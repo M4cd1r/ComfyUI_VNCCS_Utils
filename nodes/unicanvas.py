@@ -19,7 +19,7 @@ import ntpath
 import time
 import tempfile
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import torch
@@ -326,6 +326,32 @@ FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
         ),
     ),
 )
+
+
+def _call_comfy_node(class_name: str, **kwargs):
+    """Invoke a built-in/registered ComfyUI node class without a graph."""
+    import inspect
+
+    import nodes as comfy_nodes
+
+    mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) or {}
+    cls = mappings.get(class_name)
+    if cls is None:
+        raise RuntimeError(f"Required node '{class_name}' is not available")
+    instance = cls()
+    method_name = getattr(cls, "FUNCTION", None)
+    method = getattr(instance, method_name, None) if method_name else None
+    if method is None:
+        for candidate in ("execute", "sample", "decode", "process"):
+            method = getattr(instance, candidate, None)
+            if method is not None:
+                break
+    if method is None:
+        raise RuntimeError(f"Node '{class_name}' has no callable FUNCTION")
+    signature = inspect.signature(method)
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
+    accepted = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
+    return method(**accepted)
 
 
 @dataclass(frozen=True)
@@ -1012,6 +1038,45 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
 
 
 @dataclass(frozen=True)
+class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
+    key: str = "minimax_h3"
+    aliases: tuple[str, ...] = ("minimaxh3", "minimax-h3", "h3")
+    defaults: dict[str, Any] = field(default_factory=lambda: {
+        "steps": 20,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "cfg": 1.0,
+        "denoise": 1.0,
+        "frame_count": 5,
+        "ref_image_size": "match",
+    })
+    is_edit_model: bool = True
+
+    def uses_edit_masked_latents(self, mode: str) -> bool:
+        return False
+
+    def uses_differential_diffusion(self, mode: str) -> bool:
+        return False
+
+    def encode_prompt(self, clip: Any, text: str, gen_settings: dict[str, Any]):
+        # The H3 conditioning (prompt + reference pictures) is built in one call
+        # by MiniMaxH3ReferenceToVideo inside sample_latent; stash the prompt and
+        # return a placeholder that the pipeline never samples.
+        gen_settings["_h3_prompt"] = text or ""
+        return [[torch.zeros(1, 4), {}]]
+
+    def validate_conditioning(self, positive, negative, gen_settings):
+        return None
+
+    def create_empty_latent(self, width: int, height: int, gen_settings, draw_id: str = "unknown"):
+        return {"samples": torch.zeros(1, 16, 8, 8)}
+
+    def prepare_reference_conditioning(self, positive, negative, vae, image_tensor, gen_settings, draw_id="unknown"):
+        gen_settings["_h3_reference_image"] = image_tensor
+        return positive, negative
+
+
+@dataclass(frozen=True)
 class ZImageUniCanvasModule(UniCanvasModelModule):
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
         return _clone_model_clip(model, clip)
@@ -1457,6 +1522,34 @@ class GGUFUniCanvasLoader(DiffusionModelUniCanvasLoader):
         return model, clip, vae
 
 
+class ExternalUniCanvasLoader(UniCanvasModelLoader):
+    """Pass-through loader for a VNCSS_CONFIG model block."""
+
+    key = "external"
+    aliases: tuple[str, ...] = ()
+
+    def __init__(self, forced_mode: str | None = None):
+        # UniCanvasModelLoader is a frozen dataclass, so its generated
+        # __setattr__ rejects plain field assignment on subclasses.
+        object.__setattr__(self, "forced_mode", forced_mode)
+
+    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
+        return (self.key, "external")
+
+    def load_assets(self, gen_settings: dict[str, Any]):
+        external = (gen_settings or {}).get("_external") or {}
+        model = external.get("model")
+        clip = external.get("clip")
+        vae = external.get("vae")
+        if model is None or clip is None or vae is None:
+            raise RuntimeError("[VNCCS UniCanvas] External model block is missing.")
+        return model, clip, vae
+
+    def load(self, gen_settings: dict[str, Any], draw_id: str = "unknown"):
+        """Direct call entry point; delegates to the pipeline's load_assets()."""
+        return self.load_assets(gen_settings)
+
+
 UNICANVAS_MODEL_MODULES: dict[str, UniCanvasModelModule] = {}
 UNICANVAS_MODEL_LOADERS: dict[str, UniCanvasModelLoader] = {}
 
@@ -1481,6 +1574,7 @@ _register_unicanvas_model_module(
     )
 )
 _register_unicanvas_model_module(ZImageUniCanvasModule("z_image", ("z-image", "zimage", "z_image_turbo"), Z_IMAGE_DEFAULTS))
+_register_unicanvas_model_module(MiniMaxH3UniCanvasModule())
 
 
 def _register_unicanvas_model_loader(loader: UniCanvasModelLoader) -> None:
@@ -1492,6 +1586,7 @@ def _register_unicanvas_model_loader(loader: UniCanvasModelLoader) -> None:
 _register_unicanvas_model_loader(CheckpointUniCanvasLoader("checkpoint", ("ckpt",), forced_mode="sdxl"))
 _register_unicanvas_model_loader(DiffusionModelUniCanvasLoader("diffusion_model", ("unet", "diffusion"), forced_mode=None))
 _register_unicanvas_model_loader(GGUFUniCanvasLoader("gguf", (), forced_mode=None))
+_register_unicanvas_model_loader(ExternalUniCanvasLoader())
 
 
 def _get_unicanvas_model_module(generation_mode: str | None) -> UniCanvasModelModule:
