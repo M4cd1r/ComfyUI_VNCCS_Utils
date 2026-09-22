@@ -1791,11 +1791,28 @@ class UniCanvasWidget {
     return (this.presets || []).find((preset) => preset.settings?.generation_mode === mode || preset.id === mode) || null;
   }
 
+  // A linked config supplies the model/clip/vae tensors from the graph (model_loader "external"), so
+  // generation_mode belongs to the user's Mode-list pick and the preset paths must not write it. This
+  // mirrors the backend, which drops model_selection_mode/selected_preset_id for external draws
+  // (nodes/unicanvas.py). Without a linked config this returns null and the preset keeps owning
+  // generation_mode exactly as before.
+  _presetPinnedGenerationMode() {
+    return this._isConfigLinked() ? this.settings.generation_mode : null;
+  }
+
+  // Applies a preset's model settings (generation_mode, model_loader, ckpt/diffusion/gguf, clip, vae).
+  // pinnedGenerationMode carries the user's pre-merge generation_mode when a config is linked; null
+  // means "no pin" and the preset writes generation_mode as usual.
+  applyPresetModelSettings(preset, pinnedGenerationMode = null) {
+    forceUniCanvasPresetModelSettings(this.settings, preset);
+    if (pinnedGenerationMode !== null) this.settings.generation_mode = pinnedGenerationMode;
+  }
+
   forceSelectedPresetModelSettings() {
     if (this.settings.model_selection_mode !== "presets") return null;
     const preset = this.getPresetById(this.settings.selected_preset_id);
     if (!preset) return null;
-    forceUniCanvasPresetModelSettings(this.settings, preset);
+    this.applyPresetModelSettings(preset, this._presetPinnedGenerationMode());
     return preset;
   }
 
@@ -1989,6 +2006,9 @@ class UniCanvasWidget {
   applyPresetSettings(preset) {
     if (!preset?.settings) return;
     const savedRuntimeSettings = this.restorePresetRuntimeSettings(preset);
+    // Captured before the preset merge below, so a linked config keeps the user's Mode-list pick
+    // through both the spread and the forcing call.
+    const pinnedGenerationMode = this._presetPinnedGenerationMode();
     this.settings = {
       ...this.settings,
       ...preset.settings,
@@ -1996,7 +2016,7 @@ class UniCanvasWidget {
       model_selection_mode: "presets",
       selected_preset_id: preset.id,
     };
-    forceUniCanvasPresetModelSettings(this.settings, preset);
+    this.applyPresetModelSettings(preset, pinnedGenerationMode);
     this.presetRuntimeSettingsStore();
     const module = getUniCanvasModelModule(this.settings.generation_mode);
     this.settings.generation_mode = module.key;
