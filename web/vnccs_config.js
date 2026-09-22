@@ -103,6 +103,7 @@ class UniCanvasConfigWidget {
           this.node.setDirtyCanvas(true, true);
         }
       } else if (index !== -1) {
+        if (typeof this.node.disconnectInput === "function") this.node.disconnectInput(index);
         this.node.removeInput(index);
         this.node.setDirtyCanvas(true, true);
       }
