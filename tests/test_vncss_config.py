@@ -60,9 +60,18 @@ def test_normalize_lora_stack_filters_and_defaults():
         {"name": "b.safetensors", "strength": "0.8", "enabled": False},
     ])
     assert stack == [
-        {"name": "a.safetensors", "strength": 0.5, "enabled": True},
-        {"name": "b.safetensors", "strength": 0.8, "enabled": False},
+        {"name": "a.safetensors", "strength": 0.5, "enabled": True, "clip_strength": None},
+        {"name": "b.safetensors", "strength": 0.8, "enabled": False, "clip_strength": None},
     ]
+
+
+def test_normalize_lora_stack_parses_clip_strength():
+    stack = normalize_lora_stack([
+        {"name": "a", "strength": 1.0, "clip_strength": "0.25"},
+        {"name": "b", "strength": 1.0, "clip_strength": "junk"},
+        {"name": "c", "strength": 1.0},
+    ])
+    assert [entry["clip_strength"] for entry in stack] == [0.25, None, None]
 
 
 def test_apply_lora_stack_applies_enabled_in_order(monkeypatch):
@@ -158,4 +167,35 @@ def test_execute_returns_patched_model(monkeypatch):
     )[0]
     assert result["model"] == "m-x"
     assert result["clip"] == "c-x"
-    assert result["lora_stack"] == [{"name": "x", "strength": 0.5, "enabled": True}]
+    assert result["lora_stack"] == [
+        {"name": "x", "strength": 0.5, "enabled": True, "clip_strength": None}
+    ]
+
+
+def test_apply_lora_stack_forwards_clip_strength(monkeypatch):
+    import nodes.vncss_config as vc
+
+    calls = []
+
+    def fake_cached(model, clip, name, strength, clip_strength=None):
+        calls.append((name, strength, clip_strength))
+        return model, clip
+
+    monkeypatch.setattr(vc, "_apply_lora_cached", fake_cached, raising=False)
+    apply_lora_stack(
+        "m0", "c0",
+        [{"name": "one", "strength": 0.5, "enabled": True, "clip_strength": 0.25}],
+    )
+    assert calls == [("one", 0.5, 0.25)]
+
+
+def test_execute_collects_reference_image_10():
+    """The family limit is 10 reference images (MiniMax H3 / Qwen-Image-2.1)."""
+    ref = object()
+    result = VNCCS_Config().execute(
+        _state({"loras": [], "edit_model": True}),
+        model=object(), clip=object(), vae=object(),
+        reference_image_1=object(), reference_image_10=ref,
+    )[0]
+    assert set(result["references"]) == {"reference_image_1", "reference_image_10"}
+    assert result["references"]["reference_image_10"] is ref

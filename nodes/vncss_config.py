@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-REFERENCE_INPUTS = ("reference_image_1", "reference_image_2", "reference_image_3", "reference_image_4")
+# MiniMax H3 (REF2VA <Picture N>) and Qwen-Image-2.1 (<image N>) accept up to 10 reference
+# images beyond the working area, so the node exposes reference_image_1..10.
+REFERENCE_INPUTS = tuple(f"reference_image_{index}" for index in range(1, 11))
 
 
 def _load_state(node_state: str) -> dict[str, Any]:
@@ -67,7 +69,15 @@ def normalize_lora_stack(raw: Any) -> list[dict[str, Any]]:
             strength = float(item.get("strength", 1.0))
         except (TypeError, ValueError):
             strength = 1.0
-        stack.append({"name": name, "strength": strength, "enabled": bool(item.get("enabled", True))})
+        clip_strength: float | None
+        try:
+            raw_clip = item.get("clip_strength")
+            clip_strength = None if raw_clip is None else float(raw_clip)
+        except (TypeError, ValueError):
+            clip_strength = None
+        stack.append(
+            {"name": name, "strength": strength, "enabled": bool(item.get("enabled", True)), "clip_strength": clip_strength}
+        )
     return stack
 
 
@@ -75,7 +85,7 @@ def apply_lora_stack(model: Any, clip: Any, lora_stack: list[dict[str, Any]], co
     for item in lora_stack:
         if not item.get("enabled") or abs(float(item.get("strength", 1.0))) <= 1e-6:
             continue
-        model, clip = _apply_lora_cached(model, clip, item["name"], item["strength"])
+        model, clip = _apply_lora_cached(model, clip, item["name"], item["strength"], item.get("clip_strength"))
     return model, clip
 
 
@@ -93,10 +103,7 @@ class VNCCS_Config:
                 "clip": ("CLIP",),
                 "vae": ("VAE",),
                 "audio_vae": ("VAE",),
-                "reference_image_1": ("IMAGE",),
-                "reference_image_2": ("IMAGE",),
-                "reference_image_3": ("IMAGE",),
-                "reference_image_4": ("IMAGE",),
+                **{name: ("IMAGE",) for name in REFERENCE_INPUTS},
             },
         }
 
@@ -116,11 +123,11 @@ class VNCCS_Config:
         clip: Any = None,
         vae: Any = None,
         audio_vae: Any = None,
-        reference_image_1: Any = None,
-        reference_image_2: Any = None,
-        reference_image_3: Any = None,
-        reference_image_4: Any = None,
+        **references_kwargs: Any,
     ) -> tuple[dict[str, Any]]:
+        # Reference images arrive as reference_image_N kwargs (N is 1..10 and only
+        # connected sockets are passed by ComfyUI), so they are collected by name
+        # instead of ten explicit parameters.
         state = _load_state(node_state)
         edit_model = bool(state.get("edit_model", False))
         lora_stack = normalize_lora_stack(state.get("loras"))
@@ -133,12 +140,9 @@ class VNCCS_Config:
             raise RuntimeError("[VNCCS Config] VAE input is not connected.")
 
         references = {
-            name: value
-            for name, value in zip(
-                REFERENCE_INPUTS,
-                (reference_image_1, reference_image_2, reference_image_3, reference_image_4),
-            )
-            if value is not None
+            name: references_kwargs[name]
+            for name in REFERENCE_INPUTS
+            if references_kwargs.get(name) is not None
         }
         if edit_model and "reference_image_1" not in references:
             raise RuntimeError("[VNCCS Config] Edit model requires reference_image_1.")
