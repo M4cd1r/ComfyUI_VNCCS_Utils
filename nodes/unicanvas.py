@@ -1766,6 +1766,20 @@ def _get_draw_progress(draw_id: str) -> dict[str, Any]:
         })
 
 
+_DRAW_RESULTS: dict[str, dict[str, Any]] = {}
+
+
+def _store_draw_result(draw_id: str, result: dict[str, Any]) -> None:
+    _DRAW_RESULTS[str(draw_id)] = dict(result)
+
+
+def _get_draw_result(draw_id: str) -> dict[str, Any]:
+    result = _DRAW_RESULTS.get(str(draw_id))
+    if not result:
+        return {"present": False}
+    return {"present": True, "images": result.get("images") or [], "mask": result.get("mask")}
+
+
 def _tensor_debug(value: Any) -> dict[str, Any]:
     if not UNICANVAS_DEBUG:
         return {}
@@ -1862,17 +1876,39 @@ class VNCCS_UniCanvas:
             "required": {
                 "unicanvas_state": ("STRING", {"multiline": True, "default": "{}"}),
             },
+            "optional": {
+                "config": ("VNCSS_CONFIG",),
+            },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
             },
         }
 
     @classmethod
-    def IS_CHANGED(cls, unicanvas_state: str = "{}", unique_id: str | None = None):
+    def IS_CHANGED(cls, unicanvas_state: str = "{}", config=None, unique_id: str | None = None):
         return unicanvas_state
 
-    def export_state(self, unicanvas_state: str = "{}", unique_id: str | None = None):
-        return (_render_unicanvas_state_to_image_tensor(unicanvas_state),)
+    def export_state(self, unicanvas_state: str = "{}", config=None, unique_id: str | None = None):
+        if config is None:
+            return (_render_unicanvas_state_to_image_tensor(unicanvas_state),)
+        state = _load_unicanvas_state(unicanvas_state)
+        settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
+        draw_id = str(settings.get("draw_id") or f"uc-graph-{unique_id or 'node'}")
+        result = _run_unicanvas_draw({
+            "state": state,
+            "gen_settings": settings,
+            "debug_id": draw_id,
+            "external": {
+                "model": config.get("model"),
+                "clip": config.get("clip"),
+                "vae": config.get("vae"),
+                "audio_vae": config.get("audio_vae"),
+                "references": config.get("references") or {},
+            },
+            "return_tensor": True,
+        })
+        _store_draw_result(draw_id, {"images": result.get("images") or [], "mask": result.get("mask")})
+        return (result["tensor"],)
 
 
 def _content_length_ok(request, max_bytes: int) -> bool:
@@ -3860,7 +3896,17 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     if mode not in {"txt2img", "img2img", "inpaint", "outpaint"}:
         raise ValueError("mode must be txt2img, img2img, inpaint or outpaint")
 
-    settings = _normalize_gen_settings(payload.get("settings") or {})
+    gen_settings = payload.get("settings")
+    if not isinstance(gen_settings, dict):
+        # Graph generation hands the node state's settings over as "gen_settings".
+        gen_settings = payload.get("gen_settings")
+    gen_settings = dict(gen_settings) if isinstance(gen_settings, dict) else {}
+    external = payload.get("external")
+    if external:
+        # A VNCSS_CONFIG draw forwards its own model block, so the pass-through loader owns the assets.
+        gen_settings["_external"] = external
+        gen_settings["model_loader"] = "external"
+    settings = _normalize_gen_settings(gen_settings)
     settings["draw_mode"] = mode
     seed = int(settings.get("seed", 0))
     batch_size = max(1, min(99, int(settings.get("batch_size", 1) or 1)))
@@ -4203,7 +4249,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         saved_mask = _save_temp_image(mask_to_save, f"VNCCS_UniCanvas_{draw_id}_result_mask")
     _uc_log(draw_id, "result saved", {"image": saved, "images": saved_images, "mask": saved_mask, "count": len(saved_images), "size": output_size})
     _set_draw_progress(draw_id, "complete", 1.0, steps, steps, "Complete")
-    return {
+    result_payload = {
         "status": "ok",
         "image": saved,
         "images": saved_images,
@@ -4215,6 +4261,9 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         "generation_mode": settings.get("generation_mode", "illustrious"),
         "debug_id": draw_id,
     }
+    if payload.get("return_tensor"):
+        result_payload["tensor"] = decoded.detach().cpu()
+    return result_payload
 
 
 def _load_sam_model(model_key: str) -> tuple[Any, Any, Any]:
@@ -4480,6 +4529,10 @@ def register_unicanvas_routes() -> None:
     @PromptServer.instance.routes.get("/vnccs/unicanvas/progress/{draw_id}")
     async def vnccs_unicanvas_progress(request):
         return web.json_response(_get_draw_progress(str(request.match_info.get("draw_id") or "")))
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/result/{draw_id}")
+    async def vnccs_unicanvas_result(request):
+        return web.json_response(_get_draw_result(str(request.match_info.get("draw_id") or "")))
 
 
 NODE_CLASS_MAPPINGS = {

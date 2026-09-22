@@ -1,5 +1,9 @@
+import base64
+import io
+
 import pytest
 import torch
+from PIL import Image
 
 from nodes.unicanvas import (
     _MODEL_CACHE,
@@ -186,3 +190,74 @@ def test_sample_latent_requires_audio_vae():
             gen_settings={"_h3_prompt": "p", "_external": {}},
             draw_id="t", width=64, height=64,
         )
+
+
+def test_graph_generate_runs_draw_and_returns_tensor(monkeypatch):
+    from nodes import unicanvas as uc
+    from nodes.vncss_config import VNCCS_Config
+
+    captured = {}
+
+    def fake_draw(payload):
+        captured.update(payload)
+        return {"images": ["data:image/png;base64,AAAA"], "tensor": torch.zeros(1, 8, 8, 3)}
+
+    monkeypatch.setattr(uc, "_run_unicanvas_draw", fake_draw)
+    config = VNCCS_Config().execute(
+        '{"loras": [], "edit_model": False}', model="M", clip="C", vae="V",
+    )[0]
+    node = uc.VNCCS_UniCanvas()
+    (image,) = node.export_state(
+        '{"state_id": "s1", "layers": [], "settings": {"draw_id": "draw-1", "generation_mode": "minimax_h3"}}',
+        config=config,
+        unique_id="9",
+    )
+    assert captured["debug_id"] == "draw-1"
+    assert captured["external"]["model"] == "M"
+    assert captured["return_tensor"] is True
+    assert image.shape == (1, 8, 8, 3)
+
+
+def test_graph_generate_without_config_keeps_legacy_export(monkeypatch):
+    from nodes import unicanvas as uc
+
+    monkeypatch.setattr(
+        uc, "_render_unicanvas_state_to_image_tensor", lambda state: torch.zeros(1, 4, 4, 3)
+    )
+    (image,) = uc.VNCCS_UniCanvas().export_state('{"layers": []}', config=None, unique_id="9")
+    assert image.shape == (1, 4, 4, 3)
+
+
+def test_result_store_roundtrip():
+    from nodes.unicanvas import _store_draw_result, _get_draw_result
+
+    _store_draw_result("draw-x", {"images": ["data:x"], "mask": None})
+    assert _get_draw_result("draw-x") == {"present": True, "images": ["data:x"], "mask": None}
+    assert _get_draw_result("missing") == {"present": False}
+
+
+def test_external_payload_selects_external_loader(monkeypatch):
+    """A graph-generation payload forwards its VNCSS_CONFIG block to the pass-through loader."""
+    from nodes import unicanvas as uc
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(buffer, format="PNG")
+    image_data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    captured = {}
+
+    def fake_load_assets(gen_settings):
+        captured.update(gen_settings)
+        raise RuntimeError("stop after asset selection")
+
+    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    with pytest.raises(RuntimeError, match="stop after asset selection"):
+        uc._run_unicanvas_draw({
+            "debug_id": "graph-draw",
+            "mode": "txt2img",
+            "image": image_data_url,
+            "settings": {"generation_mode": "minimax_h3"},
+            "external": {"model": "M", "clip": "C", "vae": "V", "audio_vae": "A", "references": {}},
+        })
+    assert captured["model_loader"] == "external"
+    assert captured["generation_mode"] == "minimax_h3"
+    assert captured["_external"]["model"] == "M"
