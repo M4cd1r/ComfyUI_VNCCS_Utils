@@ -106,7 +106,8 @@ assets through the bundled SparkJS viewport.
     **opacity**, down for **hardness**, or left for the **foreground color**;
     once a sector is selected, keep dragging to adjust its value live and
     release to commit. Holding Alt disables the HUD because that chord belongs
-    to the brush-size gesture.
+    to the brush-size gesture. The HUD is also intentionally disabled for the
+    SAM tool, where right-click keeps its subtract-point meaning.
 *   **Brush hardness**: a new brush-engine setting (0-1) with a slider in the
     brush tool settings and a radial HUD sector. Values below 1 render strokes
     with radial-gradient stamps for soft edges; the effect is immediate while
@@ -119,7 +120,9 @@ Right-click a layer row to open the layer context menu:
 *   **Copy layer as image to clipboard**: copies the layer as a PNG with alpha
     through `navigator.clipboard.write`.
 *   **Save layer as image**: writes the layer PNG to ComfyUI's `output/`
-    through `POST /vnccs/unicanvas/save_output`.
+    through `POST /vnccs/unicanvas/save_output`. Both export entries crop the
+    layer to its alpha bounds, so the PNG contains the visible artwork rather
+    than the full canvas backing store.
 *   **Remove bg – QI2.1**: extracts the subject over the layer's pixels with
     the Qwen-Image-2.1 RGBA subject-extraction pipeline (requires a QI2.1
     stack) and applies the returned alpha.
