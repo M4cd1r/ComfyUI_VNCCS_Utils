@@ -22,6 +22,8 @@
  * one install call.
  */
 
+import { clamp } from "./vnccs_unicanvas_input_tools.mjs";
+
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
   { id: "save-image", label: "Save layer as image" },
@@ -74,10 +76,6 @@ export const REMOVE_BG_ROUTE = "/vnccs/unicanvas/remove_bg";
 export const SAVE_OUTPUT_ROUTE = "/vnccs/unicanvas/save_output";
 export const POSE_TOOLS_UNAVAILABLE = "[VNCCS UniCanvas] Pose tools are not available.";
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
 function normalizePsdOpacity(value) {
   const opacity = Number(value);
   if (!Number.isFinite(opacity)) return 1;
@@ -103,7 +101,7 @@ function psdEntryToCanvas(entry) {
   return canvas;
 }
 
-export function collectPsdRasterLayers(entries, imported, skipped) {
+function collectPsdRasterLayers(entries, imported, skipped) {
   for (const entry of entries || []) {
     if (!entry || typeof entry !== "object") continue;
     if (Array.isArray(entry.children)) {
@@ -132,7 +130,7 @@ export function collectPsdRasterLayers(entries, imported, skipped) {
   }
 }
 
-export function formatPsdImportReport(importedCount, skipped) {
+function formatPsdImportReport(importedCount, skipped) {
   const base = `[VNCCS UniCanvas] PSD imported ${importedCount} raster layers`;
   if (!skipped.length) return `${base}; nothing skipped.`;
   const details = skipped.map((item) => `${item.reason} "${item.name}"`).join(", ");
@@ -262,20 +260,22 @@ async function removeLayerBackground(uc, layer, method) {
   }
 }
 
-function buildColorMatchReference(uc, layer) {
+function buildColorMatchReference(uc, layer, crop) {
   const index = uc.layers.indexOf(layer);
   const below = uc.layers.slice(index + 1).filter((item) => item.visible);
   const pool = below.length ? below : uc.layers.filter((item) => item.visible && item.id !== layer.id);
   if (!pool.length) return null;
   const canvas = document.createElement("canvas");
-  canvas.width = layer.canvas.width;
-  canvas.height = layer.canvas.height;
+  canvas.width = crop.width;
+  canvas.height = crop.height;
   const ctx = uc.configureImageContext(canvas.getContext("2d"));
+  const worldRect = { x: uc.origin.x + crop.x, y: uc.origin.y + crop.y, width: crop.width, height: crop.height };
   for (const item of [...pool].reverse()) {
     ctx.save();
     ctx.globalAlpha = clamp(Number(item.opacity ?? 1), 0, 1);
     ctx.globalCompositeOperation = item.blendMode || "source-over";
-    ctx.drawImage(item.canvas, 0, 0);
+    // Same hi-res-aware semantics as the base composite paths.
+    uc.drawRasterLayerToWorldRect(ctx, item, worldRect, { x: 0, y: 0, width: crop.width, height: crop.height });
     ctx.restore();
   }
   return canvas;
@@ -309,7 +309,7 @@ function applyColorMatchPreview(uc, preview, resultImage) {
 }
 
 function commitColorMatchPreview(uc, preview) {
-  if (!preview.gestureBefore || preview.appliedSeq !== preview.seq) return;
+  if (!preview.gestureBefore) return;
   uc.pushHistoryEntry({
     kind: "layerPixels",
     layerId: preview.layer.id,
@@ -321,6 +321,17 @@ function commitColorMatchPreview(uc, preview) {
   uc.syncLightStateToWidget();
   uc.scheduleFullSync();
   uc.setStatus("[VNCCS UniCanvas] Color match committed.");
+}
+
+function finishColorMatchGesture(uc, preview) {
+  // End of one gesture: record exactly one layerPixels entry, waiting for the
+  // newest preview first so no pixel change is ever left unrecorded.
+  if (!preview.gestureBefore) return;
+  if (preview.rafId || preview.inFlight) {
+    preview.commitRequested = true;
+    return;
+  }
+  commitColorMatchPreview(uc, preview);
 }
 
 function scheduleColorMatchPreview(uc, preview, strength, commit) {
@@ -335,6 +346,12 @@ function scheduleColorMatchPreview(uc, preview, strength, commit) {
 }
 
 async function runColorMatchPreview(uc, preview) {
+  if (preview.closed) return;
+  if (preview.inFlight) {
+    // One round trip at a time; the newest value reruns on completion.
+    preview.rerunNeeded = true;
+    return;
+  }
   const strength = preview.pendingStrength;
   preview.seq += 1;
   const seq = preview.seq;
@@ -343,16 +360,26 @@ async function runColorMatchPreview(uc, preview) {
   try {
     const resultURL = await requestColorMatch(preview.targetBase, preview.referenceBase, preview.method, strength);
     const resultImage = await uc.loadImage(resultURL);
-    preview.inFlight = false;
-    if (seq !== preview.seq) return; // stale preview dropped; newest value wins
+    if (preview.closed || seq !== preview.seq) return; // stale preview dropped; newest value wins
     applyColorMatchPreview(uc, preview, resultImage);
-    preview.appliedSeq = seq;
-    if (preview.commitRequested) commitColorMatchPreview(uc, preview);
   } catch (err) {
+    if (!preview.closed && seq === preview.seq) {
+      uc.setStatus(`[VNCCS UniCanvas] Color match failed: ${err.message || err}`, true);
+    }
+  } finally {
     preview.inFlight = false;
-    if (seq !== preview.seq) return; // stale preview dropped; newest value wins
-    preview.commitRequested = false;
-    uc.setStatus(`[VNCCS UniCanvas] Color match failed: ${err.message || err}`, true);
+    if (preview.closed) return;
+    if (preview.rerunNeeded) {
+      preview.rerunNeeded = false;
+      runColorMatchPreview(uc, preview);
+      return;
+    }
+    // Commit whatever the gesture produced - even after a failed preview - so
+    // changed pixels never end up without a history entry.
+    if (preview.commitRequested) {
+      preview.commitRequested = false;
+      commitColorMatchPreview(uc, preview);
+    }
   }
 }
 
@@ -360,12 +387,20 @@ function closeColorMatchPreview(uc, commit) {
   const preview = uc._vnccsColorMatch;
   if (!preview) return;
   uc._vnccsColorMatch = null;
+  preview.closed = true;
+  preview.seq += 1; // drop any in-flight preview (stale preview dropped)
   if (preview.rafId) cancelAnimationFrame(preview.rafId);
-  if (!commit && preview.gestureBefore) {
-    // Closing mid-gesture discards the uncommitted scratch preview.
-    uc.restoreLayerPixelSnapshot(preview.layer, preview.gestureBefore);
-    uc.refreshLayerRow(preview.layer.id);
-    uc.requestRender();
+  if (preview.gestureBefore) {
+    if (commit) {
+      // Closing with commit=true still records the pending gesture.
+      commitColorMatchPreview(uc, preview);
+    } else {
+      // Closing mid-gesture discards the uncommitted scratch preview.
+      uc.restoreLayerPixelSnapshot(preview.layer, preview.gestureBefore);
+      preview.gestureBefore = null;
+      uc.refreshLayerRow(preview.layer.id);
+      uc.requestRender();
+    }
   }
   preview.element?.remove();
 }
@@ -377,7 +412,7 @@ function openColorMatchPopover(uc, layer) {
     uc.setStatus("[VNCCS UniCanvas] Color match to below: layer is empty.", true);
     return;
   }
-  const referenceBase = buildColorMatchReference(uc, layer);
+  const referenceBase = buildColorMatchReference(uc, layer, crop);
   if (!referenceBase) {
     uc.setStatus("[VNCCS UniCanvas] Color match to below needs a visible reference layer.", true);
     return;
@@ -410,9 +445,10 @@ function openColorMatchPopover(uc, layer) {
     referenceBase,
     method: COLOR_MATCH_METHODS[0],
     seq: 0,
-    appliedSeq: 0,
     rafId: 0,
     inFlight: false,
+    rerunNeeded: false,
+    closed: false,
     pendingStrength: COLOR_MATCH_STRENGTH_MAX,
     commitRequested: false,
     gestureBefore: null,
@@ -426,7 +462,7 @@ function openColorMatchPopover(uc, layer) {
 
   methodSelect.addEventListener("change", () => {
     preview.method = methodSelect.value;
-    preview.gestureBefore = uc.createLayerPixelSnapshot(layer);
+    if (!preview.gestureBefore) preview.gestureBefore = uc.createLayerPixelSnapshot(layer);
     scheduleColorMatchPreview(uc, preview, Number(strengthInput.value), true);
   });
   strengthInput.addEventListener("input", () => {
@@ -438,9 +474,11 @@ function openColorMatchPopover(uc, layer) {
   });
   strengthInput.addEventListener("pointerup", () => {
     // Release commits the current gesture as one history entry.
-    if (!preview.gestureBefore) return;
-    if (preview.rafId || preview.inFlight) preview.commitRequested = true;
-    else commitColorMatchPreview(uc, preview);
+    finishColorMatchGesture(uc, preview);
+  });
+  strengthInput.addEventListener("change", () => {
+    // Keyboard-only adjustments fire no pointerup; change also ends a gesture.
+    finishColorMatchGesture(uc, preview);
   });
   closeBtn.addEventListener("click", () => closeColorMatchPreview(uc, true));
 }
@@ -529,13 +567,22 @@ export function installUniCanvasLayerTools(uc) {
     openLayerContextMenu(uc, layer, e);
   });
 
-  document.addEventListener("pointerdown", (e) => {
+  const onDocumentPointerDown = (e) => {
     if (uc._vnccsLayerMenu && !uc._vnccsLayerMenu.contains(e.target)) closeLayerContextMenu(uc);
-  });
-  document.addEventListener("keydown", (e) => {
+  };
+  const onDocumentKeyDown = (e) => {
     if (e.key !== "Escape") return;
     if (uc._vnccsLayerMenu) closeLayerContextMenu(uc);
     else if (uc._vnccsColorMatch) closeColorMatchPreview(uc, false);
+  };
+  // The base widget wires its AbortController in _attachEvents (after this
+  // installer runs), so bind on the next microtask and tie the listeners to
+  // the widget's dispose signal.
+  queueMicrotask(() => {
+    if (uc._disposed) return;
+    const options = { signal: uc._eventAbortController?.signal };
+    document.addEventListener("pointerdown", onDocumentPointerDown, options);
+    document.addEventListener("keydown", onDocumentKeyDown, options);
   });
 
   return uc;

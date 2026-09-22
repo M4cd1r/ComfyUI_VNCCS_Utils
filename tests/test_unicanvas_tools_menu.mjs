@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { LAYER_MENU_ITEMS } from "../web/vnccs_unicanvas_layer_tools.mjs";
+
 
 const inputTools = await readFile(new URL("../web/vnccs_unicanvas_input_tools.mjs", import.meta.url), "utf8");
 const layerTools = await readFile(new URL("../web/vnccs_unicanvas_layer_tools.mjs", import.meta.url), "utf8");
@@ -28,7 +30,8 @@ test("Alt guard keeps the brush-size gesture and the radial HUD apart", () => {
   assert.match(inputTools, /if \(e\.altKey\) \{[\s\S]*?startBrushSizeGesture\(uc, e\);/);
   assert.match(inputTools, /else if \(uc\.tool !== "sam"\) \{[\s\S]*?openRadialHud\(uc, e\);/);
   assert.ok(inputTools.includes("BRUSH_FAMILY_TOOLS.has(uc.tool)"), "the size gesture must be limited to brush-family tools");
-  assert.ok(inputTools.includes("BRUSH_SIZE_GESTURE_SENSITIVITY = 0.5"), "size sensitivity must stay at ~0.5 px per pointer px");
+  assert.ok(inputTools.includes("BRUSH_RADIUS_GESTURE_SENSITIVITY = 0.5"), "radius sensitivity must stay at ~0.5 px per pointer px");
+  assert.ok(inputTools.includes("uc.hoverPoint = uc.worldFromCanvasPoint(gesture.lastScreen)"), "the preview circle must track the cursor during the gesture");
 });
 
 test("radial HUD maps the four drag directions to parameters", () => {
@@ -49,7 +52,8 @@ test("layer context menu defines all seven entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(MENU_LABELS.length, 7);
+  assert.equal(LAYER_MENU_ITEMS.length, 7, "the shipped menu must define exactly seven entries");
+  assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
 });
 
 test("pose entries guard the parallel-branch methods with a status fallback", () => {
@@ -83,5 +87,7 @@ test("strength slider previews live and commits on release", () => {
   assert.ok(layerTools.includes("requestAnimationFrame"), "per-frame work must be coalesced");
   assert.ok(layerTools.includes("stale preview dropped; newest value wins"), "stale async previews must be dropped");
   assert.match(layerTools, /strengthInput\.addEventListener\("pointerup"/, "release must commit");
+  assert.match(layerTools, /strengthInput\.addEventListener\("change"/, "keyboard-only changes must commit too");
+  assert.ok(layerTools.includes("finishColorMatchGesture"), "gesture end must route through the single commit path");
   assert.match(layerTools, /kind: "layerPixels"/, "the commit must record a layerPixels history entry");
 });
