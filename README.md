@@ -92,6 +92,24 @@ assets through the bundled SparkJS viewport.
 *   **Canvas Editing Tools**: Move, transform, resize, snap, undo/redo, and manage generation results without leaving the node.
 *   **Progress and Result Handling**: Track generation progress and apply results back into the canvas as editable layers.
 
+## Pose layers
+
+Pose layers are smart-object layers for live posed mannequins on the UniCanvas
+stack (design spec section 7). They behave like raster layers in the stack —
+transforms (move / resize / rotate), opacity, blend mode and arbitrary stacking
+order all work — but brush, eraser and rectangle painting are blocked on them;
+use **Rasterize** from the layer context menu when the pixels should become a
+normal raster layer.
+
+*   **Add pose layer** (Layers section, next to *Add raster* / *Add mask*) creates the layer and subscribes on the `vnccs:unicanvas:pose-layer` window CustomEvent bus. A linked Pose Studio answers with PNG renders (with alpha) plus metadata, and the layer pixels follow the posing interactively: previews are coalesced through `requestAnimationFrame` at ~15–20 fps while you interact, with a full-quality capture committed on release as a single undo step. Stale renders are dropped — the newest one always wins.
+*   **Status chip** on the layer row shows `linked to Pose Studio` / `waiting…` / `disconnected`, with a manual **capture now** action for a full-quality grab at any time.
+*   **Character dropdown** (Pose Studio Characters panel) offers `Mannequin` plus saved VNCCS characters from `/vnccs/list_characters`; picking one applies its morphs through the existing `applyExternalCharacterCreatorValues()` path. Without the VNCCS character pack the list degrades to `Mannequin` and the status chip says so. The dropdown is the single source of truth for the layer character; the UniCanvas pose panel mirrors the selection read-only.
+*   **Mannequin tool** (tools column): with a pose layer active it enters in-place pose editing — the layer pixels are temporarily replaced by an interactive mannequin loaded from `layer.poseData` (pose, character morphs, camera), reusing the Pose Studio viewer and morph runtime embedded over the stage. **Save pose** re-renders the mannequin with the stored settings and the new pose and rebuilds the layer pixels and `poseData`; **Cancel** restores the previous render untouched.
+
+Everything needed to rebuild the render lives in `layer.poseData`
+(`{ schemaVersion, pose, character: { id, name, source, morphs }, camera,
+render: { transparent: true, size } }`) and is persisted with the canvas state.
+
 ## VNCSS_CONFIG and MiniMax H3 region editing
 
 `VNCSS_CONFIG` feeds UniCanvas with `MODEL`/`CLIP`/`VAE` tensors that already

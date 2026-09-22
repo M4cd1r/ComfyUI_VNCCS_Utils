@@ -10,6 +10,17 @@ import {
   getUniCanvasPresetModelName,
 } from "./vnccs_unicanvas_presets.mjs";
 import { installUniCanvasWidgetModes, registerUniCanvasStandaloneSidebarTab, teardownUniCanvasWidgetModes } from "./vnccs_unicanvas_modes.mjs";
+import {
+  createUniCanvasPoseLayer,
+  disposeUniCanvasPoseLayers,
+  editUniCanvasPoseLayer,
+  MANNEQUIN_TOOL_ICON,
+  normalizePoseLayerData,
+  POSE_LAYER_ADD_ICON,
+  POSE_LAYER_TYPE,
+  rasterizeUniCanvasPoseLayer,
+  refreshUniCanvasPoseLayerUI,
+} from "./vnccs_unicanvas_pose_layers.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -669,6 +680,7 @@ const TOOL_ICONS = {
   resize: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M140,88a12,12,0,0,1,12-12h32a12,12,0,0,1,12,12v32a12,12,0,0,1-24,0V100H152A12,12,0,0,1,140,88ZM72,180h32a12,12,0,0,0,0-24H84V136a12,12,0,0,0-24,0v32A12,12,0,0,0,72,180ZM236,56V200a20,20,0,0,1-20,20H40a20,20,0,0,1-20-20V56A20,20,0,0,1,40,36H216A20,20,0,0,1,236,56Zm-24,4H44V196H212Z"/></svg>`,
   bbox: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M208,100a20,20,0,0,0,20-20V48a20,20,0,0,0-20-20H176a20,20,0,0,0-20,20v4H100V48A20,20,0,0,0,80,28H48A20,20,0,0,0,28,48V80a20,20,0,0,0,20,20h4v56H48a20,20,0,0,0-20,20v32a20,20,0,0,0,20,20H80a20,20,0,0,0,20-20v-4h56v4a20,20,0,0,0,20,20h32a20,20,0,0,0,20-20V176a20,20,0,0,0-20-20h-4V100ZM180,52h24V76H180ZM52,52H76V76H52ZM76,204H52V180H76Zm128,0H180V180h24Zm-24-48h-4a20,20,0,0,0-20,20v4H100v-4a20,20,0,0,0-20-20H76V100h4a20,20,0,0,0,20-20V76h56v4a20,20,0,0,0,20,20h4Z"/></svg>`,
   pan: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M188,44a32,32,0,0,0-8,1V44a32,32,0,0,0-60.79-14A32,32,0,0,0,76,60v50.83a32,32,0,0,0-52,36.7C55.82,214.6,75.35,244,128,244a92.1,92.1,0,0,0,92-92V76A32,32,0,0,0,188,44Zm8,108a68.08,68.08,0,0,1-68,68c-35.83,0-49.71-14-82.48-83.14-.14-.29-.29-.58-.45-.86a8,8,0,0,1,13.85-8l.21.35,18.68,30A12,12,0,0,0,100,152V60a8,8,0,0,1,16,0v60a12,12,0,0,0,24,0V44a8,8,0,0,1,16,0v76a12,12,0,0,0,24,0V76a8,8,0,0,1,16,0Z"/></svg>`,
+  mannequin: MANNEQUIN_TOOL_ICON,
 };
 const UI_ICONS = {
   plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
@@ -924,6 +936,7 @@ class UniCanvasWidget {
     const layersSection = this._section("Layers", layersBody, [
       [UI_ICONS.plus, "Add raster", () => this.addLayer("raster")],
       [UI_ICONS.mask, "Add mask", () => this.addLayer("mask")],
+      [POSE_LAYER_ADD_ICON, "Add pose layer", () => this.addPoseLayer()],
       [UI_ICONS.duplicate, "Duplicate selected", () => this.duplicateActiveLayer()],
       [UI_ICONS.up, "Move selected up", () => this.moveActiveLayer(-1)],
       [UI_ICONS.down, "Move selected down", () => this.moveActiveLayer(1)],
@@ -1022,6 +1035,7 @@ class UniCanvasWidget {
       ["rect", "Rectangle"],
       ["lasso", "Lasso"],
       ["resize", "Resize layer"],
+      ["mannequin", "Pose mannequin"],
       ["bbox", "Generation bbox"],
       ["pan", "Pan view"],
     ].forEach(([tool, title]) => this.tools.appendChild(this._toolButton(tool, title)));
@@ -1369,6 +1383,7 @@ class UniCanvasWidget {
     this.updateContextCursor();
     this.updateToolPreviewOverlay();
     if (force || this.toolNeedsCanvasRender(previousTool) || this.toolNeedsCanvasRender(tool)) this.requestRender();
+    if (tool === "mannequin") this.activatePoseMannequinTool();
   }
 
   toolNeedsCanvasRender(tool) {
@@ -2628,6 +2643,14 @@ class UniCanvasWidget {
       return;
     }
     if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
+      const poseBrushTarget = this.pointerMode === "mask" ? null : this.activeLayer;
+      if (poseBrushTarget?.type === POSE_LAYER_TYPE) {
+        this.setStatus("[VNCCS UniCanvas] Brush and eraser are blocked on pose layers (smart object)", true);
+        this.pointerMode = "idle";
+        this.isPointerDown = false;
+        this.dragStart = null;
+        return;
+      }
       if (!this.ensureVisibleWorldBounds(Math.max(128, this.brushSize * 2))) {
         this.pointerMode = "idle";
         this.isPointerDown = false;
@@ -2812,6 +2835,10 @@ class UniCanvasWidget {
     const layer = this.activeLayer;
     const rect = this.shapeDraft;
     if (!layer || layer.locked || !rect || rect.width <= 0 || rect.height <= 0) return;
+    if (layer.type === POSE_LAYER_TYPE) {
+      this.setStatus("[VNCCS UniCanvas] Brush and eraser are blocked on pose layers (smart object)", true);
+      return;
+    }
     if (!this.ensureWorldBounds(rect.x + rect.width, rect.y + rect.height, 128)) return;
     if (!this.ensureWorldBounds(rect.x, rect.y, 128)) return;
     this.materializeRasterLayerForEditing(layer);
@@ -3160,6 +3187,7 @@ class UniCanvasWidget {
       opacity: layer.opacity,
       blendMode: layer.blendMode || "source-over",
       canvas: this.cloneCanvas(layer.canvas),
+      poseData: layer.poseData ? JSON.parse(JSON.stringify(layer.poseData)) : null,
     };
     if (layer.hiresCanvas && layer.hiresRect) {
       clone.hiresCanvas = this.cloneCanvas(layer.hiresCanvas);
@@ -3329,6 +3357,10 @@ class UniCanvasWidget {
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
+      if (layer && entry.poseDataBefore !== undefined) {
+        const poseData = direction === "undo" ? entry.poseDataBefore : entry.poseDataAfter;
+        layer.poseData = poseData ? JSON.parse(JSON.stringify(poseData)) : null;
+      }
       this.activeLayerId = layer?.id || this.activeLayerId;
     }
     this.historyRestoring = false;
@@ -4068,6 +4100,10 @@ class UniCanvasWidget {
   drawStroke(a, b) {
     const layer = this.tool === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
     if (!layer || layer.locked) return;
+    if (layer.type === POSE_LAYER_TYPE) {
+      this.setStatus("[VNCCS UniCanvas] Brush and eraser are blocked on pose layers (smart object)", true);
+      return;
+    }
     if (!this.ensureVisibleWorldBounds(Math.max(128, this.brushSize * 2))) return;
     const start = this.alignCoordForTool(a, this.brushSize);
     const end = this.alignCoordForTool(b, this.brushSize);
@@ -4141,6 +4177,7 @@ class UniCanvasWidget {
     const hideMaskOverlays = this.hasOpenStagingPanel();
     for (const layer of [...this.layers].reverse()) {
       if (!layer.visible) continue;
+      if (layer._poseEditing) continue;
       if (hideMaskOverlays && layer.type === "mask") continue;
       ctx.save();
       if (layer.type === "mask") {
@@ -4823,6 +4860,7 @@ class UniCanvasWidget {
     this.attachLayerGroupDrop(this.maskLayerList, "mask");
     this.attachLayerGroupDrop(this.rasterLayerList, "raster");
     this.syncActiveLayerControls();
+    this.refreshPoseLayerUI();
   }
 
   createLayerGroupHead(label, count, type) {
@@ -5185,6 +5223,7 @@ class UniCanvasWidget {
       opacity: layer.opacity,
       blendMode: layer.blendMode || "source-over",
       canvas: this._createCanvas(),
+      poseData: layer.poseData ? JSON.parse(JSON.stringify(layer.poseData)) : null,
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
     if (layer.hiresCanvas && layer.hiresRect) {
@@ -6187,6 +6226,7 @@ class UniCanvasWidget {
         id: layer.id,
         name: layer.name,
         type: layer.type,
+        poseData: layer.poseData ? JSON.parse(JSON.stringify(layer.poseData)) : null,
         visible: layer.visible,
         locked: layer.locked,
         opacity: layer.opacity,
@@ -6371,6 +6411,7 @@ class UniCanvasWidget {
       id: layer.id,
       name: layer.name,
       type: layer.type,
+      poseData: layer.poseData ? JSON.parse(JSON.stringify(layer.poseData)) : null,
       visible: layer.visible,
       locked: layer.locked,
       opacity: layer.opacity,
@@ -6501,6 +6542,10 @@ class UniCanvasWidget {
           blendMode: typeof item.blendMode === "string" ? item.blendMode : "source-over",
           canvas: this._createCanvas(),
         };
+        if (item.type === POSE_LAYER_TYPE && item.poseData) {
+          layer.type = POSE_LAYER_TYPE;
+          layer.poseData = normalizePoseLayerData(item.poseData);
+        }
         if (item.dataURL) {
           const img = await this.loadImage(item.dataURL);
           if (item.crop) {
@@ -6620,6 +6665,20 @@ class UniCanvasWidget {
     return stats;
   }
 
+  // --- Pose layers (spec section 7); implementation: web/vnccs_unicanvas_pose_layers.mjs ---
+  addPoseLayer() { return createUniCanvasPoseLayer(this); }
+  rasterizePoseLayer(layer) { return rasterizeUniCanvasPoseLayer(this, layer); }
+  editPoseLayer(layer) { return editUniCanvasPoseLayer(this, layer); }
+  refreshPoseLayerUI() { return refreshUniCanvasPoseLayerUI(this); }
+  activatePoseMannequinTool() {
+    const layer = this.activeLayer;
+    if (layer?.type === POSE_LAYER_TYPE) {
+      this.editPoseLayer(layer);
+      return;
+    }
+    this.setStatus("[VNCCS UniCanvas] Select a pose layer to edit the pose", true);
+  }
+
   dispose() {
     if (this._disposed) return;
     try {
@@ -6629,6 +6688,7 @@ class UniCanvasWidget {
     }
     this._disposed = true;
     teardownUniCanvasWidgetModes(this);
+    disposeUniCanvasPoseLayers(this);
     this._eventAbortController?.abort();
     this._eventAbortController = null;
     this.stopDrawProgressPolling();
