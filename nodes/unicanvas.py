@@ -2710,6 +2710,11 @@ def _call_node_method(class_names: list[str], method_names: list[str], **kwargs)
 
 def _load_generation_assets(gen_settings: dict[str, Any]):
     loader = _get_unicanvas_model_loader(str(gen_settings.get("model_loader") or "checkpoint").lower())
+    if loader.key == "external":
+        # The external pass-through loader returns the caller's own VNCSS_CONFIG block, so its
+        # assets cannot be keyed by the loader alone: caching them under a constant key would make
+        # a later external draw reuse the first draw's model/clip/vae. Bypass _MODEL_CACHE entirely.
+        return loader.load_assets(gen_settings)
     asset_key = loader.cache_key(gen_settings)
     with _COMFY_MODEL_OP_LOCK:
         with _MODEL_CACHE_LOCK:
