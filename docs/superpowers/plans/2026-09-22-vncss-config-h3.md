@@ -1215,6 +1215,7 @@ Inside `draw()` (line 5518), before the `fetch("/vnccs/unicanvas/draw", …)` ca
     const configLinked = !!(configInput && configInput.link != null);
     if (configLinked) {
       this.settings.draw_id = `uc_${Date.now().toString(36)}`;
+      this.settings.queued_draw = this._buildDrawPayload({ includeDebugId: false });
       this.syncSettingsToWidget();
       this.startDrawProgressPolling(this.settings.draw_id);
       try {
