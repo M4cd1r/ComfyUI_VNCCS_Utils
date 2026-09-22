@@ -21,7 +21,7 @@ import re
 import pytest
 from PIL import Image
 
-from nodes.unicanvas import _run_unicanvas_save_output, register_unicanvas_routes
+from nodes.unicanvas import _run_unicanvas_save_output, _unicanvas_save_output_image, register_unicanvas_routes
 
 
 
@@ -130,6 +130,20 @@ def test_state_save_renders_flattened_composite(output_dir):
     with Image.open(result["path"]) as saved:
         assert saved.mode == "RGBA"
         assert saved.getpixel((0, 0))[:3] == (255, 0, 0)
+
+
+def test_failed_save_unlinks_the_reserved_file(output_dir, monkeypatch):
+    def failing_save(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Image.Image, "save", failing_save)
+
+    with pytest.raises(OSError, match="disk full"):
+        _unicanvas_save_output_image(Image.new("RGBA", (2, 2), (0, 0, 0, 0)))
+
+    # The O_EXCL reservation created the file: a failed save must not leave a
+    # zero-byte PNG behind in output/.
+    assert list(pathlib.Path(str(output_dir)).glob("unicanvas-*.png")) == []
 
 
 def test_save_output_requires_image_or_state(output_dir):

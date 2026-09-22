@@ -1188,8 +1188,17 @@ class UniCanvasWidget {
         if (e.target === overlay) close(false);
       });
       overlay.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") close(false);
-        if (e.key === "Enter") close(true);
+        // The modal owns Escape/Enter for this keypress: stop propagation so
+        // the container/window shortcut handlers cannot act on the same event
+        // (Esc closing the modal must not also exit fullscreen).
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          close(false);
+        }
+        if (e.key === "Enter") {
+          e.stopPropagation();
+          close(true);
+        }
       });
       this.container.appendChild(overlay);
       requestAnimationFrame(() => {

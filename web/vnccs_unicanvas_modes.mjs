@@ -499,7 +499,10 @@ export function flushStandalonePersistence(widget) {
     window.clearTimeout(entry.timer);
     entry.timer = null;
   }
-  if (!widget._disposed) writeStandaloneState(widget, widget.buildSerializedState(true));
+  // Write even for a disposed widget: the localStorage write is safe after
+  // disposal and preserves the last pending document (symmetry with the
+  // dispose()-time flushStateUpload path).
+  writeStandaloneState(widget, widget.buildSerializedState(true));
 }
 
 export function teardownUniCanvasWidgetModes(widget) {

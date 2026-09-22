@@ -4513,7 +4513,16 @@ def _unicanvas_save_output_image(image: Image.Image) -> str:
     output_dir = str(folder_paths.get_output_directory() or "output")
     os.makedirs(output_dir, exist_ok=True)
     path = _unicanvas_reserve_output_path(output_dir)
-    image.save(path, format="PNG")
+    try:
+        image.save(path, format="PNG")
+    except BaseException:
+        # The O_EXCL reservation created the file: a failed save must not leave
+        # a zero-byte PNG behind in output/.
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
     return path
 
 
