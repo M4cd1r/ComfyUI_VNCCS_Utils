@@ -361,16 +361,16 @@ export function installUniCanvasInputTools(uc) {
   if (!Number.isFinite(uc.brushHardness)) uc.brushHardness = DEFAULT_BRUSH_HARDNESS;
   uc._vnccsInputTools = { gesture: null };
 
-  const originalDrawStroke = uc.drawStroke.bind(uc);
+  const originalDrawStroke = uc.drawStroke;
   uc.drawStroke = (a, b) => {
-    if (uc.brushHardness >= 1) return originalDrawStroke(a, b);
+    if (uc.brushHardness >= 1) return Reflect.apply(originalDrawStroke, uc, [a, b]);
     return drawSoftStampStroke(uc, a, b);
   };
 
-  const originalDrawToolPreview = uc.drawToolPreview.bind(uc);
+  const originalDrawToolPreview = uc.drawToolPreview;
   uc.drawToolPreview = (ctx) => {
     if (uc.brushHardness >= 1 || !uc.hoverPoint || uc.hoverPointerType !== "mouse" || !BRUSH_FAMILY_TOOLS.has(uc.tool)) {
-      return originalDrawToolPreview(ctx);
+      return Reflect.apply(originalDrawToolPreview, uc, [ctx]);
     }
     const radius = uc.brushSize / 2;
     const point = uc.hoverPoint;
@@ -387,30 +387,30 @@ export function installUniCanvasInputTools(uc) {
     ctx.restore();
   };
 
-  const originalUpdateToolPreviewOverlay = uc.updateToolPreviewOverlay.bind(uc);
+  const originalUpdateToolPreviewOverlay = uc.updateToolPreviewOverlay;
   uc.updateToolPreviewOverlay = () => {
-    originalUpdateToolPreviewOverlay();
+    Reflect.apply(originalUpdateToolPreviewOverlay, uc, []);
     drawInputToolsOverlay(uc);
   };
 
-  const originalRenderToolSettings = uc.renderToolSettings.bind(uc);
+  const originalRenderToolSettings = uc.renderToolSettings;
   uc.renderToolSettings = () => {
-    originalRenderToolSettings();
+    Reflect.apply(originalRenderToolSettings, uc, []);
     const panel = uc.toolSettings;
     if (!panel || !panel.classList.contains("visible") || !BRUSH_FAMILY_TOOLS.has(uc.tool)) return;
     if (panel.querySelector('input[data-control="brushHardness"]')) return;
     panel.insertAdjacentHTML("beforeend", `<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Hardness</span><input class="vnccs-uc-range" type="range" min="0" max="1" step="0.01" value="${clamp01(uc.brushHardness)}" data-control="brushHardness"></label>`);
   };
 
-  const originalCreateHistorySnapshot = uc.createHistorySnapshot.bind(uc);
+  const originalCreateHistorySnapshot = uc.createHistorySnapshot;
   uc.createHistorySnapshot = (...args) => {
-    const snapshot = originalCreateHistorySnapshot(...args);
+    const snapshot = Reflect.apply(originalCreateHistorySnapshot, uc, args);
     if (snapshot && typeof snapshot === "object") snapshot.brushHardness = clamp01(uc.brushHardness);
     return snapshot;
   };
-  const originalRestoreHistorySnapshot = uc.restoreHistorySnapshot.bind(uc);
+  const originalRestoreHistorySnapshot = uc.restoreHistorySnapshot;
   uc.restoreHistorySnapshot = (snapshot) => {
-    originalRestoreHistorySnapshot(snapshot);
+    Reflect.apply(originalRestoreHistorySnapshot, uc, [snapshot]);
     if (snapshot && Number.isFinite(snapshot.brushHardness)) uc.brushHardness = clamp01(snapshot.brushHardness);
     uc.renderToolSettings();
   };
