@@ -4773,6 +4773,12 @@ def _apply_qwen21_spectrum(model: Any, gen_settings: dict[str, Any], draw_id: st
         from spectrum_qwen21 import apply_spectrum
 
     config = _qwen21_spectrum_config(gen_settings)
+    try:
+        config.validate()
+    except ValueError as exc:
+        # Spec 11: fail fast with an actionable, prefixed message before the
+        # draw reaches sampling (covers e.g. chebyshev_degree + 1 > history_points).
+        raise ValueError(f"[VNCCS UniCanvas] Invalid Spectrum settings: {exc}") from exc
     patched = apply_spectrum(model, config)
     _uc_log(
         draw_id,

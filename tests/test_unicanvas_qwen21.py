@@ -394,9 +394,10 @@ def test_apply_qwen21_spectrum_calls_vendored_port(monkeypatch):
     assert captured["config"].blend_weight == 1.0
 
 
-def test_apply_qwen21_spectrum_validates_config_via_vendored_port():
-    # The vendored port validates the config before touching the model.
-    with pytest.raises(ValueError):
+def test_apply_qwen21_spectrum_rejects_invalid_settings_with_prefix():
+    # Cross-field constraints (chebyshev_degree + 1 > history_points) fail fast
+    # with the mandated [VNCCS UniCanvas] prefix before the draw reaches sampling.
+    with pytest.raises(ValueError, match="\\[VNCCS UniCanvas\\] Invalid Spectrum settings"):
         _apply_qwen21_spectrum(
             "model",
             {"spectrum": {"enabled": True, "chebyshev_degree": 9, "history_points": 4}},

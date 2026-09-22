@@ -90,6 +90,15 @@ test("Spectrum controls update visible state continuously from input events", ()
 });
 
 
+test("Spectrum panel clamps the chebyshev/history pair", () => {
+    assert.match(panelSource, /export function clampSpectrumPair\(/, "pair clamp helper missing");
+    assert.match(panelSource, /history < degree \+ 1/, "cross-field constraint missing");
+    const apply = panelSource.match(/function applyControlValue\(widget, panel, target\) \{([\s\S]*?)\n\}/);
+    assert.ok(apply, "applyControlValue missing");
+    assert.match(apply[1], /clampSpectrumPair\(spectrum, name\)/, "value updates must clamp the pair");
+});
+
+
 test("Qwen-Image-2.1 output switch and native 2K presets are exposed", () => {
     assert.match(panelSource, /qwen21_opaque_output/, "'opaque output' switch setting missing");
     assert.match(panelSource, /qwen21_aspect_preset/, "native 2K aspect preset setting missing");

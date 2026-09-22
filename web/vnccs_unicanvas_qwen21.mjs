@@ -140,6 +140,24 @@ function clampSpectrumValue(param, raw) {
   return param.kind === "int" ? Math.round(clamped) : clamped;
 }
 
+// Cross-field constraint mirrored from SpectrumConfig.validate(): the
+// Chebyshev fit needs at least chebyshev_degree + 1 history points. The
+// untouched side of the edited pair absorbs the clamp so no selectable
+// combination is invalid (defense in depth next to the backend validation).
+export function clampSpectrumPair(spectrum, editedName) {
+  const degreeParam = paramByName("chebyshev_degree");
+  const historyParam = paramByName("history_points");
+  let degree = clampSpectrumValue(degreeParam, spectrum.chebyshev_degree);
+  let history = clampSpectrumValue(historyParam, spectrum.history_points);
+  if (history < degree + 1) {
+    if (editedName === "chebyshev_degree") history = degree + 1;
+    else degree = history - 1;
+  }
+  spectrum.chebyshev_degree = degree;
+  spectrum.history_points = history;
+  return spectrum;
+}
+
 function buildPanelShell() {
   const panel = document.createElement("div");
   panel.className = "vnccs-uc-qwen21-panel";
@@ -295,16 +313,20 @@ function applyControlValue(widget, panel, target) {
     value = clampSpectrumValue(param, target.value);
   }
   spectrum[name] = value;
-  // Newest value wins: mirror the fresh value into the paired control so slider
-  // and numeric field stay synchronized during the whole interaction.
-  const row = panel.querySelector(`[data-spectrum-param="${name}"]`);
-  if (row) {
+  // Cross-field safety: the Chebyshev fit needs history_points >= degree + 1.
+  clampSpectrumPair(spectrum, name);
+  // Newest value wins: mirror the fresh values into the paired slider/number
+  // fields (never into the control being edited) so every field stays
+  // synchronized during the whole interaction.
+  for (const mirrored of QWEN21_SPECTRUM_PARAMS) {
+    if (mirrored.kind !== "int" && mirrored.kind !== "float") continue;
+    const row = panel.querySelector(`[data-spectrum-param="${mirrored.name}"]`);
+    if (!row) continue;
     const range = row.querySelector("input[type=range]");
     const number = row.querySelector("input[type=number]");
-    if (param.kind === "int" || param.kind === "float") {
-      if (range && range !== target) range.value = String(value);
-      if (number && number !== target) number.value = String(value);
-    }
+    const mirrorValue = String(spectrum[mirrored.name]);
+    if (range && range !== target) range.value = mirrorValue;
+    if (number && number !== target) number.value = mirrorValue;
   }
 }
 
@@ -368,6 +390,7 @@ function bindPanelEvents(widget, panel) {
     } else if (target.dataset.spectrumPreset !== undefined) {
       const preset = QWEN21_SPECTRUM_PRESETS[target.value] || QWEN21_SPECTRUM_PRESETS.moderate;
       widget.settings.spectrum = { ...spectrum, ...preset };
+      clampSpectrumPair(widget.settings.spectrum, null);
       refreshPanel(widget, panel);
     } else if (target.dataset.spectrumRange !== undefined || target.dataset.spectrumNumber !== undefined || target.dataset.spectrumControl !== undefined) {
       applyControlValue(widget, panel, target);
