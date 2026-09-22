@@ -3628,6 +3628,8 @@ def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str
         "_qwen21_latent",
         "_qwen21_clip",
         "_qwen21_prompts",
+        "_qwen21_prompt",
+        "_qwen21_negative_prompt",
     ):
         if key in gen_settings:
             gen_settings.pop(key, None)
