@@ -4485,15 +4485,25 @@ def _run_unicanvas_segment(payload: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 _UNICANVAS_SAVE_OUTPUT_SEQ = 0
+_UNICANVAS_SAVE_OUTPUT_LOCK = threading.Lock()
 
 
-def _unicanvas_next_output_path(output_dir: str) -> str:
+def _unicanvas_reserve_output_path(output_dir: str) -> str:
+    """Atomically reserve a unique unicanvas-<timestamp>-<n>.png name.
+
+    The lock serialises the counter and O_EXCL reserves the name, so concurrent
+    saves (Save to output plus the layer context menu) cannot collide.
+    """
     global _UNICANVAS_SAVE_OUTPUT_SEQ
     timestamp = int(time.time() * 1000)
-    while True:
-        _UNICANVAS_SAVE_OUTPUT_SEQ += 1
-        candidate = os.path.join(output_dir, f"unicanvas-{timestamp}-{_UNICANVAS_SAVE_OUTPUT_SEQ}.png")
-        if not os.path.exists(candidate):
+    with _UNICANVAS_SAVE_OUTPUT_LOCK:
+        while True:
+            _UNICANVAS_SAVE_OUTPUT_SEQ += 1
+            candidate = os.path.join(output_dir, f"unicanvas-{timestamp}-{_UNICANVAS_SAVE_OUTPUT_SEQ}.png")
+            try:
+                os.close(os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            except FileExistsError:
+                continue
             return candidate
 
 
@@ -4502,7 +4512,7 @@ def _unicanvas_save_output_image(image: Image.Image) -> str:
 
     output_dir = str(folder_paths.get_output_directory() or "output")
     os.makedirs(output_dir, exist_ok=True)
-    path = _unicanvas_next_output_path(output_dir)
+    path = _unicanvas_reserve_output_path(output_dir)
     image.save(path, format="PNG")
     return path
 

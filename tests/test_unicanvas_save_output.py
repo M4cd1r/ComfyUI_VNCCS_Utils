@@ -60,6 +60,28 @@ def test_composite_save_returns_ok_json_and_unique_names(output_dir):
             assert saved.size == (4, 4)
 
 
+def test_output_path_reservation_skips_taken_names(output_dir, monkeypatch):
+    import nodes.unicanvas as unicanvas_module
+
+    monkeypatch.setattr(unicanvas_module.time, "time", lambda: 1234.5)
+    timestamp = 1234500
+    seq = unicanvas_module._UNICANVAS_SAVE_OUTPUT_SEQ
+    taken = []
+    for offset in (1, 2):
+        name = os.path.join(str(output_dir), f"unicanvas-{timestamp}-{seq + offset}.png")
+        with open(name, "wb") as handle:
+            handle.write(b"taken")
+        taken.append(name)
+
+    reserved = unicanvas_module._unicanvas_reserve_output_path(str(output_dir))
+
+    assert reserved not in taken
+    assert os.path.exists(reserved)
+    for name in taken:
+        with open(name, "rb") as handle:
+            assert handle.read() == b"taken"
+
+
 def test_layer_id_save_keeps_layer_alpha(output_dir):
     layer = Image.new("RGBA", (3, 3), (200, 40, 60, 128))
 
