@@ -5653,8 +5653,19 @@ class UniCanvasWidget {
     if (this.batchInput) this.batchInput.disabled = true;
     try {
       if (configLinked) {
-        await app.queuePrompt(0, 1);
-        const result = await this._pollForResult(this.settings.draw_id);
+        let result = null;
+        try {
+          const queueResponse = await app.queuePrompt(0, 1);
+          // The queued prompt id scopes both the failure events and the queue-membership check to
+          // this draw, so an unrelated node failure in the same prompt cannot abort it.
+          const promptId = await this._queuedPromptId(queueResponse);
+          result = await this._pollForResult(this.settings.draw_id, promptId);
+        } finally {
+          // The composition is one-shot: once the poll settles (success or failure) the payload must
+          // stop travelling with the workflow, otherwise it would re-run the stale draw under the old
+          // draw_id on the next plain Queue Prompt.
+          this.releaseQueuedDraw();
+        }
         await this._stageGeneratedImages(result, maskCanvas, mode, drawContext);
       } else {
         const res = await fetch("/vnccs/unicanvas/draw", {
@@ -5951,26 +5962,87 @@ class UniCanvasWidget {
     }
   }
 
-  async _pollForResult(drawId, timeoutMs = 600000) {
+  // The composition handed to the node is one-shot: dropping it keeps the two PNG data URLs out of
+  // every saved workflow and stops a later plain Queue Prompt from re-running the stale draw under
+  // the old draw_id. export_state falls back to the canvas render when it is absent.
+  releaseQueuedDraw() {
+    if (!this.settings) return;
+    if (this.settings.queued_draw === undefined && !this.settings.draw_id) return;
+    delete this.settings.queued_draw;
+    this.settings.draw_id = "";
+    this.flushSettingsToWidget();
+  }
+
+  // app.queuePrompt resolves with the POST /prompt payload (or with the Response itself on some
+  // ComfyUI builds); both are accepted so the queued prompt id is always available when it exists.
+  async _queuedPromptId(queueResponse) {
+    try {
+      const payload = queueResponse && typeof queueResponse.json === "function" ? await queueResponse.json() : queueResponse;
+      return payload?.prompt_id ? String(payload.prompt_id) : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  // An event without a prompt id, or one for a different prompt, belongs to some other node in the
+  // same prompt: it must not end this draw.
+  _eventMatchesQueuedPrompt(event, promptId) {
+    if (!promptId) return false;
+    const eventPromptId = event?.detail?.prompt_id;
+    return eventPromptId != null && String(eventPromptId) === String(promptId);
+  }
+
+  // A prompt that is neither running nor pending can never store a result for us (cancelled,
+  // aborted, or finished without one), so polling ends instead of holding GENERATE for 600 s.
+  async _queuedPromptIsLive(promptId) {
+    if (!promptId) return true;
+    let data = null;
+    try {
+      const res = await fetch(`/queue?t=${Date.now()}`);
+      if (!res.ok) return true;
+      data = await res.json();
+    } catch (_err) {
+      return true;
+    }
+    if (!data || (!Array.isArray(data.queue_running) && !Array.isArray(data.queue_pending))) return true;
+    return [...data.queue_running, ...data.queue_pending].some((entry) => {
+      const entryPromptId = Array.isArray(entry) ? entry[1] : entry?.prompt_id;
+      return entryPromptId != null && String(entryPromptId) === String(promptId);
+    });
+  }
+
+  async _pollForResult(drawId, promptId = null, timeoutMs = 600000) {
     const started = Date.now();
     let executionFailure = null;
-    // Prompt failures surface as execution_error; fail fast instead of waiting out the timeout.
+    // Prompt failures surface as execution_error and a queue Cancel as execution_interrupted; both
+    // carry the prompt id, so only events for the queued prompt may end this draw.
     const onExecutionError = (event) => {
+      if (!this._eventMatchesQueuedPrompt(event, promptId)) return;
       const detail = event?.detail || {};
       executionFailure = new Error(`Queued generation failed: ${detail.exception_message || detail.error || "prompt execution failed"}`);
     };
+    const onExecutionInterrupted = (event) => {
+      if (!this._eventMatchesQueuedPrompt(event, promptId)) return;
+      executionFailure = new Error("Queued generation was cancelled");
+    };
     api.addEventListener("execution_error", onExecutionError);
+    api.addEventListener("execution_interrupted", onExecutionInterrupted);
     try {
       while (Date.now() - started < timeoutMs) {
         if (executionFailure) throw executionFailure;
         const res = await fetch(`/vnccs/unicanvas/result/${encodeURIComponent(drawId)}?t=${Date.now()}`);
+        if (!res.ok) throw new Error(`Queued result request failed: HTTP ${res.status}`);
         const data = await res.json();
         if (data.present) return data;
+        if (!(await this._queuedPromptIsLive(promptId))) {
+          throw new Error("Queued generation left the queue without a result");
+        }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       throw new Error("Timed out waiting for the queued generation result");
     } finally {
       api.removeEventListener("execution_error", onExecutionError);
+      api.removeEventListener("execution_interrupted", onExecutionInterrupted);
     }
   }
 

@@ -118,8 +118,9 @@ first decoded frame taken as the still:
 - The result returns to the existing staging popover (accept/discard). On accept: if an
   inpaint mask layer is active, paste back only inside the mask; otherwise replace the
   whole region.
-- Works with `VNCSS_CONFIG` (references) or with built-in model loading by name from
-  `diffusion_models/` + `text_encoders/` + `vae/`.
+- In this package the H3 module is driven by `VNCSS_CONFIG` (it supplies clip/vae/audio_vae
+  and the reference dataset); the draw path fails fast with an actionable message when H3 is
+  selected without a connected config. Built-in by-name H3 loading is deferred (see section 14).
 
 ## 5. Fullscreen mode (keyboard isolation)
 
@@ -350,6 +351,8 @@ Vendored Spectrum (`nodes/spectrum_qwen21/`, ported from
 ## 14. Future work (explicitly deferred)
 
 - Multi-character pose layers (Pose Studio scenes hold up to 4 characters).
+- Built-in by-name loading of the MiniMax H3 stack (diffusion model + text encoder + audio VAE
+  picker) for config-free H3 region edits.
 - Handing pose-layer edits to a linked Pose Studio node instead of the embedded viewer.
 - Reference images sourced from canvas layers instead of node sockets.
 - Per-layer masks / clipping masks and the other rejected feature candidates.

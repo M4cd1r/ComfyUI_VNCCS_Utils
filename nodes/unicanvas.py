@@ -1931,9 +1931,10 @@ class VNCCS_UniCanvas:
         draw_id = str(settings.get("draw_id") or f"uc-graph-{unique_id or 'node'}")
         queued_draw = settings.get("queued_draw")
         if not isinstance(queued_draw, dict) or not queued_draw:
-            # An empty mapping carries no composition either, so it must not fall through to the
-            # opaque "Missing image data" ValueError inside _run_unicanvas_draw.
-            raise RuntimeError("[VNCCS UniCanvas] Queued draw payload is missing from the node state.")
+            # A plain ComfyUI Queue Prompt carries no fresh composition: the widget releases
+            # queued_draw as soon as a queued draw settles, so the node renders the canvas state
+            # rather than failing the whole prompt.
+            return (_render_unicanvas_state_to_image_tensor(unicanvas_state),)
         payload = {
             "state": state,
             "gen_settings": settings,
@@ -3975,6 +3976,14 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     coherence_edge_size = int(settings.get("canvas_coherence_edge_size", 16))
     positive_text = str(settings.get("positive", ""))
     model_module = _get_unicanvas_model_module(str(settings.get("generation_mode", "illustrious")).lower())
+    if model_module.key == "minimax_h3" and not external:
+        # The H3 family is driven by VNCSS_CONFIG: it supplies clip/vae/audio_vae and the reference
+        # dataset, while by-name loading of that stack is deferred (spec section 14). Without a config
+        # the draw would dead-end on "requires the audio VAE", which has no control outside the config
+        # node, so fail fast here, before any asset loading, with the actionable message.
+        raise RuntimeError(
+            "[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS_CONFIG (clip, vae, audio_vae)."
+        )
     outpaint_prompt_suffix = model_module.outpaint_prompt_suffix() if mode == "outpaint" else ""
     if outpaint_prompt_suffix:
         positive_text = _append_prompt_suffix(positive_text, outpaint_prompt_suffix)

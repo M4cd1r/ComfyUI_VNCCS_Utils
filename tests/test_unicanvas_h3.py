@@ -401,10 +401,17 @@ def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
         {"draw_id": "draw-1", "queued_draw": []},
     ],
 )
-def test_export_state_requires_queued_draw_payload(monkeypatch, settings):
+def test_export_state_falls_back_to_canvas_render_without_queued_draw(monkeypatch, settings):
+    """A plain Queue Prompt has no fresh composition: the node renders the canvas instead of raising."""
     from nodes import unicanvas as uc
     from nodes.vncss_config import VNCCS_Config
 
+    rendered = []
+    monkeypatch.setattr(
+        uc,
+        "_render_unicanvas_state_to_image_tensor",
+        lambda state: rendered.append(state) or torch.zeros(1, 6, 6, 3),
+    )
     monkeypatch.setattr(
         uc, "_run_unicanvas_draw", lambda payload: pytest.fail("draw must not run without a queued payload")
     )
@@ -412,10 +419,55 @@ def test_export_state_requires_queued_draw_payload(monkeypatch, settings):
         '{"loras": [], "edit_model": False}', model="M", clip="C", vae="V",
     )[0]
     state = {"state_id": "s1", "layers": [], "settings": settings}
+    state_json = json.dumps(state)
+    (image,) = uc.VNCCS_UniCanvas().export_state(state_json, config=config, unique_id="9")
+    assert image.shape == (1, 6, 6, 3)
+    assert rendered == [state_json]
+
+
+def test_h3_without_connected_config_fails_fast():
+    """MiniMax H3 is driven by VNCSS_CONFIG; without one the draw path stops with an actionable message.
+
+    The Diffusion-Model loader is the reachable config-free case: it does not force a family, so a
+    MiniMax H3 pick (the Mode list is enabled for that loader) reaches the H3 module.
+    """
+    from nodes import unicanvas as uc
+
     with pytest.raises(
-        RuntimeError, match=r"\[VNCCS UniCanvas\] Queued draw payload is missing from the node state\."
+        RuntimeError,
+        match=r"\[VNCCS UniCanvas\] MiniMax H3 requires a connected VNCSS_CONFIG \(clip, vae, audio_vae\)\.",
     ):
-        uc.VNCCS_UniCanvas().export_state(json.dumps(state), config=config, unique_id="9")
+        uc._run_unicanvas_draw({
+            "debug_id": "h3-no-config",
+            "mode": "txt2img",
+            "settings": {"generation_mode": "minimax_h3", "model_loader": "diffusion_model"},
+        })
+
+
+def test_h3_with_connected_config_reaches_the_external_loader(monkeypatch):
+    """Regression guard for the H3 fail-fast: a forwarded external block still selects the pass-through loader."""
+    from nodes import unicanvas as uc
+
+    captured = {}
+
+    def fake_load_assets(gen_settings):
+        captured.update(gen_settings)
+        raise RuntimeError("stop after asset selection")
+
+    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(buffer, format="PNG")
+    image_data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    with pytest.raises(RuntimeError, match="stop after asset selection"):
+        uc._run_unicanvas_draw({
+            "debug_id": "h3-with-config",
+            "mode": "txt2img",
+            "image": image_data_url,
+            "settings": {"generation_mode": "minimax_h3"},
+            "external": {"model": "M", "clip": "C", "vae": "V", "audio_vae": "A", "references": {}},
+        })
+    assert captured["model_loader"] == "external"
+    assert captured["generation_mode"] == "minimax_h3"
 
 
 def test_queued_draw_payload_reaches_the_real_draw_pipeline(monkeypatch):

@@ -131,10 +131,13 @@ reference sockets — when the workflow is reloaded.
 
 ### MiniMax H3 region editing
 
-Select the **MiniMax H3** family in the UniCanvas engine panel. Generation is a
-REF2VA-style region edit: the selected working area is `<Picture 1>`, the `Edit
-model` reference sockets become `<Picture 2..5>` in socket order, and the prompt
-is the edit instruction:
+Select the **MiniMax H3** family in the UniCanvas engine panel. H3 region editing is
+driven by a connected `VNCSS_CONFIG` (`clip`, `vae`, `audio_vae` and the reference
+dataset); selecting the family without a connected config fails fast with
+`[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS_CONFIG (clip, vae, audio_vae).`
+Generation is a REF2VA-style region edit: the selected working area is `<Picture 1>`,
+the `Edit model` reference sockets become `<Picture 2..5>` in socket order, and the
+prompt is the edit instruction:
 
 ```text
 Keep the identity from <Picture 2>. Use the pose from <Picture 3>.
@@ -144,9 +147,9 @@ Defaults: sampler `res_multistep`, scheduler `simple`, 20 steps (adjustable
 1–60 in the panel), cfg 1. No mask is required — the bounding box of the
 selection is the working area. For this family the connected `audio_vae` is
 mandatory, because the MiniMax H3 conditioning builds its aligned audio-video
-latent from it; without it generation stops with `[VNCCS UniCanvas] MiniMax H3
-requires the audio VAE.` Results arrive in the usual staging popover
-(accept / discard).
+latent from it; a connected config without it stops generation with `[VNCCS
+UniCanvas] MiniMax H3 requires the audio VAE.` Results arrive in the usual staging
+popover (accept / discard).
 
 ### Queued generation with a connected config
 
