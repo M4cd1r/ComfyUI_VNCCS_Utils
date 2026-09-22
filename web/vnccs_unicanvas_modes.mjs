@@ -101,6 +101,13 @@ export function toggleUniCanvasPanels(widget) {
   widget.requestRender?.();
 }
 
+function consumeUniCanvasShortcut(event) {
+  // The canvas owns the key while it has focus, so the graph's global shortcuts
+  // must not also run for it.
+  event.preventDefault();
+  event.stopPropagation();
+}
+
 export function handleUniCanvasShortcut(widget, event) {
   if (!widget || !event || isUniCanvasTextTarget(event)) return false;
   const key = String(event.key || "");
@@ -108,7 +115,7 @@ export function handleUniCanvasShortcut(widget, event) {
   const modifier = event.ctrlKey || event.metaKey;
   // History: Ctrl+Z / Ctrl+Shift+Z.
   if (modifier && !event.altKey && lower === "z") {
-    event.preventDefault();
+    consumeUniCanvasShortcut(event);
     if (event.shiftKey) widget.redo();
     else widget.undo();
     return true;
@@ -116,30 +123,30 @@ export function handleUniCanvasShortcut(widget, event) {
   if (modifier || event.altKey) return false;
   // Tools: B brush, V move, E eraser, M mask, L lasso, S rect.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
-    event.preventDefault();
+    consumeUniCanvasShortcut(event);
     widget.setTool(TOOL_SHORTCUTS[lower]);
     return true;
   }
   // Brush size: [ / ].
   if (key === "[") {
-    event.preventDefault();
+    consumeUniCanvasShortcut(event);
     setUniCanvasBrushSize(widget, widget.brushSize - BRUSH_SIZE_STEP);
     return true;
   }
   if (key === "]") {
-    event.preventDefault();
+    consumeUniCanvasShortcut(event);
     setUniCanvasBrushSize(widget, widget.brushSize + BRUSH_SIZE_STEP);
     return true;
   }
   // Tab toggles panel visibility.
   if (key === "Tab") {
-    event.preventDefault();
+    consumeUniCanvasShortcut(event);
     toggleUniCanvasPanels(widget);
     return true;
   }
   // Esc exits fullscreen.
   if (key === "Escape" && widget._vnccsFullscreen) {
-    event.preventDefault();
+    consumeUniCanvasShortcut(event);
     exitUniCanvasFullscreen(widget);
     return true;
   }
