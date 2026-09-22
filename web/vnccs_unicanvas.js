@@ -5233,6 +5233,25 @@ class UniCanvasWidget {
     this.flattenLayersToMaster();
   }
 
+  drawFlattenedLayers(ctx, layers = this.layers) {
+    // Shared per-layer draw semantics for flattenLayersToMaster and for the
+    // Save to output composite (hi-res layers included).
+    const worldRect = { x: this.origin.x, y: this.origin.y, width: this.size.width, height: this.size.height };
+    const destRect = { x: 0, y: 0, width: this.size.width, height: this.size.height };
+    for (const layer of [...layers].reverse()) {
+      if (!layer.visible || layer.type !== "raster") continue;
+      ctx.save();
+      ctx.globalAlpha = layer.opacity;
+      ctx.globalCompositeOperation = layer.blendMode || "source-over";
+      if (layer.hiresCanvas && layer.hiresRect) {
+        this.drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, false);
+      } else {
+        ctx.drawImage(layer.canvas, 0, 0);
+      }
+      ctx.restore();
+    }
+  }
+
   flattenLayersToMaster() {
     this.recordHistoryBefore();
     const master = {
@@ -5246,20 +5265,7 @@ class UniCanvasWidget {
       canvas: this._createCanvas(),
     };
     const ctx = this.configureImageContext(master.canvas.getContext("2d"), false);
-    const worldRect = { x: this.origin.x, y: this.origin.y, width: this.size.width, height: this.size.height };
-    const destRect = { x: 0, y: 0, width: this.size.width, height: this.size.height };
-    for (const layer of [...this.layers].reverse()) {
-      if (!layer.visible || layer.type !== "raster") continue;
-      ctx.save();
-      ctx.globalAlpha = layer.opacity;
-      ctx.globalCompositeOperation = layer.blendMode || "source-over";
-      if (layer.hiresCanvas && layer.hiresRect) {
-        this.drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, false);
-      } else {
-        ctx.drawImage(layer.canvas, 0, 0);
-      }
-      ctx.restore();
-    }
+    this.drawFlattenedLayers(ctx);
     this.invalidateLayerCaches(master);
     this.layers = [master];
     this.activeLayerId = master.id;

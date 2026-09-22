@@ -312,21 +312,15 @@ function installUniCanvasFullscreenButton(widget) {
 }
 
 export function buildUniCanvasCompositeCanvas(widget) {
-  // Flattened composite: every visible raster layer, in stacking order, over the
-  // whole canvas. Mask layers stay out of it, matching the node's image output.
+  // Flattened composite = exactly what flattenLayersToMaster draws: the shared
+  // per-layer semantics of widget.drawFlattenedLayers (hi-res layers included),
+  // over the whole canvas. Mask layers stay out of it, matching the node's image
+  // socket output.
   const out = document.createElement("canvas");
   out.width = Math.max(1, Math.round(widget.size.width));
   out.height = Math.max(1, Math.round(widget.size.height));
-  const ctx = out.getContext("2d");
-  widget.configureImageContext?.(ctx);
-  for (const layer of [...widget.layers].reverse()) {
-    if (!layer.visible || layer.type !== "raster") continue;
-    ctx.save();
-    ctx.globalAlpha = layer.opacity;
-    ctx.globalCompositeOperation = layer.blendMode || "source-over";
-    ctx.drawImage(layer.canvas, 0, 0);
-    ctx.restore();
-  }
+  const ctx = widget.configureImageContext(out.getContext("2d"), false);
+  widget.drawFlattenedLayers(ctx);
   return out;
 }
 
