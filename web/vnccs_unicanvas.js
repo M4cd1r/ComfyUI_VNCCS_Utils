@@ -23,6 +23,7 @@ import {
   rasterizeUniCanvasPoseLayer,
   refreshUniCanvasPoseLayerUI,
 } from "./vnccs_unicanvas_pose_layers.mjs";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -565,6 +566,7 @@ const UNICANVAS_MODEL_MODULES = {
       denoise: 1,
     },
   },
+  ...UNICANVAS_QWEN21_MODULE,
 };
 const UNICANVAS_MODEL_LOADERS = {
   checkpoint: {
@@ -2004,6 +2006,8 @@ class UniCanvasWidget {
       const h3Active = getUniCanvasModelModule(this.settings.generation_mode).key === "minimax_h3";
       h3Panel.style.display = h3Active ? "" : "none";
     }
+    // Qwen-Image-2.1 family: mount and gate the Spectrum acceleration panel.
+    syncQwen21SpectrumPanel(this);
   }
 
   presetRuntimeSettingKeys(preset) {
@@ -2256,6 +2260,8 @@ class UniCanvasWidget {
     this.applyInferenceModuleDefaults(mode);
     this.syncInferenceControls();
     this.syncPromptControls();
+    // Re-gate the Qwen-Image-2.1 Spectrum panel for the new family.
+    syncQwen21SpectrumPanel(this);
   }
 
   applyModelLoaderDefaults(loaderType) {
