@@ -4729,7 +4729,7 @@ def _reinhard_lab_transfer_np(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
         source = src_lab[..., channel]
         reference = ref_lab[..., channel]
         out[..., channel] = (source - source.mean()) / (source.std() + 1e-6) * (reference.std() + 1e-6) + reference.mean()
-    return _np_lab_to_srgb(out)
+    return _np_lab_to_srgb(out).astype(np.float32)
 
 
 def _torch_srgb_to_lab(rgb: torch.Tensor) -> torch.Tensor:
