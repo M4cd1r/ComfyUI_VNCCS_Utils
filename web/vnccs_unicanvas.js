@@ -6,6 +6,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
+import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
@@ -781,6 +782,7 @@ class UniCanvasWidget {
       theme: "unicanvas",
     });
     installUniCanvasInputTools(this);
+    installUniCanvasLayerTools(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
