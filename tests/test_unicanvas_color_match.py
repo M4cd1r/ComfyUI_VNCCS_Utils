@@ -1,37 +1,24 @@
-import base64
-import io
-
 import numpy as np
 import pytest
 import torch
 from PIL import Image
 
+from helpers.unicanvas_images import decode_png_data_url, png_data_url
 from nodes import unicanvas
 from nodes.unicanvas import (
     UC_COLOR_MATCH_METHODS,
     _apply_color_match_strength,
     _color_match_transfer,
-    _np_srgb_to_lab,
     _reinhard_lab_gpu_transfer,
     _reinhard_lab_transfer_np,
     _run_unicanvas_color_match,
+    _torch_srgb_to_lab,
 )
 
 # Mid-range (in-gamut) samples keep the LAB round trip free of clipping so
 # mean/std assertions stay exact.
 _SRC = torch.tensor((0.2 + 0.5 * np.random.RandomState(0).rand(6, 5, 3)).astype(np.float32))
 _REF = torch.tensor((0.2 + 0.5 * np.random.RandomState(1).rand(6, 5, 3)).astype(np.float32))
-
-
-def _png_data_url(image):
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
-def _decode_result_image(result):
-    payload = result["image"].split(",", 1)[1]
-    return Image.open(io.BytesIO(base64.b64decode(payload)))
 
 
 def test_method_list_matches_design_spec():
@@ -88,8 +75,8 @@ def test_missing_dependency_falls_back_to_pure_reinhard(monkeypatch):
     matched, engine = _color_match_transfer(_SRC, _REF, "mkl")
 
     assert engine == "reinhard-fallback"
-    matched_lab = _np_srgb_to_lab(matched.numpy())
-    ref_lab = _np_srgb_to_lab(_REF.numpy())
+    matched_lab = _torch_srgb_to_lab(matched).numpy()
+    ref_lab = _torch_srgb_to_lab(_REF).numpy()
     # Pure Reinhard matches the reference LAB mean and std.
     assert np.allclose(matched_lab.mean(axis=(0, 1)), ref_lab.mean(axis=(0, 1)), atol=1.0)
     assert np.allclose(matched_lab.std(axis=(0, 1)), ref_lab.std(axis=(0, 1)), atol=1.0)
@@ -108,8 +95,8 @@ def test_run_color_match_preserves_alpha_and_reports_engine(monkeypatch):
     reference = Image.new("RGB", (4, 4), (40, 200, 40))
 
     result = _run_unicanvas_color_match({
-        "image": _png_data_url(target),
-        "reference": _png_data_url(reference),
+        "image": png_data_url(target),
+        "reference": png_data_url(reference),
         "method": "hm",
         "strength": 10,
     })
@@ -117,7 +104,7 @@ def test_run_color_match_preserves_alpha_and_reports_engine(monkeypatch):
     assert result["engine"] == "reinhard-fallback"
     assert result["method"] == "hm"
     assert result["strength"] == 10.0
-    out = _decode_result_image(result)
+    out = decode_png_data_url(result["image"])
     assert out.mode == "RGBA"
     assert out.getpixel((0, 0))[3] == 128
     # Full strength moves the target toward the green reference.

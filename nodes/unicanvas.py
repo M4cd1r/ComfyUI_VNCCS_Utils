@@ -4650,7 +4650,14 @@ def _uc_resolve_qi21_module():
 
 
 def _uc_load_birefnet_masker():
-    from vnccs_sam3d.processing.birefnet_mask import auto_mask_bgr
+    # Inside a ComfyUI process this extension loads vnccs_sam3d as a sibling
+    # subpackage, so the relative form resolves; the absolute fallback covers
+    # flat imports (tests/conftest.py stubs "nodes" as a top-level package,
+    # where the relative form cannot resolve).
+    try:
+        from ..vnccs_sam3d.processing.birefnet_mask import auto_mask_bgr
+    except ImportError:
+        from vnccs_sam3d.processing.birefnet_mask import auto_mask_bgr
 
     return auto_mask_bgr
 
@@ -4681,55 +4688,17 @@ def _run_unicanvas_remove_bg(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _np_srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
-    """sRGB (0..1) to CIE LAB (D65); pure NumPy so it works without extra deps."""
-    array = np.clip(np.asarray(rgb, dtype=np.float64), 0.0, 1.0)
-    linear = np.where(array <= 0.04045, array / 12.92, ((array + 0.055) / 1.055) ** 2.4)
-    matrix = np.array(
-        [
-            [0.4124564, 0.3575761, 0.1804375],
-            [0.2126729, 0.7151522, 0.0721750],
-            [0.0193339, 0.1191920, 0.9503041],
-        ]
-    )
-    xyz = linear @ matrix.T
-    xyz = xyz / np.array([0.95047, 1.0, 1.08883])
-    with np.errstate(invalid="ignore"):
-        f = np.where(xyz > 0.008856, np.cbrt(np.clip(xyz, 0.0, None)), 7.787 * xyz + 16.0 / 116.0)
-    fx, fy, fz = f[..., 0], f[..., 1], f[..., 2]
-    return np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], axis=-1)
-
-
-def _np_lab_to_srgb(lab: np.ndarray) -> np.ndarray:
-    """CIE LAB (D65) back to sRGB (0..1); pure NumPy counterpart of _np_srgb_to_lab."""
-    lab = np.asarray(lab, dtype=np.float64)
-    fy = (lab[..., 0] + 16.0) / 116.0
-    fx = fy + lab[..., 1] / 500.0
-    fz = fy - lab[..., 2] / 200.0
-    f = np.stack([fx, fy, fz], axis=-1)
-    cube = f ** 3
-    xyz = np.where(cube > 0.008856, cube, (f - 16.0 / 116.0) / 7.787) * np.array([0.95047, 1.0, 1.08883])
-    matrix = np.array(
-        [
-            [3.2404542, -1.5371385, -0.4985314],
-            [-0.9692660, 1.8760108, 0.0415560],
-            [0.0556434, -0.2040259, 1.0572252],
-        ]
-    )
-    linear = xyz @ matrix.T
-    return np.clip(np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * np.clip(linear, 0.0, None) ** (1.0 / 2.4) - 0.055), 0.0, 1.0)
-
-
 def _reinhard_lab_transfer_np(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
-    """Pure Reinhard (LAB mean/std) transfer - fallback when color-matcher is unavailable."""
-    src_lab = _np_srgb_to_lab(src)
-    ref_lab = _np_srgb_to_lab(ref)
-    out = np.empty_like(src_lab)
-    for channel in range(3):
-        source = src_lab[..., channel]
-        reference = ref_lab[..., channel]
-        out[..., channel] = (source - source.mean()) / (source.std() + 1e-6) * (reference.std() + 1e-6) + reference.mean()
-    return _np_lab_to_srgb(out).astype(np.float32)
+    """Pure Reinhard (LAB mean/std) transfer - fallback when color-matcher is unavailable.
+
+    Delegates to the torch implementation so the LAB transfer math has a single
+    source of truth; the array signature stays for the numpy callers.
+    """
+    matched = _reinhard_lab_gpu_transfer(
+        torch.from_numpy(np.asarray(src, dtype=np.float32)),
+        torch.from_numpy(np.asarray(ref, dtype=np.float32)),
+    )
+    return matched.detach().cpu().numpy()
 
 
 def _torch_srgb_to_lab(rgb: torch.Tensor) -> torch.Tensor:
@@ -4807,11 +4776,8 @@ def _color_match_transfer(src: torch.Tensor, ref: torch.Tensor, method: str) -> 
             return torch.from_numpy(np.asarray(matched, dtype=np.float32) / 255.0), "color-matcher"
         except Exception:
             pass
-    fallback = _reinhard_lab_transfer_np(
-        _uc_tensor_to_u8(src).astype(np.float64) / 255.0,
-        _uc_tensor_to_u8(ref).astype(np.float64) / 255.0,
-    )
-    return torch.from_numpy(fallback.astype(np.float32)), "reinhard-fallback"
+    fallback = _reinhard_lab_transfer_np(src.detach().cpu().numpy(), ref.detach().cpu().numpy())
+    return torch.from_numpy(fallback), "reinhard-fallback"
 
 
 def _uc_clamp_strength(strength: Any) -> float:
@@ -4861,7 +4827,7 @@ def register_unicanvas_layer_routes() -> None:
     @PromptServer.instance.routes.post("/vnccs/unicanvas/remove_bg")
     async def vnccs_unicanvas_remove_bg(request):
         if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
-            return web.json_response({"error": "UniCanvas remove bg payload is too large"}, status=413)
+            return web.json_response({"error": "[VNCCS UniCanvas] Remove bg payload is too large."}, status=413)
         try:
             payload = await request.json()
             result = await asyncio.to_thread(_run_unicanvas_remove_bg, payload)
@@ -4872,7 +4838,7 @@ def register_unicanvas_layer_routes() -> None:
     @PromptServer.instance.routes.post("/vnccs/unicanvas/color_match")
     async def vnccs_unicanvas_color_match(request):
         if not _content_length_ok(request, _MAX_UPLOAD_BYTES * 2 + 1024 * 1024):
-            return web.json_response({"error": "UniCanvas color match payload is too large"}, status=413)
+            return web.json_response({"error": "[VNCCS UniCanvas] Color match payload is too large."}, status=413)
         try:
             payload = await request.json()
             result = await asyncio.to_thread(_run_unicanvas_color_match, payload)
