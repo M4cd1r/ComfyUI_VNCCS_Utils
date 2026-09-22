@@ -3,6 +3,7 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import {
   forceUniCanvasPresetModelSettings,
@@ -164,6 +165,8 @@ const STYLES = `
 .vnccs-uc-model-card-download { width:100%; height:27px; border:1px solid rgba(255,143,163,.36); border-radius:8px; background:rgba(255,143,163,.1); color:#ffdce5; font:inherit; font-size:10px; font-weight:800; text-transform:uppercase; cursor:pointer; }
 .vnccs-uc-model-card-download:disabled { opacity:.55; cursor:not-allowed; }
 .vnccs-uc-turbo-section { display:flex; flex-direction:column; gap:6px; padding-top:2px; }
+.vnccs-uc-h3-panel { display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid rgba(184,169,232,.28); border-radius:8px; background:rgba(184,169,232,.06); }
+.vnccs-uc-h3-hint { color:var(--uc-muted); font-size:10px; line-height:1.35; }
 .vnccs-uc-turbo-title { color:var(--uc-accent); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
 .vnccs-uc-toggle { position:relative; flex:0 0 auto; width:42px; height:22px; border:1px solid rgba(255,143,163,.5); border-radius:999px; background:rgba(255,143,163,.16); }
 .vnccs-uc-toggle::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:var(--uc-muted); transition:left .14s ease, background .14s ease; }
@@ -414,7 +417,7 @@ const RENDER_LOD_LEVELS = [0.5, 0.25, 0.125, 0.0625];
 const RENDER_LOD_OVERSAMPLE = 2.25;
 const UNICANVAS_LAYOUT_BASE_WIDTH = 320 / 0.2035;
 const UNICANVAS_LAYOUT_BASE_HEIGHT = 34 / 0.0311;
-const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "batch_size", "anima_lllite_strength", "fun_controlnet_strength"]);
+const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "batch_size", "anima_lllite_strength", "fun_controlnet_strength", "minimax_h3_steps"]);
 const UNICANVAS_MODEL_MODULES = {
   sdxl: {
     key: "sdxl",
@@ -525,6 +528,22 @@ const UNICANVAS_MODEL_MODULES = {
       qwen_target_vl_size: 384,
     },
   },
+  minimax_h3: {
+    key: "minimax_h3",
+    aliases: ["minimaxh3", "minimax-h3", "h3"],
+    label: "MiniMax H3",
+    base: "minimax_h3",
+    isEditModel: true,
+    detect: ["minimax_h3", "minimax-h3", "minimaxh3", "h3"],
+    defaults: {
+      generation_mode: "minimax_h3",
+      sampler_name: "res_multistep",
+      scheduler: "simple",
+      steps: 20,
+      cfg: 1,
+      denoise: 1,
+    },
+  },
 };
 const UNICANVAS_MODEL_LOADERS = {
   checkpoint: {
@@ -603,6 +622,10 @@ function makeDefaultUniCanvasSettings() {
   return {
     ...UNICANVAS_MODEL_MODULES.sdxl.defaults,
     model_selection_mode: "presets",
+    generation_mode: "illustrious",
+    minimax_h3_steps: 20,
+    minimax_h3_frame_count: 5,
+    draw_id: "",
     selected_preset_id: "sdxl",
     model_loader: "checkpoint",
     ckpt_name: "",
@@ -933,6 +956,10 @@ class UniCanvasWidget {
         ${loaderFields}
       </div>
       <div class="vnccs-uc-turbo-section" data-turbo-panel></div>
+      <div class="vnccs-uc-h3-panel" data-h3-panel style="display:none">
+        <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label>
+        <div class="vnccs-uc-h3-hint">REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.</div>
+      </div>
       <div class="vnccs-uc-generation-grid">
         <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
         <label class="vnccs-uc-field">Sampler<select class="vnccs-uc-select" data-setting="sampler_name"></select></label>
@@ -1911,6 +1938,11 @@ class UniCanvasWidget {
         turboPanel.style.display = "none";
       }
     }
+    const h3Panel = this.container.querySelector("[data-h3-panel]");
+    if (h3Panel) {
+      const h3Active = getUniCanvasModelModule(this.settings.generation_mode).key === "minimax_h3";
+      h3Panel.style.display = h3Active ? "" : "none";
+    }
   }
 
   presetRuntimeSettingKeys(preset) {
@@ -2128,6 +2160,10 @@ class UniCanvasWidget {
     if (loader.forcedMode) this.settings.generation_mode = loader.forcedMode;
     const module = getUniCanvasModelModule(this.settings.generation_mode);
     this.settings.generation_mode = module.key;
+    if (module.key === "minimax_h3") {
+      // The H3 family owns its own step budget; the backend samples from the generic "steps" key.
+      this.settings.steps = Math.max(1, Math.min(60, Math.round(Number(this.settings.minimax_h3_steps) || 20)));
+    }
     return { module, loader };
   }
 
@@ -5552,58 +5588,37 @@ class UniCanvasWidget {
     this.settings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
     this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
-    this.startDrawProgressPolling(debugId);
+    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize };
+    const configInput = (this.node?.inputs || []).find((input) => input?.name === "config");
+    const configLinked = !!(configInput && configInput.link != null);
+    if (configLinked) {
+      // External model/clip/vae tensors only exist during graph execution, so the composition is
+      // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
+      this.settings.draw_id = `uc_${Date.now().toString(36)}`;
+      this.settings.queued_draw = this._buildDrawPayload(drawContext);
+      // The widget value has to be current before queuePrompt serializes the graph, so the
+      // debounced settings sync is flushed synchronously here.
+      this.flushSettingsToWidget();
+      this.startDrawProgressPolling(this.settings.draw_id);
+    } else {
+      this.startDrawProgressPolling(debugId);
+    }
     this.drawBtn.disabled = true;
     if (this.batchInput) this.batchInput.disabled = true;
     try {
-      const res = await fetch("/vnccs/unicanvas/draw", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          debug_id: debugId,
-          mode,
-          image: imageCanvas.toDataURL("image/png"),
-          mask: maskCanvas.toDataURL("image/png"),
-          source_empty: mode === "txt2img",
-          bbox: requestBbox,
-          inference_size: inferenceSize,
-          output_size: outputSize,
-          settings: this.makeSettingsPayload(),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-      const resultImages = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
-      if (!resultImages.length) throw new Error("Generation returned no images");
-      const hasResultMask = Boolean(data.mask);
-      const stagingMode = hasResultMask ? mode : (mode === "inpaint" || mode === "outpaint" ? "img2img" : mode);
-      const stagingMaskCanvas = hasResultMask && (mode === "inpaint" || mode === "outpaint") ? maskCanvas : null;
-      let resultMaskCanvas = null;
-      if (data.mask) {
-        const maskUrl = this.imageResultToURL(data.mask);
-        const maskImg = await this.loadImage(maskUrl);
-        resultMaskCanvas = this.makeAlphaMaskCanvasFromImage(maskImg, outputSize.width, outputSize.height, {
-          clearEdgeConnected: mode === "inpaint",
-          preserveCanvas: stagingMaskCanvas,
+      if (configLinked) {
+        await app.queuePrompt(0, 1);
+        const result = await this._pollForResult(this.settings.draw_id);
+        await this._stageGeneratedImages(result, maskCanvas, mode, drawContext);
+      } else {
+        const res = await fetch("/vnccs/unicanvas/draw", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(this._buildDrawPayload({ ...drawContext, includeDebugId: true, debugId })),
         });
-      }
-      const acceptMaskCanvas = resultMaskCanvas || stagingMaskCanvas;
-      for (const image of resultImages) {
-        const url = this.imageResultToURL(image);
-        const img = await this.loadImage(url);
-        this.addStagingItem({
-          url,
-          bbox: { ...requestBbox },
-          displaySize: outputSize,
-          inferenceSize,
-          image,
-          img,
-          visible: true,
-          mode: stagingMode,
-          maskCanvas: acceptMaskCanvas,
-          userMaskCanvas: stagingMaskCanvas,
-          resultMaskCanvas,
-        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        await this._stageGeneratedImages(data, maskCanvas, mode, drawContext);
       }
       this.render();
       this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)`);
@@ -5821,6 +5836,95 @@ class UniCanvasWidget {
     if (this.drawProgressTimer) {
       window.clearInterval(this.drawProgressTimer);
       this.drawProgressTimer = null;
+    }
+  }
+
+  // The HTTP path consumes this payload as the POST body; the queued path stores it in
+  // settings.queued_draw, where the node forwards exactly the composition keys to _run_unicanvas_draw.
+  _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize }) {
+    const payload = {
+      mode,
+      image: imageCanvas.toDataURL("image/png"),
+      mask: maskCanvas.toDataURL("image/png"),
+      source_empty: mode === "txt2img",
+      bbox,
+      inference_size: inferenceSize,
+      output_size: outputSize,
+    };
+    if (includeDebugId) {
+      payload.debug_id = debugId;
+      payload.settings = this.makeSettingsPayload();
+    }
+    return payload;
+  }
+
+  // A draw result is either the POST /vnccs/unicanvas/draw response or the queued
+  // GET /vnccs/unicanvas/result/{draw_id} response: both carry ComfyUI temp-file descriptors
+  // ({filename, subfolder, type}) for "images" and "mask". Data URLs are accepted as well so a
+  // result can be staged without going through /view.
+  resultImageURL(image) {
+    return typeof image === "string" ? image : this.imageResultToURL(image);
+  }
+
+  // Single staging hand-off for both draw paths. context carries the composition values captured
+  // by draw() (bbox, inferenceSize, outputSize) so staged items match the request that produced them.
+  async _stageGeneratedImages(result, maskCanvas, mode, context) {
+    const resultImages = Array.isArray(result.images) && result.images.length ? result.images : [result.image].filter(Boolean);
+    if (!resultImages.length) throw new Error("Generation returned no images");
+    const bbox = { ...context.bbox };
+    const inferenceSize = context.inferenceSize;
+    const outputSize = context.outputSize;
+    const hasResultMask = Boolean(result.mask);
+    const stagingMode = hasResultMask ? mode : (mode === "inpaint" || mode === "outpaint" ? "img2img" : mode);
+    const stagingMaskCanvas = hasResultMask && (mode === "inpaint" || mode === "outpaint") ? maskCanvas : null;
+    let resultMaskCanvas = null;
+    if (result.mask) {
+      const maskImg = await this.loadImage(this.resultImageURL(result.mask));
+      resultMaskCanvas = this.makeAlphaMaskCanvasFromImage(maskImg, outputSize.width, outputSize.height, {
+        clearEdgeConnected: mode === "inpaint",
+        preserveCanvas: stagingMaskCanvas,
+      });
+    }
+    const acceptMaskCanvas = resultMaskCanvas || stagingMaskCanvas;
+    for (const image of resultImages) {
+      const url = this.resultImageURL(image);
+      const img = await this.loadImage(url);
+      this.addStagingItem({
+        url,
+        bbox,
+        displaySize: outputSize,
+        inferenceSize,
+        image,
+        img,
+        visible: true,
+        mode: stagingMode,
+        maskCanvas: acceptMaskCanvas,
+        userMaskCanvas: stagingMaskCanvas,
+        resultMaskCanvas,
+      });
+    }
+  }
+
+  async _pollForResult(drawId, timeoutMs = 600000) {
+    const started = Date.now();
+    let executionFailure = null;
+    // Prompt failures surface as execution_error; fail fast instead of waiting out the timeout.
+    const onExecutionError = (event) => {
+      const detail = event?.detail || {};
+      executionFailure = new Error(`Queued generation failed: ${detail.exception_message || detail.error || "prompt execution failed"}`);
+    };
+    api.addEventListener("execution_error", onExecutionError);
+    try {
+      while (Date.now() - started < timeoutMs) {
+        if (executionFailure) throw executionFailure;
+        const res = await fetch(`/vnccs/unicanvas/result/${encodeURIComponent(drawId)}?t=${Date.now()}`);
+        const data = await res.json();
+        if (data.present) return data;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      throw new Error("Timed out waiting for the queued generation result");
+    } finally {
+      api.removeEventListener("execution_error", onExecutionError);
     }
   }
 
