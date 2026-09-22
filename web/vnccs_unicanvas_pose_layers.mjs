@@ -284,12 +284,9 @@ function ensureUniCanvasPoseLayerSubscription(state, layer) {
   }
   if (!sub.subscribed) {
     sub.subscribed = true;
-    broadcastUniCanvasPoseLayerMessage({
-      source: "unicanvas",
-      type: "subscribe",
-      layerId: layer.id,
-      schemaVersion: POSE_LAYER_SCHEMA_VERSION,
-    });
+    // Arm the waiting state and the link timeout before broadcasting: a Pose
+    // Studio responder answers the subscribe message synchronously and its
+    // hello flips the chip to "linked to Pose Studio" during the dispatch.
     setUniCanvasPoseLayerStatus(sub, POSE_LAYER_STATUS_WAITING);
     if (sub.linkTimer) window.clearTimeout(sub.linkTimer);
     sub.linkTimer = window.setTimeout(() => {
@@ -298,6 +295,12 @@ function ensureUniCanvasPoseLayerSubscription(state, layer) {
         setUniCanvasPoseLayerStatus(sub, POSE_LAYER_STATUS_DISCONNECTED);
       }
     }, POSE_LAYER_LINK_TIMEOUT_MS);
+    broadcastUniCanvasPoseLayerMessage({
+      source: "unicanvas",
+      type: "subscribe",
+      layerId: layer.id,
+      schemaVersion: POSE_LAYER_SCHEMA_VERSION,
+    });
   }
   void loadUniCanvasPoseCharacters(state);
   return sub;

@@ -16236,7 +16236,11 @@ class VNCCSPoseLayerBridge {
         }
         this.reply({ source: "pose-studio", type: "hello", layerId });
         this.beginGesture(sub);
-        this.requestFinal(sub);
+        // Defer the initial full-quality capture so the synchronous PNG work
+        // stays out of the subscriber's dispatch stack.
+        setTimeout(() => {
+            if (this.subs.get(layerId) === sub) this.requestFinal(sub);
+        }, 0);
     }
 
     unsubscribe(layerId) {
