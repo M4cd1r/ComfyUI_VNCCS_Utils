@@ -1,4 +1,5 @@
 import pytest
+import torch
 
 from nodes.unicanvas import (
     _MODEL_CACHE,
@@ -83,3 +84,79 @@ def test_repeated_external_block_loads_consistently():
 
     assert _load_generation_assets(_external_gen_settings(block)) == ("M", "C", "V")
     assert _load_generation_assets(_external_gen_settings(block)) == ("M", "C", "V")
+
+
+def test_reference_mapping_order(monkeypatch):
+    module = _get_unicanvas_model_module("minimax_h3")
+    captured = {}
+
+    def fake_call(name, **kwargs):
+        captured.setdefault(name, []).append(kwargs)
+        if name == "MiniMaxH3ReferenceToVideo":
+            return ("positive", "latent")
+        if name == "BasicGuider":
+            return ("guider",)
+        if name == "RandomNoise":
+            return ("noise",)
+        if name == "KSamplerSelect":
+            return ("sampler",)
+        if name == "BasicScheduler":
+            return ("sigmas",)
+        if name == "SamplerCustomAdvanced":
+            return ({"samples": torch.zeros(1, 4, 8, 8)}, {"samples": torch.zeros(1, 4, 8, 8)})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("nodes.unicanvas._call_comfy_node", fake_call)
+    gen_settings = {
+        "_h3_prompt": "Keep the face from <Picture 2>.",
+        "_h3_reference_image": torch.zeros(1, 64, 64, 3),
+        "_external": {
+            "clip": "C",
+            "vae": "V",
+            "audio_vae": "A",
+            "references": {
+                "reference_image_1": torch.ones(1, 32, 32, 3),
+                "reference_image_2": torch.full((1, 32, 32, 3), 2.0),
+            },
+        },
+    }
+    module.sample_latent(
+        model="M", positive=None, negative=None, latent=None, seed=7,
+        steps=20, cfg=1.0, sampler_name="res_multistep", scheduler="simple",
+        denoise=1.0, gen_settings=gen_settings, draw_id="t", width=64, height=64,
+    )
+    encode_kwargs = captured["MiniMaxH3ReferenceToVideo"][0]
+    refs = encode_kwargs["ref_images"]
+    assert list(refs) == ["ref_image_1", "ref_image_2", "ref_image_3"]
+    assert torch.equal(refs["ref_image_1"], torch.zeros(1, 64, 64, 3))
+    assert torch.equal(refs["ref_image_2"], torch.ones(1, 32, 32, 3))
+    assert torch.equal(refs["ref_image_3"], torch.full((1, 32, 32, 3), 2.0))
+    assert encode_kwargs["prompt"] == "Keep the face from <Picture 2>."
+    assert encode_kwargs["length"] == 5
+    assert captured["BasicGuider"][0]["conditioning"] == "positive"
+    assert captured["SamplerCustomAdvanced"][0]["latent_image"] == "latent"
+
+
+def test_decode_samples_takes_first_frame(monkeypatch):
+    module = _get_unicanvas_model_module("minimax_h3")
+    frames = torch.zeros(5, 32, 32, 3)
+    monkeypatch.setattr(
+        "nodes.unicanvas._call_comfy_node",
+        lambda name, **kwargs: (frames,) if name == "VAEDecodeTiled" else (_ for _ in ()).throw(AssertionError(name)),
+    )
+    out = module.decode_samples("V", {"samples": torch.zeros(1, 4, 8, 8)}, {"_draw_id": "t"})
+    assert out.shape[0] == 1
+
+
+def test_sample_latent_requires_audio_vae():
+    module = _get_unicanvas_model_module("minimax_h3")
+    import pytest
+
+    with pytest.raises(RuntimeError, match=r"\[VNCCS UniCanvas\] MiniMax H3 requires the audio VAE\."):
+        module.sample_latent(
+            model="M", positive=None, negative=None, latent=None, seed=1,
+            steps=20, cfg=1.0, sampler_name="res_multistep", scheduler="simple",
+            denoise=1.0,
+            gen_settings={"_h3_prompt": "p", "_external": {}},
+            draw_id="t", width=64, height=64,
+        )

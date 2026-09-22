@@ -1075,6 +1075,91 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         gen_settings["_h3_reference_image"] = image_tensor
         return positive, negative
 
+    def _h3_reference_images(self, gen_settings: dict[str, Any]) -> dict[str, Any]:
+        refs: dict[str, Any] = {}
+        region = gen_settings.get("_h3_reference_image")
+        if region is not None:
+            refs["ref_image_1"] = region
+        external_refs = (gen_settings.get("_external") or {}).get("references") or {}
+        for index, name in enumerate(
+            ("reference_image_1", "reference_image_2", "reference_image_3", "reference_image_4"), start=2
+        ):
+            value = external_refs.get(name)
+            if value is not None:
+                refs[f"ref_image_{index}"] = value
+        return refs
+
+    def sample_latent(
+        self,
+        model: Any,
+        positive: Any,
+        negative: Any,
+        latent: Any,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+        width: int | None = None,
+        height: int | None = None,
+    ):
+        external = gen_settings.get("_external") or {}
+        clip = external.get("clip")
+        vae = external.get("vae")
+        audio_vae = external.get("audio_vae")
+        if audio_vae is None:
+            raise RuntimeError("[VNCCS UniCanvas] MiniMax H3 requires the audio VAE.")
+        prompt = str(gen_settings.get("_h3_prompt") or "")
+        refs = self._h3_reference_images(gen_settings)
+        target_w = int(width or 1344) // 32 * 32
+        target_h = int(height or 768) // 32 * 32
+        length = int(self.defaults.get("frame_count", 5))
+
+        positive_h3, latent_h3 = _call_comfy_node(
+            "MiniMaxH3ReferenceToVideo",
+            clip=clip,
+            vae=vae,
+            audio_vae=audio_vae,
+            prompt=prompt,
+            width=target_w,
+            height=target_h,
+            length=length,
+            ref_image_size=str(self.defaults.get("ref_image_size", "match")),
+            ref_images=refs,
+        )
+        guider = _call_comfy_node("BasicGuider", model=model, conditioning=positive_h3)[0]
+        noise = _call_comfy_node("RandomNoise", noise_seed=int(seed))[0]
+        sampler_object = _call_comfy_node("KSamplerSelect", sampler_name=sampler_name or "res_multistep")[0]
+        sigmas = _call_comfy_node(
+            "BasicScheduler",
+            model=model,
+            scheduler=scheduler or "simple",
+            steps=int(steps),
+            denoise=float(denoise),
+        )[0]
+        sampled = _call_comfy_node(
+            "SamplerCustomAdvanced",
+            noise=noise,
+            guider=guider,
+            sampler=sampler_object,
+            sigmas=sigmas,
+            latent_image=latent_h3,
+        )[0]
+        _uc_log(draw_id, "MiniMax H3 region edit sampled", {
+            "width": target_w, "height": target_h, "steps": steps,
+            "refs": sorted(refs), "seed": seed,
+        })
+        return sampled
+
+    def decode_samples(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
+        decoded = _call_comfy_node("VAEDecodeTiled", samples=samples, vae=vae)[0]
+        if hasattr(decoded, "shape") and len(decoded.shape) == 4 and decoded.shape[0] > 1:
+            return decoded[:1]  # H3 returns a frame packet; the still is the first frame
+        return decoded
+
 
 @dataclass(frozen=True)
 class ZImageUniCanvasModule(UniCanvasModelModule):
