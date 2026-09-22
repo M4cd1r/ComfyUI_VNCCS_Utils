@@ -97,11 +97,18 @@ Reference semantics (shared convention across families):
 - The user prompt is the edit instruction and references pictures by number, e.g.
   `Keep the identity from <Picture 2>. Use the pose from <Picture 3>.`
 
-No `audio_vae` socket: H3 image output does not require the audio VAE.
+An optional `audio_vae` (VAE) socket feeds MiniMax H3's aligned audio-video latent —
+the built-in `MiniMaxH3ReferenceToVideo` node needs the audio VAE to build it. It is
+required only when the H3 family is active (`[VNCCS UniCanvas] MiniMax H3 requires the
+audio VAE.` otherwise); all other families ignore it.
 
 ## 4. MiniMax H3 region editing (H3 "inpaint")
 
-New `MiniMaxH3UniCanvasModule` (key `minimax_h3`) in `nodes/unicanvas.py`:
+New `MiniMaxH3UniCanvasModule` (key `minimax_h3`) in `nodes/unicanvas.py`. Conditioning
+and sampling reuse ComfyUI's built-in `MiniMaxH3ReferenceToVideo` node (REF2VA:
+prompt + reference pictures → `positive` + empty audio-video latent), followed by
+`BasicGuider` + `RandomNoise` + `SamplerCustomAdvanced`, and `VAEDecodeTiled` with the
+first decoded frame taken as the still:
 
 - Mode: REF2VA-style edit. No mask is required — the selected working area (bbox) is
   `<Picture 1>`, `Edit model` references are `<Picture 2..5>`, the prompt is the edit
