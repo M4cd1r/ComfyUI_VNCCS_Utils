@@ -4948,18 +4948,18 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
 
     def _require_rgb_pixels(self, image: Any) -> torch.Tensor:
         if not torch.is_tensor(image):
-            raise ValueError("[VNCCS UniCanvas] Remove bg - QI2.1 expects a torch.Tensor (H,W,3) float 0..1 image.")
+            raise ValueError("[VNCCS UniCanvas] Remove bg – QI2.1 expects a torch.Tensor (H,W,3) float 0..1 image.")
         if image.ndim != 3 or int(image.shape[-1]) != 3:
             raise ValueError(
-                f"[VNCCS UniCanvas] Remove bg - QI2.1 expects a (H,W,3) image tensor, got {tuple(image.shape)}."
+                f"[VNCCS UniCanvas] Remove bg – QI2.1 expects a (H,W,3) image tensor, got {tuple(image.shape)}."
             )
         if not torch.is_floating_point(image):
-            raise ValueError("[VNCCS UniCanvas] Remove bg - QI2.1 expects a float 0..1 image tensor.")
+            raise ValueError("[VNCCS UniCanvas] Remove bg – QI2.1 expects a float 0..1 image tensor.")
         return image.clamp(0.0, 1.0)
 
     def _coerce_rgba_result(self, rgba: Any, size) -> torch.Tensor:
         if not torch.is_tensor(rgba):
-            raise RuntimeError("[VNCCS UniCanvas] Remove bg - QI2.1 subject extraction returned no image.")
+            raise RuntimeError("[VNCCS UniCanvas] Remove bg – QI2.1 subject extraction returned no image.")
         result = rgba.detach().float()
         while result.ndim > 3 and int(result.shape[0]) == 1:
             result = result[0]
@@ -4967,7 +4967,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             result = result[0]
         if result.ndim != 3 or int(result.shape[-1]) != 4:
             raise RuntimeError(
-                "[VNCCS UniCanvas] Remove bg - QI2.1 subject extraction must return an RGBA image, "
+                "[VNCCS UniCanvas] Remove bg – QI2.1 subject extraction must return an RGBA image, "
                 f"got {tuple(result.shape)}."
             )
         target_h, target_w = int(size[0]), int(size[1])
@@ -5000,7 +5000,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             model, clip, vae = _load_generation_assets(gen_settings)
         except Exception as exc:
             raise RuntimeError(
-                "[VNCCS UniCanvas] Remove bg - QI2.1 requires a Qwen-Image-2.1 stack "
+                "[VNCCS UniCanvas] Remove bg – QI2.1 requires a Qwen-Image-2.1 stack "
                 f"(UNETLoader/CLIPLoader/VAELoader): {exc}"
             ) from exc
         gen_settings["_qwen21_clip"] = clip

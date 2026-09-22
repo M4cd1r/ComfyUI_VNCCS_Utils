@@ -197,7 +197,7 @@ picker (node widget and standalone host):
   and the background is transparent.`) and staging keeps the alpha channel, so accepted results are
   layers with real transparency. The **`opaque output`** switch is available for the rare case where
   alpha is unwanted: it disables the RGBA prompting and flattens the result.
-- `Remove bg - QI2.1` in the layer context menu runs the Qwen-Image-2.1 RGBA subject-extraction
+- `Remove bg – QI2.1` in the layer context menu runs the Qwen-Image-2.1 RGBA subject-extraction
   flow over the layer pixels and applies the extracted alpha.
 
 ### Spectrum acceleration

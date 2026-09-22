@@ -307,13 +307,13 @@ def test_remove_background_accepts_batched_and_resized_results(monkeypatch):
 
 def test_remove_background_rejects_bad_inputs():
     module = _get_unicanvas_model_module("qwen_image21")
-    with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Remove bg - QI2.1"):
+    with pytest.raises(ValueError, match="\\[VNCCS UniCanvas\\] Remove bg \N{EN DASH} QI2.1"):
         module.remove_background(torch.rand(6, 5, 4))
-    with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Remove bg - QI2.1"):
+    with pytest.raises(ValueError, match="\\[VNCCS UniCanvas\\] Remove bg \N{EN DASH} QI2.1"):
         module.remove_background(torch.zeros(6, 3))
-    with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Remove bg - QI2.1"):
+    with pytest.raises(ValueError, match="\\[VNCCS UniCanvas\\] Remove bg \N{EN DASH} QI2.1"):
         module.remove_background(torch.zeros(6, 5, 3, dtype=torch.uint8))
-    with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Remove bg - QI2.1"):
+    with pytest.raises(ValueError, match="\\[VNCCS UniCanvas\\] Remove bg \N{EN DASH} QI2.1"):
         module.remove_background("not a tensor")
 
 
