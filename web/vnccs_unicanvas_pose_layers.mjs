@@ -651,7 +651,7 @@ function decorateUniCanvasPoseLayerRow(state, layer, row) {
 }
 
 function ensureUniCanvasPoseLayerPanel(state) {
-  if (state.panel) return state.panel;
+  if (state.panel && state.panel.isConnected) return state.panel;
   const widget = state.widget;
   const panel = document.createElement("div");
   panel.className = "vnccs-uc-pose-panel";
@@ -673,9 +673,8 @@ function ensureUniCanvasPoseLayerPanel(state) {
     const character = options.find((item) => item.id === select.value) || options[0];
     selectUniCanvasPoseLayerCharacter(state.widget, layer, character);
   });
-  if (widget.layerList?.parentElement) {
-    widget.layerList.parentElement.insertBefore(panel, widget.layerList);
-  }
+  if (!widget.layerList?.parentElement) return null;
+  widget.layerList.parentElement.insertBefore(panel, widget.layerList);
   state.panel = panel;
   state.panelSelect = select;
   return panel;
@@ -683,6 +682,7 @@ function ensureUniCanvasPoseLayerPanel(state) {
 
 function renderUniCanvasPoseLayerPanel(state, layer) {
   const panel = ensureUniCanvasPoseLayerPanel(state);
+  if (!panel || !state.panelSelect) return;
   const visible = layer && layer.type === POSE_LAYER_TYPE;
   panel.style.display = visible ? "flex" : "none";
   if (!visible) return;
