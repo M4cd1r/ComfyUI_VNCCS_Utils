@@ -1780,6 +1780,20 @@ def _get_draw_result(draw_id: str) -> dict[str, Any]:
     return {"present": True, "images": result.get("images") or [], "mask": result.get("mask")}
 
 
+# The composition keys _run_unicanvas_draw reads from an HTTP-path draw payload (the exact
+# key set web/vnccs_unicanvas.js draw() sends). The frontend owns the composition, so the
+# queued graph path forwards these values verbatim from settings["queued_draw"].
+_QUEUED_DRAW_COMPOSITION_KEYS = (
+    "mode",
+    "image",
+    "mask",
+    "source_empty",
+    "bbox",
+    "inference_size",
+    "output_size",
+)
+
+
 def _tensor_debug(value: Any) -> dict[str, Any]:
     if not UNICANVAS_DEBUG:
         return {}
@@ -1894,7 +1908,12 @@ class VNCCS_UniCanvas:
         state = _load_unicanvas_state(unicanvas_state)
         settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
         draw_id = str(settings.get("draw_id") or f"uc-graph-{unique_id or 'node'}")
-        result = _run_unicanvas_draw({
+        queued_draw = settings.get("queued_draw")
+        if not isinstance(queued_draw, dict) or not queued_draw:
+            # An empty mapping carries no composition either, so it must not fall through to the
+            # opaque "Missing image data" ValueError inside _run_unicanvas_draw.
+            raise RuntimeError("[VNCCS UniCanvas] Queued draw payload is missing from the node state.")
+        payload = {
             "state": state,
             "gen_settings": settings,
             "debug_id": draw_id,
@@ -1906,7 +1925,13 @@ class VNCCS_UniCanvas:
                 "references": config.get("references") or {},
             },
             "return_tensor": True,
-        })
+        }
+        # The frontend draw() owns the composition (bbox crop, composite, mask, mode decision);
+        # forward its payload verbatim so the queued draw runs the same composition as the HTTP path.
+        for key in _QUEUED_DRAW_COMPOSITION_KEYS:
+            if key in queued_draw:
+                payload[key] = queued_draw[key]
+        result = _run_unicanvas_draw(payload)
         _store_draw_result(draw_id, {"images": result.get("images") or [], "mask": result.get("mask")})
         return (result["tensor"],)
 

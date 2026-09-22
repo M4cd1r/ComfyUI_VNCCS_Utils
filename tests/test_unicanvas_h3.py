@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 
 import pytest
 import torch
@@ -207,8 +208,25 @@ def test_graph_generate_runs_draw_and_returns_tensor(monkeypatch):
         '{"loras": [], "edit_model": False}', model="M", clip="C", vae="V",
     )[0]
     node = uc.VNCCS_UniCanvas()
+    state = {
+        "state_id": "s1",
+        "layers": [],
+        "settings": {
+            "draw_id": "draw-1",
+            "generation_mode": "minimax_h3",
+            "queued_draw": {
+                "mode": "txt2img",
+                "image": "data:image/png;base64,AAAA",
+                "mask": "data:image/png;base64,BBBB",
+                "source_empty": True,
+                "bbox": {"x": 0, "y": 0, "width": 64, "height": 64},
+                "inference_size": {"width": 64, "height": 64},
+                "output_size": {"width": 64, "height": 64},
+            },
+        },
+    }
     (image,) = node.export_state(
-        '{"state_id": "s1", "layers": [], "settings": {"draw_id": "draw-1", "generation_mode": "minimax_h3"}}',
+        json.dumps(state),
         config=config,
         unique_id="9",
     )
@@ -260,4 +278,123 @@ def test_external_payload_selects_external_loader(monkeypatch):
         })
     assert captured["model_loader"] == "external"
     assert captured["generation_mode"] == "minimax_h3"
+    assert captured["_external"]["model"] == "M"
+
+
+def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
+    """The queued path replays the frontend draw() composition keys verbatim."""
+    from nodes import unicanvas as uc
+    from nodes.vncss_config import VNCCS_Config
+
+    captured = {}
+    queued_draw = {
+        "mode": "outpaint",
+        "image": "data:image/png;base64,IMG",
+        "mask": "data:image/png;base64,MASK",
+        "source_empty": False,
+        "bbox": {"x": 10, "y": 20, "width": 640, "height": 480},
+        "inference_size": {"width": 1280, "height": 960},
+        "output_size": {"width": 640, "height": 480},
+        # Not composition keys: the node state owns the draw id and the generation settings,
+        # so these must not cross the bridge from queued_draw.
+        "debug_id": "frontend-debug-id",
+        "settings": {"generation_mode": "sdxl"},
+    }
+
+    def fake_draw(payload):
+        captured.update(payload)
+        return {"images": [], "mask": None, "tensor": torch.zeros(1, 8, 8, 3)}
+
+    monkeypatch.setattr(uc, "_run_unicanvas_draw", fake_draw)
+    config = VNCCS_Config().execute(
+        '{"loras": [], "edit_model": False}', model="M", clip="C", vae="V",
+    )[0]
+    state = {
+        "state_id": "s1",
+        "layers": [],
+        "settings": {
+            "draw_id": "draw-queued",
+            "generation_mode": "minimax_h3",
+            "queued_draw": queued_draw,
+        },
+    }
+    (image,) = uc.VNCCS_UniCanvas().export_state(json.dumps(state), config=config, unique_id="9")
+
+    for key in uc._QUEUED_DRAW_COMPOSITION_KEYS:
+        assert captured[key] == queued_draw[key], key
+    assert "settings" not in captured
+    assert captured["debug_id"] == "draw-queued"
+    assert captured["gen_settings"]["generation_mode"] == "minimax_h3"
+    assert captured["external"]["model"] == "M"
+    assert captured["return_tensor"] is True
+    assert image.shape == (1, 8, 8, 3)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"draw_id": "draw-1"},
+        {"draw_id": "draw-1", "queued_draw": None},
+        {"draw_id": "draw-1", "queued_draw": {}},
+        {"draw_id": "draw-1", "queued_draw": "data:image/png;base64,IMG"},
+        {"draw_id": "draw-1", "queued_draw": []},
+    ],
+)
+def test_export_state_requires_queued_draw_payload(monkeypatch, settings):
+    from nodes import unicanvas as uc
+    from nodes.vncss_config import VNCCS_Config
+
+    monkeypatch.setattr(
+        uc, "_run_unicanvas_draw", lambda payload: pytest.fail("draw must not run without a queued payload")
+    )
+    config = VNCCS_Config().execute(
+        '{"loras": [], "edit_model": False}', model="M", clip="C", vae="V",
+    )[0]
+    state = {"state_id": "s1", "layers": [], "settings": settings}
+    with pytest.raises(
+        RuntimeError, match=r"\[VNCCS UniCanvas\] Queued draw payload is missing from the node state\."
+    ):
+        uc.VNCCS_UniCanvas().export_state(json.dumps(state), config=config, unique_id="9")
+
+
+def test_queued_draw_payload_reaches_the_real_draw_pipeline(monkeypatch):
+    """The forwarded composition gets past source decoding instead of dying on 'Missing image data'."""
+    from nodes import unicanvas as uc
+    from nodes.vncss_config import VNCCS_Config
+
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (10, 20, 30)).save(image_buffer, format="PNG")
+    image_data_url = "data:image/png;base64," + base64.b64encode(image_buffer.getvalue()).decode("ascii")
+    captured = {}
+
+    def fake_load_assets(gen_settings):
+        captured.update(gen_settings)
+        raise RuntimeError("stop after asset selection")
+
+    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    config = VNCCS_Config().execute(
+        '{"loras": [], "edit_model": False}', model="M", clip="C", vae="V",
+    )[0]
+    state = {
+        "state_id": "s1",
+        "layers": [],
+        "settings": {
+            "draw_id": "draw-real",
+            "generation_mode": "minimax_h3",
+            "queued_draw": {
+                "mode": "img2img",
+                "image": image_data_url,
+                "mask": "data:image/png;base64,AAAA",
+                "source_empty": False,
+                "bbox": {"x": 0, "y": 0, "width": 64, "height": 64},
+                "inference_size": {"width": 64, "height": 64},
+                "output_size": {"width": 64, "height": 64},
+            },
+        },
+    }
+    with pytest.raises(RuntimeError, match="stop after asset selection"):
+        uc.VNCCS_UniCanvas().export_state(json.dumps(state), config=config, unique_id="9")
+    assert captured["model_loader"] == "external"
+    assert captured["generation_mode"] == "minimax_h3"
+    assert captured["draw_mode"] == "img2img"
     assert captured["_external"]["model"] == "M"
