@@ -1462,8 +1462,13 @@ export class PoseViewerCore {
         this.renderer = new THREE.WebGLRenderer({
             canvas: this.canvas,
             antialias: true,
-            preserveDrawingBuffer: true
+            preserveDrawingBuffer: true,
+            // Opt-in RGBA drawing buffer so embedders (UniCanvas pose layers)
+            // can capture PNGs with alpha. The default keeps the legacy opaque
+            // buffer, so existing Pose Studio behavior is unchanged.
+            alpha: this.options.rendererAlpha === true,
         });
+        if (this.options.rendererAlpha === true) this.renderer.setClearAlpha(0);
         this.renderer.setSize(this.width, this.height, false); // false = don't write canvas CSS style
         // resize() may have received the real DOM viewport while Three.js modules
         // were still loading. In that case this is already the stable editor buffer.
