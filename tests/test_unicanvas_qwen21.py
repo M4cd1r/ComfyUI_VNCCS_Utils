@@ -1,0 +1,352 @@
+import pytest
+import torch
+
+from nodes.unicanvas import (
+    QWEN21_SPECTRUM_PRESETS,
+    QWEN_IMAGE21_ASPECT_PRESETS,
+    QWEN_IMAGE21_DEFAULTS,
+    QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT,
+    QwenImage21UniCanvasModule,
+    _apply_qwen21_spectrum,
+    _get_unicanvas_model_module,
+    _qwen21_spectrum_config,
+    _qwen21_spectrum_settings,
+)
+
+
+def test_module_registered_with_aliases():
+    module = _get_unicanvas_model_module("qwen_image21")
+    assert isinstance(module, QwenImage21UniCanvasModule)
+    assert module.key == "qwen_image21"
+    assert _get_unicanvas_model_module("qi21") is module
+    assert _get_unicanvas_model_module("qwen-image-2.1") is module
+    assert _get_unicanvas_model_module("QwenImage21") is module
+    assert module.is_edit_model is True
+
+
+def test_defaults_follow_qi21_recipe():
+    module = _get_unicanvas_model_module("qwen_image21")
+    defaults = module.defaults
+    # Flow matching sampling: euler/simple, 40 steps (spec section 9).
+    assert defaults["steps"] == 40
+    assert defaults["sampler"] == "euler"
+    assert defaults["sampler_name"] == "euler"
+    assert defaults["scheduler"] == "simple"
+    assert defaults["cfg"] == 1.0
+    assert defaults["denoise"] == 1.0
+    # ComfyUI core >= 0.37 loader semantics for the QI2.1 stack.
+    assert defaults["model_loader"] == "diffusion_model"
+    assert defaults["clip_type"] == "qwen_image"
+    # RGBA is the default output.
+    assert defaults["qwen21_opaque_output"] is False
+
+
+def test_native_2k_aspect_presets():
+    module = _get_unicanvas_model_module("qwen_image21")
+    assert QWEN_IMAGE21_ASPECT_PRESETS == (
+        (2048, 2048),
+        (2400, 1792),
+        (1792, 2400),
+        (2528, 1696),
+        (1696, 2528),
+        (2752, 1536),
+        (1536, 2752),
+    )
+    assert module.aspect_presets() == QWEN_IMAGE21_ASPECT_PRESETS
+    assert module.resolve_generation_size(1024, 768, {}) == (1024, 768)
+    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "auto"}) == (1024, 768)
+    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "2400x1792"}) == (2400, 1792)
+
+
+def test_create_empty_latent_uses_64_channel_16x_compression():
+    module = _get_unicanvas_model_module("qwen_image21")
+    latent = module.create_empty_latent(1024, 768, {"batch_size": 1}, draw_id="t")
+    assert tuple(latent["samples"].shape) == (1, 64, 48, 64)
+
+
+def test_rgba_default_prompt_convention():
+    module = _get_unicanvas_model_module("qwen_image21")
+    text = module.assemble_instruction("Keep the face from <image2>.", {1: object(), 2: object()})
+    assert text.startswith("This is an RGBA image with transparency.")
+    assert text.endswith("The image has alpha channel and the background is transparent.")
+    assert "Working area: <image1>." in text
+    assert "Reference images: <image2>." in text
+    assert "Keep the face from <image2>." in text
+
+
+def test_opaque_output_switch_disables_rgba_prompting():
+    module = _get_unicanvas_model_module("qwen_image21")
+    text = module.assemble_instruction("a cat", {1: object()}, opaque_output=True)
+    assert "RGBA" not in text
+    assert "transparent" not in text
+    assert text == "Working area: <image1>. a cat"
+
+
+def test_reference_wiring_slots_and_prompt():
+    module = _get_unicanvas_model_module("qwen_image21")
+    working = torch.zeros(1, 8, 8, 3)
+    refs = {
+        "reference_image_1": torch.ones(1, 8, 8, 3),
+        "reference_image_3": torch.full((1, 8, 8, 3), 3.0),
+        "reference_image_4": torch.full((1, 8, 8, 3), 4.0),
+    }
+    slots = module.reference_image_slots(working, {"_external": {"references": refs}})
+    # Working area is <image1>, Edit model references are <image2..5> in socket order.
+    assert slots[1] is working
+    assert slots[2] is refs["reference_image_1"]
+    assert 3 not in slots
+    assert slots[4] is refs["reference_image_3"]
+    assert slots[5] is refs["reference_image_4"]
+    text = module.assemble_instruction("edit", slots)
+    assert "Working area: <image1>." in text
+    assert "Reference images: <image2>, <image4>, <image5>." in text
+
+
+def test_prepare_reference_conditioning_wires_slots(monkeypatch):
+    module = _get_unicanvas_model_module("qwen_image21")
+    captured = {}
+
+    def fake_encode(self, clip, vae, prompt, negative_prompt, images, resolution, draw_id="unknown"):
+        captured.update(
+            {
+                "clip": clip,
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "images": images,
+                "resolution": resolution,
+            }
+        )
+        return "POS", "NEG"
+
+    class FakeVae:
+        def encode(self, pixels):
+            captured["vae_pixels"] = pixels
+            return {"samples": torch.zeros(1, 64, 1, 1)}
+
+    monkeypatch.setattr(QwenImage21UniCanvasModule, "_encode_qi21", fake_encode)
+    working = torch.rand(1, 8, 8, 3)
+    ref = torch.rand(1, 8, 8, 3)
+    gen_settings = {
+        "draw_mode": "img2img",
+        "_qwen21_clip": "CLIP",
+        "_qwen21_prompt": "Keep the face from <image2>.",
+        "_qwen21_negative_prompt": "blurry",
+        "_external": {"references": {"reference_image_1": ref}},
+    }
+    positive, negative = module.prepare_reference_conditioning(None, None, FakeVae(), working, gen_settings, "t")
+    assert (positive, negative) == ("POS", "NEG")
+    assert captured["clip"] == "CLIP"
+    assert captured["negative_prompt"] == "blurry"
+    assert torch.equal(captured["images"][1], working)
+    assert torch.equal(captured["images"][2], ref)
+    assert "Working area: <image1>." in captured["prompt"]
+    assert "Keep the face from <image2>." in captured["prompt"]
+    # The working area is encoded as RGBA for the 64-channel image VAE.
+    assert captured["vae_pixels"].shape == (1, 8, 8, 4)
+    assert isinstance(gen_settings["_qwen21_latent"], dict)
+
+
+def test_prepare_reference_conditioning_txt2img_drops_working_area(monkeypatch):
+    module = _get_unicanvas_model_module("qwen_image21")
+    captured = {}
+
+    def fake_encode(self, clip, vae, prompt, negative_prompt, images, resolution, draw_id="unknown"):
+        captured["images"] = images
+        return "POS", "NEG"
+
+    class FakeVae:
+        def encode(self, pixels):
+            raise AssertionError("txt2img must not encode a working area")
+
+    monkeypatch.setattr(QwenImage21UniCanvasModule, "_encode_qi21", fake_encode)
+    ref = torch.rand(1, 8, 8, 3)
+    gen_settings = {
+        "draw_mode": "txt2img",
+        "_qwen21_clip": "CLIP",
+        "_qwen21_prompt": "a cat",
+        "_external": {"references": {"reference_image_1": ref}},
+    }
+    module.prepare_reference_conditioning(None, None, FakeVae(), torch.zeros(1, 8, 8, 3), gen_settings, "t")
+    assert 1 not in captured["images"]
+    assert torch.equal(captured["images"][2], ref)
+    assert gen_settings["_qwen21_latent"] is None
+
+
+def test_encode_prompt_collects_positive_then_negative():
+    module = _get_unicanvas_model_module("qwen_image21")
+    gen_settings = {}
+    module.encode_prompt("CLIP", "positive text", gen_settings)
+    module.encode_prompt("CLIP", "negative text", gen_settings)
+    assert gen_settings["_qwen21_prompt"] == "positive text"
+    assert gen_settings["_qwen21_negative_prompt"] == "negative text"
+    assert gen_settings["_qwen21_clip"] == "CLIP"
+
+
+def test_decode_samples_keeps_alpha_by_default():
+    module = _get_unicanvas_model_module("qwen_image21")
+
+    class FakeVae:
+        def decode_tiled(self, samples, tile_x=512, tile_y=512, overlap=64):
+            decoded = torch.zeros(1, 8, 8, 4)
+            decoded[..., :3] = 0.25
+            decoded[..., 3] = 0.5
+            return decoded
+
+    decoded = module.decode_samples(FakeVae(), {"samples": torch.zeros(1, 64, 1, 1)}, {"qwen21_opaque_output": False})
+    # Staging keeps alpha: RGBA stays RGBA.
+    assert tuple(decoded.shape) == (1, 8, 8, 4)
+    assert torch.all(decoded[..., 3] == 0.5)
+
+
+def test_decode_samples_opaque_switch_flattens():
+    module = _get_unicanvas_model_module("qwen_image21")
+
+    class FakeVae:
+        def decode_tiled(self, samples, tile_x=512, tile_y=512, overlap=64):
+            decoded = torch.zeros(1, 8, 8, 4)
+            decoded[..., :3] = 0.25
+            decoded[..., 3] = 0.5
+            return decoded
+
+    decoded = module.decode_samples(FakeVae(), {"samples": torch.zeros(1, 64, 1, 1)}, {"qwen21_opaque_output": True})
+    assert tuple(decoded.shape) == (1, 8, 8, 3)
+    assert torch.allclose(decoded, torch.full((1, 8, 8, 3), 0.625))
+
+
+def test_remove_background_contract(monkeypatch):
+    module = _get_unicanvas_model_module("qwen_image21")
+    captured = {}
+
+    def fake_extraction(self, pixels):
+        captured["pixels"] = pixels
+        alpha = torch.full(pixels.shape[:-1] + (1,), 0.25)
+        return torch.cat([pixels, alpha], dim=-1)
+
+    monkeypatch.setattr(QwenImage21UniCanvasModule, "_subject_extraction", fake_extraction)
+    image = torch.rand(6, 5, 3)
+    rgba = module.remove_background(image)
+    assert tuple(rgba.shape) == (6, 5, 4)
+    assert rgba.dtype == torch.float32
+    assert captured["pixels"] is not image or torch.equal(captured["pixels"], image)
+    assert torch.all(rgba[..., 3] == 0.25)
+    assert torch.all((rgba >= 0.0) & (rgba <= 1.0))
+
+
+def test_remove_background_accepts_batched_and_resized_results(monkeypatch):
+    module = _get_unicanvas_model_module("qwen_image21")
+
+    def fake_extraction_batched(self, pixels):
+        alpha = torch.full(pixels.shape[:-1] + (1,), 0.75)
+        return torch.cat([pixels, alpha], dim=-1).unsqueeze(0)
+
+    monkeypatch.setattr(QwenImage21UniCanvasModule, "_subject_extraction", fake_extraction_batched)
+    rgba = module.remove_background(torch.rand(6, 5, 3))
+    assert tuple(rgba.shape) == (6, 5, 4)
+
+    def fake_extraction_resized(self, pixels):
+        alpha = torch.full((3, 4, 1), 0.5)
+        return torch.cat([torch.zeros(3, 4, 3), alpha], dim=-1)
+
+    monkeypatch.setattr(QwenImage21UniCanvasModule, "_subject_extraction", fake_extraction_resized)
+    rgba = module.remove_background(torch.rand(6, 5, 3))
+    assert tuple(rgba.shape) == (6, 5, 4)
+    assert torch.all(rgba[..., 3] == 0.5)
+
+
+def test_remove_background_rejects_bad_inputs():
+    module = _get_unicanvas_model_module("qwen_image21")
+    with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Remove bg - QI2.1"):
+        module.remove_background(torch.rand(6, 5, 4))
+    with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Remove bg - QI2.1"):
+        module.remove_background(torch.zeros(6, 3))
+    with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Remove bg - QI2.1"):
+        module.remove_background(torch.zeros(6, 5, 3, dtype=torch.uint8))
+    with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Remove bg - QI2.1"):
+        module.remove_background("not a tensor")
+
+
+def test_remove_background_extraction_prompt():
+    assert QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT == "Remove the background, and output a PNG image"
+
+
+def test_spectrum_settings_merge():
+    settings = _qwen21_spectrum_settings({"spectrum": {"warmup_steps": 9, "bogus_key": 1}})
+    assert settings["warmup_steps"] == 9
+    assert settings["enabled"] is False
+    assert "bogus_key" not in settings
+    assert settings["tail_actual_steps"] == 2
+
+
+def test_spectrum_presets():
+    assert set(QWEN21_SPECTRUM_PRESETS) == {"moderate", "aggressive", "quality"}
+    assert QWEN21_SPECTRUM_PRESETS["moderate"] == {
+        "warmup_steps": 5,
+        "tail_actual_steps": 2,
+        "window_size": 2.0,
+        "flex_window": 0.75,
+        "max_consecutive_forecasts": 8,
+        "history_points": 8,
+        "chebyshev_degree": 4,
+        "ridge_lambda": 0.1,
+        "blend_weight": 0.5,
+        "cache_device": "main_device",
+        "force_actual_on_control": True,
+        "debug": False,
+    }
+    assert QWEN21_SPECTRUM_PRESETS["aggressive"]["flex_window"] == 3.0
+    assert QWEN21_SPECTRUM_PRESETS["aggressive"]["tail_actual_steps"] == 1
+    assert QWEN21_SPECTRUM_PRESETS["quality"]["flex_window"] == 0.4
+    assert QWEN21_SPECTRUM_PRESETS["quality"]["tail_actual_steps"] == 4
+    assert QWEN21_SPECTRUM_PRESETS["quality"]["blend_weight"] == 1.0
+    assert QWEN_IMAGE21_DEFAULTS["spectrum"]["enabled"] is False
+
+
+def test_spectrum_config_maps_all_parameters():
+    config = _qwen21_spectrum_config({"spectrum": {**QWEN21_SPECTRUM_PRESETS["aggressive"], "enabled": True}})
+    assert config.warmup_steps == 5
+    assert config.tail_actual_steps == 1
+    assert config.window_size == 2.0
+    assert config.flex_window == 3.0
+    assert config.max_consecutive_forecasts == 8
+    assert config.history_points == 8
+    assert config.chebyshev_degree == 4
+    assert config.ridge_lambda == 0.1
+    assert config.blend_weight == 0.5
+    assert config.cache_device == "main_device"
+    assert config.force_actual_on_control is True
+    assert config.debug is False
+
+
+def test_apply_qwen21_spectrum_disabled_returns_model():
+    assert _apply_qwen21_spectrum("model", {"spectrum": {"enabled": False}}, "t") == "model"
+    assert _apply_qwen21_spectrum("model", {}, "t") == "model"
+
+
+def test_apply_qwen21_spectrum_calls_vendored_port(monkeypatch):
+    captured = {}
+
+    def fake_apply(model, config):
+        captured["model"] = model
+        captured["config"] = config
+        return "patched"
+
+    monkeypatch.setattr("nodes.spectrum_qwen21.apply_spectrum", fake_apply)
+    result = _apply_qwen21_spectrum(
+        "model",
+        {"spectrum": {**QWEN21_SPECTRUM_PRESETS["quality"], "enabled": True}},
+        "t",
+    )
+    assert result == "patched"
+    assert captured["model"] == "model"
+    assert captured["config"].flex_window == 0.4
+    assert captured["config"].blend_weight == 1.0
+
+
+def test_apply_qwen21_spectrum_validates_config_via_vendored_port():
+    # The vendored port validates the config before touching the model.
+    with pytest.raises(ValueError):
+        _apply_qwen21_spectrum(
+            "model",
+            {"spectrum": {"enabled": True, "chebyshev_degree": 9, "history_points": 4}},
+            "t",
+        )
