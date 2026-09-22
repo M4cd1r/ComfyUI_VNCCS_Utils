@@ -9,7 +9,7 @@ import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
 } from "./vnccs_unicanvas_presets.mjs";
-import { installUniCanvasWidgetModes } from "./vnccs_unicanvas_modes.mjs";
+import { installUniCanvasWidgetModes, registerUniCanvasStandaloneSidebarTab } from "./vnccs_unicanvas_modes.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -6640,6 +6640,10 @@ class UniCanvasWidget {
 
 app.registerExtension({
   name: "VNCCS.UniCanvas",
+  setup() {
+    // Standalone Unicanvas sidebar tab (no node, no workflow).
+    registerUniCanvasStandaloneSidebarTab(UniCanvasWidget);
+  },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== "VNCCS_UniCanvas") return;
 

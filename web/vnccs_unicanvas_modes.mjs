@@ -13,7 +13,14 @@ export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 const UNICANVAS_STANDALONE_TAB_ID = "vnccs-unicanvas-standalone";
 const UNICANVAS_STANDALONE_BODY_CLASS = "vnccs-unicanvas-standalone-mode";
 const UNICANVAS_PANELS_HIDDEN_CLASS = "vnccs-uc2-panels-hidden";
+const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";
 const UNICANVAS_MODE_STYLE_ID = "vnccs-unicanvas-modes-styles";
+
+// Inline SVG data URI behind the sidebar icon class: the ComfyUI sidebar tab
+// strip renders the icon value as a CSS class on an <i> element, so painting the
+// SVG from CSS guarantees a visible icon regardless of the icon font.
+const UNICANVAS_SIDEBAR_ICON_SVG =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e8e8f0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Cpath d='M3 16l5-5 3.5 3.5 3-3L21 18'/%3E%3Ccircle cx='8.5' cy='8' r='1.4'/%3E%3C/svg%3E";
 
 const BRUSH_SIZE_MIN = 1;
 const BRUSH_SIZE_MAX = 220;
@@ -35,6 +42,16 @@ const TRUE_FULLSCREEN_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M13 7h4a2 2 0 0 1 2 2v4"/><path d="M11 17H7a2 2 0 0 1-2-2v-4"/></svg>';
 
 const UNICANVAS_MODE_STYLES = `
+i.${UNICANVAS_SIDEBAR_ICON_CLASS} { display: inline-block; width: 1.35em; height: 1.35em; background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat; }
+.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 2147481000; background: #0e0b12; }
+.vnccs-uc2-standalone-shell > .vnccs-unicanvas { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; }
+.vnccs-uc2-config-hint { margin: 2px 8px 0; padding: 6px 8px; border: 1px dashed rgba(255, 143, 163, 0.35); border-radius: 8px; color: #f3c9d2; font-size: 12px; line-height: 1.3; }
+body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-top,
+body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfy-menu,
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-menu,
+body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-bottom,
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !important; }
 .vnccs-uc-stage-wrap { position: relative; }
 .vnccs-uc2-fullscreen-btn { position: absolute; top: 10px; right: 10px; z-index: 6; }
 .vnccs-uc2-fullscreen-portal { position: fixed; inset: 0; z-index: 2147482000; display: flex; flex-direction: column; background: #0e0b12; }
@@ -365,5 +382,239 @@ export function installUniCanvasWidgetModes(widget) {
   installUniCanvasShortcuts(widget);
   installUniCanvasFullscreenButton(widget);
   installUniCanvasOutputActions(widget);
+  if (widget.standalone) {
+    installStandaloneEngineNote(widget);
+    installStandalonePersistence(widget);
+  }
   return widget;
+}
+
+// ---------------------------------------------------------------------------
+// Standalone sidebar mode: "Unicanvas" tab, chrome hiding, local persistence
+// ---------------------------------------------------------------------------
+
+function installStandaloneEngineNote(widget) {
+  const note = document.createElement("div");
+  note.className = "vnccs-uc2-config-hint";
+  note.textContent = "External VNCSS_CONFIG is node-mode only.";
+  const modelTabs = widget.promptBox?.querySelector(".vnccs-uc-model-tabs");
+  if (modelTabs) modelTabs.insertAdjacentElement("afterend", note);
+  else widget.promptBox?.appendChild(note);
+  widget._vnccsStandaloneEngineNote = note;
+}
+
+function writeStandaloneState(widget, state) {
+  try {
+    state.storage = "local";
+    window.localStorage?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), state }));
+  } catch (err) {
+    console.warn("[VNCCS UniCanvas] Standalone state persistence failed", err);
+  }
+}
+
+function installStandalonePersistence(widget) {
+  // Standalone mode has no workflow widget and no server state cache: the
+  // localStorage key "vnccs-unicanvas-standalone" holds the document instead.
+  let persistTimer = null;
+  const schedulePersist = () => {
+    if (persistTimer !== null) window.clearTimeout(persistTimer);
+    persistTimer = window.setTimeout(() => {
+      persistTimer = null;
+      writeStandaloneState(widget, widget.buildSerializedState(true));
+    }, 300);
+  };
+  widget.getStateBackupKey = () => UNICANVAS_STANDALONE_STORAGE_KEY;
+  widget.uploadStatePayload = async (state) => {
+    writeStandaloneState(widget, state);
+  };
+  const originalWriteLightStateToWidget = widget.writeLightStateToWidget.bind(widget);
+  widget.writeLightStateToWidget = (...args) => {
+    const result = originalWriteLightStateToWidget(...args);
+    schedulePersist();
+    return result;
+  };
+  widget._vnccsStandalonePersist = () => writeStandaloneState(widget, widget.buildSerializedState(true));
+  widget._vnccsStandaloneSchedulePersist = schedulePersist;
+}
+
+function readStandalonePersistedStateValue() {
+  try {
+    const raw = window.localStorage?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const state = parsed && typeof parsed === "object" ? parsed.state : null;
+    if (!state || typeof state !== "object" || !Array.isArray(state.layers)) return "";
+    // The widget's own restore pipeline reads this hidden state widget; the
+    // storage marker keeps it from reaching for the node-mode server cache.
+    state.storage = "local";
+    return JSON.stringify(state);
+  } catch (err) {
+    console.warn("[VNCCS UniCanvas] Standalone state restore failed", err);
+    return "";
+  }
+}
+
+function createStandaloneWidget(UniCanvasWidgetClass) {
+  // No node and no workflow: the stub only feeds the existing restore pipeline
+  // (hidden unicanvas_state widget) and carries a size hint.
+  const stubNode = {
+    id: undefined,
+    inputs: [],
+    size: [1280, 860],
+    widgets: [{ name: "unicanvas_state", value: readStandalonePersistedStateValue() }],
+  };
+  const widget = new UniCanvasWidgetClass(stubNode);
+  widget.standalone = true;
+  installUniCanvasWidgetModes(widget);
+  return widget;
+}
+
+function findUniCanvasSidebarRail(doc) {
+  return doc.querySelector("nav.side-tool-bar-container") || doc.querySelector(".side-tool-bar-container");
+}
+
+function applyUniCanvasStandaloneShellInset(shell, doc) {
+  // Entering the standalone tab hides all ComfyUI chrome and keeps only the
+  // icon sidebar visible: the app surface stops exactly at the tab strip.
+  const rail = findUniCanvasSidebarRail(doc);
+  const railRect = rail?.getBoundingClientRect?.();
+  shell.style.top = "0";
+  shell.style.bottom = "0";
+  shell.style.left = "0";
+  shell.style.right = "0";
+  const viewportWidth = doc.defaultView?.innerWidth || 0;
+  if (railRect && railRect.width > 0 && viewportWidth > 0) {
+    if (railRect.left + railRect.width / 2 < viewportWidth / 2) {
+      shell.style.left = `${Math.ceil(railRect.right)}px`;
+    } else {
+      shell.style.right = `${Math.ceil(viewportWidth - railRect.left)}px`;
+    }
+  } else {
+    shell.style.left = "56px";
+  }
+}
+
+function watchUniCanvasStandaloneTab(onChange) {
+  const state = { button: null, buttonObserver: null, scanObserver: null, disposed: false };
+  const evaluate = () => {
+    if (state.disposed || !state.button) return;
+    onChange(state.button.classList.contains("side-bar-button-selected"));
+  };
+  const attach = (button) => {
+    state.buttonObserver?.disconnect();
+    state.button = button;
+    state.buttonObserver = new MutationObserver(evaluate);
+    state.buttonObserver.observe(button, { attributes: true, attributeFilter: ["class"] });
+    evaluate();
+  };
+  const scan = () => {
+    if (state.disposed) return;
+    if (state.button && state.button.isConnected) return;
+    const byTestId = document.querySelector(`[data-testid="${UNICANVAS_STANDALONE_TAB_ID}-tab-button"]`);
+    const iconEl = byTestId || document.querySelector(`.${UNICANVAS_SIDEBAR_ICON_CLASS}`);
+    const button = byTestId || iconEl?.closest?.("button") || null;
+    if (button) {
+      state.scanObserver?.disconnect();
+      state.scanObserver = null;
+      attach(button);
+    }
+  };
+  state.scanObserver = new MutationObserver(scan);
+  state.scanObserver.observe(document.body, { subtree: true, childList: true });
+  scan();
+  return {
+    dispose() {
+      state.disposed = true;
+      state.buttonObserver?.disconnect();
+      state.scanObserver?.disconnect();
+    },
+  };
+}
+
+export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
+  const registerSidebarTab = app?.extensionManager?.registerSidebarTab;
+  if (typeof registerSidebarTab !== "function") return;
+  ensureUniCanvasModeStyles();
+  let widget = null;
+  let shell = null;
+  let mountContainer = null;
+  let parking = null;
+  let tabWatcher = null;
+  let containerObserver = null;
+  let windowResizeHandler = null;
+  let active = false;
+
+  const syncStandaloneChrome = () => {
+    if (!widget) return;
+    if (active) {
+      if (widget._vnccsFullscreen) exitUniCanvasFullscreen(widget);
+      if (!shell) {
+        shell = document.createElement("div");
+        shell.className = "vnccs-uc2-standalone-shell";
+        document.body.appendChild(shell);
+        windowResizeHandler = () => {
+          if (!shell || !widget) return;
+          applyUniCanvasStandaloneShellInset(shell, document);
+          widget.resize?.();
+        };
+        window.addEventListener("resize", windowResizeHandler);
+      }
+      applyUniCanvasStandaloneShellInset(shell, document);
+      if (widget.container.parentNode !== shell) shell.appendChild(widget.container);
+      document.body.classList.add(UNICANVAS_STANDALONE_BODY_CLASS);
+    } else {
+      // Leaving the tab restores the standard ComfyUI chrome.
+      if (widget._vnccsFullscreen) exitUniCanvasFullscreen(widget);
+      document.body.classList.remove(UNICANVAS_STANDALONE_BODY_CLASS);
+      if (windowResizeHandler) window.removeEventListener("resize", windowResizeHandler);
+      windowResizeHandler = null;
+      shell?.remove();
+      shell = null;
+      if (!parking) parking = document.createDocumentFragment();
+      (mountContainer?.isConnected ? mountContainer : parking).appendChild(widget.container);
+    }
+    widget.resize?.();
+    widget.requestRender?.();
+  };
+
+  const setActive = (next) => {
+    if (active === next) {
+      syncStandaloneChrome();
+      return;
+    }
+    active = next;
+    syncStandaloneChrome();
+  };
+
+  registerSidebarTab({
+    id: UNICANVAS_STANDALONE_TAB_ID,
+    title: "Unicanvas",
+    tooltip: "Unicanvas",
+    icon: UNICANVAS_SIDEBAR_ICON_CLASS,
+    type: "custom",
+    render(container) {
+      mountContainer = container;
+      if (!widget) widget = createStandaloneWidget(UniCanvasWidgetClass);
+      if (!tabWatcher) tabWatcher = watchUniCanvasStandaloneTab(setActive);
+      if (!containerObserver && typeof IntersectionObserver === "function") {
+        // Belt and braces: hiding/unmounting the tab panel also restores chrome.
+        containerObserver = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) setActive(false);
+          }
+        });
+      }
+      containerObserver?.observe(container);
+      setActive(true);
+    },
+    destroy() {
+      setActive(false);
+      tabWatcher?.dispose();
+      tabWatcher = null;
+      containerObserver?.disconnect();
+      containerObserver = null;
+      mountContainer = null;
+      widget?.dispose?.();
+      widget = null;
+    },
+  });
 }
