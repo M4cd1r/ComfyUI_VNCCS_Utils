@@ -57,3 +57,8 @@ sys.modules["nodes"].__path__ = [str(_REPO_ROOT / "nodes")]
 _root_package = types.ModuleType(_REPO_ROOT.name.replace(".", "_"))
 _root_package.__path__ = [str(_REPO_ROOT)]
 sys.modules.setdefault(_root_package.__name__, _root_package)
+# Current pytest derives the bare name "__init__" for a package file that sits
+# at the rootdir, so pre-register that alias as well or Package.setup() imports
+# the full ComfyUI extension entry point (with its live-server imports) before
+# every test.
+sys.modules.setdefault("__init__", _root_package)

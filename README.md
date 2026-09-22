@@ -110,6 +110,59 @@ Everything needed to rebuild the render lives in `layer.poseData`
 (`{ schemaVersion, pose, character: { id, name, source, morphs }, camera,
 render: { transparent: true, size } }`) and is persisted with the canvas state.
 
+### Input tools
+
+*   **Brush-size gesture**: with the brush, eraser, or mask tool active, hold
+    **Alt + right mouse button** and drag to resize the brush. Dragging right
+    grows it, dragging left shrinks it (about 0.5 px radius per pointer pixel).
+    The tool preview circle, a floating pixel badge, and the Size slider all
+    update live while you drag; releasing the button records a single undo
+    entry. The gesture suppresses the browser context menu and never opens the
+    radial HUD.
+*   **Radial HUD**: a plain **right mouse button hold** (without Alt) opens a
+    four-sector radial HUD at the cursor. Drag up for **size**, right for
+    **opacity**, down for **hardness**, or left for the **foreground color**;
+    once a sector is selected, keep dragging to adjust its value live and
+    release to commit. Holding Alt disables the HUD because that chord belongs
+    to the brush-size gesture. The HUD is also intentionally disabled for the
+    SAM tool, where right-click keeps its subtract-point meaning.
+*   **Brush hardness**: a new brush-engine setting (0-1) with a slider in the
+    brush tool settings and a radial HUD sector. Values below 1 render strokes
+    with radial-gradient stamps for soft edges; the effect is immediate while
+    painting.
+
+### Layer utilities
+
+Right-click a layer row to open the layer context menu:
+
+*   **Copy layer as image to clipboard**: copies the layer as a PNG with alpha
+    through `navigator.clipboard.write`.
+*   **Save layer as image**: writes the layer PNG to ComfyUI's `output/`
+    through `POST /vnccs/unicanvas/save_output`. Both export entries crop the
+    layer to its alpha bounds, so the PNG contains the visible artwork rather
+    than the full canvas backing store.
+*   **Remove bg – QI2.1**: extracts the subject over the layer's pixels with
+    the Qwen-Image-2.1 RGBA subject-extraction pipeline (requires a QI2.1
+    stack) and applies the returned alpha.
+*   **Remove bg – BiRefNet**: uses the vendored BiRefNet-lite path
+    (`auto_mask_bgr()`, auto-downloaded on first use) and applies the mask as
+    alpha. Both remove-bg entries are one-shot operations with status-line
+    progress and a single undo entry.
+*   **Color match to below**: matches the active layer's colors to the
+    composite of the visible layers below it (or, failing that, the composite
+    without the active layer). The popover offers the methods `mkl`, `hm`,
+    `reinhard`, `mvgd`, `hm-mvgd-hm`, `hm-mkl-hm`, and `reinhard_lab_gpu`
+    plus a strength slider (0-10) with a live preview while dragging and a
+    commit on release. Backed by the `color-matcher` package with a pure
+    Reinhard (LAB mean/std) fallback.
+*   **Rasterize** / **Edit pose**: pose layers only.
+
+**Import PSD** sits next to **Export Layers as PSD** and loads raster layers
+(name, visibility, opacity, blend mode, stacking order) from a PSD file with
+the bundled `ag-psd` reader. Everything UniCanvas cannot represent (clipping
+masks, adjustment layers, layer effects, text/vector/smart-object layers
+without raster data) is skipped and reported in the status line.
+
 ## VNCSS_CONFIG and MiniMax H3 region editing
 
 `VNCSS_CONFIG` feeds UniCanvas with `MODEL`/`CLIP`/`VAE` tensors that already
