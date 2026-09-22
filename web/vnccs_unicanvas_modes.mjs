@@ -434,9 +434,9 @@ function installStandalonePersistence(widget) {
   widget.uploadStatePayload = async (state) => {
     writeStandaloneState(widget, state);
   };
-  const originalWriteLightStateToWidget = widget.writeLightStateToWidget.bind(widget);
+  const originalWriteLightStateToWidget = widget.writeLightStateToWidget;
   widget.writeLightStateToWidget = (...args) => {
-    const result = originalWriteLightStateToWidget(...args);
+    const result = originalWriteLightStateToWidget.call(widget, ...args);
     schedulePersist();
     return result;
   };
