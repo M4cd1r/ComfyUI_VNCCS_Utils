@@ -57,3 +57,15 @@ sys.modules["nodes"].__path__ = [str(_REPO_ROOT / "nodes")]
 _root_package = types.ModuleType(_REPO_ROOT.name.replace(".", "_"))
 _root_package.__path__ = [str(_REPO_ROOT)]
 sys.modules.setdefault(_root_package.__name__, _root_package)
+
+# pytest 9's Package.setup() can also resolve the repository-root package to the
+# literal name "__init__" (its file stem) when the checkout directory name is not
+# a valid identifier, e.g. worktrees named "...-p5". Pre-register that alias on
+# the same empty shell so the full ComfyUI extension entry point never executes.
+sys.modules.setdefault("__init__", _root_package)
+
+# pytest 9's Package.setup() can also resolve the repository-root package to the
+# literal name "__init__" (its file stem) when the checkout directory name is not
+# a valid identifier, e.g. worktrees named "...-p5". Pre-register that alias on
+# the same empty shell so the full ComfyUI extension entry point never executes.
+sys.modules.setdefault("__init__", _root_package)
