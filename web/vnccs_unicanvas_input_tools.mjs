@@ -20,7 +20,9 @@
 export const BRUSH_FAMILY_TOOLS = new Set(["brush", "eraser", "mask"]);
 export const BRUSH_SIZE_MIN = 1;
 export const BRUSH_SIZE_MAX = 220;
-export const BRUSH_SIZE_GESTURE_SENSITIVITY = 0.5;
+// Brush gestures move the brush RADIUS at 0.5 px per pointer px (spec 8.1);
+// brushSize is the stroke width, so it changes at twice that rate.
+export const BRUSH_RADIUS_GESTURE_SENSITIVITY = 0.5;
 export const DEFAULT_BRUSH_HARDNESS = 1;
 export const RADIAL_HUD_SECTOR_THRESHOLD_PX = 8;
 export const RADIAL_HUD_VALUE_SENSITIVITY = 0.005;
@@ -33,7 +35,7 @@ export const RADIAL_HUD_SECTORS = Object.freeze([
   { direction: "left", key: "color", label: "Foreground color" },
 ]);
 
-function clamp(value, min, max) {
+export function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
@@ -181,7 +183,7 @@ function applyHudSectorValue(uc, gesture, dx) {
   if (!sector) return;
   const start = gesture.values;
   if (sector.key === "size") {
-    uc.brushSize = Math.round(clamp(start.brushSize + dx * BRUSH_SIZE_GESTURE_SENSITIVITY, BRUSH_SIZE_MIN, BRUSH_SIZE_MAX));
+    uc.brushSize = Math.round(clamp(start.brushSize + dx * BRUSH_RADIUS_GESTURE_SENSITIVITY * 2, BRUSH_SIZE_MIN, BRUSH_SIZE_MAX));
   } else if (sector.key === "opacity") {
     uc.opacity = clamp01(start.opacity + dx * RADIAL_HUD_VALUE_SENSITIVITY);
   } else if (sector.key === "hardness") {
@@ -196,9 +198,11 @@ function updateGesture(uc, e) {
   const gesture = uc._vnccsInputTools.gesture;
   if (!gesture || e.pointerId !== gesture.pointerId) return;
   gesture.lastScreen = uc.canvasPointFromEvent(e);
+  // Keep the tool preview circle under the cursor while the gesture runs.
+  uc.hoverPoint = uc.worldFromCanvasPoint(gesture.lastScreen);
   const dx = e.clientX - gesture.startClientX;
   if (gesture.kind === "size") {
-    uc.brushSize = Math.round(clamp(gesture.values.brushSize + dx * BRUSH_SIZE_GESTURE_SENSITIVITY, BRUSH_SIZE_MIN, BRUSH_SIZE_MAX));
+    uc.brushSize = Math.round(clamp(gesture.values.brushSize + dx * BRUSH_RADIUS_GESTURE_SENSITIVITY * 2, BRUSH_SIZE_MIN, BRUSH_SIZE_MAX));
     syncBrushControlInputs(uc);
     uc.setStatus(`[VNCCS UniCanvas] Brush size ${Math.round(uc.brushSize)} px`);
   } else if (gesture.kind === "hud") {
@@ -214,7 +218,6 @@ function commitGesture(uc) {
   const state = uc._vnccsInputTools;
   const gesture = state.gesture;
   state.gesture = null;
-  state.hud = null;
   if (!gesture) return;
   if (!toolSettingsChanged(uc, gesture.before)) {
     uc.updateToolPreviewOverlay();
@@ -421,13 +424,6 @@ export function installUniCanvasInputTools(uc) {
     uc.recordInputHistory(target);
     uc.brushHardness = clamp01(Number(target.value));
     uc.updateToolPreviewOverlay();
-  });
-
-  uc.canvas.addEventListener("contextmenu", (e) => {
-    if (uc._vnccsInputTools.gesture) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
   });
 
   uc.canvas.addEventListener("pointerdown", (e) => {
