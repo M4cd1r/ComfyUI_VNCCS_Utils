@@ -9,7 +9,7 @@ import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
 } from "./vnccs_unicanvas_presets.mjs";
-import { installUniCanvasWidgetModes, registerUniCanvasStandaloneSidebarTab } from "./vnccs_unicanvas_modes.mjs";
+import { installUniCanvasWidgetModes, registerUniCanvasStandaloneSidebarTab, teardownUniCanvasWidgetModes } from "./vnccs_unicanvas_modes.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -6619,6 +6619,7 @@ class UniCanvasWidget {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
     this._disposed = true;
+    teardownUniCanvasWidgetModes(this);
     this._eventAbortController?.abort();
     this._eventAbortController = null;
     this.stopDrawProgressPolling();
@@ -6742,6 +6743,7 @@ app.registerExtension({
       clearTimeout(this._vnccsUniCanvasInitTimer);
       clearTimeout(this._vnccsUniCanvasResizeTimer);
       clearTimeout(this._vnccsUniCanvasConfigureTimer);
+      teardownUniCanvasWidgetModes(this.uniCanvasWidget);
       this.uniCanvasWidget?.dispose();
       onRemoved?.apply(this, arguments);
     };

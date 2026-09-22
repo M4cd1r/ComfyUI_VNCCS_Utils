@@ -79,7 +79,17 @@ export function ensureUniCanvasModeStyles() {
 
 export function isUniCanvasTextTarget(event) {
   const target = event?.target;
-  return Boolean(target?.closest?.("input, textarea, select, [contenteditable='true']"));
+  return Boolean(target?.closest?.("input, textarea, select, [contenteditable]"));
+}
+
+export function isUniCanvasModalOpen(widget) {
+  // The widget's confirm/prompt modal owns Enter and Escape while it is open.
+  return Boolean(widget?.container?.querySelector(".vnccs-uc-modal-overlay"));
+}
+
+function isUniCanvasCanvasFocused(widget, event) {
+  const target = event?.target;
+  return Boolean(target && widget?.canvas && (target === widget.canvas || widget.canvas.contains(target)));
 }
 
 export function setUniCanvasBrushSize(widget, value) {
@@ -110,7 +120,19 @@ function consumeUniCanvasShortcut(event) {
 
 export function handleUniCanvasShortcut(widget, event) {
   if (!widget || !event || isUniCanvasTextTarget(event)) return false;
+  // An open modal owns the keyboard: Enter activates its confirm button and
+  // Escape closes the modal instead of leaving fullscreen or switching tools.
+  if (isUniCanvasModalOpen(widget)) return false;
   const key = String(event.key || "");
+  // Esc exits fullscreen from anywhere inside the fullscreen (chrome behavior).
+  if (key === "Escape" && widget._vnccsFullscreen) {
+    consumeUniCanvasShortcut(event);
+    exitUniCanvasFullscreen(widget);
+    return true;
+  }
+  // The rest of the shortcut map is active only while the canvas has focus
+  // (spec 5), fullscreen or not.
+  if (!isUniCanvasCanvasFocused(widget, event)) return false;
   const lower = key.toLowerCase();
   const modifier = event.ctrlKey || event.metaKey;
   // History: Ctrl+Z / Ctrl+Shift+Z.
@@ -142,12 +164,6 @@ export function handleUniCanvasShortcut(widget, event) {
   if (key === "Tab") {
     consumeUniCanvasShortcut(event);
     toggleUniCanvasPanels(widget);
-    return true;
-  }
-  // Esc exits fullscreen.
-  if (key === "Escape" && widget._vnccsFullscreen) {
-    consumeUniCanvasShortcut(event);
-    exitUniCanvasFullscreen(widget);
     return true;
   }
   return false;
@@ -227,21 +243,26 @@ export function enterUniCanvasFullscreen(widget) {
   // Keyboard isolation for the duration of the fullscreen: window-level
   // capture-phase listeners swallow every key event that is not targeted at
   // input/textarea/select/[contenteditable], so LiteGraph and ComfyUI
-  // shortcuts receive nothing. The UniCanvas shortcut map runs first so the
-  // canvas keeps its own keys.
+  // shortcuts receive nothing. An open widget modal keeps its own Enter and
+  // Escape contract, and the UniCanvas shortcut map runs first so the canvas
+  // keeps its own keys.
+  const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape");
   const onKeyDown = (event) => {
     if (isUniCanvasTextTarget(event)) return;
+    if (modalOwnsKey(event)) return;
     handleUniCanvasShortcut(widget, event);
     event.stopImmediatePropagation();
     event.preventDefault();
   };
   const onKeyUp = (event) => {
     if (isUniCanvasTextTarget(event)) return;
+    if (modalOwnsKey(event)) return;
     event.stopImmediatePropagation();
     event.preventDefault();
   };
   const onKeyPress = (event) => {
     if (isUniCanvasTextTarget(event)) return;
+    if (modalOwnsKey(event)) return;
     event.stopImmediatePropagation();
     event.preventDefault();
   };
@@ -291,8 +312,10 @@ export function exitUniCanvasFullscreen(widget) {
     state.restoreParent.insertBefore(widget.container, state.restoreNextSibling || null);
   }
   widget._vnccsFullscreen = null;
-  widget.resize();
-  widget.render();
+  if (!widget._disposed) {
+    widget.resize();
+    widget.render();
+  }
 }
 
 function installUniCanvasFullscreenButton(widget) {
@@ -405,22 +428,41 @@ function installStandaloneEngineNote(widget) {
 }
 
 function writeStandaloneState(widget, state) {
+  // Mirrors saveLocalStateBackup's degradation: persistence stops (after one
+  // informative message) once localStorage cannot hold the document.
+  if (widget.localStateBackupDisabled) return;
   try {
     state.storage = "local";
-    window.localStorage?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), state }));
+    const payload = JSON.stringify({ saved_at: Date.now(), state });
+    if (payload.length > 4_000_000) {
+      widget.localStateBackupDisabled = true;
+      if (!widget.localStateBackupWarned) {
+        widget.localStateBackupWarned = true;
+        console.info("[VNCCS UniCanvas] Local backup skipped: state is too large for browser localStorage; work will not survive a reload.");
+      }
+      return;
+    }
+    window.localStorage?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY, payload);
   } catch (err) {
-    console.warn("[VNCCS UniCanvas] Standalone state persistence failed", err);
+    widget.localStateBackupDisabled = true;
+    if (!widget.localStateBackupWarned) {
+      widget.localStateBackupWarned = true;
+      console.info("[VNCCS UniCanvas] Local backup disabled: browser localStorage quota is not enough; work will not survive a reload.");
+    }
   }
 }
+
+const standalonePersistState = new WeakMap();
 
 function installStandalonePersistence(widget) {
   // Standalone mode has no workflow widget and no server state cache: the
   // localStorage key "vnccs-unicanvas-standalone" holds the document instead.
-  let persistTimer = null;
+  const entry = { timer: null };
+  standalonePersistState.set(widget, entry);
   const schedulePersist = () => {
-    if (persistTimer !== null) window.clearTimeout(persistTimer);
-    persistTimer = window.setTimeout(() => {
-      persistTimer = null;
+    if (entry.timer !== null) window.clearTimeout(entry.timer);
+    entry.timer = window.setTimeout(() => {
+      entry.timer = null;
       writeStandaloneState(widget, widget.buildSerializedState(true));
     }, 300);
   };
@@ -434,8 +476,25 @@ function installStandalonePersistence(widget) {
     schedulePersist();
     return result;
   };
-  widget._vnccsStandalonePersist = () => writeStandaloneState(widget, widget.buildSerializedState(true));
-  widget._vnccsStandaloneSchedulePersist = schedulePersist;
+}
+
+export function flushStandalonePersistence(widget) {
+  const entry = widget ? standalonePersistState.get(widget) : null;
+  if (!entry) return;
+  if (entry.timer !== null) {
+    window.clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (!widget._disposed) writeStandaloneState(widget, widget.buildSerializedState(true));
+}
+
+export function teardownUniCanvasWidgetModes(widget) {
+  if (!widget) return;
+  // Runs from widget.dispose()/onRemoved and from the standalone tab destroy():
+  // leave fullscreen (without touching a disposed widget) and flush/clear the
+  // pending standalone persistence timer.
+  exitUniCanvasFullscreen(widget);
+  flushStandalonePersistence(widget);
 }
 
 function readStandalonePersistedStateValue() {
@@ -614,6 +673,8 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       containerObserver?.disconnect();
       containerObserver = null;
       mountContainer = null;
+      // Flush and clear the pending persistence timer before disposal.
+      teardownUniCanvasWidgetModes(widget);
       widget?.dispose?.();
       widget = null;
     },
