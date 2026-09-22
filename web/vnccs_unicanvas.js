@@ -2145,6 +2145,11 @@ class UniCanvasWidget {
     }
   }
 
+  _isConfigLinked() {
+    const configInput = (this.node?.inputs || []).find((input) => input?.name === "config");
+    return !!(configInput && configInput.link != null);
+  }
+
   normalizeGenerationSettings() {
     this.forceSelectedPresetModelSettings();
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
@@ -2157,7 +2162,10 @@ class UniCanvasWidget {
         }
       }
     }
-    if (loader.forcedMode) this.settings.generation_mode = loader.forcedMode;
+    // A linked config supplies the model/clip/vae tensors from the graph (model_loader "external"), so
+    // the node-local loader must not pin the generation family here: Checkpoint would otherwise
+    // overwrite a "MiniMax H3" selection with "sdxl" on every normalize.
+    if (loader.forcedMode && !this._isConfigLinked()) this.settings.generation_mode = loader.forcedMode;
     const module = getUniCanvasModelModule(this.settings.generation_mode);
     this.settings.generation_mode = module.key;
     if (module.key === "minimax_h3") {
@@ -2196,7 +2204,8 @@ class UniCanvasWidget {
       }
     }
     if (loader.forcedMode) {
-      this.applyInferenceModuleDefaults(loader.forcedMode);
+      // With a linked config the generation family comes from the Mode list, not from the local loader.
+      if (!this._isConfigLinked()) this.applyInferenceModuleDefaults(loader.forcedMode);
     } else {
       this.autoDetectGenerationModeFromModel();
     }
@@ -2213,7 +2222,9 @@ class UniCanvasWidget {
   autoDetectGenerationModeFromModel() {
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
     if (loader.forcedMode) {
-      this.applyInferenceModuleDefaults(loader.forcedMode);
+      // Same rule as applyModelLoaderDefaults: a linked config owns the model assets, so a node-local
+      // loader with a forced family must not overwrite the mode picked in the Mode list.
+      if (!this._isConfigLinked()) this.applyInferenceModuleDefaults(loader.forcedMode);
       return;
     }
     const name = String(this.getSelectedModelNameForLoader() || "").toLowerCase();
@@ -5553,8 +5564,11 @@ class UniCanvasWidget {
 
   async draw() {
     this.flushSettingsToWidget();
+    const configLinked = this._isConfigLinked();
     const { loader } = this.normalizeGenerationSettings();
-    const validationError = loader.validate?.(this.settings);
+    // A linked config forwards the model/clip/vae tensors through the graph, so the node's own loader
+    // asset rules do not apply to this draw and must not block it.
+    const validationError = configLinked ? null : loader.validate?.(this.settings);
     if (validationError) {
       this.setStatus(validationError, true);
       return;
@@ -5589,8 +5603,6 @@ class UniCanvasWidget {
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
     this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
     const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize };
-    const configInput = (this.node?.inputs || []).find((input) => input?.name === "config");
-    const configLinked = !!(configInput && configInput.link != null);
     if (configLinked) {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
@@ -5936,8 +5948,11 @@ class UniCanvasWidget {
     });
     const modeSelect = this.container.querySelector('[data-setting="generation_mode"]');
     if (modeSelect) {
-      modeSelect.disabled = Boolean(loader.forcedMode);
-      modeSelect.title = loader.forcedMode ? "Checkpoint loader always uses SDXL" : "";
+      // A linked config takes its model assets from the graph, so the local loader cannot pin the
+      // generation family and the Mode list has to stay selectable (e.g. to pick "MiniMax H3").
+      const modePinnedByLoader = Boolean(loader.forcedMode) && !this._isConfigLinked();
+      modeSelect.disabled = modePinnedByLoader;
+      modeSelect.title = modePinnedByLoader ? "Checkpoint loader always uses SDXL" : "";
     }
     this.container.querySelectorAll("[data-setting]").forEach((el) => {
       const key = el.dataset.setting;
