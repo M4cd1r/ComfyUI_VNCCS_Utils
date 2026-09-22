@@ -206,7 +206,10 @@ The **Spectrum acceleration** panel (exposed only for the `QwenImage21` family) 
 Qwen-Image-2.1 sampling with a vendored port of **Spectrum** (arXiv 2603.01623) from
 [`awdqwdasdg/Comfyui-Spectrum-Qwen2.1`](https://github.com/awdqwdasdg/Comfyui-Spectrum-Qwen2.1) —
 MIT License, Copyright (c) 2026 ComfyUI-Spectrum-QwenImage21 contributors. The vendored package
-lives in `nodes/spectrum_qwen21/` and carries the MIT attribution in every file header.
+lives in `nodes/spectrum_qwen21/` and carries the MIT attribution in every file header. The
+package also contains `node_def.py`, the pinned upstream parameter contract (defaults and
+min/max/step of every parameter); it is kept for the test-suite only and is **not** registered
+as a ComfyUI node.
 
 On selected steps the 32-block Qwen-Image-2.1 transformer is skipped entirely and its final hidden
 state is forecast with an online ridge-regularized Chebyshev fit over the real steps, after which
