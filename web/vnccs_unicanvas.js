@@ -136,6 +136,12 @@ const STYLES = `
 .vnccs-uc-model-tab { height:30px; border:1px solid var(--uc-border); border-radius:8px; background:var(--uc-surface); color:var(--uc-muted); font:inherit; font-weight:800; text-transform:uppercase; cursor:pointer; }
 .vnccs-uc-model-tab.active { border-color:rgba(255,143,163,.72); background:rgba(255,143,163,.18); color:#ffdce5; box-shadow:0 0 0 1px rgba(255,143,163,.12) inset; }
 .vnccs-uc-model-panel { display:flex; flex-direction:column; gap:6px; }
+/* While a linked config supplies the model assets, the Mode list is the only family picker left, so
+   its panel stays open in Presets mode collapsed to the Mode field (Loader + asset pickers stay in
+   the Custom tab). Without a linked config the class is never applied. */
+.vnccs-uc-model-panel.vnccs-uc-mode-only > :not(.vnccs-uc-mode-loader-row) { display:none; }
+.vnccs-uc-model-panel.vnccs-uc-mode-only > .vnccs-uc-mode-loader-row { grid-template-columns:minmax(0,1fr); }
+.vnccs-uc-model-panel.vnccs-uc-mode-only > .vnccs-uc-mode-loader-row > :not([data-mode-control]) { display:none; }
 .vnccs-uc-model-card-list { display:flex; flex-direction:column; gap:7px; }
 .vnccs-uc-model-picker { display:flex; flex-direction:column; gap:8px; }
 .vnccs-uc-model-picker-menu { display:none; flex-direction:column; gap:9px; padding:8px; border:1px solid rgba(255,143,163,.18); border-radius:10px; background:rgba(8,8,12,.48); }
@@ -949,7 +955,7 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="custom">
         <div class="vnccs-uc-mode-loader-row">
-          <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
+          <label class="vnccs-uc-field" data-mode-control>Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
           <label class="vnccs-uc-field">Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
         </div>
         <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
@@ -1911,8 +1917,16 @@ class UniCanvasWidget {
     this.container.querySelectorAll("[data-model-selection-mode]").forEach((button) => {
       button.classList.toggle("active", button.dataset.modelSelectionMode === mode);
     });
+    // A linked config takes the model assets from the graph, so the Mode list is the only family
+    // picker that still matters and it must be reachable in the node's default Presets mode: keep the
+    // Custom panel open, collapsed to the Mode field (.vnccs-uc-mode-only), without switching tabs.
+    // Without a linked config every panel gates exactly as before.
+    const configLinked = this._isConfigLinked();
     this.container.querySelectorAll("[data-model-panel]").forEach((panel) => {
-      panel.style.display = panel.dataset.modelPanel === mode ? "" : "none";
+      const panelMode = panel.dataset.modelPanel;
+      const linkedModeOnly = configLinked && panelMode === "custom" && mode !== "custom";
+      panel.classList.toggle("vnccs-uc-mode-only", linkedModeOnly);
+      panel.style.display = panelMode === mode || linkedModeOnly ? "" : "none";
     });
     const presetPanel = this.container.querySelector("[data-preset-card-list]");
     if (presetPanel) {
@@ -6626,6 +6640,16 @@ app.registerExtension({
         this.uniCanvasWidget.fitInitialView();
         this.uniCanvasWidget.render();
       }, 100);
+    };
+
+    const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function (type, index) {
+      onConnectionsChange?.apply(this, arguments);
+      // Linking or unlinking `config` changes which model-selection panels are reachable and whether
+      // the Mode select is pinned, so the prompt controls follow the link immediately instead of
+      // waiting for an unrelated widget event.
+      if (this.inputs?.[index]?.name !== "config") return;
+      this.uniCanvasWidget?.syncPromptControls();
     };
 
     const onRemoved = nodeType.prototype.onRemoved;
