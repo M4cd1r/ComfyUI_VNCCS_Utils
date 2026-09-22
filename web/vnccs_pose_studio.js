@@ -6017,6 +6017,9 @@ class PoseStudioWidget {
         this.viewer = new PoseViewerCore(this.canvas, {
             // Model/pose/camera restoration can finish after the initial pad draw.
             onViewportRender: () => this.radarRedraw?.(),
+            // RGBA drawing buffer so UniCanvas pose layer renders come out as
+            // PNG with alpha (existing captures stay visually identical).
+            rendererAlpha: true,
             skinMode: 'naked',
             enableTextureSkinning: true,
             enableMultiPass: true,
@@ -15918,6 +15921,7 @@ app.registerExtension({
                 this.studioWidget.loadFromNode();
                 this._vnccsEnsurePoseImageInput?.();
                 window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
+                window.__vnccsPoseStudioPoseLayerBridge?.registerStudio(this.studioWidget);
                 this.studioWidget.loadModel().then(() => {
                     if (this.studioWidget.viewer) {
                         this.studioWidget.updateCaptureCameraPreview();
@@ -15956,6 +15960,7 @@ app.registerExtension({
                     this.studioWidget.loadFromNode();
                     this._vnccsEnsurePoseImageInput?.();
                     window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
+                    window.__vnccsPoseStudioPoseLayerBridge?.registerStudio(this.studioWidget);
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
                     this.studioWidget.autoRefreshEnabledPoseRepositories();
@@ -15975,6 +15980,7 @@ app.registerExtension({
         const onRemoved = nodeType.prototype.onRemoved;
         nodeType.prototype.onRemoved = function () {
             window.__vnccsPoseStudioCharacterCreatorSync?.unregisterStudio(this.studioWidget);
+            window.__vnccsPoseStudioPoseLayerBridge?.unregisterStudio(this.studioWidget);
             clearTimeout(this.resizeTimer);
             clearTimeout(this._vnccsPoseLibraryWarmupTimer);
             clearTimeout(this._vnccsPoseInitTimer);
@@ -16093,3 +16099,465 @@ app.registerExtension({
         window.__vnccsPoseStudioCharacterCreatorSync?.scan();
     }
 });
+
+/* =============================================================================
+ * UniCanvas pose layer bridge (UniCanvas design spec section 7.2) - additive
+ * region.
+ *
+ * Answers vnccs:unicanvas:pose-layer window CustomEvent bus subscriptions from
+ * UniCanvas pose layers with viewport renders of the active character (PNG with
+ * alpha) plus metadata:
+ *
+ *   { source: "pose-studio", type: "hello" | "render", layerId, seq,
+ *     quality: "preview" | "final", phase: "start" | "move" | "end", gestureId,
+ *     dataURL, pose, character, camera,
+ *     render: { transparent: true, size: { width, height } } }
+ *
+ * Producer contract: a stable gestureId per interaction, an increasing seq per
+ * message, and exactly one quality:"final" render per gesture (emitted on
+ * pointerup/change). Live previews are coalesced through requestAnimationFrame
+ * at VNCCS_POSE_LAYER_PREVIEW_FPS (~15-20 fps) during interaction and always
+ * carry the newest state.
+ *
+ * The character dropdown ("Mannequin" + saved VNCCS characters from
+ * /vnccs/list_characters) lives in the Pose Studio Characters panel and is the
+ * single source of truth for layer.poseData.character. Selecting an entry
+ * applies its morphs through applyExternalCharacterCreatorValues(); when the
+ * VNCCS pack is absent the list degrades to Mannequin and says so.
+ * ========================================================================== */
+
+const VNCCS_POSE_LAYER_BUS_EVENT = "vnccs:unicanvas:pose-layer";
+const VNCCS_POSE_LAYER_PREVIEW_FPS = 18;
+const VNCCS_POSE_LAYER_PREVIEW_MAX_SIDE = 512;
+const VNCCS_POSE_LAYER_FINAL_DEDUPE_MS = 300;
+const VNCCS_POSE_LAYER_CHARACTERS_UNAVAILABLE_NOTE = "VNCCS characters unavailable — Mannequin only";
+
+function vnccsPoseLayerMannequinCharacter() {
+    return { id: "mannequin", name: "Mannequin", source: "mannequin", morphs: {} };
+}
+
+function vnccsPoseLayerMorphValues(values) {
+    const morphs = {};
+    const source = values && typeof values === "object" ? values : {};
+    for (const key of ["age", "gender"]) {
+        const number = Number(source[key]);
+        if (Number.isFinite(number)) morphs[key] = number;
+    }
+    return morphs;
+}
+
+class VNCCSPoseLayerBridge {
+    constructor() {
+        this.studios = new Set();
+        this.subs = new Map();
+        this.gestureCounter = 0;
+        this.characters = [vnccsPoseLayerMannequinCharacter()];
+        this.charactersNote = "";
+        this.charactersPromise = null;
+        this.selectedCharacter = vnccsPoseLayerMannequinCharacter();
+        this.installStyles();
+        this._listener = (event) => this.handleMessage(event && event.detail);
+        window.addEventListener(VNCCS_POSE_LAYER_BUS_EVENT, this._listener);
+        void this.loadCharacters();
+    }
+
+    installStyles() {
+        if (!document || document.getElementById("vnccs-ps-pose-bridge-styles")) return;
+        const style = document.createElement("style");
+        style.id = "vnccs-ps-pose-bridge-styles";
+        style.textContent = [
+            ".vnccs-ps-pose-bridge-character { display:flex; flex-direction:column; gap:4px; padding:6px; border-top:1px solid rgba(255,255,255,.08); }",
+            ".vnccs-ps-pose-bridge-character-label { display:flex; align-items:center; justify-content:space-between; gap:8px; }",
+            ".vnccs-ps-pose-bridge-character-select { flex:1 1 auto; }",
+            ".vnccs-ps-pose-bridge-character-note { color:#9898a8; }",
+        ].join(" ");
+        document.head.appendChild(style);
+    }
+
+    registerStudio(studio) {
+        if (!studio || this.studios.has(studio)) return;
+        this.studios.add(studio);
+        this.hookCharacterPanel(studio);
+        this.hookStudioInteraction(studio);
+        for (const sub of this.subs.values()) this.requestFinal(sub);
+    }
+
+    unregisterStudio(studio) {
+        this.studios.delete(studio);
+        if (studio && studio._vnccsPoseLayerBridgeHook) studio._vnccsPoseLayerBridgeHook.detach();
+    }
+
+    pickStudio() {
+        for (const studio of this.studios) {
+            if (studio && studio.viewer) return studio;
+        }
+        return null;
+    }
+
+    reply(detail) {
+        window.dispatchEvent(new CustomEvent(VNCCS_POSE_LAYER_BUS_EVENT, { detail }));
+    }
+
+    handleMessage(detail) {
+        if (!detail || typeof detail !== "object") return;
+        if (detail.source !== "unicanvas") return;
+        const layerId = String(detail.layerId || "");
+        if (detail.type === "subscribe") {
+            this.subscribe(layerId);
+        } else if (detail.type === "unsubscribe") {
+            this.unsubscribe(layerId);
+        } else if (detail.type === "capture-request") {
+            const sub = this.subs.get(layerId);
+            if (sub) {
+                this.beginGesture(sub);
+                this.requestFinal(sub);
+            }
+        } else if (detail.type === "character") {
+            this.applyCharacter(detail.character);
+        }
+    }
+
+    subscribe(layerId) {
+        if (!layerId) return;
+        let sub = this.subs.get(layerId);
+        if (!sub) {
+            sub = {
+                layerId,
+                seq: 0,
+                gestureId: null,
+                gestureFinalEmitted: false,
+                previewFrame: null,
+                previewPending: false,
+                previewPhase: "start",
+                lastPreviewAt: 0,
+                lastFinalAt: 0,
+            };
+            this.subs.set(layerId, sub);
+        }
+        this.reply({ source: "pose-studio", type: "hello", layerId });
+        this.beginGesture(sub);
+        this.requestFinal(sub);
+    }
+
+    unsubscribe(layerId) {
+        const sub = this.subs.get(layerId);
+        if (!sub) return;
+        if (sub.previewFrame !== null && typeof cancelAnimationFrame === "function") {
+            cancelAnimationFrame(sub.previewFrame);
+        }
+        this.subs.delete(layerId);
+    }
+
+    beginGesture(sub) {
+        this.gestureCounter += 1;
+        sub.gestureId = sub.layerId + "#" + this.gestureCounter;
+        sub.gestureFinalEmitted = false;
+        sub.previewPhase = "start";
+    }
+
+    renderSize() {
+        const studio = this.pickStudio();
+        const params = studio && studio.exportParams ? studio.exportParams : {};
+        return {
+            width: Math.max(1, Math.round(Number(params.view_width) || 1024)),
+            height: Math.max(1, Math.round(Number(params.view_height) || 1024)),
+        };
+    }
+
+    capturePNG(quality) {
+        const studio = this.pickStudio();
+        const viewer = studio && studio.viewer;
+        if (!viewer || typeof viewer.isInitialized !== "function" || !viewer.isInitialized()) return null;
+        const size = this.renderSize();
+        const scale = quality === "final"
+            ? 1
+            : Math.min(1, VNCCS_POSE_LAYER_PREVIEW_MAX_SIDE / Math.max(size.width, size.height));
+        const width = Math.max(1, Math.round(size.width * scale));
+        const height = Math.max(1, Math.round(size.height * scale));
+        const camera = studio.currentCameraParams ? studio.currentCameraParams() : {};
+        const scene = viewer.scene;
+        const previousBackground = scene ? scene.background : null;
+        const skydomeWasVisible = viewer.directionalSkydomeVisible !== false;
+        if (scene) scene.background = null;
+        if (typeof viewer.setDirectionalSkydomeVisible === "function") viewer.setDirectionalSkydomeVisible(false);
+        try {
+            return viewer.capture(
+                width,
+                height,
+                Number(camera.zoom) || 1,
+                null,
+                Number(camera.offset_x) || 0,
+                Number(camera.offset_y) || 0,
+                Number(camera.yaw_deg) || 0,
+                Number(camera.pitch_deg) || 0,
+            );
+        } finally {
+            if (scene) scene.background = previousBackground;
+            if (typeof viewer.setDirectionalSkydomeVisible === "function") viewer.setDirectionalSkydomeVisible(skydomeWasVisible);
+            if (typeof viewer.requestRender === "function") viewer.requestRender();
+        }
+    }
+
+    buildDetail(sub, dataURL, quality) {
+        const studio = this.pickStudio();
+        const viewer = studio && studio.viewer;
+        const character = this.selectedCharacter || vnccsPoseLayerMannequinCharacter();
+        return {
+            source: "pose-studio",
+            type: "render",
+            layerId: sub.layerId,
+            seq: sub.seq + 1,
+            quality,
+            phase: quality === "final" ? "end" : sub.previewPhase,
+            gestureId: sub.gestureId,
+            dataURL,
+            pose: viewer && typeof viewer.getPose === "function" ? viewer.getPose() : {},
+            character: {
+                id: character.id,
+                name: character.name,
+                source: character.source,
+                morphs: Object.assign({}, character.morphs),
+            },
+            camera: studio && studio.currentCameraParams ? studio.currentCameraParams() : {},
+            render: { transparent: true, size: this.renderSize() },
+        };
+    }
+
+    emitRender(sub, quality) {
+        const dataURL = this.capturePNG(quality);
+        if (!dataURL) return false;
+        const detail = this.buildDetail(sub, dataURL, quality);
+        sub.seq = detail.seq;
+        if (quality === "final") {
+            sub.lastFinalAt = Date.now();
+        } else {
+            sub.previewPhase = "move";
+        }
+        this.reply(detail);
+        return true;
+    }
+
+    // Live previews: coalesced through requestAnimationFrame at ~15-20 fps
+    // while the user interacts; only the newest state is ever rendered.
+    schedulePreview(sub) {
+        sub.previewPending = true;
+        if (sub.previewFrame !== null) return;
+        const pump = () => {
+            sub.previewFrame = null;
+            const now = performance.now();
+            if (now - sub.lastPreviewAt < 1000 / VNCCS_POSE_LAYER_PREVIEW_FPS) {
+                sub.previewFrame = requestAnimationFrame(pump);
+                return;
+            }
+            if (!sub.previewPending) return;
+            sub.previewPending = false;
+            sub.lastPreviewAt = now;
+            this.emitRender(sub, "preview");
+        };
+        sub.previewFrame = requestAnimationFrame(pump);
+    }
+
+    requestFinal(sub) {
+        // Exactly one full-quality capture per gesture (pointerup/change).
+        if (sub.gestureFinalEmitted) return;
+        sub.gestureFinalEmitted = true;
+        sub.previewPending = false;
+        if (sub.previewFrame !== null && typeof cancelAnimationFrame === "function") {
+            cancelAnimationFrame(sub.previewFrame);
+            sub.previewFrame = null;
+        }
+        this.emitRender(sub, "final");
+    }
+
+    hookStudioInteraction(studio) {
+        const canvas = studio.canvas;
+        if (!canvas || studio._vnccsPoseLayerBridgeHook) return;
+        const onPointerDown = (event) => {
+            if (event && event.button !== 0) return;
+            for (const sub of this.subs.values()) this.beginGesture(sub);
+        };
+        const onPointerMove = (event) => {
+            if (!event || !(event.buttons & 1)) return;
+            for (const sub of this.subs.values()) this.schedulePreview(sub);
+        };
+        const onPointerUp = () => {
+            for (const sub of this.subs.values()) this.requestFinal(sub);
+        };
+        canvas.addEventListener("pointerdown", onPointerDown);
+        canvas.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", onPointerUp);
+        window.addEventListener("pointercancel", onPointerUp);
+        const viewer = studio.viewer;
+        const previousPoseChange = viewer && viewer.options ? viewer.options.onPoseChange : null;
+        let wrapper = null;
+        if (viewer && viewer.options) {
+            // "change" commits (sliders, morph solves, restores) also produce
+            // one full-quality capture; the dedupe window collapses the paired
+            // pointerup/onPoseChange pair of one gesture into a single final.
+            wrapper = (pose) => {
+                const now = Date.now();
+                for (const sub of this.subs.values()) {
+                    if (sub.lastFinalAt && now - sub.lastFinalAt < VNCCS_POSE_LAYER_FINAL_DEDUPE_MS) continue;
+                    this.beginGesture(sub);
+                    this.requestFinal(sub);
+                }
+                return previousPoseChange ? previousPoseChange(pose) : undefined;
+            };
+            viewer.options.onPoseChange = wrapper;
+        }
+        studio._vnccsPoseLayerBridgeHook = {
+            detach: () => {
+                canvas.removeEventListener("pointerdown", onPointerDown);
+                canvas.removeEventListener("pointermove", onPointerMove);
+                window.removeEventListener("pointerup", onPointerUp);
+                window.removeEventListener("pointercancel", onPointerUp);
+                if (wrapper && viewer && viewer.options && viewer.options.onPoseChange === wrapper) {
+                    viewer.options.onPoseChange = previousPoseChange;
+                }
+                if (studio._vnccsPoseCharacterDropdown) {
+                    studio._vnccsPoseCharacterDropdown.wrap.remove();
+                    studio._vnccsPoseCharacterDropdown = null;
+                }
+                studio._vnccsPoseCharacterPanelHooked = false;
+                studio._vnccsPoseLayerBridgeHook = null;
+            },
+        };
+    }
+
+    hookCharacterPanel(studio) {
+        if (studio._vnccsPoseCharacterPanelHooked) return;
+        studio._vnccsPoseCharacterPanelHooked = true;
+        const previousRender = typeof studio.renderCharactersUI === "function"
+            ? studio.renderCharactersUI.bind(studio)
+            : null;
+        studio.renderCharactersUI = (...args) => {
+            const result = previousRender ? previousRender(...args) : undefined;
+            studio._vnccsPoseCharacterDropdown = null;
+            this.installCharacterDropdown(studio);
+            return result;
+        };
+        this.installCharacterDropdown(studio);
+    }
+
+    installCharacterDropdown(studio) {
+        if (!studio || studio._vnccsPoseCharacterDropdown || !studio.charactersContent) return;
+        const wrap = document.createElement("div");
+        wrap.className = "vnccs-ps-pose-bridge-character";
+        const label = document.createElement("label");
+        label.className = "vnccs-ps-pose-bridge-character-label";
+        label.textContent = "Character";
+        label.title = "Character applied to linked UniCanvas pose layers";
+        const select = document.createElement("select");
+        select.className = "vnccs-ps-pose-bridge-character-select";
+        const note = document.createElement("div");
+        note.className = "vnccs-ps-pose-bridge-character-note";
+        wrap.append(label, select, note);
+        studio.charactersContent.appendChild(wrap);
+        studio._vnccsPoseCharacterDropdown = { wrap, select, note, signature: "" };
+        select.addEventListener("change", () => {
+            const character = this.characters.find((item) => item.id === select.value)
+                || vnccsPoseLayerMannequinCharacter();
+            this.applyCharacter(character);
+        });
+        this.refreshCharacterDropdown(studio);
+    }
+
+    refreshCharacterDropdown(studio) {
+        const dropdown = studio._vnccsPoseCharacterDropdown;
+        if (!dropdown) return;
+        const select = dropdown.select;
+        const current = this.selectedCharacter.id;
+        const signature = this.characters.map((item) => item.id).join(",") + "|" + current;
+        if (dropdown.signature !== signature) {
+            dropdown.signature = signature;
+            select.innerHTML = "";
+            for (const item of this.characters) {
+                const option = document.createElement("option");
+                option.value = item.id;
+                option.textContent = item.name;
+                option.selected = item.id === current;
+                select.appendChild(option);
+            }
+        }
+        select.value = current;
+        dropdown.note.textContent = this.charactersNote;
+    }
+
+    loadCharacters() {
+        if (this.charactersPromise) return this.charactersPromise;
+        this.charactersPromise = (async () => {
+            try {
+                const res = await fetch("/vnccs/list_characters");
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                const data = await res.json();
+                const list = Array.isArray(data) ? data : (Array.isArray(data && data.characters) ? data.characters : []);
+                const characters = [];
+                list.forEach((entry, index) => {
+                    if (!entry || typeof entry !== "object") return;
+                    const id = String(entry.id || entry.name || "");
+                    if (!id) return;
+                    characters.push({
+                        id,
+                        name: String(entry.name || entry.id || "Character " + (index + 1)),
+                        source: "vnccs",
+                        morphs: vnccsPoseLayerMorphValues(entry.morphs || entry),
+                    });
+                });
+                if (!characters.length) throw new Error("no saved VNCCS characters");
+                this.characters = [vnccsPoseLayerMannequinCharacter(), ...characters];
+                this.charactersNote = "";
+            } catch (_err) {
+                // Graceful degradation: no VNCCS pack means Mannequin only and
+                // the dropdown says so.
+                this.characters = [vnccsPoseLayerMannequinCharacter()];
+                this.charactersNote = VNCCS_POSE_LAYER_CHARACTERS_UNAVAILABLE_NOTE;
+            }
+            for (const studio of this.studios) this.refreshCharacterDropdown(studio);
+        })();
+        return this.charactersPromise;
+    }
+
+    applyCharacter(character) {
+        const source = character && typeof character === "object" ? character : {};
+        const next = {
+            id: String(source.id || "mannequin"),
+            name: String(source.name || "Mannequin"),
+            source: source.source === "vnccs" ? "vnccs" : "mannequin",
+            morphs: vnccsPoseLayerMorphValues(source.morphs),
+        };
+        this.selectedCharacter = next;
+        for (const studio of this.studios) {
+            if (typeof studio.applyExternalCharacterCreatorValues === "function") {
+                // Existing entry point for saved VNCCS character morphs; missing
+                // keys reset to the neutral mannequin defaults.
+                studio.applyExternalCharacterCreatorValues({
+                    age: Number.isFinite(Number(next.morphs.age)) ? Number(next.morphs.age) : 25,
+                    gender: Number.isFinite(Number(next.morphs.gender)) ? Number(next.morphs.gender) : 0.5,
+                });
+            }
+            this.refreshCharacterDropdown(studio);
+        }
+        void this.settleMorphs().then(() => {
+            // The character change is a "change" commit: one full capture.
+            for (const sub of this.subs.values()) {
+                this.beginGesture(sub);
+                this.requestFinal(sub);
+            }
+        });
+    }
+
+    async settleMorphs() {
+        const studio = this.pickStudio();
+        if (!studio || typeof studio.loadModel !== "function") return;
+        try {
+            await studio.loadModel(false, false);
+        } catch (err) {
+            console.warn("VNCCS Pose Studio: pose layer character morph solve failed", err);
+        }
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.__vnccsPoseStudioPoseLayerBridge = new VNCCSPoseLayerBridge();
+}
+
