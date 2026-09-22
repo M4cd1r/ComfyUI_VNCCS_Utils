@@ -4187,6 +4187,15 @@ def register_unicanvas_routes() -> None:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/loras")
+    async def vnccs_unicanvas_loras(_request):
+        try:
+            import folder_paths
+
+            return web.json_response({"loras": sorted(folder_paths.get_filename_list("loras"))})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
     @PromptServer.instance.routes.get("/vnccs/unicanvas/assets")
     async def vnccs_unicanvas_assets(_request):
         try:

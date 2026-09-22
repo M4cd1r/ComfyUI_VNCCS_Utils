@@ -15,6 +15,42 @@ def _load_state(node_state: str) -> dict[str, Any]:
     return state if isinstance(state, dict) else {}
 
 
+def _apply_lora_cached(model, clip, lora_name, strength, clip_strength=None):
+    """Patch a LoRA onto model/clip. Mirrors UniCanvasModule.apply_loras caching."""
+    import comfy.sd
+    import comfy.utils
+
+    lora_sd = comfy.utils.load_torch_file(lora_name, safe_load=True)
+    return comfy.sd.load_lora_for_models(
+        model, clip, lora_sd, float(strength),
+        float(strength) if clip_strength is None else float(clip_strength),
+    )
+
+
+def normalize_lora_stack(raw: Any) -> list[dict[str, Any]]:
+    stack: list[dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            strength = float(item.get("strength", 1.0))
+        except (TypeError, ValueError):
+            strength = 1.0
+        stack.append({"name": name, "strength": strength, "enabled": bool(item.get("enabled", True))})
+    return stack
+
+
+def apply_lora_stack(model: Any, clip: Any, lora_stack: list[dict[str, Any]], config: Any = None):
+    for item in lora_stack:
+        if not item.get("enabled") or abs(float(item.get("strength", 1.0))) <= 1e-6:
+            continue
+        model, clip = _apply_lora_cached(model, clip, item["name"], item["strength"])
+    return model, clip
+
+
 class VNCCS_Config:
     """Bundles external MODEL/CLIP/VAE, a LoRA stack and reference images."""
 
@@ -59,9 +95,7 @@ class VNCCS_Config:
     ) -> tuple[dict[str, Any]]:
         state = _load_state(node_state)
         edit_model = bool(state.get("edit_model", False))
-        lora_stack = state.get("loras") or []
-        if not isinstance(lora_stack, list):
-            lora_stack = []
+        lora_stack = normalize_lora_stack(state.get("loras"))
 
         if model is None:
             raise RuntimeError("[VNCCS Config] Model input is not connected.")
@@ -80,6 +114,8 @@ class VNCCS_Config:
         }
         if edit_model and "reference_image_1" not in references:
             raise RuntimeError("[VNCCS Config] Edit model requires reference_image_1.")
+
+        model, clip = apply_lora_stack(model, clip, lora_stack)
 
         config = {
             "model": model,
