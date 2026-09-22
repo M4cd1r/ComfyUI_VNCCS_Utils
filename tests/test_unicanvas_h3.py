@@ -426,7 +426,7 @@ def test_export_state_falls_back_to_canvas_render_without_queued_draw(monkeypatc
 
 
 def test_h3_without_connected_config_fails_fast():
-    """MiniMax H3 is driven by VNCSS_CONFIG; without one the draw path stops with an actionable message.
+    """MiniMax H3 is driven by the VNCSS Config node; without one the draw path stops with an actionable message.
 
     The Diffusion-Model loader is the reachable config-free case: it does not force a family, so a
     MiniMax H3 pick (the Mode list is enabled for that loader) reaches the H3 module.
@@ -435,7 +435,7 @@ def test_h3_without_connected_config_fails_fast():
 
     with pytest.raises(
         RuntimeError,
-        match=r"\[VNCCS UniCanvas\] MiniMax H3 requires a connected VNCSS_CONFIG \(clip, vae, audio_vae\)\.",
+        match=r"\[VNCCS UniCanvas\] MiniMax H3 requires a connected VNCSS Config node \(clip, vae, audio_vae\)\.",
     ):
         uc._run_unicanvas_draw({
             "debug_id": "h3-no-config",

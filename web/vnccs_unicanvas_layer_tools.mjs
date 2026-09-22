@@ -23,6 +23,7 @@
  */
 
 import { clamp } from "./vnccs_unicanvas_input_tools.mjs";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
@@ -434,6 +435,7 @@ function openColorMatchPopover(uc, layer) {
     </label>
     <button class="vnccs-uc-btn" type="button" data-control="colorMatchClose">Close</button>`;
   uc.container.appendChild(element);
+  installCustomSelects(element);
   element.style.left = "24px";
   element.style.top = "48px";
 

@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 
 const REFERENCE_INPUTS = ["reference_image_1", "reference_image_2", "reference_image_3", "reference_image_4"];
 
@@ -30,6 +31,9 @@ class UniCanvasConfigWidget {
       <div class="vnccs-config-row"><span>Edit model</span><div class="vnccs-config-switch" data-action="edit-model"></div></div>`;
     this.loraList = this.container.querySelector('[data-role="lora-list"]');
     this.editSwitch = this.container.querySelector('[data-action="edit-model"]');
+    // Native selects (LoRA names) use the shared custom selector; the mutation
+    // observer inside covers rows re-rendered later.
+    installCustomSelects(this.container);
     this.editSwitch.classList.toggle("on", !!this.state.edit_model);
 
     this.container.addEventListener("click", (e) => {

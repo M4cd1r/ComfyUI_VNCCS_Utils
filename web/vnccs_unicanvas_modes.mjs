@@ -434,7 +434,7 @@ export function installUniCanvasWidgetModes(widget) {
 function installStandaloneEngineNote(widget) {
   const note = document.createElement("div");
   note.className = "vnccs-uc2-config-hint";
-  note.textContent = "External VNCSS_CONFIG is node-mode only.";
+  note.textContent = "External VNCSS Config is node-mode only.";
   const modelTabs = widget.promptBox?.querySelector(".vnccs-uc-model-tabs");
   if (modelTabs) modelTabs.insertAdjacentElement("afterend", note);
   else widget.promptBox?.appendChild(note);

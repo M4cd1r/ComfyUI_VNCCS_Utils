@@ -163,9 +163,9 @@ the bundled `ag-psd` reader. Everything UniCanvas cannot represent (clipping
 masks, adjustment layers, layer effects, text/vector/smart-object layers
 without raster data) is skipped and reported in the status line.
 
-## VNCSS_CONFIG and MiniMax H3 region editing
+## VNCSS Config and MiniMax H3 region editing
 
-`VNCSS_CONFIG` feeds UniCanvas with `MODEL`/`CLIP`/`VAE` tensors that already
+`VNCSS Config` feeds UniCanvas with `MODEL`/`CLIP`/`VAE` tensors that already
 exist in the graph, so the canvas can be driven by any loader chain instead of
 the built-in model picker. Connect its `config` output to the `config` input of
 the `VNCCS UniCanvas` node.
@@ -203,9 +203,9 @@ reference sockets — when the workflow is reloaded.
 ### MiniMax H3 region editing
 
 Select the **MiniMax H3** family in the UniCanvas engine panel. H3 region editing is
-driven by a connected `VNCSS_CONFIG` (`clip`, `vae`, `audio_vae` and the reference
+driven by a connected `VNCSS Config` node (`clip`, `vae`, `audio_vae` and the reference
 dataset); selecting the family without a connected config fails fast with
-`[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS_CONFIG (clip, vae, audio_vae).`
+`[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS Config node (clip, vae, audio_vae).`
 Generation is a REF2VA-style region edit: the selected working area is `<Picture 1>`,
 the `Edit model` reference sockets become `<Picture 2..5>` in socket order, and the
 prompt is the edit instruction:
@@ -230,7 +230,7 @@ instead of calling the direct draw endpoint:
 
 1. The widget stamps a `draw_id`, bundles the current composition (bbox,
    composite, mask, mode) into the node settings and calls `app.queuePrompt`.
-2. `VNCSS_CONFIG` executes first, applying the LoRA stack to `model`/`clip` and
+2. `VNCSS Config` executes first, applying the LoRA stack to `model`/`clip` and
    packaging the references; `VNCCS_UniCanvas` then samples the queued draw and
    stores the result under that `draw_id`.
 3. The widget polls `GET /vnccs/unicanvas/progress/{draw_id}` for progress and
@@ -275,7 +275,7 @@ as a standalone image app — no node, no workflow:
   the icon sidebar visible; leaving the tab restores the standard chrome. This is the
   default behavior, not a toggle.
 - The engine picker offers the built-in presets plus custom models from disk across all
-  model families. An external `VNCSS_CONFIG` is node-mode only — the engine panel says
+  model families. An external `VNCSS Config` is node-mode only — the engine panel says
   so, and standalone mode ignores any config connected elsewhere.
 - Output actions replace the node's `image` socket: **Save to output** writes the
   flattened composite into ComfyUI's `output/` directory through
@@ -301,7 +301,7 @@ picker (node widget and standalone host):
   1696x2528, 2752x1536, 1536x2752.
 - **All draw modes**: `txt2img`, `img2img`, `inpaint` and `outpaint` (inpaint is img2img with
   mask paste-back).
-- **Reference editing** with `VNCSS_CONFIG` and the `Edit model` switch: the working area is
+- **Reference editing** with `VNCSS Config` and the `Edit model` switch: the working area is
   `<image1>`, connected reference images become `<image2..5>` in socket order, and the module
   assembles the instruction in the Qwen-Image-2.1 `<image N>` convention, e.g.
   ```
@@ -330,7 +330,7 @@ On selected steps the 32-block Qwen-Image-2.1 transformer is skipped entirely an
 state is forecast with an online ridge-regularized Chebyshev fit over the real steps, after which
 only the cheap output head runs. The port is fail-closed exactly like upstream: any forecast that
 cannot be proven safe (or raises) degrades that step to a real forward. `apply_spectrum()` runs
-after all model mutations (the `VNCSS_CONFIG` LoRA stack included) and before sampling.
+after all model mutations (the `VNCSS Config` LoRA stack included) and before sampling.
 
 The panel offers an enable toggle and the parameters `warmup_steps`, `tail_actual_steps`,
 `window_size`, `flex_window`, `max_consecutive_forecasts`, `history_points`, `chebyshev_degree`,

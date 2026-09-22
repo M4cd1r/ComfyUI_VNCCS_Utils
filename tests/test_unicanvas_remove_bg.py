@@ -58,7 +58,10 @@ def test_qi21_contract_stub_receives_rgb_tensor(monkeypatch):
     assert result["method"] == "qi21"
 
 
-def test_qi21_fails_fast_without_qwen_image21_module():
+def test_qi21_fails_fast_without_qwen_image21_module(monkeypatch):
+    # Simulate the module being absent: the route must fail fast with the exact
+    # contract message instead of reaching the real QI2.1 loading path.
+    monkeypatch.delitem(unicanvas.UNICANVAS_MODEL_MODULES, "qwen_image21", raising=False)
     with pytest.raises(RuntimeError) as excinfo:
         _run_unicanvas_remove_bg({"method": "qi21", "image": png_data_url(Image.new("RGB", (2, 2)))})
 

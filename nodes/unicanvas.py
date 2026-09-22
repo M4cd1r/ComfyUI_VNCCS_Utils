@@ -3977,7 +3977,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         # the draw would dead-end on "requires the audio VAE", which has no control outside the config
         # node, so fail fast here, before any asset loading, with the actionable message.
         raise RuntimeError(
-            "[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS_CONFIG (clip, vae, audio_vae)."
+            "[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS Config node (clip, vae, audio_vae)."
         )
     outpaint_prompt_suffix = model_module.outpaint_prompt_suffix() if mode == "outpaint" else ""
     if outpaint_prompt_suffix:

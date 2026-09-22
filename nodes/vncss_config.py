@@ -1,4 +1,4 @@
-"""VNCSS_CONFIG node: external model plumbing for VNCCS UniCanvas."""
+"""VNCSS Config node: external model plumbing for VNCCS UniCanvas."""
 from __future__ import annotations
 
 import json

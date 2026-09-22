@@ -35,6 +35,7 @@
  * an interactive mannequin embedded over the stage, reusing the Pose Studio
  * runtime (web/vnccs_pose_studio_core.js viewer and morph runtime).
  */
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 
 export const POSE_LAYER_TYPE = "pose";
 export const POSE_LAYER_BUS_EVENT = "vnccs:unicanvas:pose-layer";
@@ -652,6 +653,7 @@ function ensureUniCanvasPoseLayerPanel(state) {
   select.title = "Selected in the Pose Studio Characters panel";
   field.appendChild(select);
   panel.append(title, field);
+  installCustomSelects(panel);
   if (!widget.layerList?.parentElement) return null;
   widget.layerList.parentElement.insertBefore(panel, widget.layerList);
   state.panel = panel;

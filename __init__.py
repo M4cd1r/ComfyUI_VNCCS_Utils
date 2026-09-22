@@ -31,7 +31,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_ModelSelector": "VNCCS Model Selector",
     "VNCCS_PoseStudio": "VNCCS Pose Studio",
     "VNCCS_UniCanvas": "VNCCS UniCanvas",
-    "VNCCS_Config": "VNCSS_CONFIG",
+    "VNCCS_Config": "VNCSS Config",
     "VNCCS_3DFactory": "VNCCS 3D Factory",
     "VNCCS_FactoryRender": "VNCCS Factory Render",
     "VNCCS_FactoryMask": "VNCCS Factory Mask",
