@@ -16432,10 +16432,10 @@ class VNCCSPoseLayerBridge {
         if (studio._vnccsPoseCharacterPanelHooked) return;
         studio._vnccsPoseCharacterPanelHooked = true;
         const previousRender = typeof studio.renderCharactersUI === "function"
-            ? studio.renderCharactersUI.bind(studio)
+            ? studio.renderCharactersUI
             : null;
         studio.renderCharactersUI = (...args) => {
-            const result = previousRender ? previousRender(...args) : undefined;
+            const result = previousRender ? Reflect.apply(previousRender, studio, args) : undefined;
             studio._vnccsPoseCharacterDropdown = null;
             this.installCharacterDropdown(studio);
             return result;
