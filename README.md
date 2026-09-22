@@ -171,6 +171,54 @@ Without a connected `config` (and in standalone sidebar mode) UniCanvas keeps
 using the existing direct `POST /vnccs/unicanvas/draw` path with its own model
 loading, unchanged.
 
+## Qwen-Image-2.1
+
+UniCanvas can generate with **Qwen-Image-2.1** through the `QwenImage21` family tab in the engine
+picker (node widget and standalone host):
+
+- **Model stack** (official Qwen-Image-2.1 architecture, ComfyUI-native weights from
+  `Comfy-Org/Qwen-Image-2.1`): 7B / 32-layer single-stream DiT diffusion model, Qwen3-VL 8B text
+  encoder (encodes instructions and condition images), and the 64-channel RGBA image VAE with 16x
+  spatial compression. Loading follows ComfyUI core (>= 0.37) node semantics: `UNETLoader`,
+  `CLIPLoader` (type `qwen_image`) and `VAELoader`.
+- **Sampling defaults**: flow matching, `euler` / `simple`, 40 steps, cfg 1.0.
+- **Native 2K aspect presets** from the official table: 2048x2048, 2400x1792, 1792x2400, 2528x1696,
+  1696x2528, 2752x1536, 1536x2752.
+- **All draw modes**: `txt2img`, `img2img`, `inpaint` and `outpaint` (inpaint is img2img with
+  mask paste-back).
+- **Reference editing** with `VNCSS_CONFIG` and the `Edit model` switch: the working area is
+  `<image1>`, connected reference images become `<image2..5>` in socket order, and the module
+  assembles the instruction in the Qwen-Image-2.1 `<image N>` convention, e.g.
+  ```
+  Keep the identity from <image2>. Use the pose from <image3>.
+  ```
+- **RGBA output is the default.** Every generation uses the transparent-RGBA prompt convention from
+  the official Qwen space (`This is an RGBA image with transparency. ... The image has alpha channel
+  and the background is transparent.`) and staging keeps the alpha channel, so accepted results are
+  layers with real transparency. The **`opaque output`** switch is available for the rare case where
+  alpha is unwanted: it disables the RGBA prompting and flattens the result.
+- `Remove bg - QI2.1` in the layer context menu runs the Qwen-Image-2.1 RGBA subject-extraction
+  flow over the layer pixels and applies the extracted alpha.
+
+### Spectrum acceleration
+
+The **Spectrum acceleration** panel (exposed only for the `QwenImage21` family) speeds up
+Qwen-Image-2.1 sampling with a vendored port of **Spectrum** (arXiv 2603.01623) from
+[`awdqwdasdg/Comfyui-Spectrum-Qwen2.1`](https://github.com/awdqwdasdg/Comfyui-Spectrum-Qwen2.1) —
+MIT License, Copyright (c) 2026 ComfyUI-Spectrum-QwenImage21 contributors. The vendored package
+lives in `nodes/spectrum_qwen21/` and carries the MIT attribution in every file header.
+
+On selected steps the 32-block Qwen-Image-2.1 transformer is skipped entirely and its final hidden
+state is forecast with an online ridge-regularized Chebyshev fit over the real steps, after which
+only the cheap output head runs. The port is fail-closed exactly like upstream: any forecast that
+cannot be proven safe (or raises) degrades that step to a real forward. `apply_spectrum()` runs
+after all model mutations (the `VNCSS_CONFIG` LoRA stack included) and before sampling.
+
+The panel offers an enable toggle and the parameters `warmup_steps`, `tail_actual_steps`,
+`window_size`, `flex_window`, `max_consecutive_forecasts`, `history_points`, `chebyshev_degree`,
+`ridge_lambda`, `blend_weight`, `cache_device`, `force_actual_on_control` and `debug`, with the
+presets **`moderate`** (paper default), **`aggressive`** and **`quality`**.
+
 ## VNCCS Pose Studio
 
 <p align="center">
