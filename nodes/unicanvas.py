@@ -1076,18 +1076,8 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         return positive, negative
 
     def _h3_reference_images(self, gen_settings: dict[str, Any]) -> dict[str, Any]:
-        refs: dict[str, Any] = {}
-        region = gen_settings.get("_h3_reference_image")
-        if region is not None:
-            refs["ref_image_1"] = region
-        external_refs = (gen_settings.get("_external") or {}).get("references") or {}
-        for index, name in enumerate(
-            ("reference_image_1", "reference_image_2", "reference_image_3", "reference_image_4"), start=2
-        ):
-            value = external_refs.get(name)
-            if value is not None:
-                refs[f"ref_image_{index}"] = value
-        return refs
+        slots = _reference_image_slots(gen_settings.get("_h3_reference_image"), gen_settings)
+        return {f"ref_image_{slot}": value for slot, value in slots.items()}
 
     def sample_latent(
         self,
@@ -4700,6 +4690,28 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
 }
 
 
+def _reference_image_slots(image_tensor: Any, gen_settings: dict[str, Any] | None) -> dict[int, Any]:
+    """Map Edit model reference images to their numbered slots (spec 3 and 9).
+
+    Slot 1 is the canvas working area; slots 2..5 hold the VNCSS_CONFIG
+    reference images in socket order. Gaps are preserved: a reference in
+    socket position N always occupies slot N. Shared by the MiniMax H3
+    (<Picture N>) and Qwen-Image-2.1 (<image N>) modules.
+    """
+    slots: dict[int, Any] = {}
+    if image_tensor is not None:
+        slots[1] = image_tensor
+    external_refs = ((gen_settings or {}).get("_external") or {}).get("references") or {}
+    for slot, name in enumerate(
+        ("reference_image_1", "reference_image_2", "reference_image_3", "reference_image_4"),
+        start=2,
+    ):
+        value = external_refs.get(name)
+        if value is not None:
+            slots[slot] = value
+    return slots
+
+
 def _qwen21_image_size(image: Any) -> tuple[int, int]:
     """Return (height, width) of a (B,H,W,C) or (H,W,C) image tensor."""
     shape = tuple(int(value) for value in (getattr(image, "shape", ()) or ()))
@@ -4827,18 +4839,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         Slot 1 is the canvas working area; slots 2..5 are the Edit model
         reference images in socket order.
         """
-        slots: dict[int, Any] = {}
-        if torch.is_tensor(image_tensor):
-            slots[1] = image_tensor
-        external_refs = ((gen_settings or {}).get("_external") or {}).get("references") or {}
-        for slot, name in enumerate(
-            ("reference_image_1", "reference_image_2", "reference_image_3", "reference_image_4"),
-            start=2,
-        ):
-            value = external_refs.get(name)
-            if value is not None and torch.is_tensor(value):
-                slots[slot] = value
-        return slots
+        return _reference_image_slots(image_tensor, gen_settings)
 
     def assemble_instruction(self, prompt: str, slots, opaque_output: bool = False) -> str:
         """Assemble the QI2.1 instruction: <image N> slot framing, the user
