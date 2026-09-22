@@ -7,6 +7,22 @@ import test from "node:test";
 const modesSource = await readFile(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
 const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 
+// Handler-region scoping: assertions run against the named region only, so they
+// cannot pass on unrelated code elsewhere in the file.
+function region(source, startMarker, endMarker) {
+    const start = source.indexOf(startMarker);
+    assert.ok(start >= 0, `region start not found: ${startMarker}`);
+    const end = source.indexOf(endMarker, start + startMarker.length);
+    assert.ok(end > start, `region end not found: ${endMarker}`);
+    return source.slice(start, end);
+}
+
+function isolationHandler(name) {
+    const body = modesSource.match(new RegExp(`const ${name} = \\(event\\) => \\{[\\s\\S]*?\\};`));
+    assert.ok(body, `${name} isolation handler not found`);
+    return body[0];
+}
+
 test("fullscreen installs window capture-phase keyboard isolation", () => {
     for (const type of ["keydown", "keyup", "keypress"]) {
         const pattern = new RegExp(`window\\.addEventListener\\("${type}",\\s*[^,]+,\\s*true\\)`);
@@ -14,15 +30,15 @@ test("fullscreen installs window capture-phase keyboard isolation", () => {
     }
 
     for (const handler of ["onKeyDown", "onKeyUp", "onKeyPress"]) {
-        const body = modesSource.match(new RegExp(`const ${handler} = \\(event\\) => \\{[\\s\\S]*?\\};`));
-        assert.ok(body, `${handler} isolation handler not found`);
-        assert.ok(body[0].includes("stopImmediatePropagation()"), `${handler} must stop immediate propagation`);
-        assert.ok(body[0].includes("preventDefault()"), `${handler} must prevent the default action`);
-        assert.ok(body[0].includes("isUniCanvasTextTarget(event)"), `${handler} must spare text fields`);
+        const body = isolationHandler(handler);
+        assert.ok(body.includes("stopImmediatePropagation()"), `${handler} must stop immediate propagation`);
+        assert.ok(body.includes("preventDefault()"), `${handler} must prevent the default action`);
+        assert.ok(body.includes("isUniCanvasTextTarget(event)"), `${handler} must spare text fields`);
+        assert.ok(body.includes("modalOwnsKey(event)"), `${handler} must defer Enter/Escape to an open modal`);
     }
 
-    assert.ok(modesSource.includes('input, textarea, select, [contenteditable=\'true\']'),
-        "text targets are input/textarea/select/[contenteditable]");
+    assert.ok(modesSource.includes("input, textarea, select, [contenteditable]"),
+        "text targets are input/textarea/select/[contenteditable] per spec 5");
     for (const type of ["keydown", "keyup", "keypress"]) {
         const removal = new RegExp(`window\\.removeEventListener\\("${type}",\\s*state\\.onKey[^,]*,\\s*true\\)`);
         assert.ok(removal.test(modesSource), `window ${type} listener must be removed on exit`);
@@ -35,18 +51,30 @@ test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc",
         assert.ok(pattern.test(modesSource), `shortcut ${key} must select the ${tool} tool`);
     }
 
-    assert.ok(/lower === "z"/.test(modesSource), "history shortcut must be Z");
-    assert.ok(modesSource.includes("event.ctrlKey || event.metaKey"), "history shortcut must use Ctrl/Cmd");
-    assert.ok(modesSource.includes("widget.undo()") && modesSource.includes("widget.redo()"), "undo/redo must be wired");
-    assert.ok(modesSource.includes("event.shiftKey"), "Ctrl+Shift+Z must redo");
-
-    assert.ok(modesSource.includes('key === "["') && modesSource.includes('key === "]"'), "brush size keys [ and ]");
-    assert.ok(modesSource.includes('key === "Tab"'), "Tab toggles panel visibility");
-    assert.ok(modesSource.includes('key === "Escape"'), "Esc exits fullscreen");
-    assert.ok(modesSource.includes("enterUniCanvasFullscreen(widget)") && modesSource.includes("exitUniCanvasFullscreen(widget)"),
-        "fullscreen enter/exit must be reachable from the shortcut map");
+    const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
+    assert.ok(/lower === "z"/.test(shortcuts), "history shortcut must be Z");
+    assert.ok(shortcuts.includes("event.ctrlKey || event.metaKey"), "history shortcut must use Ctrl/Cmd");
+    assert.ok(shortcuts.includes("widget.undo()") && shortcuts.includes("widget.redo()"), "undo/redo must be wired");
+    assert.ok(shortcuts.includes("event.shiftKey"), "Ctrl+Shift+Z must redo");
+    assert.ok(shortcuts.includes('key === "["') && shortcuts.includes('key === "]"'), "brush size keys [ and ]");
+    assert.ok(shortcuts.includes('key === "Tab"'), "Tab toggles panel visibility");
+    assert.ok(shortcuts.includes('key === "Escape"'), "Esc exits fullscreen");
+    assert.ok(shortcuts.includes("exitUniCanvasFullscreen(widget)"), "Esc must reach the fullscreen exit");
+    assert.ok(shortcuts.includes("TOOL_SHORTCUTS[lower]"), "tool keys must route through the shortcut map");
+    assert.ok(shortcuts.includes("isUniCanvasCanvasFocused(widget, event)"),
+        "the map (minus Esc) must be scoped to canvas focus");
     assert.ok(widgetSource.includes("installUniCanvasWidgetModes(this.uniCanvasWidget)"),
         "vnccs_unicanvas.js must install the modes on every widget");
+});
+
+test("open widget modals keep their Enter/Escape keyboard contract in fullscreen", () => {
+    assert.ok(modesSource.includes('const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape")'),
+        "Enter/Escape must be deferred to the modal while one is open");
+    assert.ok(modesSource.includes(".vnccs-uc-modal-overlay"), "the modal overlay must be detected");
+    const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
+    assert.ok(shortcuts.includes("isUniCanvasModalOpen(widget)"), "an open modal must keep the keyboard");
+    assert.ok(shortcuts.indexOf("isUniCanvasModalOpen(widget)") < shortcuts.indexOf('key === "Escape"'),
+        "the modal check must precede the Esc fullscreen exit");
 });
 
 test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
@@ -76,14 +104,58 @@ test("standalone state persists to the vnccs-unicanvas-standalone key", () => {
 });
 
 test("New canvas asks Are you sure? and clears layers and images", () => {
-    assert.ok(modesSource.includes('"Are you sure?"'), "the confirm modal must ask \"Are you sure?\"");
-    assert.ok(modesSource.includes("confirmInWidget("), "the confirmation must use the widget modal");
-    assert.ok(modesSource.includes("widget.stagingItems = []"), "staged images must be cleared");
-    assert.ok(modesSource.includes("widget.layers = []"), "layers must be cleared");
-    assert.ok(modesSource.includes('widget.addLayer("raster", "Base Layer", false)'), "a fresh base layer must be created");
+    const newDocument = region(modesSource, "export async function newUniCanvasDocument", "function installUniCanvasOutputActions");
+    assert.ok(newDocument.includes('"Are you sure?"'), 'the confirm modal must ask "Are you sure?"');
+    assert.ok(newDocument.includes("confirmInWidget("), "the confirmation must use the widget modal");
+    assert.ok(newDocument.includes("widget.stagingItems = []"), "staged images must be cleared");
+    assert.ok(newDocument.includes("widget.layers = []"), "layers must be cleared");
+    assert.ok(newDocument.includes('widget.addLayer("raster", "Base Layer", false)'), "a fresh base layer must be created");
     assert.ok(modesSource.includes('widget._button("New", "vnccs-uc-btn"'), "standalone output actions must include New");
     assert.ok(modesSource.includes('widget._button("Save to output", "vnccs-uc-btn"'), "Save to output must be a widget button");
-    assert.ok(modesSource.includes('"/vnccs/unicanvas/save_output"'), "Save to output must call the save_output route");
+});
+
+test("Save to output flattens through the shared helper and keeps the layer-menu call shape", () => {
+    const composite = region(modesSource, "export function buildUniCanvasCompositeCanvas", "export async function saveUniCanvasOutput");
+    assert.ok(composite.includes("widget.drawFlattenedLayers(ctx)"),
+        "the composite must reuse the shared flatten draw");
+    const sharedDraw = region(widgetSource, "  drawFlattenedLayers(ctx, layers = this.layers) {", "  flattenLayersToMaster() {");
+    assert.ok(sharedDraw.includes("layer.hiresCanvas && layer.hiresRect"),
+        "the shared draw must keep the hi-res layer branch");
+    const flattenCall = region(widgetSource, "  flattenLayersToMaster() {", "  async importFile(");
+    assert.ok(flattenCall.includes("this.drawFlattenedLayers(ctx)"),
+        "flattenLayersToMaster must use the shared draw");
+    assert.ok(!flattenCall.includes("drawImage(layer.canvas"),
+        "flattenLayersToMaster must not keep its own compositing loop");
+
+    const save = region(modesSource, "export async function saveUniCanvasOutput", "export async function newUniCanvasDocument");
+    assert.ok(save.includes('widget.setStatus("[VNCCS UniCanvas] Saving to output...")'),
+        "the status message must carry the [VNCCS UniCanvas] prefix");
+    assert.ok(save.includes("layer-context-menu call shape"),
+        "the layerId argument must be documented as the layer-menu call shape");
+    assert.ok(save.includes("widget.serializeLayer(layer, true)"),
+        "a layer save must send only that layer's pixels");
+    assert.ok(save.includes('"/vnccs/unicanvas/save_output"'), "Save to output must call the save_output route");
+    assert.ok(!modesSource.includes("_vnccsStandalonePersist"),
+        "no dead standalone persistence hooks may remain");
+});
+
+test("fullscreen and standalone teardown run on disposal and tab destroy", () => {
+    const dispose = region(widgetSource, "  dispose() {", "app.registerExtension({");
+    assert.ok(dispose.includes("teardownUniCanvasWidgetModes(this)"), "dispose() must tear the modes down");
+    const onRemoved = widgetSource.slice(widgetSource.indexOf("const onRemoved = nodeType.prototype.onRemoved;"));
+    assert.ok(onRemoved.includes("teardownUniCanvasWidgetModes(this.uniCanvasWidget)"),
+        "onRemoved must tear the modes down");
+
+    const exit = region(modesSource, "export function exitUniCanvasFullscreen", "function installUniCanvasFullscreenButton");
+    assert.ok(exit.includes("if (!widget._disposed)"), "the exit path must not touch a disposed widget");
+    assert.ok(exit.includes("sibling.parentNode === state.restoreParent"),
+        "fullscreen restore must guard a stale sibling anchor");
+
+    const destroy = region(modesSource, "    destroy() {", "  });");
+    assert.ok(destroy.includes("teardownUniCanvasWidgetModes(widget)"),
+        "the tab destroy() must flush/clear the pending persistence timer");
+    assert.ok(modesSource.includes("localStateBackupDisabled") && modesSource.includes("4_000_000"),
+        "standalone persistence must mirror the local backup degradation");
 });
 
 test("standalone mode hides ComfyUI chrome with explicit markers", () => {
