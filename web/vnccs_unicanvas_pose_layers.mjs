@@ -57,24 +57,6 @@ export const POSE_LAYER_CHARACTERS_UNAVAILABLE_NOTE = "VNCCS characters unavaila
 export const POSE_LAYER_ADD_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="5.5" r="2.5"/><path d="M10 8v6"/><path d="M6 10.5h8"/><path d="M10 14l-3 5"/><path d="M10 14l3 5"/><path d="M18 13v6"/><path d="M15 16h6"/></svg>`;
 export const MANNEQUIN_TOOL_ICON = `<svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="46" r="24"/><path d="M128 70v76"/><path d="M66 106h124"/><path d="M128 146l-38 74"/><path d="M128 146l38 74"/><circle cx="66" cy="106" r="12"/><circle cx="190" cy="106" r="12"/></svg>`;
 
-const POSE_LAYER_MORPH_KEYS = [
-  "age",
-  "gender",
-  "weight",
-  "muscle",
-  "height",
-  "breast_size",
-  "firmness",
-  "show_genitals",
-  "penis_len",
-  "penis_circ",
-  "penis_test",
-  "head_size",
-  "arm_size",
-  "hand_size",
-  "foot_size",
-];
-
 const POSE_LAYER_STYLES = `
 .vnccs-uc-pose-chip { display:flex; align-items:center; gap:6px; margin-top:4px; flex-wrap:wrap; }
 .vnccs-uc-pose-status { padding:2px 8px; border-radius:999px; border:1px solid var(--uc-border); color:var(--uc-muted); background:rgba(255,255,255,.05); white-space:nowrap; }
@@ -112,18 +94,22 @@ function normalizeFinite(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+/**
+ * Single source of truth for morph normalization (the Pose Studio bridge
+ * imports this). Preserves every numeric/boolean morph key: saved character
+ * morphs beyond any known list must survive into layer.poseData.character.
+ */
 export function normalizePoseLayerMorphs(raw, base = {}) {
   const morphs = {};
-  const source = raw && typeof raw === "object" ? raw : {};
-  for (const key of POSE_LAYER_MORPH_KEYS) {
-    if (key === "show_genitals") {
-      if (typeof source[key] === "boolean") morphs[key] = source[key];
-      else if (typeof base[key] === "boolean") morphs[key] = base[key];
-      continue;
+  const sources = [base && typeof base === "object" ? base : {}, raw && typeof raw === "object" ? raw : {}];
+  for (const source of sources) {
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value === "boolean") morphs[key] = value;
+      else {
+        const number = Number(value);
+        if (Number.isFinite(number)) morphs[key] = number;
+      }
     }
-    const value = Number(source[key]);
-    if (Number.isFinite(value)) morphs[key] = value;
-    else if (Number.isFinite(Number(base[key]))) morphs[key] = Number(base[key]);
   }
   return morphs;
 }
@@ -187,28 +173,11 @@ export function normalizePoseLayerData(raw) {
   });
 }
 
-function normalizeUniCanvasSavedCharacter(entry, index) {
-  if (!entry || typeof entry !== "object") return null;
-  const id = String(entry.id || entry.name || "");
-  if (!id) return null;
-  const name = String(entry.name || entry.id || `Character ${index + 1}`);
-  const morphSource = entry.morphs && typeof entry.morphs === "object"
-    ? entry.morphs
-    : entry;
-  return {
-    id,
-    name,
-    source: "vnccs",
-    morphs: normalizePoseLayerMorphs(morphSource),
-  };
-}
-
 function getUniCanvasPoseLayerState(widget) {
   if (widget._poseLayerState) return widget._poseLayerState;
   const state = {
     widget,
     subs: new Map(),
-    characters: [],
     charactersNote: "",
     charactersLoaded: false,
     charactersPromise: null,
@@ -332,6 +301,18 @@ function handleUniCanvasPoseLayerBusEvent(widget, detail) {
 function handleUniCanvasPoseLayerRender(widget, sub, detail) {
   const layer = widget.layers.find((item) => item.id === sub.layerId);
   if (!layer || layer.type !== POSE_LAYER_TYPE) return;
+  // Spec 7.3: while a pose edit session owns the layer, bridge renders are
+  // dropped (a queue is not needed) - they must not touch layer pixels or
+  // layer.poseData. Render metadata may still mirror morphs into the embedded
+  // mannequin through applyExternalCharacterCreatorValues.
+  const state = widget._poseLayerState;
+  if (state?.session?.layerId === sub.layerId) {
+    markUniCanvasPoseLayerLinked(sub);
+    if (detail.character) {
+      applyUniCanvasPoseLayerCharacterMorphs(state, normalizePoseLayerCharacter(detail.character));
+    }
+    return;
+  }
   const seq = Number(detail.seq);
   // Newest-wins: a render older than the newest one we accepted is stale and
   // is dropped before it ever reaches the canvas.
@@ -346,7 +327,11 @@ function handleUniCanvasPoseLayerRender(widget, sub, detail) {
   if (!sub.gesture || sub.gesture.id !== gestureId) {
     // One layerPixels history command per gesture: snapshot the pixels before
     // the first replacement and commit the entry on the full-quality capture.
-    sub.gesture = { id: gestureId, before: widget.createLayerPixelSnapshot(layer) };
+    sub.gesture = {
+      id: gestureId,
+      before: widget.createLayerPixelSnapshot(layer),
+      poseDataBefore: layer.poseData ? deepCloneJSON(layer.poseData) : null,
+    };
   }
   if (quality === "final" || phase === "end") {
     void applyUniCanvasPoseLayerRenderPixels(widget, sub, detail, true);
@@ -430,6 +415,8 @@ function commitUniCanvasPoseLayerGesture(widget, sub, layer) {
     layerId: layer.id,
     before: gesture.before,
     after: widget.createLayerPixelSnapshot(layer),
+    poseDataBefore: gesture.poseDataBefore ?? null,
+    poseDataAfter: layer.poseData ? deepCloneJSON(layer.poseData) : null,
   });
   widget.refreshLayerRow(layer.id);
   widget.syncLightStateToWidget();
@@ -541,22 +528,22 @@ export function rasterizeUniCanvasPoseLayer(widget, layer) {
   return true;
 }
 
+/**
+ * Availability probe only (Minor 2): the character list itself lives with the
+ * dropdown in the Pose Studio Characters panel. This fetch only decides
+ * whether the status chip has to report that the VNCCS pack is unavailable.
+ */
 function loadUniCanvasPoseCharacters(state) {
   if (state.charactersPromise) return state.charactersPromise;
   state.charactersPromise = (async () => {
     try {
       const res = await fetch("/vnccs/list_characters");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const list = Array.isArray(data) ? data : (Array.isArray(data?.characters) ? data.characters : []);
-      const characters = list.map(normalizeUniCanvasSavedCharacter).filter(Boolean);
-      if (!characters.length) throw new Error("no saved VNCCS characters");
-      state.characters = characters;
+      await res.json();
       state.charactersNote = "";
     } catch (_err) {
-      // Graceful degradation: no VNCCS pack means the dropdown degrades to
-      // "Mannequin" and the status chip says so.
-      state.characters = [];
+      // Graceful degradation: no VNCCS pack means "Mannequin" only and the
+      // status chip says so.
       state.charactersNote = POSE_LAYER_CHARACTERS_UNAVAILABLE_NOTE;
     }
     state.charactersLoaded = true;
@@ -591,7 +578,11 @@ function captureUniCanvasPoseLayerNow(widget, layer) {
     void applyUniCanvasPoseEditCapture(widget, { closeSession: false });
     return true;
   }
-  ensureUniCanvasPoseLayerSubscription(state, layer);
+  const sub = ensureUniCanvasPoseLayerSubscription(state, layer);
+  if (sub.status !== POSE_LAYER_STATUS_LINKED) {
+    widget.setStatus("[VNCCS UniCanvas] Pose capture failed: no Pose Studio linked", true);
+    return false;
+  }
   broadcastUniCanvasPoseLayerMessage({
     source: "unicanvas",
     type: "capture-request",
@@ -687,6 +678,35 @@ function renderUniCanvasPoseLayerPanel(state, layer) {
   select.appendChild(option);
 }
 
+/**
+ * Pose layers get their own group heading and count in the layer list so a
+ * pose-only stack never reads "Raster Layers" (the raster head counts raster
+ * layers only).
+ */
+function updateUniCanvasPoseLayerGroup(widget, poseLayers) {
+  const rasterList = widget.rasterLayerList;
+  const layerList = widget.layerList;
+  if (!rasterList || !layerList) return;
+  let poseList = layerList.querySelector("[data-pose-layer-group]");
+  if (!poseList) {
+    poseList = document.createElement("div");
+    poseList.className = "vnccs-uc-layer-group";
+    poseList.dataset.poseLayerGroup = "1";
+    layerList.appendChild(poseList);
+    widget.attachLayerGroupDrop(poseList, "pose");
+  }
+  poseList.innerHTML = "";
+  poseList.append(widget.createLayerGroupHead("Pose Layers", poseLayers.length, "pose"));
+  for (const layer of poseLayers) {
+    const row = layerList.querySelector(`[data-layer-id="${layer.id}"]`);
+    if (row) poseList.append(row);
+  }
+  if (!poseLayers.length) poseList.append(widget.createLayerGroupEmpty("No pose layers"));
+  const rasterHead = rasterList.querySelector(".vnccs-uc-layer-group-head");
+  const rasterCount = widget.layers.filter((layer) => layer.type === "raster").length;
+  if (rasterHead?.children?.[1]) rasterHead.children[1].textContent = String(rasterCount);
+}
+
 export function refreshUniCanvasPoseLayerUI(widget) {
   if (!widget || widget._disposed) return;
   const state = getUniCanvasPoseLayerState(widget);
@@ -695,6 +715,7 @@ export function refreshUniCanvasPoseLayerUI(widget) {
     cancelUniCanvasPoseEdit(widget);
   }
   const poseLayers = widget.layers.filter((layer) => layer.type === POSE_LAYER_TYPE);
+  updateUniCanvasPoseLayerGroup(widget, poseLayers);
   for (const layer of poseLayers) ensureUniCanvasPoseLayerSubscription(state, layer);
   for (const layer of poseLayers) {
     const row = widget.layerList?.querySelector(`[data-layer-id="${layer.id}"]`);
@@ -740,7 +761,7 @@ function buildUniCanvasPoseEditOverlay(state, session) {
   return { overlay, canvas, saveBtn, cancelBtn };
 }
 
-function buildUniCanvasPoseViewerModelData(result, staticData) {
+export function buildUniCanvasPoseViewerModelData(result, staticData) {
   const bonePositions = result.bonePositions;
   const bones = (staticData.bones || []).map((bone, index) => {
     const offset = index * 6;
@@ -786,11 +807,13 @@ async function applyUniCanvasPoseEditMorphs(session, morphs) {
   return true;
 }
 
-function captureUniCanvasPoseEditPNG(session) {
-  const viewer = session.viewer;
-  if (!viewer?.isInitialized?.()) return null;
-  const size = session.poseData.render.size;
-  const camera = normalizePoseLayerCamera(session.poseData.camera);
+/**
+ * Shared capture dance (the Pose Studio bridge imports this - single copy):
+ * hide the scene background and skydome so the PNG keeps real alpha, capture
+ * with the stored framing, then restore the editor view.
+ */
+export function captureUniCanvasPoseLayerPNG(viewer, width, height, camera) {
+  const framing = normalizePoseLayerCamera(camera);
   const scene = viewer.scene;
   const previousBackground = scene ? scene.background : null;
   const skydomeWasVisible = viewer.directionalSkydomeVisible !== false;
@@ -798,20 +821,27 @@ function captureUniCanvasPoseEditPNG(session) {
   viewer.setDirectionalSkydomeVisible?.(false);
   try {
     return viewer.capture(
-      size.width,
-      size.height,
-      camera.zoom,
+      width,
+      height,
+      framing.zoom,
       null,
-      camera.offset_x,
-      camera.offset_y,
-      camera.yaw_deg,
-      camera.pitch_deg,
+      framing.offset_x,
+      framing.offset_y,
+      framing.yaw_deg,
+      framing.pitch_deg,
     );
   } finally {
     if (scene) scene.background = previousBackground;
     viewer.setDirectionalSkydomeVisible?.(skydomeWasVisible);
     viewer.requestRender?.();
   }
+}
+
+function captureUniCanvasPoseEditPNG(session) {
+  const viewer = session.viewer;
+  if (!viewer?.isInitialized?.()) return null;
+  const size = session.poseData.render.size;
+  return captureUniCanvasPoseLayerPNG(viewer, size.width, size.height, session.poseData.camera);
 }
 
 function closeUniCanvasPoseEditSession(state) {
@@ -884,9 +914,14 @@ export function cancelUniCanvasPoseEdit(widget) {
   const session = state?.session;
   if (!session) return false;
   const layer = widget.layers.find((item) => item.id === session.layerId);
-  // The pixels were never touched while the mannequin was on the stage, so the
-  // previous render comes back untouched.
-  if (layer) layer._poseEditing = false;
+  if (layer) {
+    layer._poseEditing = false;
+    // Spec 7.3: Cancel restores the pre-edit render and poseData untouched,
+    // whatever happened while the mannequin was on the stage.
+    if (session.beforePixels) widget.restoreLayerPixelSnapshot(layer, session.beforePixels);
+    if (session.beforePoseData) layer.poseData = deepCloneJSON(session.beforePoseData);
+    widget.markLayerPixelsChanged(layer, null, false);
+  }
   closeUniCanvasPoseEditSession(state);
   widget.renderLayerList();
   widget.requestRender();
@@ -915,6 +950,8 @@ export async function editUniCanvasPoseLayer(widget, layer) {
   const session = {
     layerId: layer.id,
     poseData,
+    beforePixels: widget.createLayerPixelSnapshot(layer),
+    beforePoseData: layer.poseData ? deepCloneJSON(layer.poseData) : null,
     morphs: { ...(poseData.character?.morphs || {}) },
     viewer: null,
     morphPack: null,
