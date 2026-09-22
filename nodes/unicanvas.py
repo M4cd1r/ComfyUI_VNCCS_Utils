@@ -1767,17 +1767,38 @@ def _get_draw_progress(draw_id: str) -> dict[str, Any]:
 
 
 _DRAW_RESULTS: dict[str, dict[str, Any]] = {}
+_DRAW_RESULTS_LOCK = threading.Lock()
+_DRAW_RESULTS_TTL_SECONDS = 60 * 60
+
+
+def _prune_draw_results(now: float | None = None) -> None:
+    # Caller must hold _DRAW_RESULTS_LOCK (same contract as _prune_draw_progress).
+    now = time.time() if now is None else now
+    expired = []
+    for draw_id, result in _DRAW_RESULTS.items():
+        age = max(0.0, now - float(result.get("stored_at", now)))
+        if age > _DRAW_RESULTS_TTL_SECONDS:
+            expired.append(draw_id)
+    for draw_id in expired:
+        _DRAW_RESULTS.pop(draw_id, None)
 
 
 def _store_draw_result(draw_id: str, result: dict[str, Any]) -> None:
-    _DRAW_RESULTS[str(draw_id)] = dict(result)
+    stored = dict(result)
+    with _DRAW_RESULTS_LOCK:
+        _prune_draw_results()
+        # "stored_at" is the TTL clock for this entry; _get_draw_result filters it out.
+        stored["stored_at"] = time.time()
+        _DRAW_RESULTS[str(draw_id)] = stored
 
 
 def _get_draw_result(draw_id: str) -> dict[str, Any]:
-    result = _DRAW_RESULTS.get(str(draw_id))
-    if not result:
-        return {"present": False}
-    return {"present": True, "images": result.get("images") or [], "mask": result.get("mask")}
+    with _DRAW_RESULTS_LOCK:
+        _prune_draw_results()
+        result = _DRAW_RESULTS.get(str(draw_id))
+        if not result:
+            return {"present": False}
+        return {"present": True, "images": result.get("images") or [], "mask": result.get("mask")}
 
 
 # The composition keys _run_unicanvas_draw reads from an HTTP-path draw payload (the exact
@@ -3931,6 +3952,12 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         # A VNCSS_CONFIG draw forwards its own model block, so the pass-through loader owns the assets.
         gen_settings["_external"] = external
         gen_settings["model_loader"] = "external"
+        # _normalize_gen_settings merges the selected preset over these settings before inferring the
+        # loader, and every preset ships its own model_loader/generation_mode (the widget defaults
+        # select the "sdxl" preset), which would silently replace the wired config. Drop the preset
+        # selection keys so the external block always wins; non-external draws are untouched.
+        gen_settings.pop("model_selection_mode", None)
+        gen_settings.pop("selected_preset_id", None)
     settings = _normalize_gen_settings(gen_settings)
     settings["draw_mode"] = mode
     seed = int(settings.get("seed", 0))

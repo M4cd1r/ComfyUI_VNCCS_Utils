@@ -254,6 +254,29 @@ def test_result_store_roundtrip():
     assert _get_draw_result("missing") == {"present": False}
 
 
+def test_result_store_prunes_expired_entries():
+    """Results are TTL-pruned on store and fetch; fresh entries survive both prunes."""
+    import time
+
+    from nodes import unicanvas as uc
+
+    uc._DRAW_RESULTS.clear()
+    expired_at = time.time() - (uc._DRAW_RESULTS_TTL_SECONDS + 60)
+    uc._DRAW_RESULTS["draw-old"] = {"images": ["data:old"], "mask": None, "stored_at": expired_at}
+
+    uc._store_draw_result("draw-fresh", {"images": ["data:fresh"], "mask": None})
+    # Pruned on store.
+    assert "draw-old" not in uc._DRAW_RESULTS
+    assert uc._get_draw_result("draw-fresh") == {"present": True, "images": ["data:fresh"], "mask": None}
+
+    uc._DRAW_RESULTS["draw-old-2"] = {"images": ["data:old2"], "mask": None, "stored_at": expired_at}
+    # Pruned on fetch, while the fresh entry survives.
+    assert uc._get_draw_result("draw-old-2") == {"present": False}
+    assert "draw-old-2" not in uc._DRAW_RESULTS
+    assert "draw-fresh" in uc._DRAW_RESULTS
+    uc._DRAW_RESULTS.clear()
+
+
 def test_external_payload_selects_external_loader(monkeypatch):
     """A graph-generation payload forwards its VNCSS_CONFIG block to the pass-through loader."""
     from nodes import unicanvas as uc
@@ -279,6 +302,44 @@ def test_external_payload_selects_external_loader(monkeypatch):
     assert captured["model_loader"] == "external"
     assert captured["generation_mode"] == "minimax_h3"
     assert captured["_external"]["model"] == "M"
+
+
+def test_external_block_wins_over_preset_merge(monkeypatch):
+    """Widget default settings select the 'sdxl' preset; a config-linked draw must still use the wired config."""
+    from nodes import unicanvas as uc
+
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(image_buffer, format="PNG")
+    image_data_url = "data:image/png;base64," + base64.b64encode(image_buffer.getvalue()).decode("ascii")
+    captured = {}
+
+    def fake_load_assets(gen_settings):
+        captured.update(gen_settings)
+        raise RuntimeError("stop after asset selection")
+
+    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    # makeDefaultUniCanvasSettings() (web/vnccs_unicanvas.js): SDXL module defaults plus the
+    # "presets" selection, the "sdxl" preset id and the checkpoint loader.
+    widget_default_settings = {
+        "model_selection_mode": "presets",
+        "selected_preset_id": "sdxl",
+        "model_loader": "checkpoint",
+        "ckpt_name": "",
+        "generation_mode": "minimax_h3",
+    }
+    with pytest.raises(RuntimeError, match="stop after asset selection"):
+        uc._run_unicanvas_draw({
+            "debug_id": "graph-draw",
+            "mode": "txt2img",
+            "image": image_data_url,
+            "settings": dict(widget_default_settings),
+            "external": {"model": "M", "clip": "C", "vae": "V", "audio_vae": "A", "references": {}},
+        })
+    assert captured["model_loader"] == "external"
+    assert captured["generation_mode"] == "minimax_h3"
+    assert captured["_external"]["model"] == "M"
+    # The selected preset's own model block must not leak into the external draw.
+    assert captured.get("ckpt_name") != "Illustrious/ILFlatMix.safetensors"
 
 
 def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
@@ -380,6 +441,10 @@ def test_queued_draw_payload_reaches_the_real_draw_pipeline(monkeypatch):
         "layers": [],
         "settings": {
             "draw_id": "draw-real",
+            # Widget defaults: the "presets" selection with the "sdxl" preset must not override the config.
+            "model_selection_mode": "presets",
+            "selected_preset_id": "sdxl",
+            "model_loader": "checkpoint",
             "generation_mode": "minimax_h3",
             "queued_draw": {
                 "mode": "img2img",
