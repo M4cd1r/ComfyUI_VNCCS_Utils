@@ -92,6 +92,82 @@ assets through the bundled SparkJS viewport.
 *   **Canvas Editing Tools**: Move, transform, resize, snap, undo/redo, and manage generation results without leaving the node.
 *   **Progress and Result Handling**: Track generation progress and apply results back into the canvas as editable layers.
 
+## VNCSS_CONFIG and MiniMax H3 region editing
+
+`VNCSS_CONFIG` feeds UniCanvas with `MODEL`/`CLIP`/`VAE` tensors that already
+exist in the graph, so the canvas can be driven by any loader chain instead of
+the built-in model picker. Connect its `config` output to the `config` input of
+the `VNCCS UniCanvas` node.
+
+### Node inputs
+
+| Socket | Type | Notes |
+|---|---|---|
+| `model` | MODEL | Required — execution fails with `[VNCCS Config] Model input is not connected.` otherwise. |
+| `clip` | CLIP | Required. |
+| `vae` | VAE | Required. |
+| `audio_vae` | VAE | Optional socket, mandatory when the `MiniMax H3` family is selected; every other family ignores it. |
+| `reference_image_1..4` | IMAGE | Added and removed dynamically by the `Edit model` switch. |
+
+### LoRA stack
+
+The node panel holds an ordered LoRA stack: `+ add LoRA` appends a row with a
+LoRA picker (populated from `models/loras` through `GET /vnccs/unicanvas/loras`),
+a strength field, an on/off checkbox and `✕` to remove the row. Strength and
+enable changes apply immediately while editing; rows that are switched off or
+left at strength 0 are skipped. The stack is applied to `model`/`clip` during
+graph execution, before sampling.
+
+### Edit model switch
+
+*   **Off (default)** — classic img2img / inpaint / outpaint behavior.
+*   **On** — reveals the four `reference_image_1..4` (IMAGE) sockets and enables
+    reference-conditioned editing in the connected node. `reference_image_1` must
+    be connected. Switching it off disconnects and removes the sockets cleanly.
+
+The switch and the LoRA stack live in the node's hidden `node_state` widget, so
+they are saved with the workflow and restored — together with the dynamic
+reference sockets — when the workflow is reloaded.
+
+### MiniMax H3 region editing
+
+Select the **MiniMax H3** family in the UniCanvas engine panel. Generation is a
+REF2VA-style region edit: the selected working area is `<Picture 1>`, the `Edit
+model` reference sockets become `<Picture 2..5>` in socket order, and the prompt
+is the edit instruction:
+
+```text
+Keep the identity from <Picture 2>. Use the pose from <Picture 3>.
+```
+
+Defaults: sampler `res_multistep`, scheduler `simple`, 20 steps (adjustable
+1–60 in the panel), cfg 1. No mask is required — the bounding box of the
+selection is the working area. For this family the connected `audio_vae` is
+mandatory, because the MiniMax H3 conditioning builds its aligned audio-video
+latent from it; without it generation stops with `[VNCCS UniCanvas] MiniMax H3
+requires the audio VAE.` Results arrive in the usual staging popover
+(accept / discard).
+
+### Queued generation with a connected config
+
+External `MODEL`/`CLIP`/`VAE` tensors only exist while a graph executes, so when
+the `config` input is connected, **GENERATE queues a normal ComfyUI prompt**
+instead of calling the direct draw endpoint:
+
+1. The widget stamps a `draw_id`, bundles the current composition (bbox,
+   composite, mask, mode) into the node settings and calls `app.queuePrompt`.
+2. `VNCSS_CONFIG` executes first, applying the LoRA stack to `model`/`clip` and
+   packaging the references; `VNCCS_UniCanvas` then samples the queued draw and
+   stores the result under that `draw_id`.
+3. The widget polls `GET /vnccs/unicanvas/progress/{draw_id}` for progress and
+   `GET /vnccs/unicanvas/result/{draw_id}` until the result is present, then
+   hands it to the normal staging flow. A prompt execution error fails the draw
+   immediately instead of waiting for the result timeout.
+
+Without a connected `config` (and in standalone sidebar mode) UniCanvas keeps
+using the existing direct `POST /vnccs/unicanvas/draw` path with its own model
+loading, unchanged.
+
 ## VNCCS Pose Studio
 
 <p align="center">
