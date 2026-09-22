@@ -140,11 +140,37 @@ def test_reference_mapping_order(monkeypatch):
 def test_decode_samples_takes_first_frame(monkeypatch):
     module = _get_unicanvas_model_module("minimax_h3")
     frames = torch.zeros(5, 32, 32, 3)
+    samples = torch.zeros(1, 4, 8, 8)
+    captured = {}
+
+    def fake_call(name, **kwargs):
+        assert name == "VAEDecodeTiled", name
+        captured.update(kwargs)
+        return (frames,)
+
+    monkeypatch.setattr("nodes.unicanvas._call_comfy_node", fake_call)
+    out = module.decode_samples("V", samples, {"_draw_id": "t"})
+    assert out.shape[0] == 1
+    assert torch.equal(out, frames[:1])
+    # The tile widgets must be passed explicitly: _call_comfy_node cannot supply missing
+    # required parameters, and it filters out keywords the installed core does not declare.
+    assert captured["samples"] is samples
+    assert captured["vae"] == "V"
+    assert captured["tile_size"] == 512
+    assert captured["overlap"] == 64
+    assert captured["temporal_size"] == 64
+    assert captured["temporal_overlap"] == 8
+
+
+def test_decode_samples_single_frame_passes_through(monkeypatch):
+    module = _get_unicanvas_model_module("minimax_h3")
+    frame = torch.zeros(1, 32, 32, 3)
     monkeypatch.setattr(
         "nodes.unicanvas._call_comfy_node",
-        lambda name, **kwargs: (frames,) if name == "VAEDecodeTiled" else (_ for _ in ()).throw(AssertionError(name)),
+        lambda name, **kwargs: (frame,) if name == "VAEDecodeTiled" else (_ for _ in ()).throw(AssertionError(name)),
     )
-    out = module.decode_samples("V", {"samples": torch.zeros(1, 4, 8, 8)}, {"_draw_id": "t"})
+    out = module.decode_samples("V", torch.zeros(1, 4, 8, 8), {"_draw_id": "t"})
+    assert out is frame
     assert out.shape[0] == 1
 
 
