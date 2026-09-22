@@ -15,6 +15,7 @@ import {
 
 const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const poseLayerSource = await readFile(new URL("../web/vnccs_unicanvas_pose_layers.mjs", import.meta.url), "utf8");
+const poseStudioSource = await readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
 
 
 test("pose layer type is \"pose\" and poseData keeps the spec section 7.1 keys", () => {
@@ -129,9 +130,47 @@ test("mannequin editing keeps the Save pose / Cancel contract and rasterize is o
 });
 
 
-test("character dropdown degrades to Mannequin when /vnccs/list_characters is unavailable", () => {
+test("the pose status chip reports when /vnccs/list_characters is unavailable", () => {
     assert.match(poseLayerSource, /fetch\("\/vnccs\/list_characters"\)/);
     assert.match(poseLayerSource, /"Mannequin"/);
     assert.match(poseLayerSource, /POSE_LAYER_CHARACTERS_UNAVAILABLE_NOTE = "VNCCS characters unavailable/);
     assert.match(poseLayerSource, /applyExternalCharacterCreatorValues/);
+});
+
+
+test("Pose Studio answers pose layer subscriptions on the vnccs:unicanvas:pose-layer bus", () => {
+    assert.match(poseStudioSource, /"vnccs:unicanvas:pose-layer"/);
+    assert.match(poseStudioSource, /source: "pose-studio"/);
+    assert.match(poseStudioSource, /type: "hello"/);
+    assert.match(poseStudioSource, /type: "render"/);
+    assert.match(poseStudioSource, /gestureId/);
+    assert.match(poseStudioSource, /seq: sub\.seq \+ 1/);
+    assert.match(poseStudioSource, /render: \{ transparent: true, size: this\.renderSize\(\) \}/);
+});
+
+
+test("Pose Studio streams rAF-coalesced previews and one final capture per gesture", () => {
+    assert.match(poseStudioSource, /VNCCS_POSE_LAYER_PREVIEW_FPS = 18/);
+    const schedulerStart = poseStudioSource.indexOf("schedulePreview(sub)");
+    assert.ok(schedulerStart >= 0, "Pose Studio preview scheduler not found");
+    const scheduler = poseStudioSource.slice(schedulerStart, schedulerStart + 900);
+    assert.ok(scheduler.includes("requestAnimationFrame"), "Pose Studio previews must be coalesced through requestAnimationFrame");
+    assert.match(poseStudioSource, /window\.addEventListener\("pointerup", onPointerUp\)/);
+    assert.match(poseStudioSource, /Exactly one full-quality capture per gesture/);
+    assert.match(poseStudioSource, /if \(sub\.gestureFinalEmitted\) return;/);
+});
+
+
+test("the Pose Studio Characters panel owns the character dropdown", () => {
+    assert.match(poseStudioSource, /studio\.renderCharactersUI = /);
+    assert.match(poseStudioSource, /"Mannequin"/);
+    assert.match(poseStudioSource, /fetch\("\/vnccs\/list_characters"\)/);
+    assert.match(poseStudioSource, /applyExternalCharacterCreatorValues/);
+    assert.match(poseStudioSource, /VNCCS_POSE_LAYER_CHARACTERS_UNAVAILABLE_NOTE = "VNCCS characters unavailable/);
+});
+
+
+test("the UniCanvas character control mirrors the Pose Studio selection read-only", () => {
+    assert.match(poseLayerSource, /select\.disabled = true/);
+    assert.match(poseLayerSource, /single source of truth for layer\.poseData\.character/);
 });
