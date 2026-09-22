@@ -9,6 +9,7 @@ import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
 } from "./vnccs_unicanvas_presets.mjs";
+import { installUniCanvasWidgetModes } from "./vnccs_unicanvas_modes.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -353,6 +354,7 @@ function enableUniCanvasGraphNavigationForwarding(root) {
   };
 
   const canForwardFrom = (target) => {
+    if (root._vnccsUniCanvasGraphNavigationSuspended) return false;
     if (hasInteractiveTarget(target)) return false;
     if (hasOwnWheelHandler(target)) return false;
     if (hasScrollableAncestor(target)) return false;
@@ -6667,6 +6669,7 @@ app.registerExtension({
       onCreated?.apply(this, arguments);
       this.setSize([1280, 1280]);
       this.uniCanvasWidget = new UniCanvasWidget(this);
+      installUniCanvasWidgetModes(this.uniCanvasWidget);
       const domWidget = this.addDOMWidget("unicanvas_ui", "ui", this.uniCanvasWidget.container, {
         serialize: false,
         hideOnZoom: false,
