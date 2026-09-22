@@ -400,6 +400,13 @@ async function applyUniCanvasPoseLayerRenderPixels(widget, sub, detail, commit) 
   drawUniCanvasPoseRenderIntoLayer(widget, layer, image, detail.render);
   if (commit) {
     layer.poseData = mergeUniCanvasPoseLayerDetail(layer, detail);
+    // The character selection made in the Pose Studio Characters panel is
+    // authoritative and arrives with the render metadata; mirror it into the
+    // embedded edit mannequin through applyExternalCharacterCreatorValues.
+    if (detail.character && widget._poseLayerState?.session?.layerId === layer.id) {
+      applyUniCanvasPoseLayerCharacterMorphs(widget._poseLayerState, normalizePoseLayerCharacter(detail.character));
+    }
+    renderUniCanvasPoseLayerPanel(getUniCanvasPoseLayerState(widget), widget.activeLayer);
   }
   widget.markLayerPixelsChanged(layer, null, false);
   widget.refreshLayerRow(layer.id);
@@ -571,25 +578,6 @@ function applyUniCanvasPoseLayerCharacterMorphs(state, character) {
   }
 }
 
-function selectUniCanvasPoseLayerCharacter(widget, layer, character) {
-  layer.poseData = buildPoseLayerData({
-    pose: layer.poseData?.pose || {},
-    character,
-    camera: layer.poseData?.camera || {},
-    size: layer.poseData?.render?.size,
-  });
-  applyUniCanvasPoseLayerCharacterMorphs(getUniCanvasPoseLayerState(widget), character);
-  broadcastUniCanvasPoseLayerMessage({
-    source: "unicanvas",
-    type: "character",
-    layerId: layer.id,
-    character,
-  });
-  widget.syncLightStateToWidget();
-  widget.scheduleFullSync();
-  widget.setStatus(`[VNCCS UniCanvas] Pose character: ${character.name}`);
-}
-
 function captureUniCanvasPoseLayerNow(widget, layer) {
   if (!layer || layer.type !== POSE_LAYER_TYPE) {
     widget.setStatus("[VNCCS UniCanvas] capture now requires a pose layer", true);
@@ -661,18 +649,15 @@ function ensureUniCanvasPoseLayerPanel(state) {
   const field = document.createElement("label");
   field.className = "vnccs-uc-field";
   field.textContent = "Character";
+  // Read-only mirror: the character dropdown in the Pose Studio Characters
+  // panel is the single source of truth for layer.poseData.character.
   const select = document.createElement("select");
   select.className = "vnccs-uc-select";
   select.dataset.poseCharacter = "1";
+  select.disabled = true;
+  select.title = "Selected in the Pose Studio Characters panel";
   field.appendChild(select);
   panel.append(title, field);
-  select.addEventListener("change", () => {
-    const layer = state.widget.activeLayer;
-    if (!layer || layer.type !== POSE_LAYER_TYPE) return;
-    const options = [defaultUniCanvasPoseLayerCharacter(), ...state.characters];
-    const character = options.find((item) => item.id === select.value) || options[0];
-    selectUniCanvasPoseLayerCharacter(state.widget, layer, character);
-  });
   if (!widget.layerList?.parentElement) return null;
   widget.layerList.parentElement.insertBefore(panel, widget.layerList);
   state.panel = panel;
@@ -686,20 +671,17 @@ function renderUniCanvasPoseLayerPanel(state, layer) {
   const visible = layer && layer.type === POSE_LAYER_TYPE;
   panel.style.display = visible ? "flex" : "none";
   if (!visible) return;
-  const options = [defaultUniCanvasPoseLayerCharacter(), ...state.characters];
-  const selectedId = layer.poseData?.character?.id || options[0].id;
-  const signature = `${layer.id}|${options.map((item) => item.id).join(",")}|${selectedId}`;
+  const character = normalizePoseLayerCharacter(layer.poseData?.character);
+  const signature = `${layer.id}|${character.id}|${character.name}`;
   if (state.panelSignature === signature) return;
   state.panelSignature = signature;
   const select = state.panelSelect;
   select.innerHTML = "";
-  for (const item of options) {
-    const option = document.createElement("option");
-    option.value = item.id;
-    option.textContent = item.name;
-    option.selected = item.id === selectedId;
-    select.appendChild(option);
-  }
+  const option = document.createElement("option");
+  option.value = character.id;
+  option.textContent = character.name;
+  option.selected = true;
+  select.appendChild(option);
 }
 
 export function refreshUniCanvasPoseLayerUI(widget) {
