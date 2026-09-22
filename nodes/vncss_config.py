@@ -15,12 +15,40 @@ def _load_state(node_state: str) -> dict[str, Any]:
     return state if isinstance(state, dict) else {}
 
 
+def _resolve_lora_path(lora_name: str) -> str:
+    """Resolve a loras-folder name (as returned by folder_paths.get_filename_list) to a full path."""
+    import folder_paths
+
+    raw = str(lora_name or "").strip()
+    normalized = raw.replace("\\", "/")
+    candidates = [raw]
+    if normalized and normalized != raw:
+        candidates.append(normalized)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            full_path = folder_paths.get_full_path("loras", candidate)
+        except Exception:
+            full_path = None
+        if full_path:
+            return full_path
+
+    raise RuntimeError(f"[VNCCS Config] LoRA not found: {lora_name}")
+
+
 def _apply_lora_cached(model, clip, lora_name, strength, clip_strength=None):
-    """Patch a LoRA onto model/clip. Mirrors UniCanvasModule.apply_loras caching."""
+    """Resolve a loras-folder name, then patch that LoRA onto model/clip.
+
+    Resolution is mandatory: names from the picker are loras-folder relative, while
+    comfy.utils.load_torch_file would resolve them against the process CWD. Despite
+    the historical name this helper does not cache the loaded weights.
+    """
     import comfy.sd
     import comfy.utils
 
-    lora_sd = comfy.utils.load_torch_file(lora_name, safe_load=True)
+    lora_sd = comfy.utils.load_torch_file(_resolve_lora_path(lora_name), safe_load=True)
     return comfy.sd.load_lora_for_models(
         model, clip, lora_sd, float(strength),
         float(strength) if clip_strength is None else float(clip_strength),

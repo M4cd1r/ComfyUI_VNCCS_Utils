@@ -86,6 +86,68 @@ def test_apply_lora_stack_applies_enabled_in_order(monkeypatch):
     assert model == "m-two" and clip == "c-two"
 
 
+def test_apply_lora_stack_resolves_loras_relative_name(monkeypatch):
+    """A name from folder_paths.get_filename_list('loras') must reach the loader as a full path."""
+    import comfy.sd
+    import comfy.utils
+    import nodes.vncss_config as vc
+
+    loaded_paths = []
+    lora_calls = []
+
+    def fake_load_torch_file(path, safe_load=True):
+        loaded_paths.append(path)
+        return {"lora": True}
+
+    def fake_load_lora_for_models(model, clip, lora_sd, strength, clip_strength=1.0):
+        lora_calls.append((model, clip, lora_sd, strength, clip_strength))
+        return f"m-{strength}", f"c-{clip_strength}"
+
+    monkeypatch.setattr(comfy.utils, "load_torch_file", fake_load_torch_file)
+    monkeypatch.setattr(comfy.sd, "load_lora_for_models", fake_load_lora_for_models)
+
+    model, clip = vc.apply_lora_stack(
+        "m0", "c0",
+        [{"name": "foo.safetensors", "strength": 0.5, "enabled": True}],
+    )
+
+    # conftest stubs folder_paths.get_full_path(kind, name) -> "/models/{kind}/{name}".
+    assert loaded_paths == ["/models/loras/foo.safetensors"]
+    assert lora_calls == [("m0", "c0", {"lora": True}, 0.5, 0.5)]
+    assert (model, clip) == ("m-0.5", "c-0.5")
+
+
+def test_apply_lora_stack_raises_for_unresolvable_name(monkeypatch):
+    import folder_paths
+    import nodes.vncss_config as vc
+
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda kind, name: None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        vc.apply_lora_stack(
+            "m0", "c0",
+            [{"name": "bad.safetensors", "strength": 1.0, "enabled": True}],
+        )
+
+    assert str(excinfo.value) == "[VNCCS Config] LoRA not found: bad.safetensors"
+
+
+def test_lora_resolution_normalizes_backslash_separators(monkeypatch):
+    import folder_paths
+    import nodes.vncss_config as vc
+
+    requested = []
+
+    def fake_get_full_path(kind, name):
+        requested.append(name)
+        return "/models/loras/subdir/foo.safetensors" if name == "subdir/foo.safetensors" else None
+
+    monkeypatch.setattr(folder_paths, "get_full_path", fake_get_full_path)
+
+    assert vc._resolve_lora_path("subdir\\foo.safetensors") == "/models/loras/subdir/foo.safetensors"
+    assert requested == ["subdir\\foo.safetensors", "subdir/foo.safetensors"]
+
+
 def test_execute_returns_patched_model(monkeypatch):
     import nodes.vncss_config as vc
     monkeypatch.setattr(vc, "_apply_lora_cached",
