@@ -46,6 +46,8 @@ const UNICANVAS_MODE_STYLES = `
 .vnccs-uc2-true-fullscreen.active { border-color: rgba(255, 143, 163, 0.7); background: rgba(255, 143, 163, 0.18); color: #ffdce5; }
 .vnccs-uc2-fullscreen-exit { font-size: 15px; font-weight: 800; }
 .vnccs-uc2-true-fullscreen:hover, .vnccs-uc2-fullscreen-exit:hover { background: var(--uc-hover, rgba(255, 255, 255, 0.1)); }
+.vnccs-uc2-output-actions { display: flex; gap: 6px; padding: 8px 8px 0; }
+.vnccs-uc2-output-actions .vnccs-uc-btn { flex: 1 1 auto; }
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
 `;
 
@@ -285,11 +287,83 @@ function installUniCanvasFullscreenButton(widget) {
   widget._vnccsFullscreenButton = btn;
 }
 
+export function buildUniCanvasCompositeCanvas(widget) {
+  // Flattened composite: every visible raster layer, in stacking order, over the
+  // whole canvas. Mask layers stay out of it, matching the node's image output.
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(widget.size.width));
+  out.height = Math.max(1, Math.round(widget.size.height));
+  const ctx = out.getContext("2d");
+  widget.configureImageContext?.(ctx);
+  for (const layer of [...widget.layers].reverse()) {
+    if (!layer.visible || layer.type !== "raster") continue;
+    ctx.save();
+    ctx.globalAlpha = layer.opacity;
+    ctx.globalCompositeOperation = layer.blendMode || "source-over";
+    ctx.drawImage(layer.canvas, 0, 0);
+    ctx.restore();
+  }
+  return out;
+}
+
+export async function saveUniCanvasOutput(widget, layerId = null) {
+  try {
+    widget.setStatus("Saving to output...");
+    const composite = buildUniCanvasCompositeCanvas(widget);
+    const payload = { image: composite.toDataURL("image/png") };
+    if (layerId) payload.layer_id = String(layerId);
+    const res = await fetch("/vnccs/unicanvas/save_output", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    widget.setStatus(`[VNCCS UniCanvas] Saved ${data.path}`);
+  } catch (err) {
+    widget.setStatus(`[VNCCS UniCanvas] Save to output failed: ${err?.message || err}`, true);
+  }
+}
+
+export async function newUniCanvasDocument(widget) {
+  const confirmed = await widget.confirmInWidget("New", "Are you sure?", "Confirm");
+  if (!confirmed) return;
+  // Clear every layer and image, then create one fresh base layer for new work.
+  widget.stagingItems = [];
+  widget.activeStagingIndex = -1;
+  widget.layers = [];
+  widget.activeLayerId = null;
+  widget.undoStack = [];
+  widget.redoStack = [];
+  widget.addLayer("raster", "Base Layer", false);
+  widget.updateHistoryButtons?.();
+  widget.renderLayerList();
+  widget.syncActiveLayerControls?.();
+  widget.requestRender();
+  widget.syncToNode?.();
+  widget.setStatus("[VNCCS UniCanvas] Started a new canvas.");
+}
+
+function installUniCanvasOutputActions(widget) {
+  const row = document.createElement("div");
+  row.className = "vnccs-uc2-output-actions";
+  row.append(
+    widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory")
+  );
+  if (widget.standalone) {
+    // Standalone mode replaces the node's image socket with Save to output + New.
+    row.append(widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas"));
+  }
+  widget.left.insertBefore(row, widget.left.firstChild);
+  widget._vnccsOutputActions = row;
+}
+
 export function installUniCanvasWidgetModes(widget) {
   if (!widget || widget._vnccsModesInstalled) return widget;
   widget._vnccsModesInstalled = true;
   ensureUniCanvasModeStyles();
   installUniCanvasShortcuts(widget);
   installUniCanvasFullscreenButton(widget);
+  installUniCanvasOutputActions(widget);
   return widget;
 }
