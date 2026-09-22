@@ -171,6 +171,50 @@ Without a connected `config` (and in standalone sidebar mode) UniCanvas keeps
 using the existing direct `POST /vnccs/unicanvas/draw` path with its own model
 loading, unchanged.
 
+## Fullscreen mode
+
+UniCanvas opens a distraction-free fullscreen workspace from the **Fullscreen** icon
+button at the top-right of the stage:
+
+- The widget is re-parented — same instance, no reload — into a `position:fixed`
+  `inset:0` portal; the stage re-lays out and the view fits automatically.
+- While fullscreen is active, keyboard input is isolated: `keydown` / `keyup` /
+  `keypress` events that are not targeted at `input` / `textarea` / `select` /
+  `[contenteditable]` are swallowed in the capture phase before LiteGraph or ComfyUI
+  sees them, and graph navigation forwarding (wheel / middle-click panning) is
+  suspended. Text fields keep working normally.
+- Fullscreen chrome shows the title, a **✕** exit button, and an optional "true
+  fullscreen" toggle that uses `requestFullscreen()`.
+- The UniCanvas shortcut map works whenever the canvas has focus (fullscreen or not):
+
+| Shortcut | Action |
+|---|---|
+| `B` / `V` / `E` / `M` / `L` / `S` | Brush / Move / Eraser / Mask brush / Lasso / Rectangle tools |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
+| `[` / `]` | Shrink / grow the brush size |
+| `Tab` | Toggle panel visibility |
+| `Esc` | Exit fullscreen |
+
+## Standalone Unicanvas mode
+
+The **Unicanvas** sidebar tab (with its own icon in the sidebar tab strip) runs UniCanvas
+as a standalone image app — no node, no workflow:
+
+- Entering the tab hides all ComfyUI chrome (top bar and sidebar panels) and keeps only
+  the icon sidebar visible; leaving the tab restores the standard chrome. This is the
+  default behavior, not a toggle.
+- The engine picker offers the built-in presets plus custom models from disk across all
+  model families. An external `VNCSS_CONFIG` is node-mode only — the engine panel says
+  so, and standalone mode ignores any config connected elsewhere.
+- Output actions replace the node's `image` socket: **Save to output** writes the
+  flattened composite into ComfyUI's `output/` directory through
+  `POST /vnccs/unicanvas/save_output` (the button is also present in node mode; the
+  same route saves a single layer's PNG with its alpha channel when `layer_id` is
+  given), and **New** asks "Are you sure?" before clearing all layers and images and
+  creating a fresh base layer.
+- Work persists to `localStorage` under the `vnccs-unicanvas-standalone` key, so it
+  survives a page reload.
+
 ## VNCCS Pose Studio
 
 <p align="center">

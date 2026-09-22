@@ -9,6 +9,7 @@ import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
 } from "./vnccs_unicanvas_presets.mjs";
+import { installUniCanvasWidgetModes, registerUniCanvasStandaloneSidebarTab, teardownUniCanvasWidgetModes } from "./vnccs_unicanvas_modes.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -353,6 +354,7 @@ function enableUniCanvasGraphNavigationForwarding(root) {
   };
 
   const canForwardFrom = (target) => {
+    if (root._vnccsUniCanvasGraphNavigationSuspended) return false;
     if (hasInteractiveTarget(target)) return false;
     if (hasOwnWheelHandler(target)) return false;
     if (hasScrollableAncestor(target)) return false;
@@ -1186,8 +1188,17 @@ class UniCanvasWidget {
         if (e.target === overlay) close(false);
       });
       overlay.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") close(false);
-        if (e.key === "Enter") close(true);
+        // The modal owns Escape/Enter for this keypress: stop propagation so
+        // the container/window shortcut handlers cannot act on the same event
+        // (Esc closing the modal must not also exit fullscreen).
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          close(false);
+        }
+        if (e.key === "Enter") {
+          e.stopPropagation();
+          close(true);
+        }
       });
       this.container.appendChild(overlay);
       requestAnimationFrame(() => {
@@ -5231,6 +5242,25 @@ class UniCanvasWidget {
     this.flattenLayersToMaster();
   }
 
+  drawFlattenedLayers(ctx, layers = this.layers) {
+    // Shared per-layer draw semantics for flattenLayersToMaster and for the
+    // Save to output composite (hi-res layers included).
+    const worldRect = { x: this.origin.x, y: this.origin.y, width: this.size.width, height: this.size.height };
+    const destRect = { x: 0, y: 0, width: this.size.width, height: this.size.height };
+    for (const layer of [...layers].reverse()) {
+      if (!layer.visible || layer.type !== "raster") continue;
+      ctx.save();
+      ctx.globalAlpha = layer.opacity;
+      ctx.globalCompositeOperation = layer.blendMode || "source-over";
+      if (layer.hiresCanvas && layer.hiresRect) {
+        this.drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, false);
+      } else {
+        ctx.drawImage(layer.canvas, 0, 0);
+      }
+      ctx.restore();
+    }
+  }
+
   flattenLayersToMaster() {
     this.recordHistoryBefore();
     const master = {
@@ -5244,20 +5274,7 @@ class UniCanvasWidget {
       canvas: this._createCanvas(),
     };
     const ctx = this.configureImageContext(master.canvas.getContext("2d"), false);
-    const worldRect = { x: this.origin.x, y: this.origin.y, width: this.size.width, height: this.size.height };
-    const destRect = { x: 0, y: 0, width: this.size.width, height: this.size.height };
-    for (const layer of [...this.layers].reverse()) {
-      if (!layer.visible || layer.type !== "raster") continue;
-      ctx.save();
-      ctx.globalAlpha = layer.opacity;
-      ctx.globalCompositeOperation = layer.blendMode || "source-over";
-      if (layer.hiresCanvas && layer.hiresRect) {
-        this.drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, false);
-      } else {
-        ctx.drawImage(layer.canvas, 0, 0);
-      }
-      ctx.restore();
-    }
+    this.drawFlattenedLayers(ctx);
     this.invalidateLayerCaches(master);
     this.layers = [master];
     this.activeLayerId = master.id;
@@ -6611,6 +6628,7 @@ class UniCanvasWidget {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
     this._disposed = true;
+    teardownUniCanvasWidgetModes(this);
     this._eventAbortController?.abort();
     this._eventAbortController = null;
     this.stopDrawProgressPolling();
@@ -6638,6 +6656,10 @@ class UniCanvasWidget {
 
 app.registerExtension({
   name: "VNCCS.UniCanvas",
+  setup() {
+    // Standalone Unicanvas sidebar tab (no node, no workflow).
+    registerUniCanvasStandaloneSidebarTab(UniCanvasWidget);
+  },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== "VNCCS_UniCanvas") return;
 
@@ -6667,6 +6689,7 @@ app.registerExtension({
       onCreated?.apply(this, arguments);
       this.setSize([1280, 1280]);
       this.uniCanvasWidget = new UniCanvasWidget(this);
+      installUniCanvasWidgetModes(this.uniCanvasWidget);
       const domWidget = this.addDOMWidget("unicanvas_ui", "ui", this.uniCanvasWidget.container, {
         serialize: false,
         hideOnZoom: false,
@@ -6729,6 +6752,7 @@ app.registerExtension({
       clearTimeout(this._vnccsUniCanvasInitTimer);
       clearTimeout(this._vnccsUniCanvasResizeTimer);
       clearTimeout(this._vnccsUniCanvasConfigureTimer);
+      teardownUniCanvasWidgetModes(this.uniCanvasWidget);
       this.uniCanvasWidget?.dispose();
       onRemoved?.apply(this, arguments);
     };

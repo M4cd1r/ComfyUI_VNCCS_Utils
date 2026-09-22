@@ -4480,6 +4480,96 @@ def _run_unicanvas_segment(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# =============================================================================
+# Plan 2 region: POST /vnccs/unicanvas/save_output (Save to output / layer save)
+# =============================================================================
+
+_UNICANVAS_SAVE_OUTPUT_SEQ = 0
+_UNICANVAS_SAVE_OUTPUT_LOCK = threading.Lock()
+
+
+def _unicanvas_reserve_output_path(output_dir: str) -> str:
+    """Atomically reserve a unique unicanvas-<timestamp>-<n>.png name.
+
+    The lock serialises the counter and O_EXCL reserves the name, so concurrent
+    saves (Save to output plus the layer context menu) cannot collide.
+    """
+    global _UNICANVAS_SAVE_OUTPUT_SEQ
+    timestamp = int(time.time() * 1000)
+    with _UNICANVAS_SAVE_OUTPUT_LOCK:
+        while True:
+            _UNICANVAS_SAVE_OUTPUT_SEQ += 1
+            candidate = os.path.join(output_dir, f"unicanvas-{timestamp}-{_UNICANVAS_SAVE_OUTPUT_SEQ}.png")
+            try:
+                os.close(os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            except FileExistsError:
+                continue
+            return candidate
+
+
+def _unicanvas_save_output_image(image: Image.Image) -> str:
+    import folder_paths
+
+    output_dir = str(folder_paths.get_output_directory() or "output")
+    os.makedirs(output_dir, exist_ok=True)
+    path = _unicanvas_reserve_output_path(output_dir)
+    try:
+        image.save(path, format="PNG")
+    except BaseException:
+        # The O_EXCL reservation created the file: a failed save must not leave
+        # a zero-byte PNG behind in output/.
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def _unicanvas_state_layer_image(state: dict[str, Any], layer_id: str) -> Image.Image:
+    layers = state.get("layers")
+    if isinstance(layers, list):
+        for layer in layers:
+            if not isinstance(layer, dict) or str(layer.get("id") or "") != str(layer_id):
+                continue
+            data_url = layer.get("dataURL") or layer.get("hiresDataURL")
+            if data_url:
+                return _decode_data_url(str(data_url), "RGBA")
+            break
+    raise ValueError(f"[VNCCS UniCanvas] Layer '{layer_id}' has no stored pixels to save.")
+
+
+def _run_unicanvas_save_output(payload: dict[str, Any]) -> dict[str, Any]:
+    """Save one PNG into ComfyUI's output directory for the Save to output action.
+
+    ``image`` carries the PNG data URL of the flattened composite, or of a single
+    layer when ``layer_id`` is set (the layer keeps its alpha channel). Without
+    ``image`` the pixels come from ``state`` (or the server-side state cache via
+    ``state_id``): ``layer_id`` saves only that layer's PNG, otherwise the whole
+    state renders to one flattened composite.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("[VNCCS UniCanvas] save_output expects a JSON object.")
+    layer_id = str(payload.get("layer_id") or "").strip() or None
+    data_url = payload.get("image")
+    if data_url:
+        image = _decode_data_url(str(data_url), "RGBA")
+    else:
+        state = payload.get("state")
+        if state is None and payload.get("state_id"):
+            state = _read_unicanvas_state_cache(str(payload.get("state_id")))
+        if not isinstance(state, dict):
+            raise ValueError("[VNCCS UniCanvas] save_output needs an image or a canvas state.")
+        if layer_id:
+            image = _unicanvas_state_layer_image(state, layer_id)
+        else:
+            image = _render_unicanvas_state_to_rgba(json.dumps(state))
+    if layer_id:
+        image = image.convert("RGBA")
+    path = _unicanvas_save_output_image(image)
+    return {"ok": True, "path": path}
+
+
 def register_unicanvas_routes() -> None:
     try:
         from aiohttp import web
@@ -4594,6 +4684,28 @@ def register_unicanvas_routes() -> None:
     @PromptServer.instance.routes.get("/vnccs/unicanvas/result/{draw_id}")
     async def vnccs_unicanvas_result(request):
         return web.json_response(_get_draw_result(str(request.match_info.get("draw_id") or "")))
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/save_output")
+    async def vnccs_unicanvas_save_output(request):
+        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+            return web.json_response({"error": "[VNCCS UniCanvas] save_output payload is too large"}, status=413)
+        payload: dict[str, Any] = {}
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                payload = dict(body)
+        except Exception:
+            payload = {}
+        # The layer context menu calls this route with ?layer_id=..., the Save to
+        # output button sends it as a JSON field; both select the same layer save.
+        layer_id = request.query.get("layer_id") or payload.get("layer_id")
+        if layer_id:
+            payload["layer_id"] = str(layer_id)
+        try:
+            result = await asyncio.to_thread(_run_unicanvas_save_output, payload)
+            return web.json_response(result)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
 
 
 NODE_CLASS_MAPPINGS = {
