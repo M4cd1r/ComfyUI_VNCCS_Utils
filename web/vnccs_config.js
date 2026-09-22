@@ -14,7 +14,8 @@ class UniCanvasConfigWidget {
       <style>
         .vnccs-config-root { display:flex; flex-direction:column; gap:8px; padding:8px; color:#eee; font:12px sans-serif; }
         .vnccs-config-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-        .vnccs-config-lora { display:grid; grid-template-columns:minmax(0,2fr) 64px 24px; gap:6px; align-items:center; }
+        .vnccs-config-lora { display:grid; grid-template-columns:minmax(0,2fr) 58px 22px 24px; gap:6px; align-items:center; }
+        .vnccs-config-lora input[type="checkbox"] { margin:0; accent-color:#ffd45c; cursor:pointer; }
         .vnccs-config-btn { border:1px solid #555; background:#222; color:#eee; border-radius:6px; height:26px; cursor:pointer; }
         .vnccs-config-switch { width:42px; height:22px; border-radius:999px; border:1px solid #f08fa3; background:#f08fa322; position:relative; cursor:pointer; }
         .vnccs-config-switch::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:#aaa; transition:left .12s ease; }
@@ -113,15 +114,48 @@ class UniCanvasConfigWidget {
   renderLoras() {
     this.loraList.innerHTML = "";
     this.state.loras.forEach((entry, index) => {
+      // LoRA names come from the server listing and from persisted node_state JSON, so every row is
+      // built with DOM APIs: no value is ever parsed as HTML/attribute text.
+      if (typeof entry.enabled !== "boolean") {
+        entry.enabled = entry.enabled === undefined ? true : Boolean(entry.enabled);
+      }
       const row = document.createElement("div");
       row.className = "vnccs-config-lora";
-      const options = this.loraNames
-        .map((name) => `<option value="${name}" ${name === entry.name ? "selected" : ""}>${name}</option>`)
-        .join("");
-      row.innerHTML = `
-        <select data-field="name" data-index="${index}">${options}</select>
-        <input type="number" min="0" max="2" step="0.05" value="${entry.strength}" data-field="strength" data-index="${index}">
-        <button class="vnccs-config-btn" data-lora-action="remove-lora" data-index="${index}">✕</button>`;
+
+      const select = document.createElement("select");
+      select.dataset.field = "name";
+      select.dataset.index = String(index);
+      this.loraNames.forEach((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        if (name === entry.name) option.selected = true;
+        select.appendChild(option);
+      });
+
+      const strength = document.createElement("input");
+      strength.type = "number";
+      strength.min = "0";
+      strength.max = "2";
+      strength.step = "0.05";
+      strength.value = String(entry.strength);
+      strength.dataset.field = "strength";
+      strength.dataset.index = String(index);
+
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.checked = entry.enabled;
+      enabled.title = "Enable LoRA";
+      enabled.dataset.field = "enabled";
+      enabled.dataset.index = String(index);
+
+      const remove = document.createElement("button");
+      remove.className = "vnccs-config-btn";
+      remove.dataset.loraAction = "remove-lora";
+      remove.dataset.index = String(index);
+      remove.textContent = "✕";
+
+      row.append(select, strength, enabled, remove);
       this.loraList.appendChild(row);
     });
   }
@@ -147,7 +181,18 @@ app.registerExtension({
     const onConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function () {
       onConfigure?.apply(this, arguments);
-      setTimeout(() => this.configWidget?._syncReferenceInputs(), 50);
+      clearTimeout(this._vnccsConfigConfigureTimer);
+      this._vnccsConfigConfigureTimer = setTimeout(() => {
+        const widget = this.configWidget;
+        if (!widget) return;
+        // The constructor snapshot runs before widgets_values are applied, so re-read the persisted
+        // node_state here, then resync the switch, the LoRA rows and the reference sockets from it
+        // (same pattern as vnccs_unicanvas.js:6476 loadFromNode).
+        widget.state = widget._readState();
+        widget.editSwitch.classList.toggle("on", !!widget.state.edit_model);
+        widget.renderLoras();
+        widget._syncReferenceInputs();
+      }, 50);
     };
   },
 });
