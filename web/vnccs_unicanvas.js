@@ -3346,6 +3346,10 @@ class UniCanvasWidget {
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
+      if (layer && entry.poseDataBefore !== undefined) {
+        const poseData = direction === "undo" ? entry.poseDataBefore : entry.poseDataAfter;
+        layer.poseData = poseData ? JSON.parse(JSON.stringify(poseData)) : null;
+      }
       this.activeLayerId = layer?.id || this.activeLayerId;
     }
     this.historyRestoring = false;
