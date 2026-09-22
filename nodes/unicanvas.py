@@ -4700,6 +4700,16 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
 }
 
 
+def _qwen21_image_size(image: Any) -> tuple[int, int]:
+    """Return (height, width) of a (B,H,W,C) or (H,W,C) image tensor."""
+    shape = tuple(int(value) for value in (getattr(image, "shape", ()) or ()))
+    if len(shape) >= 4:
+        return shape[1], shape[2]
+    if len(shape) == 3:
+        return shape[0], shape[1]
+    return 0, 0
+
+
 def _qwen21_spectrum_settings(gen_settings: dict[str, Any] | None) -> dict[str, Any]:
     merged = dict(QWEN21_SPECTRUM_DEFAULTS)
     raw = (gen_settings or {}).get("spectrum")
@@ -4802,9 +4812,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     def output_is_opaque(self, gen_settings: dict[str, Any] | None) -> bool:
         return bool((gen_settings or {}).get("qwen21_opaque_output", False))
 
-    def aspect_presets(self) -> tuple[tuple[int, int], ...]:
-        return QWEN_IMAGE21_ASPECT_PRESETS
-
     def resolve_generation_size(self, width: int, height: int, gen_settings: dict[str, Any] | None) -> tuple[int, int]:
         preset = str((gen_settings or {}).get("qwen21_aspect_preset") or "").strip().lower()
         if preset in {"", "auto"}:
@@ -4895,11 +4902,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         instruction = self.assemble_instruction(gen_settings.get("_qwen21_prompt"), slots, opaque)
         negative_prompt = str(gen_settings.get("_qwen21_negative_prompt") or "")
         condition_images = {slot: self._prepare_qi21_condition_image(tensor) for slot, tensor in slots.items()}
-        target_w, target_h = self.resolve_generation_size(
-            int(getattr(image_tensor, "shape", [1, 1, 1024, 1024])[2]),
-            int(getattr(image_tensor, "shape", [1, 1, 1024, 1024])[1]),
-            gen_settings,
-        )
+        image_h, image_w = _qwen21_image_size(image_tensor)
+        target_w, target_h = self.resolve_generation_size(image_w, image_h, gen_settings)
         positive, negative = self._encode_qi21(
             clip=clip,
             vae=vae,
@@ -4984,6 +4988,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         transparent-RGBA prompt convention so the flow returns real alpha.
         """
         draw_id = "remove_background"
+        # The public contract hands over (H,W,3) pixels; run the flow over the
+        # batched (1,H,W,3) layout that every other call path uses.
+        if pixels.ndim == 3:
+            pixels = pixels.unsqueeze(0)
         gen_settings = dict(QWEN_IMAGE21_DEFAULTS)
         gen_settings["draw_mode"] = "img2img"
         gen_settings["_draw_id"] = draw_id
@@ -5001,7 +5009,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
         latent = gen_settings.get("_qwen21_latent")
         if not isinstance(latent, dict):
-            latent = self.create_empty_latent(int(pixels.shape[2]), int(pixels.shape[1]), gen_settings, draw_id)
+            pixels_h, pixels_w = _qwen21_image_size(pixels)
+            latent = self.create_empty_latent(int(pixels_w), int(pixels_h), gen_settings, draw_id)
         sampled = self.sample_latent(
             model=model,
             positive=positive,
@@ -5046,11 +5055,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         )
         if str(gen_settings.get("draw_mode") or "") == "txt2img" or not has_working_area:
             return None
-        target_w, target_h = self.resolve_generation_size(
-            int(image_tensor.shape[2]), int(image_tensor.shape[1]), gen_settings
-        )
+        source_h, source_w = _qwen21_image_size(image_tensor)
+        target_w, target_h = self.resolve_generation_size(source_w, source_h, gen_settings)
         pixels = self._prepare_qi21_condition_image(image_tensor)
-        if (int(pixels.shape[2]), int(pixels.shape[1])) != (int(target_h), int(target_w)):
+        if (int(pixels.shape[2]), int(pixels.shape[1])) != (int(target_w), int(target_h)):
             pixels = torch.nn.functional.interpolate(
                 pixels.movedim(-1, 1),
                 size=(int(target_h), int(target_w)),

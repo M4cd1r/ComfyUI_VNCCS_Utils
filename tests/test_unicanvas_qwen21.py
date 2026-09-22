@@ -52,7 +52,6 @@ def test_native_2k_aspect_presets():
         (2752, 1536),
         (1536, 2752),
     )
-    assert module.aspect_presets() == QWEN_IMAGE21_ASPECT_PRESETS
     assert module.resolve_generation_size(1024, 768, {}) == (1024, 768)
     assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "auto"}) == (1024, 768)
     assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "2400x1792"}) == (2400, 1792)
@@ -227,9 +226,62 @@ def test_remove_background_contract(monkeypatch):
     rgba = module.remove_background(image)
     assert tuple(rgba.shape) == (6, 5, 4)
     assert rgba.dtype == torch.float32
-    assert captured["pixels"] is not image or torch.equal(captured["pixels"], image)
+    assert torch.equal(captured["pixels"], image)
     assert torch.all(rgba[..., 3] == 0.25)
     assert torch.all((rgba >= 0.0) & (rgba <= 1.0))
+
+
+def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
+    """The (H,W,3) contract input must reach the QI2.1 flow as real geometry.
+
+    Runs the real remove_background -> _subject_extraction ->
+    prepare_reference_conditioning -> _qwen21_working_latent path (only the
+    asset loader, the ComfyUI node call and the sampler are stubbed) and
+    asserts the working latent shape (1,64,H/16,W/16) plus the resolution
+    value passed to the text encoder.
+    """
+    module = _get_unicanvas_model_module("qwen_image21")
+    captured = {}
+
+    class FakeVae:
+        def encode(self, pixels):
+            captured["encode_pixels"] = pixels
+            return {"samples": torch.zeros(1, 64, pixels.shape[1] // 16, pixels.shape[2] // 16)}
+
+        def decode_tiled(self, samples, tile_x=512, tile_y=512, overlap=64):
+            decoded = torch.zeros(1, 48, 80, 4)
+            decoded[..., :3] = 0.25
+            decoded[..., 3] = 0.5
+            return decoded
+
+    monkeypatch.setattr(
+        "nodes.unicanvas._load_generation_assets",
+        lambda settings: ("MODEL", "CLIP", FakeVae()),
+    )
+
+    def fake_call_comfy_node(class_name, **kwargs):
+        captured.setdefault("calls", []).append((class_name, kwargs))
+        if class_name == "TextEncodeQwenImage21":
+            return ("POS", "NEG")
+        raise AssertionError(f"unexpected node call: {class_name}")
+
+    monkeypatch.setattr("nodes.unicanvas._call_comfy_node", fake_call_comfy_node)
+
+    def fake_sample(**kwargs):
+        captured["sample_latent"] = kwargs["latent"]
+        return kwargs["latent"]
+
+    monkeypatch.setattr("nodes.unicanvas._sample_generation_latent_default", fake_sample)
+
+    image = torch.rand(48, 80, 3)  # (H,W,3) contract input
+    rgba = module.remove_background(image)
+
+    encode = next(kwargs for name, kwargs in captured["calls"] if name == "TextEncodeQwenImage21")
+    assert encode["resolution"] == 48 * 80
+    assert captured["encode_pixels"].shape == (1, 48, 80, 4)
+    assert captured["sample_latent"]["samples"].shape == (1, 64, 3, 5)
+    assert tuple(rgba.shape) == (48, 80, 4)
+    assert torch.all(rgba[..., 3] == 0.5)
 
 
 def test_remove_background_accepts_batched_and_resized_results(monkeypatch):
