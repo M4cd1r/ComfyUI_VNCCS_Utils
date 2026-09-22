@@ -309,7 +309,14 @@ export function exitUniCanvasFullscreen(widget) {
   }
   state.portal.remove();
   if (state.restoreParent) {
-    state.restoreParent.insertBefore(widget.container, state.restoreNextSibling || null);
+    // Re-insert only when the saved anchor still sits in the saved parent; a
+    // re-laid-out DOM widget area leaves a stale sibling reference behind.
+    const sibling = state.restoreNextSibling;
+    if (sibling && sibling.parentNode === state.restoreParent) {
+      state.restoreParent.insertBefore(widget.container, sibling);
+    } else {
+      state.restoreParent.appendChild(widget.container);
+    }
   }
   widget._vnccsFullscreen = null;
   if (!widget._disposed) {
@@ -348,11 +355,18 @@ export function buildUniCanvasCompositeCanvas(widget) {
 }
 
 export async function saveUniCanvasOutput(widget, layerId = null) {
+  // layerId is the layer-context-menu call shape ("Save layer as image" in the
+  // layer context menu of a parallel branch): it saves only that layer's PNG.
   try {
-    widget.setStatus("Saving to output...");
-    const composite = buildUniCanvasCompositeCanvas(widget);
-    const payload = { image: composite.toDataURL("image/png") };
-    if (layerId) payload.layer_id = String(layerId);
+    widget.setStatus("[VNCCS UniCanvas] Saving to output...");
+    let payload;
+    if (layerId) {
+      const layer = widget.layers.find((item) => item.id === String(layerId));
+      if (!layer) throw new Error(`[VNCCS UniCanvas] Layer '${layerId}' was not found.`);
+      payload = { state: { version: 2, layers: [widget.serializeLayer(layer, true)] }, layer_id: String(layerId) };
+    } else {
+      payload = { image: buildUniCanvasCompositeCanvas(widget).toDataURL("image/png") };
+    }
     const res = await fetch("/vnccs/unicanvas/save_output", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
