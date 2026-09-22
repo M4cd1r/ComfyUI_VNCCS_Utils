@@ -14,6 +14,10 @@ import {
 import {
     cameraPromptToSkydomeRotation,
 } from "./vnccs_camera_control_utils.mjs";
+import {
+    captureUniCanvasPoseLayerPNG,
+    normalizePoseLayerMorphs,
+} from "./vnccs_unicanvas_pose_layers.mjs";
 import { HAND_PRESETS } from "./vnccs_hand_presets.js";
 import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
@@ -13612,6 +13616,10 @@ class PoseStudioWidget {
         }
     }
 
+    // Duplicated on purpose: buildUniCanvasPoseViewerModelData in
+    // web/vnccs_unicanvas_pose_layers.mjs is the shared variant, but this
+    // class is also evaluated standalone (without imports) by
+    // tests/helpers/pose_studio_scene.mjs.
     modelDataFromMorphMessage(message) {
         const staticData = message?.staticData;
         const bonePositions = message?.bonePositions;
@@ -16129,21 +16137,11 @@ app.registerExtension({
 const VNCCS_POSE_LAYER_BUS_EVENT = "vnccs:unicanvas:pose-layer";
 const VNCCS_POSE_LAYER_PREVIEW_FPS = 18;
 const VNCCS_POSE_LAYER_PREVIEW_MAX_SIDE = 512;
-const VNCCS_POSE_LAYER_FINAL_DEDUPE_MS = 300;
+const VNCCS_POSE_LAYER_GESTURE_SETTLE_MS = 300;
 const VNCCS_POSE_LAYER_CHARACTERS_UNAVAILABLE_NOTE = "VNCCS characters unavailable — Mannequin only";
 
 function vnccsPoseLayerMannequinCharacter() {
     return { id: "mannequin", name: "Mannequin", source: "mannequin", morphs: {} };
-}
-
-function vnccsPoseLayerMorphValues(values) {
-    const morphs = {};
-    const source = values && typeof values === "object" ? values : {};
-    for (const key of ["age", "gender"]) {
-        const number = Number(source[key]);
-        if (Number.isFinite(number)) morphs[key] = number;
-    }
-    return morphs;
 }
 
 class VNCCSPoseLayerBridge {
@@ -16179,7 +16177,19 @@ class VNCCSPoseLayerBridge {
         this.studios.add(studio);
         this.hookCharacterPanel(studio);
         this.hookStudioInteraction(studio);
-        for (const sub of this.subs.values()) this.requestFinal(sub);
+        // Re-issue the hello + initial render for subscriptions that never got
+        // one (layer-first ordering: the layer subscribed before any studio
+        // could render), now and again once the viewer is actually ready.
+        const reissue = () => {
+            if (!this.pickStudio()) return;
+            for (const sub of this.subs.values()) {
+                if (sub.emittedCount > 0) continue;
+                this.reply({ source: "pose-studio", type: "hello", layerId: sub.layerId });
+                this.nudgeGesture(sub);
+            }
+        };
+        reissue();
+        Promise.resolve(studio._viewerInitPromise).then(reissue).catch(() => {});
     }
 
     unregisterStudio(studio) {
@@ -16189,7 +16199,10 @@ class VNCCSPoseLayerBridge {
 
     pickStudio() {
         for (const studio of this.studios) {
-            if (studio && studio.viewer) return studio;
+            const viewer = studio && studio.viewer;
+            if (viewer && typeof viewer.isInitialized === "function" && viewer.isInitialized()) {
+                return studio;
+            }
         }
         return null;
     }
@@ -16208,10 +16221,12 @@ class VNCCSPoseLayerBridge {
             this.unsubscribe(layerId);
         } else if (detail.type === "capture-request") {
             const sub = this.subs.get(layerId);
-            if (sub) {
-                this.beginGesture(sub);
-                this.requestFinal(sub);
+            if (!sub) return;
+            if (!this.pickStudio()) {
+                this.reportError("[VNCCS Pose Studio] Pose layer capture failed: no initialized Pose Studio");
+                return;
             }
+            this.nudgeGesture(sub);
         } else if (detail.type === "character") {
             this.applyCharacter(detail.character);
         }
@@ -16224,39 +16239,56 @@ class VNCCSPoseLayerBridge {
             sub = {
                 layerId,
                 seq: 0,
+                emittedCount: 0,
                 gestureId: null,
+                gestureOpen: false,
                 gestureFinalEmitted: false,
+                settleHold: false,
+                finalTimer: null,
                 previewFrame: null,
                 previewPending: false,
                 previewPhase: "start",
                 lastPreviewAt: 0,
-                lastFinalAt: 0,
             };
             this.subs.set(layerId, sub);
         }
+        // Spec 7.2: only a Pose Studio that can actually render answers. With
+        // no such studio the layer must stay "waiting..." and time out to
+        // "disconnected" instead of claiming a link (registerStudio re-issues
+        // the initial render once one is available).
+        if (!this.pickStudio()) return;
         this.reply({ source: "pose-studio", type: "hello", layerId });
-        this.beginGesture(sub);
-        // Defer the initial full-quality capture so the synchronous PNG work
-        // stays out of the subscriber's dispatch stack.
-        setTimeout(() => {
-            if (this.subs.get(layerId) === sub) this.requestFinal(sub);
-        }, 0);
+        this.nudgeGesture(sub);
     }
 
     unsubscribe(layerId) {
         const sub = this.subs.get(layerId);
         if (!sub) return;
+        if (sub.finalTimer) clearTimeout(sub.finalTimer);
         if (sub.previewFrame !== null && typeof cancelAnimationFrame === "function") {
             cancelAnimationFrame(sub.previewFrame);
         }
         this.subs.delete(layerId);
     }
 
-    beginGesture(sub) {
-        this.gestureCounter += 1;
-        sub.gestureId = sub.layerId + "#" + this.gestureCounter;
-        sub.gestureFinalEmitted = false;
-        sub.previewPhase = "start";
+    // One user gesture = one quality:"final" render = one layerPixels history
+    // command. Every trigger (pointer activity, pose changes, the character
+    // morph settle) nudges the SAME open gesture and re-arms the settle timer;
+    // the gesture closes after a short inactivity gap, so async work cannot
+    // split one selection into two gestures.
+    nudgeGesture(sub) {
+        if (!sub.gestureOpen) {
+            this.gestureCounter += 1;
+            sub.gestureId = sub.layerId + "#" + this.gestureCounter;
+            sub.gestureOpen = true;
+            sub.gestureFinalEmitted = false;
+            sub.previewPhase = "start";
+        }
+        if (sub.finalTimer) clearTimeout(sub.finalTimer);
+        sub.finalTimer = setTimeout(() => {
+            sub.finalTimer = null;
+            this.requestFinal(sub);
+        }, VNCCS_POSE_LAYER_GESTURE_SETTLE_MS);
     }
 
     renderSize() {
@@ -16271,35 +16303,21 @@ class VNCCSPoseLayerBridge {
     capturePNG(quality) {
         const studio = this.pickStudio();
         const viewer = studio && studio.viewer;
-        if (!viewer || typeof viewer.isInitialized !== "function" || !viewer.isInitialized()) return null;
+        if (!viewer) return null;
         const size = this.renderSize();
         const scale = quality === "final"
             ? 1
             : Math.min(1, VNCCS_POSE_LAYER_PREVIEW_MAX_SIDE / Math.max(size.width, size.height));
         const width = Math.max(1, Math.round(size.width * scale));
         const height = Math.max(1, Math.round(size.height * scale));
-        const camera = studio.currentCameraParams ? studio.currentCameraParams() : {};
-        const scene = viewer.scene;
-        const previousBackground = scene ? scene.background : null;
-        const skydomeWasVisible = viewer.directionalSkydomeVisible !== false;
-        if (scene) scene.background = null;
-        if (typeof viewer.setDirectionalSkydomeVisible === "function") viewer.setDirectionalSkydomeVisible(false);
-        try {
-            return viewer.capture(
-                width,
-                height,
-                Number(camera.zoom) || 1,
-                null,
-                Number(camera.offset_x) || 0,
-                Number(camera.offset_y) || 0,
-                Number(camera.yaw_deg) || 0,
-                Number(camera.pitch_deg) || 0,
-            );
-        } finally {
-            if (scene) scene.background = previousBackground;
-            if (typeof viewer.setDirectionalSkydomeVisible === "function") viewer.setDirectionalSkydomeVisible(skydomeWasVisible);
-            if (typeof viewer.requestRender === "function") viewer.requestRender();
-        }
+        // Shared capture dance: captureUniCanvasPoseLayerPNG in
+        // web/vnccs_unicanvas_pose_layers.mjs (single copy).
+        return captureUniCanvasPoseLayerPNG(
+            viewer,
+            width,
+            height,
+            studio.currentCameraParams ? studio.currentCameraParams() : {},
+        );
     }
 
     buildDetail(sub, dataURL, quality) {
@@ -16332,9 +16350,8 @@ class VNCCSPoseLayerBridge {
         if (!dataURL) return false;
         const detail = this.buildDetail(sub, dataURL, quality);
         sub.seq = detail.seq;
-        if (quality === "final") {
-            sub.lastFinalAt = Date.now();
-        } else {
+        sub.emittedCount += 1;
+        if (quality !== "final") {
             sub.previewPhase = "move";
         }
         this.reply(detail);
@@ -16364,13 +16381,31 @@ class VNCCSPoseLayerBridge {
     requestFinal(sub) {
         // Exactly one full-quality capture per gesture (pointerup/change).
         if (sub.gestureFinalEmitted) return;
-        sub.gestureFinalEmitted = true;
+        // A character selection is still settling its morph solve; that path
+        // re-nudges the same gesture when it is done.
+        if (sub.settleHold) return;
         sub.previewPending = false;
         if (sub.previewFrame !== null && typeof cancelAnimationFrame === "function") {
             cancelAnimationFrame(sub.previewFrame);
             sub.previewFrame = null;
         }
-        this.emitRender(sub, "final");
+        // The final-emitted guard is set only after a successful capture so a
+        // failed capture re-arms and the gesture can still complete later.
+        if (!this.emitRender(sub, "final")) {
+            this.reportError("[VNCCS Pose Studio] Pose layer capture failed");
+            return;
+        }
+        sub.gestureFinalEmitted = true;
+        sub.gestureOpen = false;
+    }
+
+    reportError(message) {
+        const studio = this.pickStudio();
+        if (studio && typeof studio.showMessage === "function") {
+            studio.showMessage(message, true);
+        } else {
+            console.warn(message);
+        }
     }
 
     hookStudioInteraction(studio) {
@@ -16378,14 +16413,17 @@ class VNCCSPoseLayerBridge {
         if (!canvas || studio._vnccsPoseLayerBridgeHook) return;
         const onPointerDown = (event) => {
             if (event && event.button !== 0) return;
-            for (const sub of this.subs.values()) this.beginGesture(sub);
+            for (const sub of this.subs.values()) this.nudgeGesture(sub);
         };
         const onPointerMove = (event) => {
             if (!event || !(event.buttons & 1)) return;
-            for (const sub of this.subs.values()) this.schedulePreview(sub);
+            for (const sub of this.subs.values()) {
+                this.schedulePreview(sub);
+                this.nudgeGesture(sub);
+            }
         };
         const onPointerUp = () => {
-            for (const sub of this.subs.values()) this.requestFinal(sub);
+            for (const sub of this.subs.values()) this.nudgeGesture(sub);
         };
         canvas.addEventListener("pointerdown", onPointerDown);
         canvas.addEventListener("pointermove", onPointerMove);
@@ -16395,16 +16433,11 @@ class VNCCSPoseLayerBridge {
         const previousPoseChange = viewer && viewer.options ? viewer.options.onPoseChange : null;
         let wrapper = null;
         if (viewer && viewer.options) {
-            // "change" commits (sliders, morph solves, restores) also produce
-            // one full-quality capture; the dedupe window collapses the paired
-            // pointerup/onPoseChange pair of one gesture into a single final.
+            // "change" commits (sliders, morph solves, restores) nudge the
+            // same gesture manager as pointer activity, so one user action
+            // still ends in exactly one full-quality capture.
             wrapper = (pose) => {
-                const now = Date.now();
-                for (const sub of this.subs.values()) {
-                    if (sub.lastFinalAt && now - sub.lastFinalAt < VNCCS_POSE_LAYER_FINAL_DEDUPE_MS) continue;
-                    this.beginGesture(sub);
-                    this.requestFinal(sub);
-                }
+                for (const sub of this.subs.values()) this.nudgeGesture(sub);
                 return previousPoseChange ? previousPoseChange(pose) : undefined;
             };
             viewer.options.onPoseChange = wrapper;
@@ -16422,6 +16455,14 @@ class VNCCSPoseLayerBridge {
                     studio._vnccsPoseCharacterDropdown.wrap.remove();
                     studio._vnccsPoseCharacterDropdown = null;
                 }
+                // Restore the original renderCharactersUI so a re-register of
+                // the same studio cannot stack another wrapper (Minor 3).
+                if (studio._vnccsPoseCharacterRenderWrapper
+                    && studio.renderCharactersUI === studio._vnccsPoseCharacterRenderWrapper) {
+                    studio.renderCharactersUI = studio._vnccsPoseCharacterRenderOriginal;
+                }
+                studio._vnccsPoseCharacterRenderWrapper = null;
+                studio._vnccsPoseCharacterRenderOriginal = null;
                 studio._vnccsPoseCharacterPanelHooked = false;
                 studio._vnccsPoseLayerBridgeHook = null;
             },
@@ -16434,12 +16475,15 @@ class VNCCSPoseLayerBridge {
         const previousRender = typeof studio.renderCharactersUI === "function"
             ? studio.renderCharactersUI
             : null;
-        studio.renderCharactersUI = (...args) => {
+        const wrapper = (...args) => {
             const result = previousRender ? Reflect.apply(previousRender, studio, args) : undefined;
             studio._vnccsPoseCharacterDropdown = null;
             this.installCharacterDropdown(studio);
             return result;
         };
+        studio._vnccsPoseCharacterRenderOriginal = previousRender;
+        studio._vnccsPoseCharacterRenderWrapper = wrapper;
+        studio.renderCharactersUI = wrapper;
         this.installCharacterDropdown(studio);
     }
 
@@ -16504,7 +16548,7 @@ class VNCCSPoseLayerBridge {
                         id,
                         name: String(entry.name || entry.id || "Character " + (index + 1)),
                         source: "vnccs",
-                        morphs: vnccsPoseLayerMorphValues(entry.morphs || entry),
+                        morphs: normalizePoseLayerMorphs(entry.morphs || entry),
                     });
                 });
                 if (!characters.length) throw new Error("no saved VNCCS characters");
@@ -16527,7 +16571,7 @@ class VNCCSPoseLayerBridge {
             id: String(source.id || "mannequin"),
             name: String(source.name || "Mannequin"),
             source: source.source === "vnccs" ? "vnccs" : "mannequin",
-            morphs: vnccsPoseLayerMorphValues(source.morphs),
+            morphs: normalizePoseLayerMorphs(source.morphs),
         };
         this.selectedCharacter = next;
         for (const studio of this.studios) {
@@ -16541,11 +16585,16 @@ class VNCCSPoseLayerBridge {
             }
             this.refreshCharacterDropdown(studio);
         }
+        // One selection = one gesture = one history command: hold the gesture
+        // open across the async morph settle so it cannot split in two.
+        for (const sub of this.subs.values()) {
+            sub.settleHold = true;
+            this.nudgeGesture(sub);
+        }
         void this.settleMorphs().then(() => {
-            // The character change is a "change" commit: one full capture.
             for (const sub of this.subs.values()) {
-                this.beginGesture(sub);
-                this.requestFinal(sub);
+                sub.settleHold = false;
+                this.nudgeGesture(sub);
             }
         });
     }
@@ -16556,7 +16605,7 @@ class VNCCSPoseLayerBridge {
         try {
             await studio.loadModel(false, false);
         } catch (err) {
-            console.warn("VNCCS Pose Studio: pose layer character morph solve failed", err);
+            console.warn("[VNCCS Pose Studio] Pose layer character morph solve failed", err);
         }
     }
 }
