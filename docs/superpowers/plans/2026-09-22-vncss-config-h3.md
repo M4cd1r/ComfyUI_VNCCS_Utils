@@ -1221,20 +1221,9 @@ Inside `draw()` (line 5518), before the `fetch("/vnccs/unicanvas/draw", …)` ca
       try {
         await app.queuePrompt(0, 1);
         const images = await this._pollForResult(this.settings.draw_id);
-        await this._stageGeneratedImages(images.images, images.mask, mode);
-        this.setStatus(`Generated ${images.images.length} image(s)`);
-      } catch (err) {
-        this.setStatus(`[VNCCS UniCanvas] ${err.message || err}`, true);
-      } finally {
-        this.stopDrawProgressPolling();
-        this.drawInProgress = false;
-        this.drawBtn.disabled = false;
-      }
-      return;
-    }
 ```
 
-Add the polling helper next to `startDrawProgressPolling` (line 5803):
+Add the polling helper next to `startDrawProgressPolling` (line 5803). `_buildDrawPayload({ includeDebugId })` is the extraction of the payload the HTTP path already builds in `draw()` (the body sent to `/vnccs/unicanvas/draw` minus `debug_id`/`settings` when `includeDebugId` is false) — it must carry the full composition key set `_run_unicanvas_draw` consumes: `mode`, `image`, `mask`, `source_empty`, `bbox`, `inference_size`, `output_size`. The queued branch must also fail fast on prompt failure: subscribe to `api`'s `execution_error` event while polling and reject `_pollForResult` with the reported error message instead of waiting out the timeout.
 
 ```js
   async _pollForResult(drawId, timeoutMs = 600000) {
