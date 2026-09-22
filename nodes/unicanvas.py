@@ -4595,6 +4595,8 @@ def register_unicanvas_routes() -> None:
     async def vnccs_unicanvas_result(request):
         return web.json_response(_get_draw_result(str(request.match_info.get("draw_id") or "")))
 
+    register_unicanvas_layer_routes()
+
 
 NODE_CLASS_MAPPINGS = {
     "VNCCS_UniCanvas": VNCCS_UniCanvas,
@@ -4603,3 +4605,283 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_UniCanvas": "VNCCS UniCanvas",
 }
+
+
+# ============================================================================
+# UniCanvas layer utilities (Plan 4): background removal + color matching.
+# Deliberately appended region so the shared draw pipeline above stays
+# untouched for parallel branches. Registers:
+#   POST /vnccs/unicanvas/remove_bg   { method: "qi21" | "birefnet", image }
+#   POST /vnccs/unicanvas/color_match { image, reference, method, strength }
+# ============================================================================
+
+UC_QI21_REMOVE_BG_UNAVAILABLE = (
+    "[VNCCS UniCanvas] Remove bg – QI2.1 requires the Qwen-Image-2.1 module (QI2.1 family)."
+)
+
+UC_COLOR_MATCH_METHODS = ("mkl", "hm", "reinhard", "mvgd", "hm-mvgd-hm", "hm-mkl-hm", "reinhard_lab_gpu")
+
+_UNICANVAS_LAYER_ROUTES_REGISTERED = False
+
+
+def _uc_image_to_rgb_tensor(image: Image.Image) -> torch.Tensor:
+    """(H,W,3) float32 tensor in 0..1 - the shared layer-utility image contract."""
+    array = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    return torch.from_numpy(array.copy())
+
+
+def _uc_rgba_tensor_to_image(tensor: torch.Tensor) -> Image.Image:
+    array = tensor.detach().to(device="cpu", dtype=torch.float32).clamp(0.0, 1.0).numpy()
+    if array.ndim != 3 or array.shape[-1] not in (3, 4):
+        raise ValueError(f"[VNCCS UniCanvas] Unsupported result tensor shape {tuple(array.shape)}.")
+    data = (array * 255.0).round().astype(np.uint8)
+    return Image.fromarray(data, mode="RGBA" if array.shape[-1] == 4 else "RGB")
+
+
+def _uc_resolve_qi21_module():
+    """Contract #3: the QI2.1 stack is obtained through the existing registry lookup."""
+    try:
+        module = _get_unicanvas_model_module("qwen_image21")
+    except Exception:
+        module = None
+    if module is None or not callable(getattr(module, "remove_background", None)):
+        raise RuntimeError(UC_QI21_REMOVE_BG_UNAVAILABLE)
+    return module
+
+
+def _uc_load_birefnet_masker():
+    from vnccs_sam3d.processing.birefnet_mask import auto_mask_bgr
+
+    return auto_mask_bgr
+
+
+def _run_unicanvas_remove_bg(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = payload or {}
+    method = str(payload.get("method") or "").strip().lower()
+    if method not in ("qi21", "birefnet"):
+        raise ValueError(f"[VNCCS UniCanvas] Unknown remove bg method '{method}'.")
+    # Fail fast before any pixel work when the requested stack is unavailable.
+    module = _uc_resolve_qi21_module() if method == "qi21" else None
+    image = _decode_data_url(str(payload.get("image") or ""), "RGB")
+    if method == "qi21":
+        rgba = module.remove_background(_uc_image_to_rgb_tensor(image))
+        result = _uc_rgba_tensor_to_image(rgba)
+    else:
+        masker = _uc_load_birefnet_masker()
+        img_bgr = np.asarray(image, dtype=np.uint8)[:, :, ::-1].copy()
+        mask, _bounds = masker(img_bgr)
+        alpha = (np.asarray(mask) > 0).astype(np.uint8) * 255
+        result = Image.new("RGBA", image.size, (255, 255, 255, 0))
+        result.putalpha(Image.fromarray(alpha, mode="L"))
+    return {
+        "alpha": _encode_png_data_url(result),
+        "width": result.width,
+        "height": result.height,
+        "method": method,
+    }
+
+
+def _np_srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
+    """sRGB (0..1) to CIE LAB (D65); pure NumPy so it works without extra deps."""
+    array = np.clip(np.asarray(rgb, dtype=np.float64), 0.0, 1.0)
+    linear = np.where(array <= 0.04045, array / 12.92, ((array + 0.055) / 1.055) ** 2.4)
+    matrix = np.array(
+        [
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041],
+        ]
+    )
+    xyz = linear @ matrix.T
+    xyz = xyz / np.array([0.95047, 1.0, 1.08883])
+    with np.errstate(invalid="ignore"):
+        f = np.where(xyz > 0.008856, np.cbrt(np.clip(xyz, 0.0, None)), 7.787 * xyz + 16.0 / 116.0)
+    fx, fy, fz = f[..., 0], f[..., 1], f[..., 2]
+    return np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], axis=-1)
+
+
+def _np_lab_to_srgb(lab: np.ndarray) -> np.ndarray:
+    """CIE LAB (D65) back to sRGB (0..1); pure NumPy counterpart of _np_srgb_to_lab."""
+    lab = np.asarray(lab, dtype=np.float64)
+    fy = (lab[..., 0] + 16.0) / 116.0
+    fx = fy + lab[..., 1] / 500.0
+    fz = fy - lab[..., 2] / 200.0
+    f = np.stack([fx, fy, fz], axis=-1)
+    cube = f ** 3
+    xyz = np.where(cube > 0.008856, cube, (f - 16.0 / 116.0) / 7.787) * np.array([0.95047, 1.0, 1.08883])
+    matrix = np.array(
+        [
+            [3.2404542, -1.5371385, -0.4985314],
+            [-0.9692660, 1.8760108, 0.0415560],
+            [0.0556434, -0.2040259, 1.0572252],
+        ]
+    )
+    linear = xyz @ matrix.T
+    return np.clip(np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * np.clip(linear, 0.0, None) ** (1.0 / 2.4) - 0.055), 0.0, 1.0)
+
+
+def _reinhard_lab_transfer_np(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """Pure Reinhard (LAB mean/std) transfer - fallback when color-matcher is unavailable."""
+    src_lab = _np_srgb_to_lab(src)
+    ref_lab = _np_srgb_to_lab(ref)
+    out = np.empty_like(src_lab)
+    for channel in range(3):
+        source = src_lab[..., channel]
+        reference = ref_lab[..., channel]
+        out[..., channel] = (source - source.mean()) / (source.std() + 1e-6) * (reference.std() + 1e-6) + reference.mean()
+    return _np_lab_to_srgb(out)
+
+
+def _torch_srgb_to_lab(rgb: torch.Tensor) -> torch.Tensor:
+    array = rgb.clamp(0.0, 1.0).to(dtype=torch.float32)
+    linear = torch.where(array <= 0.04045, array / 12.92, ((array + 0.055) / 1.055) ** 2.4)
+    matrix = array.new_tensor(
+        [
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041],
+        ]
+    )
+    xyz = linear @ matrix.T
+    xyz = xyz / xyz.new_tensor([0.95047, 1.0, 1.08883])
+    f = torch.where(xyz > 0.008856, torch.clamp(xyz, min=0.0) ** (1.0 / 3.0), 7.787 * xyz + 16.0 / 116.0)
+    fx, fy, fz = f[..., 0], f[..., 1], f[..., 2]
+    return torch.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], dim=-1)
+
+
+def _torch_lab_to_srgb(lab: torch.Tensor) -> torch.Tensor:
+    fy = (lab[..., 0] + 16.0) / 116.0
+    fx = fy + lab[..., 1] / 500.0
+    fz = fy - lab[..., 2] / 200.0
+    f = torch.stack([fx, fy, fz], dim=-1)
+    cube = f ** 3
+    xyz = torch.where(cube > 0.008856, cube, (f - 16.0 / 116.0) / 7.787) * lab.new_tensor([0.95047, 1.0, 1.08883])
+    matrix = lab.new_tensor(
+        [
+            [3.2404542, -1.5371385, -0.4985314],
+            [-0.9692660, 1.8760108, 0.0415560],
+            [0.0556434, -0.2040259, 1.0572252],
+        ]
+    )
+    linear = xyz @ matrix.T
+    return torch.where(linear <= 0.0031308, 12.92 * linear, 1.055 * torch.clamp(linear, min=0.0) ** (1.0 / 2.4) - 0.055).clamp(0.0, 1.0)
+
+
+def _reinhard_lab_gpu_transfer(src: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    """Torch Reinhard (LAB mean/std) transfer; follows the tensors' device."""
+    src_lab = _torch_srgb_to_lab(src)
+    ref_lab = _torch_srgb_to_lab(ref)
+    out = torch.empty_like(src_lab)
+    for channel in range(3):
+        source = src_lab[..., channel]
+        reference = ref_lab[..., channel]
+        out[..., channel] = (source - source.mean()) / (source.std(unbiased=False) + 1e-6) * (reference.std(unbiased=False) + 1e-6) + reference.mean()
+    return _torch_lab_to_srgb(out)
+
+
+def _load_color_matcher_class():
+    """Return the color-matcher ColorMatcher class, or None when the package is unavailable."""
+    try:
+        from color_matcher import ColorMatcher
+    except Exception:
+        return None
+    return ColorMatcher
+
+
+def _uc_tensor_to_u8(tensor: torch.Tensor) -> np.ndarray:
+    array = tensor.detach().to(device="cpu", dtype=torch.float32).clamp(0.0, 1.0).numpy()
+    return (array * 255.0).round().astype(np.uint8)
+
+
+def _color_match_transfer(src: torch.Tensor, ref: torch.Tensor, method: str) -> tuple[torch.Tensor, str]:
+    """Transfer ref's color statistics onto src; returns (matched RGB, engine name)."""
+    method = str(method or "mkl").strip().lower()
+    if method not in UC_COLOR_MATCH_METHODS:
+        raise ValueError(f"[VNCCS UniCanvas] Unknown color match method '{method}'.")
+    if method == "reinhard_lab_gpu":
+        return _reinhard_lab_gpu_transfer(src, ref), "reinhard_lab_gpu"
+    matcher_cls = _load_color_matcher_class()
+    if matcher_cls is not None:
+        try:
+            matched = matcher_cls().transfer(src=_uc_tensor_to_u8(src), ref=_uc_tensor_to_u8(ref), method=method)
+            return torch.from_numpy(np.asarray(matched, dtype=np.float32) / 255.0), "color-matcher"
+        except Exception:
+            pass
+    fallback = _reinhard_lab_transfer_np(
+        _uc_tensor_to_u8(src).astype(np.float64) / 255.0,
+        _uc_tensor_to_u8(ref).astype(np.float64) / 255.0,
+    )
+    return torch.from_numpy(fallback.astype(np.float32)), "reinhard-fallback"
+
+
+def _uc_clamp_strength(strength: Any) -> float:
+    try:
+        value = float(strength)
+    except (TypeError, ValueError):
+        value = 10.0
+    return max(0.0, min(10.0, value))
+
+
+def _apply_color_match_strength(src: torch.Tensor, matched: torch.Tensor, strength: Any) -> torch.Tensor:
+    """strength 0..10: 0 keeps the target, 10 applies the full transfer."""
+    alpha = _uc_clamp_strength(strength) / 10.0
+    return (src + (matched - src) * alpha).clamp(0.0, 1.0)
+
+
+def _run_unicanvas_color_match(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = payload or {}
+    image = _decode_data_url(str(payload.get("image") or ""), "RGBA")
+    reference = _decode_data_url(str(payload.get("reference") or ""), "RGB")
+    method = str(payload.get("method") or "mkl").strip().lower()
+    src = _uc_image_to_rgb_tensor(image)
+    ref = _uc_image_to_rgb_tensor(reference)
+    matched, engine = _color_match_transfer(src, ref, method)
+    result = _apply_color_match_strength(src, matched, payload.get("strength", 10.0))
+    rgb = (result.detach().to(device="cpu", dtype=torch.float32).clamp(0.0, 1.0).numpy() * 255.0).round().astype(np.uint8)
+    alpha = np.asarray(image.convert("RGBA"))[:, :, 3]
+    rgba = np.concatenate([rgb, alpha[:, :, None]], axis=-1)
+    return {
+        "image": _encode_png_data_url(Image.fromarray(rgba, mode="RGBA")),
+        "method": method,
+        "engine": engine,
+        "strength": _uc_clamp_strength(payload.get("strength", 10.0)),
+    }
+
+
+def register_unicanvas_layer_routes() -> None:
+    global _UNICANVAS_LAYER_ROUTES_REGISTERED
+    if _UNICANVAS_LAYER_ROUTES_REGISTERED:
+        return
+    try:
+        from aiohttp import web
+        from server import PromptServer
+    except Exception:
+        return
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/remove_bg")
+    async def vnccs_unicanvas_remove_bg(request):
+        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+            return web.json_response({"error": "UniCanvas remove bg payload is too large"}, status=413)
+        try:
+            payload = await request.json()
+            result = await asyncio.to_thread(_run_unicanvas_remove_bg, payload)
+            return web.json_response(result)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/color_match")
+    async def vnccs_unicanvas_color_match(request):
+        if not _content_length_ok(request, _MAX_UPLOAD_BYTES * 2 + 1024 * 1024):
+            return web.json_response({"error": "UniCanvas color match payload is too large"}, status=413)
+        try:
+            payload = await request.json()
+            result = await asyncio.to_thread(_run_unicanvas_color_match, payload)
+            return web.json_response(result)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    _UNICANVAS_LAYER_ROUTES_REGISTERED = True
+
+
+register_unicanvas_layer_routes()
+
