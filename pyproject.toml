@@ -52,5 +52,6 @@ NodeIds = [
     "VNCCS_ModelSelector",
     "VNCCS_PoseStudio",
     "VNCCS_UniCanvas",
-    "VNCCS_3DFactory"
+    "VNCCS_3DFactory",
+    "VNCCS_Config"
 ]

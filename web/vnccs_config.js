@@ -8,14 +8,18 @@ class UniCanvasConfigWidget {
     this.node = node;
     this.state = this._readState();
     this.loraNames = [];
+    this.dragLoraIndex = null;
     this.container = document.createElement("div");
     this.container.className = "vnccs-config-root";
     this.container.innerHTML = `
       <style>
         .vnccs-config-root { display:flex; flex-direction:column; gap:8px; padding:8px; color:#eee; font:12px sans-serif; }
         .vnccs-config-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-        .vnccs-config-lora { display:grid; grid-template-columns:minmax(0,2fr) 58px 22px 24px; gap:6px; align-items:center; }
+        .vnccs-config-lora { display:grid; grid-template-columns:minmax(0,2fr) 58px 22px 24px; gap:6px; align-items:center; cursor:grab; }
         .vnccs-config-lora input[type="checkbox"] { margin:0; accent-color:#ffd45c; cursor:pointer; }
+        .vnccs-config-lora input[type="number"] { cursor:text; }
+        .vnccs-config-lora.dragging { opacity:.5; }
+        .vnccs-config-lora.drop-target { outline:1px dashed #ffd45c; outline-offset:1px; border-radius:4px; }
         .vnccs-config-btn { border:1px solid #555; background:#222; color:#eee; border-radius:6px; height:26px; cursor:pointer; }
         .vnccs-config-switch { width:42px; height:22px; border-radius:999px; border:1px solid #f08fa3; background:#f08fa322; position:relative; cursor:pointer; }
         .vnccs-config-switch::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:#aaa; transition:left .12s ease; }
@@ -121,6 +125,11 @@ class UniCanvasConfigWidget {
       }
       const row = document.createElement("div");
       row.className = "vnccs-config-lora";
+      // Spec §3: the LoRA stack rows are drag-reorderable. The row is the drag source, any other row
+      // is a drop target, and the reorder commits on drop (a discrete action: no undo semantics).
+      row.draggable = true;
+      row.dataset.index = String(index);
+      row.title = "Drag to reorder";
 
       const select = document.createElement("select");
       select.dataset.field = "name";
@@ -156,8 +165,76 @@ class UniCanvasConfigWidget {
       remove.textContent = "✕";
 
       row.append(select, strength, enabled, remove);
+
+      row.addEventListener("dragstart", (e) => {
+        // A drag that starts on one of the row controls must not steal the control's own gesture
+        // (text selection in the strength field, opening the picker), so the controls keep behaving
+        // exactly as before the drag reorder existed.
+        if (e.target?.closest?.("input, select, button")) {
+          e.preventDefault();
+          return;
+        }
+        this.dragLoraIndex = index;
+        row.classList.add("dragging");
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", String(index));
+        }
+      });
+      row.addEventListener("dragend", () => {
+        this.dragLoraIndex = null;
+        row.classList.remove("dragging");
+        this.clearLoraDropMarkers();
+      });
+      row.addEventListener("dragover", (e) => {
+        const from = this._dragLoraIndex(e);
+        if (from === null || from === index) return;
+        e.preventDefault();
+        this.markLoraDropTarget(row);
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      });
+      row.addEventListener("dragleave", () => row.classList.remove("drop-target"));
+      row.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const from = this._dragLoraIndex(e);
+        this.dragLoraIndex = null;
+        this.clearLoraDropMarkers();
+        // Dropping a row onto itself is a no-op: nothing moves, nothing is written.
+        if (from === null || from === index) return;
+        this.reorderLoras(from, index);
+      });
+
       this.loraList.appendChild(row);
     });
+  }
+
+  _dragLoraIndex(e) {
+    if (Number.isInteger(this.dragLoraIndex) && this.dragLoraIndex >= 0) return this.dragLoraIndex;
+    const raw = e.dataTransfer?.getData?.("text/plain");
+    const index = Number(raw);
+    return raw !== undefined && raw !== "" && Number.isInteger(index) && index >= 0 ? index : null;
+  }
+
+  clearLoraDropMarkers() {
+    this.loraList?.querySelectorAll?.(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+  }
+
+  markLoraDropTarget(row) {
+    this.clearLoraDropMarkers();
+    row.classList.add("drop-target");
+  }
+
+  // Drop commit: the dragged entry lands on the index of the row it was dropped onto, then the
+  // stack is re-rendered and persisted (single discrete action, no history entry).
+  reorderLoras(from, to) {
+    const total = this.state.loras.length;
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) return false;
+    if (from < 0 || to < 0 || from >= total || to >= total) return false;
+    const [entry] = this.state.loras.splice(from, 1);
+    this.state.loras.splice(to, 0, entry);
+    this.renderLoras();
+    this._writeState();
+    return true;
   }
 }
 
