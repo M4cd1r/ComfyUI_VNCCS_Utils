@@ -174,3 +174,78 @@ test("the UniCanvas character control mirrors the Pose Studio selection read-onl
     assert.match(poseLayerSource, /select\.disabled = true/);
     assert.match(poseLayerSource, /single source of truth for layer\.poseData\.character/);
 });
+
+
+test("bridge renders are dropped while a pose edit session owns the layer", () => {
+    const guardStart = poseLayerSource.indexOf("function handleUniCanvasPoseLayerRender");
+    assert.ok(guardStart >= 0, "render handler not found");
+    const handler = poseLayerSource.slice(guardStart, guardStart + 1400);
+    assert.match(handler, /state\?\.session\?\.layerId === sub\.layerId/);
+    // Morph mirroring into the session is still allowed.
+    assert.match(handler, /applyUniCanvasPoseLayerCharacterMorphs/);
+    // Cancel restores the pre-edit pixels AND poseData untouched.
+    assert.match(poseLayerSource, /session\.beforePixels/);
+    assert.match(poseLayerSource, /session\.beforePoseData/);
+    const cancelStart = poseLayerSource.indexOf("export function cancelUniCanvasPoseEdit");
+    assert.ok(cancelStart >= 0, "cancelUniCanvasPoseEdit not found");
+    const cancel = poseLayerSource.slice(cancelStart, cancelStart + 1400);
+    assert.match(cancel, /restoreLayerPixelSnapshot\(layer, session\.beforePixels\)/);
+    assert.match(cancel, /layer\.poseData = deepCloneJSON\(session\.beforePoseData\)/);
+});
+
+
+test("the chip links only when a Pose Studio that can render answers", () => {
+    const pickStart = poseStudioSource.indexOf("    pickStudio() {");
+    assert.ok(pickStart >= 0, "pickStudio not found");
+    const pick = poseStudioSource.slice(pickStart, pickStart + 400);
+    assert.match(pick, /isInitialized/);
+    const subscribeStart = poseStudioSource.indexOf("    subscribe(layerId) {");
+    assert.ok(subscribeStart >= 0, "subscribe not found");
+    const subscribe = poseStudioSource.slice(subscribeStart, subscribeStart + 1400);
+    assert.match(subscribe, /if \(!this\.pickStudio\(\)\) return;/);
+});
+
+
+test("the initial render is re-issued and the final guard re-arms on failure", () => {
+    const finalStart = poseStudioSource.indexOf("    requestFinal(sub) {");
+    assert.ok(finalStart >= 0, "requestFinal not found");
+    const requestFinal = poseStudioSource.slice(finalStart, finalStart + 1200);
+    const successIndex = requestFinal.indexOf('emitRender(sub, "final")');
+    const guardIndex = requestFinal.indexOf("gestureFinalEmitted = true");
+    assert.ok(successIndex >= 0 && guardIndex > successIndex, "the final-emitted guard must be set only after emitRender succeeds");
+    assert.match(requestFinal, /reportError/);
+    assert.match(poseStudioSource, /sub\.emittedCount/);
+    assert.match(poseStudioSource, /_viewerInitPromise\)\.then\(reissue\)/);
+});
+
+
+test("one character selection commits one layerPixels history command", () => {
+    assert.match(poseStudioSource, /VNCCS_POSE_LAYER_GESTURE_SETTLE_MS/);
+    assert.match(poseStudioSource, /nudgeGesture\(sub\)/);
+    const applyStart = poseStudioSource.indexOf("    applyCharacter(character) {");
+    assert.ok(applyStart >= 0, "applyCharacter not found");
+    const apply = poseStudioSource.slice(applyStart, applyStart + 2200);
+    assert.match(apply, /settleHold = true/);
+    assert.match(apply, /settleHold = false/);
+    // The morph settle re-nudges the SAME gesture instead of opening a new one.
+    assert.ok(!apply.includes("beginGesture"), "applyCharacter must not open a second gesture");
+    assert.match(poseStudioSource, /if \(sub\.settleHold\) return;/);
+});
+
+
+test("undo of bridge gestures restores poseData together with pixels", () => {
+    assert.match(poseLayerSource, /poseDataBefore: gesture\.poseDataBefore/);
+    assert.match(poseLayerSource, /poseDataAfter: layer\.poseData \? deepCloneJSON\(layer\.poseData\) : null/);
+    assert.match(widgetSource, /entry\.poseDataBefore !== undefined/);
+    assert.match(widgetSource, /layer\.poseData = poseData \? JSON\.parse\(JSON\.stringify\(poseData\)\) : null;/);
+});
+
+
+test("fix-round hygiene: probe-only availability, own pose group, visible capture errors", () => {
+    assert.ok(!poseLayerSource.includes("state.characters."), "vestigial character-list parsing must be gone");
+    assert.ok(!poseLayerSource.includes("state.characters "), "vestigial character-list state must be gone");
+    assert.match(poseLayerSource, /createLayerGroupHead\("Pose Layers"/);
+    assert.match(poseLayerSource, /Pose capture failed: no Pose Studio linked/);
+    assert.match(poseStudioSource, /\[VNCCS Pose Studio\] Pose layer capture failed/);
+    assert.match(poseStudioSource, /console\.warn\("\[VNCCS Pose Studio\] Pose layer character morph solve failed"/);
+});
