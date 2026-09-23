@@ -96,6 +96,15 @@ the composition over N cycles equals one cycle. Concretely the rendered layer pi
 and `layer.poseData` (bone deltas, morphs, camera, size) must be stable across cycles within
 numeric tolerance.
 
+5.1b **Position preservation** (owner acceptance criterion, 2026-09-23): after a pose
+change and Save, the mannequin's torso anchor stays at the same position on the canvas —
+the capture is torso-anchored (6.2) and the editor save draws the capture at the fixed
+natural rect, so re-posing limbs does not translate the body; silhouette changes are the
+pose change itself. Legacy layers re-frame once on their first save (6.3). Verification
+gate: on the merged build, a pose-change save must not translate the torso anchor; if
+residual drift is measured, the draw offset aligns the new capture's content centre with
+the layer's previous content centre (never scaled).
+
 5.2 **Storage contract.** `poseData.pose.bonePositions` stays RELATIVE to the shaped rest
 (`bonePositionsRel:true`, `web/vnccs_unicanvas_pose_layers.mjs:1156-1192`) and carries
 **un-scaled** deltas: proportion morphs (`*_length`, `head_size`, ...) and body morphs
