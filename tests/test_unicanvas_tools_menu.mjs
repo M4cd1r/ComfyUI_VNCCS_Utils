@@ -93,3 +93,10 @@ test("strength slider previews live and commits on release", () => {
   assert.ok(layerTools.includes("finishColorMatchGesture"), "gesture end must route through the single commit path");
   assert.match(layerTools, /kind: "layerPixels"/, "the commit must record a layerPixels history entry");
 });
+
+test("a failed or stale dropdown menu never blocks future opens", async () => {
+    const source = await readFile(new URL("../web/vnccs_custom_select.mjs", import.meta.url), "utf8");
+    assert.match(source, /if \(state\.menu && !state\.menu\.isConnected\) state\.menu = null;/, "a detached menu must be discarded before the open guard");
+    assert.ok(source.includes("[VNCCS Custom Select] open failed"), "open failures must surface in the console and self-heal");
+    assert.ok(source.includes("z-index: 2147483600"), "the menu must render above the fullscreen portal");
+});
