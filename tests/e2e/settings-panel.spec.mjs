@@ -24,3 +24,17 @@ test("settings open as one larger panel anchored under the gear", async ({ page 
   await gear.click(); // second gear click closes
   await expect(panel).toHaveCount(0);
 });
+
+test("the settings Close button closes the panel and the gear reopens it", async ({ page }) => {
+  await openUnicanvas(page);
+  const gear = page.locator('[title="Settings"]').first();
+  await gear.click();
+  const panel = page.locator(".vnccs-uc-settings-popover");
+  await expect(panel).toHaveCount(1);
+
+  await panel.locator('button:has-text("Close")').click();
+  await expect(panel).toHaveCount(0);
+
+  await gear.click(); // the closed panel must leave no stale outside-click state behind
+  await expect(panel).toHaveCount(1);
+});
