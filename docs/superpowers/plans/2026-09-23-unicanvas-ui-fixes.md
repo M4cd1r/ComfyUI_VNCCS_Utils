@@ -110,7 +110,8 @@ services:
         VNCSS_UTILS_REPO: ${VNCSS_UTILS_REPO:-https://github.com/M4cd1r/ComfyUI_VNCCS_Utils}
         VNCSS_UTILS_REF: ${VNCSS_UTILS_REF:-unicanvas-next}
     ports:
-      - "8188:8188"
+      # PORT lets parallel worktrees each run their own platform instance.
+      - "${PORT:-8188}:8188"
     ipc: host
     volumes:
       # Code under test comes from the working tree - no image rebuild for WIP code.
