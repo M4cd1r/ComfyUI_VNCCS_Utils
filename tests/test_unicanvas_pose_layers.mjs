@@ -3,9 +3,11 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+    absolutizeUniCanvasPoseBones,
     buildPoseLayerData,
     buildUniCanvasPoseOptionsSection,
     computeTorsoAnchor,
+    drawUniCanvasPoseRenderIntoLayer,
     MANNEQUIN_TOOL_ICON,
     mountUniCanvasPoseOptions,
     normalizePoseLayerData,
@@ -14,6 +16,7 @@ import {
     POSE_LAYER_BUS_EVENT,
     POSE_LAYER_STATUS,
     POSE_LAYER_TYPE,
+    relativizeUniCanvasPoseBones,
     saveUniCanvasPoseEdit,
     unmountUniCanvasPoseOptions,
 } from "../web/vnccs_unicanvas_pose_layers.mjs";
@@ -615,6 +618,8 @@ test("mannequin options apply morphs live through requestAnimationFrame", () => 
         else globalThis.requestAnimationFrame = previousRaf;
         fixture.restore();
     }
+});
+
 // Minimal stand-in for a Three.js bone: getWorldPosition(target) fills target.
 function boneStub(map) {
     const bones = {};
@@ -702,4 +707,115 @@ test("pose edit framing is torso-anchored and saves a re-centered camera", () =>
     assert.ok(storedCameraIndex >= 0, "saved poseData.camera must zero the offsets");
     const storedCamera = poseLayerSource.slice(storedCameraIndex, storedCameraIndex + 200);
     assert.match(storedCamera, /offset_x: 0,\s*offset_y: 0/);
+});
+
+// --- Task 5: pose round-trip idempotence (Bug A) -----------------------------
+
+
+// --- Task 5: pose round-trip idempotence (Bug A) -----------------------------
+
+// Minimal 2D-context stub: records drawImage destination rects so the pose
+// layer draw geometry is assertable without a browser canvas.
+function makeDrawRecorder() {
+    const draws = [];
+    const context = {
+        clearRect() {},
+        drawImage(_image, x, y, width, height) { draws.push({ x, y, width, height }); },
+    };
+    return { context, draws };
+}
+
+test("editor pose saves draw the capture at its natural render size, never squeezed into the previous alpha bounds", () => {
+    // Bug A geometry: the first editor save left a 378x595 mannequin footprint
+    // on a 2048 canvas. The next save squeezed the whole 1024x1024 capture
+    // into that footprint, shrinking the mannequin on every edit -> save cycle.
+    const recorder = makeDrawRecorder();
+    const widget = {
+        origin: { x: 0, y: 0 },
+        size: { width: 2048, height: 2048 },
+        getLayerAlphaBounds: () => ({ x: 835, y: 725, width: 378, height: 595 }),
+        configureImageContext: (context) => context,
+    };
+    const layer = { canvas: { width: 2048, height: 2048, getContext: () => recorder.context } };
+    const image = { naturalWidth: 1024, naturalHeight: 1024, width: 1024, height: 1024 };
+    const renderMeta = { transparent: true, size: { width: 1024, height: 1024 } };
+
+    drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta, { respectLayerCrop: false });
+
+    assert.equal(recorder.draws.length, 1);
+    const { x, y, width, height } = recorder.draws[0];
+    // Natural capture size, centered on the canvas: a fixed point across save
+    // cycles, independent of the mannequin footprint left by earlier saves.
+    assert.deepEqual([width, height], [1024, 1024]);
+    assert.deepEqual([x, y], [512, 512]);
+});
+
+
+test("the editor capture path opts out of the layer alpha-crop squeeze", () => {
+    const captureStart = poseLayerSource.indexOf("async function applyUniCanvasPoseEditCapture");
+    assert.ok(captureStart >= 0, "applyUniCanvasPoseEditCapture not found");
+    const capture = poseLayerSource.slice(captureStart, captureStart + 2600);
+    assert.match(
+        capture,
+        /drawUniCanvasPoseRenderIntoLayer\(widget, layer, image, session\.poseData\.render, \{ respectLayerCrop: false \}\)/,
+        "the editor capture must draw the fresh render at natural size, not into the previous alpha bounds",
+    );
+});
+
+
+// Faithful stub of the viewer semantics the storage round trip relies on:
+// getPose() -> absolute local positions; setPose() resets to rest then
+// applies; updateBoneLengthScale() rescales a child offset from the UN-shaped
+// initial state and re-caches the shaped rest (vnccs_pose_studio_core.js
+// _setBoneOffsetScale/_cacheShapedRestBonePositions/updateBoneLengthScale).
+// CHILD_OF mirrors _boneLengthChildrenForGroup output for the seeded groups.
+const poseVec = ([x, y, z]) => ({ x, y, z });
+const POSE_CHILD_OF = { shoulder_l: "upperarm_l", spine: "spine_02" };
+
+class PoseRoundTripViewerStub {
+    constructor(initialOffsets) {
+        this.initialBoneStates = Object.fromEntries(
+            Object.entries(initialOffsets).map(([name, position]) => [name, { position: poseVec(position) }]),
+        );
+        this.shapedBoneRestPositions = {};
+        this.scaled = {};
+        this.positions = {};
+        this.restyle();
+    }
+    restyle() {
+        for (const [name, initial] of Object.entries(this.initialBoneStates)) {
+            const scale = this.scaled[name] ?? 1;
+            const rest = [initial.position.x * scale, initial.position.y * scale, initial.position.z * scale];
+            this.shapedBoneRestPositions[name] = poseVec(rest);
+            this.positions[name] = [...rest];
+        }
+    }
+    getPose() {
+        return { bonePositions: Object.fromEntries(Object.entries(this.positions).map(([n, p]) => [n, [...p]])) };
+    }
+    setPose(pose) {
+        this.restyle();
+        for (const [name, p] of Object.entries(pose.bonePositions || {})) this.positions[name] = [...p];
+    }
+    updateBoneLengthScale(group, value) {
+        this.scaled[POSE_CHILD_OF[group]] = 0.5 + value;
+        this.restyle();
+    }
+}
+
+test("relativize -> absolutize over a reshaped rest is the identity across 10 edit->save cycles", () => {
+    // Binary-exact offsets so the float arithmetic is deterministic (the
+    // identity must hold bit-for-bit, not approximately).
+    const viewer = new PoseRoundTripViewerStub({ upperarm_l: [2, 0, 0], spine_02: [0, 2, 0] });
+    const first = relativizeUniCanvasPoseBones(viewer, {
+        bonePositions: { upperarm_l: [3.5, 0.5, 0], spine_02: [0, 3, 0.5] },
+    });
+    let current = first;
+    for (let cycle = 0; cycle < 10; cycle += 1) {
+        viewer.updateBoneLengthScale("shoulder_l", 0.5); // neutral 1.0 scale, re-caches rest
+        current = relativizeUniCanvasPoseBones(viewer, absolutizeUniCanvasPoseBones(viewer, current));
+    }
+    assert.deepEqual(current.bonePositions, first.bonePositions);
+    // The saved pose stays tagged relative so the next edit absolutizes it.
+    assert.equal(current.bonePositionsRel, true);
 });
