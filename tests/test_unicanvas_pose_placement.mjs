@@ -134,3 +134,46 @@ test("a pose change reuses the recorded draw rect, so the body cannot translate 
         restoreDocument();
     }
 });
+
+test("a world expansion invalidates the recorded rect, a render-size change keeps its placement", () => {
+    // The recorded rect lives in layer-canvas coordinates, so a world expansion
+    // (which shifts every layer canvas) must discard it even though the pixel
+    // revision may look unchanged. A render-size change keeps the frame centre
+    // and draws at the new natural size - the mannequin is never re-centred and
+    // never scaled.
+    const restoreDocument = makeScratchDocument(globalThis.document);
+    try {
+        const previousBounds = { x: 120, y: 900, width: 378, height: 595 };
+        const incomingBounds = { x: 323, y: 217, width: 378, height: 595 };
+        const fixture = makeFixture({ previousBounds, incomingBounds });
+        const rect1 = drawUniCanvasPoseRenderIntoLayer(fixture.widget, fixture.layer, IMAGE, RENDER_META);
+        assert.deepEqual([rect1.width, rect1.height], [1024, 1024]);
+
+        // Render-size change with the frame record still current: same centre,
+        // new size (never the old footprint, never a re-centre).
+        const small = { transparent: true, size: { width: 512, height: 512 } };
+        const rect2 = drawUniCanvasPoseRenderIntoLayer(fixture.widget, fixture.layer, IMAGE, small);
+        assert.deepEqual(rect2, { x: rect1.x + 256, y: rect1.y + 256, width: 512, height: 512 });
+        assert.deepEqual(
+            [rect2.x + rect2.width / 2, rect2.y + rect2.height / 2],
+            [rect1.x + rect1.width / 2, rect1.y + rect1.height / 2],
+            "a size change must keep the frame centre",
+        );
+
+        // World expansion: the canvas coordinate system moved, so the record is
+        // no longer a claim about the current pixels.
+        const beforeExpansion = fixture.recorder.draws.length;
+        fixture.widget.origin = { x: -256, y: -256 };
+        fixture.state.previousBounds = { x: -136, y: 644, width: 378, height: 595 };
+        const rect3 = drawUniCanvasPoseRenderIntoLayer(fixture.widget, fixture.layer, IMAGE, small);
+        assert.equal(fixture.recorder.draws.length, beforeExpansion + 1);
+        assert.notDeepEqual(
+            [rect3.x, rect3.y],
+            [rect2.x, rect2.y],
+            "a shifted world frame must not reuse the old rect",
+        );
+        assert.deepEqual([rect3.width, rect3.height], [512, 512]);
+    } finally {
+        restoreDocument();
+    }
+});

@@ -158,8 +158,8 @@ async function measurePosePlacement(page, layerId) {
   return measure;
 }
 
-test("a pose change and save does not translate the mannequin (spec 5.1b)", async ({ page }) => {
-  await openUnicanvas(page);
+/** Create a pose layer and return the id of the layer this test just added. */
+async function addTrackedPoseLayer(page) {
   // The widget state (and therefore earlier spec runs' pose layers) is shared
   // across tests, so track the id of the layer this test creates instead of
   // taking whichever pose layer happens to be first.
@@ -170,25 +170,29 @@ test("a pose change and save does not translate the mannequin (spec 5.1b)", asyn
     return fresh ? fresh.id : null;
   }, knownIds);
   expect(poseLayerId, "adding a pose layer must create a new layer").not.toBeNull();
-  await runEditSaveCycle(page);
-  const measure = await measurePosePlacement(page, poseLayerId);
-  const baseline = await measure();
-  expect(baseline.area).toBeGreaterThan(0);
-  expect(baseline.feetCentroidX).not.toBeNull();
+  return poseLayerId;
+}
 
-  // Re-enter the editor and REALLY change the pose. The mannequin is framed on
-  // the torso anchor at the canvas centre and the viewer's fixed vertical fov
-  // maps the figure to a stable fraction of the canvas height, so the left
-  // forearm sits left of the centre by ~0.10 canvas heights. Clicking it
-  // selects that bone (rotate gizmo at the joint, radius ~0.09 canvas heights);
-  // sweeping that ring ~180 degrees rotates the forearm out of the old
-  // silhouette without touching the torso anchor or the legs.
-  await page.locator(`[data-layer-id="${poseLayerId}"]`).first().click({ button: "right" });
+/** Re-enter the editor for one specific layer and wait until it is usable. */
+async function enterPoseEditForLayer(page, layerId) {
+  await page.locator(`[data-layer-id="${layerId}"]`).first().click({ button: "right" });
   await page.locator(`${".vnccs-uc-layer-menu"} button:has-text("Edit pose")`).click();
   await waitForPoseEditorReady(page);
   // Canvas gestures have no DOM signal to await: give the viewer a beat to
-  // settle after the framing call and after attaching the gizmo.
+  // settle after the framing call.
   await page.waitForTimeout(400);
+}
+
+/**
+ * REALLY change the pose: the mannequin is framed on the torso anchor at the
+ * canvas centre and the viewer's fixed vertical fov maps the figure to a stable
+ * fraction of the canvas height, so the left forearm sits left of the centre by
+ * ~0.10 canvas heights. Clicking it selects that bone (rotate gizmo at the
+ * joint, radius ~0.09 canvas heights); sweeping that ring ~180 degrees rotates
+ * the forearm out of the old silhouette without touching the torso anchor or
+ * the legs.
+ */
+async function rotateForearmOnEditCanvas(page) {
   const canvas = page.locator(".vnccs-uc-pose-edit-canvas");
   const box = await canvas.boundingBox();
   const forearm = {
@@ -197,6 +201,7 @@ test("a pose change and save does not translate the mannequin (spec 5.1b)", asyn
   };
   const ringRadius = box.height * 0.09;
   await page.mouse.click(forearm.x, forearm.y);
+  // The rotate gizmo is attached on the next render.
   await page.waitForTimeout(400);
   await page.mouse.move(forearm.x, forearm.y - ringRadius);
   await page.mouse.down();
@@ -204,8 +209,25 @@ test("a pose change and save does not translate the mannequin (spec 5.1b)", asyn
   await page.mouse.move(forearm.x, forearm.y + ringRadius, { steps: 8 });
   await page.mouse.up();
   await page.waitForTimeout(300);
-  await page.locator(`${POSE_EDIT_BAR} button:has-text("Save pose")`).click();
+}
+
+async function clickPoseEditBar(page, label) {
+  await page.locator(`${POSE_EDIT_BAR} button:has-text("${label}")`).click();
   await expect(page.locator(POSE_EDIT_BAR)).toBeHidden({ timeout: 30_000 });
+}
+
+test("a pose change and save does not translate the mannequin (spec 5.1b)", async ({ page }) => {
+  await openUnicanvas(page);
+  const poseLayerId = await addTrackedPoseLayer(page);
+  await runEditSaveCycle(page);
+  const measure = await measurePosePlacement(page, poseLayerId);
+  const baseline = await measure();
+  expect(baseline.area).toBeGreaterThan(0);
+  expect(baseline.feetCentroidX).not.toBeNull();
+
+  await enterPoseEditForLayer(page, poseLayerId);
+  await rotateForearmOnEditCanvas(page);
+  await clickPoseEditBar(page, "Save pose");
 
   const changed = await measure();
   // The pose really changed: different stored pose AND a different silhouette
@@ -229,5 +251,56 @@ test("a pose change and save does not translate the mannequin (spec 5.1b)", asyn
   await writeFile(
     resolve(outDir, "pose-change-placement.json"),
     JSON.stringify({ baseline, changed }, null, 2),
+  );
+});
+
+test("a cancelled pose edit keeps the frame anchor for the next save (spec 5.1b)", async ({ page }) => {
+  // Cancel restores the pre-edit pixels - exactly the frame the draw record
+  // describes - but the restore runs through the widget's generic cache
+  // invalidation, which bumps the pixel revision. If that rev bump is allowed
+  // to eat the record, the NEXT save falls back to the bbox-centre rule and the
+  // mannequin translates (review finding C1 residual).
+  await openUnicanvas(page);
+  const poseLayerId = await addTrackedPoseLayer(page);
+  await runEditSaveCycle(page);
+  const measure = await measurePosePlacement(page, poseLayerId);
+  const baseline = await measure();
+  expect(baseline.area).toBeGreaterThan(0);
+
+  // Edit -> change the pose -> Cancel: pixels and poseData must come back
+  // untouched (spec 7.3), so the layer still holds the recorded frame.
+  await enterPoseEditForLayer(page, poseLayerId);
+  await rotateForearmOnEditCanvas(page);
+  await clickPoseEditBar(page, "Cancel");
+  const afterCancel = await measure();
+  expect(afterCancel.poseData, "Cancel must restore the pre-edit poseData").toBe(baseline.poseData);
+  expect(Math.abs(afterCancel.feetCentroidX - baseline.feetCentroidX)).toBeLessThanOrEqual(1);
+  expect(Math.abs(afterCancel.maxY - baseline.maxY)).toBeLessThanOrEqual(1);
+  expect(Math.abs(afterCancel.width - baseline.width)).toBeLessThanOrEqual(1);
+
+  // Second edit from the restored state: change the pose for real and save.
+  // The anchor must still hold - this is the path the record has to survive.
+  await enterPoseEditForLayer(page, poseLayerId);
+  await rotateForearmOnEditCanvas(page);
+  await clickPoseEditBar(page, "Save pose");
+  const changed = await measure();
+  expect(changed.poseData, "the edit must really change the stored pose").not.toBe(baseline.poseData);
+  const silhouetteDelta = Math.max(
+    Math.abs(changed.width - baseline.width),
+    Math.abs(changed.height - baseline.height),
+    Math.abs(changed.area / baseline.area - 1) * 100,
+  );
+  expect(silhouetteDelta, "the silhouette must really change with the pose").toBeGreaterThan(10);
+  expect(
+    Math.abs(changed.feetCentroidX - baseline.feetCentroidX),
+    "the save after a cancel must not translate the body",
+  ).toBeLessThanOrEqual(3);
+  expect(Math.abs(changed.maxY - baseline.maxY)).toBeLessThanOrEqual(3);
+
+  const outDir = resolve(import.meta.dirname, "evidence", "pose-roundtrip");
+  await mkdir(outDir, { recursive: true });
+  await writeFile(
+    resolve(outDir, "pose-change-after-cancel.json"),
+    JSON.stringify({ baseline, afterCancel, changed }, null, 2),
   );
 });

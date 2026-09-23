@@ -473,34 +473,59 @@ function resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta) {
  * pixels that draw produced, the next draw reuses the rect VERBATIM, so a pose
  * change cannot translate the body (bbox-centre alignment would: the figure's
  * bbox centre sits below the torso-anchored frame centre, so any silhouette
- * change moves the whole mannequin). Validity is a pixel revision read - never
- * a bitmap scan. A move (the tool bakes the placement into the pixels), a
+ * change moves the whole mannequin). Validity is a revision + world-frame read,
+ * never a bitmap scan. A move (the tool bakes the placement into the pixels), a
  * paint, an undo or a transform bumps the revision and drops back to the
- * content-centre rule below.
+ * content-centre rule below; a world expansion shifts every canvas coordinate,
+ * so the recorded rect is only meaningful inside the frame it was drawn in.
  */
-function currentUniCanvasPoseDrawRecord(layer) {
+function currentUniCanvasPoseDrawRecord(widget, layer) {
   const record = layer?._poseDrawRecord;
   if (!record || record.rev !== (layer._pixelsRev || 0)) return null;
-  return record;
-}
-
-function readUniCanvasPoseDrawRecord(layer, natural) {
-  const record = currentUniCanvasPoseDrawRecord(layer);
-  if (!record) return null;
-  if (record.rect.width !== natural.width || record.rect.height !== natural.height) return null;
+  const frame = record.frame;
+  if (!frame) return null;
+  if (frame.x !== widget.origin.x || frame.y !== widget.origin.y) return null;
+  if (frame.width !== widget.size.width || frame.height !== widget.size.height) return null;
   return record;
 }
 
 /**
- * Store the rect a 1:1 draw used and the pixel revision it produced. Called by
- * the draw helpers AFTER the widget invalidation that follows the draw
- * (`markLayerPixelsChanged` bumps the revision).
+ * The frame to draw at, from a record that is still current. Same render size:
+ * the rect verbatim. A changed render size: the SAME frame centre at the new
+ * size - the placement survives a size change and the drawn size is always the
+ * natural one (a capture is never scaled into a previous footprint).
  */
-function recordUniCanvasPoseDrawRect(layer, rect) {
+function resolveUniCanvasPoseLayerReusedRect(record, natural) {
+  const rect = record.rect;
+  if (rect.width === natural.width && rect.height === natural.height) {
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  }
+  return {
+    x: Math.round(rect.x + rect.width / 2 - natural.width / 2),
+    y: Math.round(rect.y + rect.height / 2 - natural.height / 2),
+    width: natural.width,
+    height: natural.height,
+  };
+}
+
+/** Copy of the current record (or null), so a later restore can re-apply it. */
+function snapshotUniCanvasPoseDrawRecord(widget, layer) {
+  const record = currentUniCanvasPoseDrawRecord(widget, layer);
+  return record ? { rev: record.rev, rect: { ...record.rect } } : null;
+}
+
+/**
+ * Store the rect a 1:1 draw used, the world frame it was drawn in and the pixel
+ * revision it produced. Called by the draw helpers AFTER the widget
+ * invalidation that follows the draw (`markLayerPixelsChanged` bumps the
+ * revision).
+ */
+function recordUniCanvasPoseDrawRect(widget, layer, rect) {
   if (!layer || !rect) return null;
   layer._poseDrawRecord = {
     rev: layer._pixelsRev || 0,
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    frame: { x: widget.origin.x, y: widget.origin.y, width: widget.size.width, height: widget.size.height },
   };
   return layer._poseDrawRecord;
 }
@@ -519,7 +544,7 @@ function recordUniCanvasPoseDrawRect(layer, rect) {
  * the subscription while the widget's cached layer bounds identity is stable.
  */
 export function resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer) {
-  const record = currentUniCanvasPoseDrawRecord(layer);
+  const record = currentUniCanvasPoseDrawRecord(widget, layer);
   if (record) {
     return {
       x: record.rect.x + record.rect.width / 2,
@@ -540,20 +565,18 @@ export function resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer) {
 
 /**
  * Bridge draw: the capture lands 1:1 (natural render size, never scaled). When
- * the anchor carries a recorded rect of the same size the frame is redrawn
- * there verbatim; otherwise its centre is shifted onto the anchor, and a layer
- * with no previous content keeps the centred natural rect. No branch squeezes
- * the capture into a previous footprint. Returns the rect it drew.
+ * the anchor carries a recorded rect the frame is redrawn on it - verbatim for
+ * the same render size, at the same frame centre for a changed one, so a
+ * re-render never re-centres the mannequin. Otherwise the frame centre is
+ * shifted onto the anchor, and a layer with no previous content keeps the
+ * centred natural rect. No branch squeezes the capture into a previous
+ * footprint. Returns the rect it drew.
  */
 export function drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, renderMeta, anchor) {
   const natural = resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
   let target = natural;
   if (anchor?.rect) {
-    // Frame reuse only while the recorded frame has the size this render asks
-    // for; a changed render size falls back to the centred natural rect.
-    if (anchor.rect.width === natural.width && anchor.rect.height === natural.height) {
-      target = { ...anchor.rect };
-    }
+    target = resolveUniCanvasPoseLayerReusedRect(anchor, natural);
   } else if (anchor) {
     target = {
       x: Math.round(natural.x + (anchor.x - (natural.x + natural.width / 2))),
@@ -574,7 +597,7 @@ export function drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, ren
   layer.hiresCanvas = null;
   layer.hiresRect = null;
   widget.markLayerPixelsChanged?.(layer, null, false);
-  recordUniCanvasPoseDrawRect(layer, target);
+  recordUniCanvasPoseDrawRect(widget, layer, target);
   return target;
 }
 
@@ -604,8 +627,9 @@ function scanUniCanvasCaptureAlphaBounds(widget, image) {
  *
  * Placement, in order:
  * 1. frame reuse - the layer still holds exactly the frame this module drew
- *    last (pixel revision unchanged), so the recorded rect is reused verbatim
- *    and a pose change cannot translate the mannequin (spec 5.1b);
+ *    last (pixel revision and world frame unchanged), so the recorded rect is
+ *    reused - verbatim when the render size matches, else at the same frame
+ *    centre - and a pose change cannot translate the mannequin (spec 5.1b);
  * 2. content centre - otherwise shift the natural rect so the incoming
  *    capture's content centre lands on the layer's previous content centre,
  *    which keeps a placement the move tool baked into the bitmap;
@@ -618,9 +642,9 @@ function scanUniCanvasCaptureAlphaBounds(widget, image) {
 export function drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta) {
   const natural = resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
   let target = natural;
-  const recorded = readUniCanvasPoseDrawRecord(layer, natural);
+  const recorded = currentUniCanvasPoseDrawRecord(widget, layer);
   if (recorded) {
-    target = { ...recorded.rect };
+    target = resolveUniCanvasPoseLayerReusedRect(recorded, natural);
   } else {
     const previous = widget.getLayerAlphaBounds(layer);
     const incoming = scanUniCanvasCaptureAlphaBounds(widget, image);
@@ -651,7 +675,7 @@ export function drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMet
   layer.hiresCanvas = null;
   layer.hiresRect = null;
   widget.markLayerPixelsChanged?.(layer, null, false);
-  recordUniCanvasPoseDrawRect(layer, target);
+  recordUniCanvasPoseDrawRect(widget, layer, target);
   return target;
 }
 
@@ -1561,6 +1585,16 @@ export function cancelUniCanvasPoseEdit(widget) {
     if (session.beforePixels) widget.restoreLayerPixelSnapshot(layer, session.beforePixels);
     if (session.beforePoseData) layer.poseData = deepCloneJSON(session.beforePoseData);
     widget.markLayerPixelsChanged(layer, null, false);
+    // The snapshot restore repaints exactly the frame this module drew last,
+    // but the generic cache invalidation above bumps the pixel revision and
+    // would discard the draw record - the next save would then fall back to the
+    // bbox-centre rule and translate the body (spec 5.1b on the cancel path:
+    // edit -> cancel -> edit -> change pose -> save). Re-apply the record the
+    // layer really holds; `recordUniCanvasPoseDrawRect` re-reads the revision
+    // and the world frame, so this stays a claim about the current pixels (a
+    // stale record captured at edit entry is not resurrected - the snapshot
+    // only carries the record when it was current then).
+    if (session.beforeDrawRecord) recordUniCanvasPoseDrawRect(widget, layer, session.beforeDrawRecord.rect);
   }
   closeUniCanvasPoseEditSession(state);
   widget.renderLayerList();
@@ -1592,6 +1626,10 @@ export async function editUniCanvasPoseLayer(widget, layer) {
     poseData,
     beforePixels: widget.createLayerPixelSnapshot(layer),
     beforePoseData: layer.poseData ? deepCloneJSON(layer.poseData) : null,
+    // The frame this module drew last, when the layer really holds it. Cancel
+    // restores `beforePixels`, which IS that frame, so the record must survive
+    // the restore (spec 5.1b on the cancel path) - see cancelUniCanvasPoseEdit.
+    beforeDrawRecord: snapshotUniCanvasPoseDrawRecord(widget, layer),
     morphs: { ...(poseData.character?.morphs || {}) },
     viewer: null,
     morphPack: null,

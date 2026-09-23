@@ -891,8 +891,9 @@ test("bridge preview frames reuse the recorded rect and stop scanning the layer 
     assert.deepEqual(rect, { x: -23, y: 686, width: 1024, height: 1024 });
     assert.deepEqual(recorder.draws.at(-1), { x: -23, y: 686, width: 1024, height: 1024 });
 
-    // A recorded frame of a different size is never reused (nor off-centred):
-    // the draw falls back to the centred natural rect for the new size.
+    // A recorded frame of a different render size is never reused as-is, but its
+    // PLACEMENT survives: the frame centre stays where it was and the draw uses
+    // the new natural size (never re-centred on the canvas, never scaled).
     const resized = drawUniCanvasPoseBridgeRenderIntoLayer(
         widget,
         layer,
@@ -900,7 +901,12 @@ test("bridge preview frames reuse the recorded rect and stop scanning the layer 
         { transparent: true, size: { width: 512, height: 512 } },
         { rect: { x: -23, y: 686, width: 1024, height: 1024 }, x: 489, y: 1197.5 },
     );
-    assert.deepEqual(resized, { x: 768, y: 768, width: 512, height: 512 });
+    assert.deepEqual(resized, { x: 233, y: 942, width: 512, height: 512 });
+    assert.deepEqual(
+        [resized.x + resized.width / 2, resized.y + resized.height / 2],
+        [-23 + 512, 686 + 512],
+        "the recorded frame centre must be kept across a render-size change",
+    );
 });
 
 
