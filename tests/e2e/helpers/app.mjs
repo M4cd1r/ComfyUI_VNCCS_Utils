@@ -54,7 +54,14 @@ export async function enterPoseEdit(page) {
   }
   const entry = page.locator('[title="Edit pose"], button:has-text("Edit pose")').first();
   if (!(await entry.isVisible().catch(() => false))) {
-    await page.locator("[data-layer-id]").first().click({ button: "right" });
+    // Right-click a POSE-typed row: the widget seeds mask/raster layers whose
+    // context menu has no "Edit pose" entry, so the first row would dead-end.
+    // Pose layers are always named "Pose <n>" (nextUniCanvasPoseLayerName).
+    await page
+      .locator("[data-layer-id]")
+      .filter({ hasText: /^Pose\b/ })
+      .first()
+      .click({ button: "right" });
   }
   await entry.click();
   await waitForPoseEditorReady(page);
