@@ -1198,6 +1198,21 @@ function absolutizeUniCanvasPoseBones(viewer, pose) {
 const TORSO_BONE_PATTERN = /(pelvis|hips|spine|chest)/i;
 const EXCLUDED_BONE_PATTERN = /(head|neck)/i;
 
+// World Y of the first head/neck bone, or null when the rig has none.
+function headNeckWorldY(viewer) {
+  const bones = viewer?.bones || {};
+  const v = viewer.THREE ? new viewer.THREE.Vector3() : { x: 0, y: 0, z: 0 };
+  for (const name of Object.keys(bones)) {
+    if (!EXCLUDED_BONE_PATTERN.test(name)) continue;
+    const bone = bones[name];
+    if (typeof bone?.getWorldPosition === "function") {
+      bone.getWorldPosition(v);
+      return v.y;
+    }
+  }
+  return null;
+}
+
 export function computeTorsoAnchor(viewer) {
   const bones = viewer?.bones || {};
   const names = Object.keys(bones).filter(
@@ -1216,10 +1231,19 @@ export function computeTorsoAnchor(viewer) {
     }
   }
   if (!points.length) {
-    // Unknown rig: fall back to the mesh bounding-box center so the framing
-    // still lands on the figure instead of the viewer default (head height).
+    // Spec 6.1 fallback: no torso bones -> bbox centre EXCLUDING the head:
+    // truncate the box at the head/neck Y and take the truncated centre, so
+    // an exotic rig cannot re-center the framing on the head. Raw meshCenter
+    // stays only as the last resort (no head/neck bone either).
     const c = viewer?.meshCenter;
-    return c ? { x: c.x, y: c.y, z: c.z } : null;
+    if (!c) return null;
+    const headY = headNeckWorldY(viewer);
+    const minY = viewer.skinnedMesh?.geometry?.boundingBox?.min?.y;
+    const maxY = viewer.skinnedMesh?.geometry?.boundingBox?.max?.y;
+    if (headY === null || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      return { x: c.x, y: c.y, z: c.z };
+    }
+    return { x: c.x, y: (minY + Math.min(maxY, headY)) / 2, z: c.z };
   }
   const sum = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y, z: acc.z + p.z }), { x: 0, y: 0, z: 0 });
   return { x: sum.x / points.length, y: sum.y / points.length, z: sum.z / points.length };

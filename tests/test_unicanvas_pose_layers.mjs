@@ -425,6 +425,30 @@ test("computeTorsoAnchor falls back to the mesh center on an unknown rig", () =>
     assert.deepEqual(anchor, { x: 0, y: 2, z: 0 });
 });
 
+test("computeTorsoAnchor caps the mesh-center fallback below the head bone", () => {
+    // Spec 6.1 fallback: a rig with no torso-pattern bones must not re-center
+    // on the head - the bbox is truncated at the head/neck Y first.
+    const viewer = {
+        bones: boneStub({ head: [0, 8.6, 0] }),
+        meshCenter: { x: 0.5, y: 5, z: -0.25 },
+        skinnedMesh: { geometry: { boundingBox: { min: { y: 0 }, max: { y: 10 } } } },
+    };
+    const anchor = computeTorsoAnchor(viewer);
+    // bbox y in [0, 10] capped at the head (8.6) -> truncated centre 4.3,
+    // not the head-inclusive 5.0.
+    assert.ok(Math.abs(anchor.y - 4.3) < 1e-6, `anchor.y=${anchor.y} expected ~4.3`);
+    assert.equal(anchor.x, 0.5);
+    assert.equal(anchor.z, -0.25);
+
+    // No head/neck bone either: raw meshCenter stays the last resort.
+    const bareViewer = {
+        bones: boneStub({ tentacle_a: [0, 9, 0] }),
+        meshCenter: { x: 0, y: 5, z: 0 },
+        skinnedMesh: { geometry: { boundingBox: { min: { y: 0 }, max: { y: 10 } } } },
+    };
+    assert.deepEqual(computeTorsoAnchor(bareViewer), { x: 0, y: 5, z: 0 });
+});
+
 test("pose edit framing is torso-anchored and saves a re-centered camera", () => {
     // Edit entry re-frames the viewer on the torso anchor after setPose (spec 6.2).
     const setPoseIndex = poseLayerSource.indexOf("viewer.setPose(absolutizeUniCanvasPoseBones(viewer, poseData.pose) || {}, true)");
