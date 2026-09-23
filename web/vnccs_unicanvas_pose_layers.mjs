@@ -468,13 +468,53 @@ function resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta) {
   return resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
 }
 
+/**
+ * Alpha bounds of the incoming capture, scanned on a scratch canvas (same
+ * style as the widget's layer bounds scan). The editor save needs them to
+ * align the fresh render with the layer's previous placement (spec 5.1b).
+ * Returns image-pixel bounds, or null when the capture is empty/unscannable.
+ */
+function scanUniCanvasCaptureAlphaBounds(widget, image) {
+  const width = image.naturalWidth || image.width || 0;
+  const height = image.naturalHeight || image.height || 0;
+  if (!width || !height || typeof document === "undefined") return null;
+  const scratch = document.createElement("canvas");
+  scratch.width = width;
+  scratch.height = height;
+  const ctx = scratch.getContext("2d");
+  ctx.drawImage(image, 0, 0);
+  return widget.getCanvasAlphaBounds ? widget.getCanvasAlphaBounds(scratch) : null;
+}
+
 export function drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta, { respectLayerCrop = true } = {}) {
-  // respectLayerCrop=false is the editor save path: squeezing the fresh
-  // capture into the previous alpha bounds scales the mannequin down on every
-  // edit -> save cycle (Bug A). Bridge previews keep the crop alignment.
-  const target = respectLayerCrop
-    ? resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta)
-    : resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
+  const natural = resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
+  let target = natural;
+  if (respectLayerCrop) {
+    target = resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta);
+  } else {
+    // Editor save path. Squeezing the fresh capture into the previous alpha
+    // bounds scaled the mannequin down on every edit -> save cycle (Bug A),
+    // and plain centring threw away a placement the move tool had baked into
+    // the bitmap (spec 5.1b). Align 1:1 instead: shift the natural-size rect
+    // so the incoming content centre lands on the previous content centre.
+    // After one aligned save the centres agree, so repeated saves are stable.
+    const previous = widget.getLayerAlphaBounds(layer);
+    const incoming = scanUniCanvasCaptureAlphaBounds(widget, image);
+    if (previous && previous.width > 0 && previous.height > 0 && incoming && incoming.width > 0 && incoming.height > 0) {
+      const incomingWidth = image.naturalWidth || image.width || natural.width;
+      const incomingHeight = image.naturalHeight || image.height || natural.height;
+      const previousCentreX = previous.x + previous.width / 2;
+      const previousCentreY = previous.y + previous.height / 2;
+      const naturalIncomingCentreX = natural.x - widget.origin.x + (incoming.x + incoming.width / 2) * (natural.width / incomingWidth);
+      const naturalIncomingCentreY = natural.y - widget.origin.y + (incoming.y + incoming.height / 2) * (natural.height / incomingHeight);
+      target = {
+        x: natural.x + (previousCentreX - naturalIncomingCentreX),
+        y: natural.y + (previousCentreY - naturalIncomingCentreY),
+        width: natural.width,
+        height: natural.height,
+      };
+    }
+  }
   const ctx = widget.configureImageContext(layer.canvas.getContext("2d"), true);
   ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
   ctx.drawImage(
