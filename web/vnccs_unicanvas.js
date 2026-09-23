@@ -1348,8 +1348,20 @@ class UniCanvasWidget {
     return `${prefix} ${max + 1}`;
   }
 
+  /**
+   * Monotonic per-layer pixel revision. Every path that can change a layer's
+   * pixels bumps it, so a consumer that recorded "I drew these pixels myself"
+   * can tell whether that claim still holds (a move, a paint, an undo or a
+   * transform invalidates it) without re-scanning the bitmap.
+   */
+  bumpLayerPixelRevision(layer) {
+    if (!layer) return;
+    layer._pixelsRev = (layer._pixelsRev || 0) + 1;
+  }
+
   invalidateLayerCaches(layer) {
     if (!layer) return;
+    this.bumpLayerPixelRevision(layer);
     layer._boundsCache = undefined;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -1363,6 +1375,7 @@ class UniCanvasWidget {
 
   invalidateLayerRenderCaches(layer) {
     if (!layer) return;
+    this.bumpLayerPixelRevision(layer);
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
     layer._hiresRenderLodCache = null;
@@ -1370,6 +1383,7 @@ class UniCanvasWidget {
 
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
     if (!layer) return;
+    this.bumpLayerPixelRevision(layer);
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
     layer._hiresRenderLodCache = null;

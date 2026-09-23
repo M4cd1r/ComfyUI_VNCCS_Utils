@@ -731,6 +731,7 @@ test("editor pose saves draw the capture at its natural render size, never squee
     // Bug A geometry: the first editor save left a 378x595 mannequin footprint
     // on a 2048 canvas. The next save squeezed the whole 1024x1024 capture
     // into that footprint, shrinking the mannequin on every edit -> save cycle.
+    // The alpha-crop branch is gone, so no caller can ask for that squeeze.
     const recorder = makeDrawRecorder();
     const widget = {
         origin: { x: 0, y: 0 },
@@ -742,7 +743,7 @@ test("editor pose saves draw the capture at its natural render size, never squee
     const image = { naturalWidth: 1024, naturalHeight: 1024, width: 1024, height: 1024 };
     const renderMeta = { transparent: true, size: { width: 1024, height: 1024 } };
 
-    drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta, { respectLayerCrop: false });
+    drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta);
 
     assert.equal(recorder.draws.length, 1);
     const { x, y, width, height } = recorder.draws[0];
@@ -753,14 +754,32 @@ test("editor pose saves draw the capture at its natural render size, never squee
 });
 
 
-test("the editor capture path opts out of the layer alpha-crop squeeze", () => {
+test("the shared pose draw exposes no crop option any more", () => {
+    const drawStart = poseLayerSource.indexOf("export function drawUniCanvasPoseRenderIntoLayer");
+    assert.ok(drawStart >= 0, "drawUniCanvasPoseRenderIntoLayer not found");
+    const draw = poseLayerSource.slice(drawStart, poseLayerSource.indexOf("\nfunction nextUniCanvasPoseLayerName", drawStart));
+    assert.doesNotMatch(draw, /respectLayerCrop/, "the dead crop option must not come back");
+    assert.doesNotMatch(
+        poseLayerSource,
+        /resolveUniCanvasPoseLayerTargetRect/,
+        "the dead crop target helper must be gone (the squeeze was Bug A)",
+    );
+});
+
+
+test("the editor capture path draws 1:1 through the shared pose draw", () => {
     const captureStart = poseLayerSource.indexOf("async function applyUniCanvasPoseEditCapture");
     assert.ok(captureStart >= 0, "applyUniCanvasPoseEditCapture not found");
-    const capture = poseLayerSource.slice(captureStart, captureStart + 2600);
+    const capture = poseLayerSource.slice(captureStart, captureStart + 2800);
     assert.match(
         capture,
-        /drawUniCanvasPoseRenderIntoLayer\(widget, layer, image, session\.poseData\.render, \{ respectLayerCrop: false \}\)/,
-        "the editor capture must draw the fresh render at natural size, not into the previous alpha bounds",
+        /drawUniCanvasPoseRenderIntoLayer\(widget, layer, image, session\.poseData\.render\)/,
+        "the editor capture must draw the fresh render 1:1 at natural size",
+    );
+    assert.doesNotMatch(
+        capture,
+        /respectLayerCrop/,
+        "the removed crop option must not be passed any more",
     );
 });
 
@@ -773,11 +792,15 @@ test("bridge draws land 1:1 at natural size, frame centre on the previous conten
     // the mannequin shrank on every push.
     const recorder = makeDrawRecorder();
     const bounds = { x: 835, y: 725, width: 378, height: 595 };
+    let scans = 0;
     const widget = {
         origin: { x: 0, y: 0 },
         size: { width: 2048, height: 2048 },
-        getLayerAlphaBounds: () => bounds,
+        getLayerAlphaBounds: () => { scans += 1; return bounds; },
         configureImageContext: (context) => context,
+        markLayerPixelsChanged: (layer) => {
+            layer._pixelsRev = (layer._pixelsRev || 0) + 1;
+        },
     };
     const layer = { canvas: { width: 2048, height: 2048, getContext: () => recorder.context } };
     const image = { naturalWidth: 1024, naturalHeight: 1024, width: 1024, height: 1024 };
@@ -796,10 +819,12 @@ test("bridge draws land 1:1 at natural size, frame centre on the previous conten
     // The frame centre sits on the anchor: x + 512 = 1024, y + 512 ~ 1022.5
     // (rounded), so y = round(512 - 1.5) = 511.
     assert.deepEqual([x, y], [512, 511]);
-    // Repeated pushes reuse the cached anchor without recomputing the bounds
-    // centre: the anchor object is stable across calls.
+    // The draw recorded that rect, so the next anchor comes from the record -
+    // O(1), with no second scan of the layer bitmap.
     const again = resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer);
-    assert.equal(again, anchor);
+    assert.deepEqual([again.x, again.y], [1024, 1023]);
+    assert.deepEqual(again.rect, { x: 512, y: 511, width: 1024, height: 1024 });
+    assert.equal(scans, 1, "the recorded rect must be reused without rescanning the layer");
 });
 
 test("the bridge render path never goes through the alpha-crop draw branch", () => {
@@ -816,6 +841,55 @@ test("the bridge render path never goes through the alpha-crop draw branch", () 
         /drawUniCanvasPoseRenderIntoLayer\(/,
         "the bridge must not call the crop-capable draw any more",
     );
+});
+
+
+test("bridge preview frames reuse the recorded rect and stop scanning the layer bitmap", () => {
+    // Preview pushes arrive at ~18 FPS, so the second and later frames of an
+    // unchanged layer must cost no alpha scan at all: they reuse the rect the
+    // previous frame recorded. The layer's pixel revision is the validity
+    // token, so a move or a paint drops back to one cold scan per change.
+    const recorder = makeDrawRecorder();
+    const bounds = { x: 835, y: 725, width: 378, height: 595 };
+    let scans = 0;
+    const widget = {
+        origin: { x: 0, y: 0 },
+        size: { width: 2048, height: 2048 },
+        getLayerAlphaBounds: () => { scans += 1; return bounds; },
+        configureImageContext: (context) => context,
+        markLayerPixelsChanged: (layer) => {
+            layer._pixelsRev = (layer._pixelsRev || 0) + 1;
+        },
+    };
+    const layer = { canvas: { width: 2048, height: 2048, getContext: () => recorder.context } };
+    const image = { naturalWidth: 1024, naturalHeight: 1024, width: 1024, height: 1024 };
+    const renderMeta = { transparent: true, size: { width: 1024, height: 1024 } };
+    const sub = {};
+    let anchor = resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer);
+    let rect = drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, renderMeta, anchor);
+    assert.equal(scans, 1, "the first frame of a foreign layer needs one cold scan");
+
+    // Same layer, next preview frame: no scan, same rect (no drift).
+    for (let frame = 0; frame < 3; frame += 1) {
+        anchor = resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer);
+        const next = drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, renderMeta, anchor);
+        assert.deepEqual(next, rect, "a reused frame must land on the identical rect");
+    }
+    assert.equal(scans, 1, "steady-state preview frames must not scan the layer bitmap");
+    assert.deepEqual(recorder.draws.map((draw) => [draw.x, draw.y]), [[512, 511], [512, 511], [512, 511], [512, 511]]);
+
+    // A committed foreign change (move/paint) bumps the revision: exactly one
+    // cold scan, then the reuse resumes on the new placement.
+    layer._pixelsRev = (layer._pixelsRev || 0) + 1;
+    const moved = { x: 300, y: 900, width: 378, height: 595 };
+    widget.getLayerAlphaBounds = () => { scans += 1; return moved; };
+    anchor = resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer);
+    rect = drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, renderMeta, anchor);
+    assert.equal(scans, 2, "one cold scan per foreign change");
+    // New anchor = the moved content centre (300+189, 900+297.5) = (489, 1197.5),
+    // so the natural rect shifts to (round(512-535), round(512+173.5)) = (-23, 686).
+    assert.deepEqual(rect, { x: -23, y: 686, width: 1024, height: 1024 });
+    assert.deepEqual(recorder.draws.at(-1), { x: -23, y: 686, width: 1024, height: 1024 });
 });
 
 

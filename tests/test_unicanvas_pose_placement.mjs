@@ -15,39 +15,56 @@ function makeDrawRecorder() {
     return { context, draws };
 }
 
+// The production scanner draws the capture on a scratch canvas; stub the
+// document + widget scanner so the geometry is testable in Node.
+function makeScratchDocument(previousDocument) {
+    globalThis.document = {
+        createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage() {} }) }),
+    };
+    return () => {
+        if (previousDocument === undefined) delete globalThis.document;
+        else globalThis.document = previousDocument;
+    };
+}
+
+const IMAGE = { naturalWidth: 1024, naturalHeight: 1024, width: 1024, height: 1024 };
+const RENDER_META = { transparent: true, size: { width: 1024, height: 1024 } };
+
+/**
+ * Widget/layer fixture with the production pixel-revision contract: the widget
+ * bumps `layer._pixelsRev` whenever it invalidates the layer's pixel caches,
+ * and the draw helper records the rect it drew against that revision.
+ */
+function makeFixture({ previousBounds, incomingBounds }) {
+    const recorder = makeDrawRecorder();
+    const state = { previousBounds, incomingBounds, scans: 0 };
+    const widget = {
+        origin: { x: 0, y: 0 },
+        size: { width: 2048, height: 2048 },
+        getLayerAlphaBounds: () => state.previousBounds,
+        getCanvasAlphaBounds: () => state.incomingBounds,
+        configureImageContext: (context) => context,
+        markLayerPixelsChanged: (layer) => {
+            layer._pixelsRev = (layer._pixelsRev || 0) + 1;
+        },
+    };
+    const layer = { canvas: { width: 2048, height: 2048, getContext: () => recorder.context } };
+    return { recorder, widget, layer, state };
+}
+
 test("editor pose saves preserve an off-centre placement and keep a fresh layer centred (spec 5.1b)", () => {
     // The move tool bakes the layer placement into the bitmap, so an editor
     // save must align the fresh capture's content centre with the previous
     // content centre instead of jumping back to the canvas centre. The draw
     // stays 1:1 natural size - never scaled.
-    const image = { naturalWidth: 1024, naturalHeight: 1024, width: 1024, height: 1024 };
-    const renderMeta = { transparent: true, size: { width: 1024, height: 1024 } };
-    // Where the mannequin sits inside the fresh capture (alpha bounds, image px).
     const incomingBounds = { x: 323, y: 217, width: 378, height: 595 };
-    // The production scanner draws the capture on a scratch canvas; stub the
-    // document + widget scanner so the geometry is testable in Node.
-    const previousDocument = globalThis.document;
-    globalThis.document = {
-        createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage() {} }) }),
-    };
-    const makeFixture = (previousBounds) => {
-        const recorder = makeDrawRecorder();
-        const widget = {
-            origin: { x: 0, y: 0 },
-            size: { width: 2048, height: 2048 },
-            getLayerAlphaBounds: () => previousBounds,
-            getCanvasAlphaBounds: () => incomingBounds,
-            configureImageContext: (context) => context,
-        };
-        const layer = { canvas: { width: 2048, height: 2048, getContext: () => recorder.context } };
-        return { recorder, widget, layer };
-    };
+    const restoreDocument = makeScratchDocument(globalThis.document);
     try {
         // Previous content sits bottom-left (moved layer): the drawn rect must
         // put the incoming content centre on the previous content centre.
         const previousBounds = { x: 120, y: 900, width: 378, height: 595 };
-        const moved = makeFixture(previousBounds);
-        drawUniCanvasPoseRenderIntoLayer(moved.widget, moved.layer, image, renderMeta, { respectLayerCrop: false });
+        const moved = makeFixture({ previousBounds, incomingBounds });
+        drawUniCanvasPoseRenderIntoLayer(moved.widget, moved.layer, IMAGE, RENDER_META);
         assert.equal(moved.recorder.draws.length, 1);
         const draw = moved.recorder.draws[0];
         assert.deepEqual([draw.width, draw.height], [1024, 1024], "the capture must never be scaled");
@@ -63,14 +80,57 @@ test("editor pose saves preserve an off-centre placement and keep a fresh layer 
         );
 
         // Fresh/empty layer: no previous placement -> centred fallback.
-        const fresh = makeFixture(null);
-        drawUniCanvasPoseRenderIntoLayer(fresh.widget, fresh.layer, image, renderMeta, { respectLayerCrop: false });
+        const fresh = makeFixture({ previousBounds: null, incomingBounds });
+        drawUniCanvasPoseRenderIntoLayer(fresh.widget, fresh.layer, IMAGE, RENDER_META);
         assert.deepEqual(
             [fresh.recorder.draws[0].x, fresh.recorder.draws[0].y, fresh.recorder.draws[0].width, fresh.recorder.draws[0].height],
             [512, 512, 1024, 1024],
         );
     } finally {
-        if (previousDocument === undefined) delete globalThis.document;
-        else globalThis.document = previousDocument;
+        restoreDocument();
+    }
+});
+
+test("a pose change reuses the recorded draw rect, so the body cannot translate (spec 5.1b)", () => {
+    // Frame-anchored saves: the capture is torso-anchored, so its content bbox
+    // centre sits BELOW the torso. Aligning bbox centres (the old rule) turns
+    // any silhouette change into a whole-body translation - raising an arm by
+    // 100 px moved the mannequin ~50 px. Reusing the rect the layer already
+    // holds is the fix; a move/paint invalidates the record and the
+    // content-centre rule comes back for that save.
+    const restoreDocument = makeScratchDocument(globalThis.document);
+    try {
+        const previousBounds = { x: 120, y: 900, width: 378, height: 595 };
+        const fixture = makeFixture({ previousBounds, incomingBounds: { x: 323, y: 217, width: 378, height: 595 } });
+        const rect1 = drawUniCanvasPoseRenderIntoLayer(fixture.widget, fixture.layer, IMAGE, RENDER_META);
+        assert.deepEqual([rect1.width, rect1.height], [1024, 1024]);
+
+        // Pose change: the arm goes up, so the capture's alpha bbox grows 100 px
+        // at the top while the layer pixels are untouched since the last save.
+        fixture.state.incomingBounds = { x: 323, y: 117, width: 378, height: 695 };
+        const rect2 = drawUniCanvasPoseRenderIntoLayer(fixture.widget, fixture.layer, IMAGE, RENDER_META);
+        assert.deepEqual(
+            { x: rect2.x, y: rect2.y, width: rect2.width, height: rect2.height },
+            { x: rect1.x, y: rect1.y, width: rect1.width, height: rect1.height },
+            "a pose change must redraw at the recorded rect (bbox-centre alignment would shift the body)",
+        );
+
+        // Foreign pixel change (the move tool bakes the new placement into the
+        // bitmap) invalidates the record: the save falls back to the content
+        // centre rule and follows the new placement.
+        fixture.state.previousBounds = { x: -500, y: 1100, width: 378, height: 595 };
+        fixture.layer._pixelsRev = (fixture.layer._pixelsRev || 0) + 1;
+        const rect3 = drawUniCanvasPoseRenderIntoLayer(fixture.widget, fixture.layer, IMAGE, RENDER_META);
+        assert.deepEqual([rect3.width, rect3.height], [1024, 1024], "still never scaled");
+        assert.notDeepEqual([rect3.x, rect3.y], [rect2.x, rect2.y], "a moved layer must not keep the stale rect");
+        const drawnContentCentreX = rect3.x + 323 + 189;
+        const drawnContentCentreY = rect3.y + 117 + 347.5;
+        assert.ok(
+            Math.abs(drawnContentCentreX - (fixture.state.previousBounds.x + 189)) <= 0.5
+            && Math.abs(drawnContentCentreY - (fixture.state.previousBounds.y + 297.5)) <= 0.5,
+            "the fallback must still align the incoming content centre with the moved placement",
+        );
+    } finally {
+        restoreDocument();
     }
 });

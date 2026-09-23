@@ -390,9 +390,12 @@ async function applyUniCanvasPoseLayerRenderPixels(widget, sub, detail, commit) 
   if (!layer || layer.type !== POSE_LAYER_TYPE) return false;
   // Bridge draws (previews at ~18 FPS and committed "capture now" alike) land
   // 1:1 at natural render size, anchored on the layer's previous content
-  // centre. The old call went through the alpha-crop branch, squeezing the
-  // fresh capture into the previous footprint and shrinking the mannequin on
-  // every push (owner-reported, measured 142x355 -> 52x207 -> 20x121 -> 8x71).
+  // centre; while the layer still holds the frame this subscription drew, the
+  // recorded rect is reused verbatim, so a preview frame is O(1) layer state
+  // and repeated pushes cannot drift. The old call went through the alpha-crop
+  // branch, squeezing the fresh capture into the previous footprint and
+  // shrinking the mannequin on every push (owner-reported, measured
+  // 142x355 -> 52x207 -> 20x121 -> 8x71).
   drawUniCanvasPoseBridgeRenderIntoLayer(
     widget,
     layer,
@@ -410,7 +413,6 @@ async function applyUniCanvasPoseLayerRenderPixels(widget, sub, detail, commit) 
     }
     renderUniCanvasPoseLayerPanel(getUniCanvasPoseLayerState(widget), widget.activeLayer);
   }
-  widget.markLayerPixelsChanged(layer, null, false);
   widget.refreshLayerRow(layer.id);
   widget.requestRender();
   if (commit) {
@@ -449,9 +451,8 @@ function mergeUniCanvasPoseLayerDetail(layer, detail) {
 
 /**
  * Natural-size target rect: the capture lands 1:1 (its render.size), centered
- * on the canvas. This is the fixed point of the editor save draw - reusing it
- * for every save keeps the mannequin footprint constant instead of shrinking
- * into the previous frame's alpha bounds.
+ * on the canvas. Used for the first save of a layer and for every save of a
+ * layer whose pixels this module did not draw itself.
  */
 function resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta) {
   const width = clampRenderSide(renderMeta?.size?.width, image.naturalWidth || image.width || 1024);
@@ -466,55 +467,90 @@ function resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta) {
   };
 }
 
-function resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta) {
-  const crop = widget.getLayerAlphaBounds(layer);
-  if (crop && crop.width > 0 && crop.height > 0) {
-    return {
-      x: widget.origin.x + crop.x,
-      y: widget.origin.y + crop.y,
-      width: crop.width,
-      height: crop.height,
-    };
-  }
-  return resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
+/**
+ * Record of the last 1:1 draw this module made into a pose layer (spec 5.1b).
+ * The rect alone is the placement: while the layer still holds exactly the
+ * pixels that draw produced, the next draw reuses the rect VERBATIM, so a pose
+ * change cannot translate the body (bbox-centre alignment would: the figure's
+ * bbox centre sits below the torso-anchored frame centre, so any silhouette
+ * change moves the whole mannequin). Validity is a pixel revision read - never
+ * a bitmap scan. A move (the tool bakes the placement into the pixels), a
+ * paint, an undo or a transform bumps the revision and drops back to the
+ * content-centre rule below.
+ */
+function currentUniCanvasPoseDrawRecord(layer) {
+  const record = layer?._poseDrawRecord;
+  if (!record || record.rev !== (layer._pixelsRev || 0)) return null;
+  return record;
+}
+
+function readUniCanvasPoseDrawRecord(layer, natural) {
+  const record = currentUniCanvasPoseDrawRecord(layer);
+  if (!record) return null;
+  if (record.rect.width !== natural.width || record.rect.height !== natural.height) return null;
+  return record;
 }
 
 /**
- * Placement anchor for bridge draws (spec 5.1b on the bridge path): the
- * widget-space centre of the layer's PREVIOUS content, so the incoming frame
- * centre lands there and a moved layer keeps its placement. The torso-anchored
- * capture of spec 6.2 keeps the mannequin centred in its frame, so frame
- * centre ~ content centre and repeated pushes do not drift.
+ * Store the rect a 1:1 draw used and the pixel revision it produced. Called by
+ * the draw helpers AFTER the widget invalidation that follows the draw
+ * (`markLayerPixelsChanged` bumps the revision).
+ */
+function recordUniCanvasPoseDrawRect(layer, rect) {
+  if (!layer || !rect) return null;
+  layer._poseDrawRecord = {
+    rev: layer._pixelsRev || 0,
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+  };
+  return layer._poseDrawRecord;
+}
+
+/**
+ * Placement anchor for bridge draws (spec 5.1b on the bridge path). Frame
+ * reuse first: when the layer still holds exactly the frame this subscription
+ * drew, the anchor IS that frame's rect centre - one property read, no scan of
+ * the layer bitmap and no capture scan, and repeated previews cannot drift
+ * (the earlier content-centre rule re-derived the anchor from the freshly
+ * drawn pixels every frame, and the +-0.5 px rounding of that loop walked the
+ * mannequin ~1 px per push).
  *
- * Performance (binding - previews arrive at ~18 FPS): the anchor is cached on
- * the subscription and only refreshed when the widget's cached layer bounds
- * identity changes (i.e. after a committed render, a move or a transform
- * invalidated the cache). Between those events `getLayerAlphaBounds` returns
- * the warm `layer._boundsCache`, so a preview frame costs one property read -
- * never a scan of the capture or of the layer bitmap.
+ * Cold path (first frame, a moved/painted layer, a committed render): the
+ * anchor is the widget-space centre of the layer's previous content, cached on
+ * the subscription while the widget's cached layer bounds identity is stable.
  */
 export function resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer) {
+  const record = currentUniCanvasPoseDrawRecord(layer);
+  if (record) {
+    return {
+      x: record.rect.x + record.rect.width / 2,
+      y: record.rect.y + record.rect.height / 2,
+      rect: record.rect,
+    };
+  }
   const bounds = widget.getLayerAlphaBounds(layer);
   if (!bounds || !(bounds.width > 0) || !(bounds.height > 0)) return null;
   const cached = sub.placementAnchor;
   const centerX = widget.origin.x + bounds.x + bounds.width / 2;
   const centerY = widget.origin.y + bounds.y + bounds.height / 2;
   if (!cached || cached.boundsRef !== bounds || cached.x !== centerX || cached.y !== centerY) {
-    sub.placementAnchor = { boundsRef: bounds, x: centerX, y: centerY };
+    sub.placementAnchor = { boundsRef: bounds, x: centerX, y: centerY, rect: null };
   }
   return sub.placementAnchor;
 }
 
 /**
- * Bridge draw: the capture lands 1:1 (natural render size, never scaled),
- * shifted so its frame centre sits on `anchor` when one exists. A layer with
- * no previous content keeps the centred natural rect. No branch squeezes the
- * capture into a previous footprint.
+ * Bridge draw: the capture lands 1:1 (natural render size, never scaled). When
+ * the anchor carries a recorded rect the frame is redrawn there verbatim;
+ * otherwise its centre is shifted onto the anchor, and a layer with no
+ * previous content keeps the centred natural rect. No branch squeezes the
+ * capture into a previous footprint. Returns the rect it drew.
  */
 export function drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, renderMeta, anchor) {
   const natural = resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
   let target = natural;
-  if (anchor) {
+  if (anchor?.rect) {
+    target = { ...anchor.rect };
+  } else if (anchor) {
     target = {
       x: Math.round(natural.x + (anchor.x - (natural.x + natural.width / 2))),
       y: Math.round(natural.y + (anchor.y - (natural.y + natural.height / 2))),
@@ -533,6 +569,9 @@ export function drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, ren
   );
   layer.hiresCanvas = null;
   layer.hiresRect = null;
+  widget.markLayerPixelsChanged?.(layer, null, false);
+  recordUniCanvasPoseDrawRect(layer, target);
+  return target;
 }
 
 /**
@@ -553,18 +592,32 @@ function scanUniCanvasCaptureAlphaBounds(widget, image) {
   return widget.getCanvasAlphaBounds ? widget.getCanvasAlphaBounds(scratch) : null;
 }
 
-export function drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta, { respectLayerCrop = true } = {}) {
+/**
+ * Draw a pose render into the layer 1:1 at its natural render size. No branch
+ * scales the capture into a previous footprint: the alpha-crop branch that did
+ * (Bug A, and the bridge shrink before it) is gone, and the option that used
+ * to re-enable it is gone with it - a future caller cannot ask for it.
+ *
+ * Placement, in order:
+ * 1. frame reuse - the layer still holds exactly the frame this module drew
+ *    last (pixel revision unchanged), so the recorded rect is reused verbatim
+ *    and a pose change cannot translate the mannequin (spec 5.1b);
+ * 2. content centre - otherwise shift the natural rect so the incoming
+ *    capture's content centre lands on the layer's previous content centre,
+ *    which keeps a placement the move tool baked into the bitmap;
+ * 3. centred - no usable previous content: the natural rect on the canvas.
+ *
+ * Invalidate + record + draw belong together: the caller must not invalidate
+ * the layer again afterwards, or the record would be stale immediately.
+ * Returns the rect it drew.
+ */
+export function drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta) {
   const natural = resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
   let target = natural;
-  if (respectLayerCrop) {
-    target = resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta);
+  const recorded = readUniCanvasPoseDrawRecord(layer, natural);
+  if (recorded) {
+    target = { ...recorded.rect };
   } else {
-    // Editor save path. Squeezing the fresh capture into the previous alpha
-    // bounds scaled the mannequin down on every edit -> save cycle (Bug A),
-    // and plain centring threw away a placement the move tool had baked into
-    // the bitmap (spec 5.1b). Align 1:1 instead: shift the natural-size rect
-    // so the incoming content centre lands on the previous content centre.
-    // After one aligned save the centres agree, so repeated saves are stable.
     const previous = widget.getLayerAlphaBounds(layer);
     const incoming = scanUniCanvasCaptureAlphaBounds(widget, image);
     if (previous && previous.width > 0 && previous.height > 0 && incoming && incoming.width > 0 && incoming.height > 0) {
@@ -593,6 +646,9 @@ export function drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMet
   );
   layer.hiresCanvas = null;
   layer.hiresRect = null;
+  widget.markLayerPixelsChanged?.(layer, null, false);
+  recordUniCanvasPoseDrawRect(layer, target);
+  return target;
 }
 
 function nextUniCanvasPoseLayerName(widget) {
@@ -1460,17 +1516,16 @@ async function applyUniCanvasPoseEditCapture(widget, { closeSession }) {
     camera: { ...session.poseData.camera, offset_x: 0, offset_y: 0 }, // spec 6.3: re-frame on the torso anchor
     size: session.poseData.render.size,
   });
-  if (png) {
-    const image = await loadUniCanvasPoseRenderImage(png);
-    if (image) {
-      // Natural size, centered: the capture camera framing is fixed, so every
-      // save redraws the same footprint and the round trip stays the identity
-      // (squeezing into the layer's previous alpha bounds shrank the mannequin
-      // on each edit -> save cycle - Bug A).
-      drawUniCanvasPoseRenderIntoLayer(widget, layer, image, session.poseData.render, { respectLayerCrop: false });
-    }
+  const image = await loadUniCanvasPoseRenderImage(png);
+  if (image) {
+    // 1:1 at the natural render size, at the recorded rect while the layer
+    // still holds the frame this path drew last (spec 5.1b): a pose change
+    // then cannot translate the body. Squeezing into the previous alpha bounds
+    // shrank the mannequin on each edit -> save cycle (Bug A).
+    drawUniCanvasPoseRenderIntoLayer(widget, layer, image, session.poseData.render);
+  } else {
+    widget.markLayerPixelsChanged(layer, null, false);
   }
-  widget.markLayerPixelsChanged(layer, null, false);
   widget.refreshLayerRow(layer.id);
   if (closeSession) {
     layer._poseEditing = false;
