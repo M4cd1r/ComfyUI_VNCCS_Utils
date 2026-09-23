@@ -213,3 +213,5 @@ __marimo__/
 
 # Runtime shallow clones used to accelerate external Pose Library sync.
 /PoseLibrary/.repository_git_cache/
+
+.worktrees/
