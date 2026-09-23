@@ -159,7 +159,50 @@ export function clampSpectrumPair(spectrum, editedName) {
   return spectrum;
 }
 
+const QWEN21_HELP_TEXTS = {
+  qwen21: "Qwen-Image-2.1 (QI2.1) generates with the official stack: 7B DiT + Qwen3-VL 8B text encoder + 64-channel RGBA image VAE. RGBA output is transparent by default.",
+  opaque: "Disables the transparent-RGBA prompting and flattens the result - use it only when you want a plain opaque image.",
+  aspect: "Forces one of the official 2K aspect presets; auto (match canvas) keeps the current canvas aspect ratio.",
+  spectrum: "Training-free sampling acceleration (Spectrum, arXiv 2603.01623): selected steps are forecast with a Chebyshev fit instead of running the 32-block transformer. Fail-closed: any unsafe forecast degrades to a real forward.",
+  preset: "Tunes the acceleration parameters: moderate (paper default), aggressive (more speedup), quality (safer forecasts).",
+};
+
+const QWEN21_PANEL_STYLE_ID = "vnccs-uc-qwen21-styles";
+
+// UniCanvas palette tokens (var(--uc-*) are defined on the widget root).
+function ensureQwen21PanelStyles(doc = document) {
+  if (!doc?.head || doc.getElementById(QWEN21_PANEL_STYLE_ID)) return;
+  const style = doc.createElement("style");
+  style.id = QWEN21_PANEL_STYLE_ID;
+  style.textContent = `
+.vnccs-uc-qwen21-panel { display:grid; gap:6px; padding:8px; background:var(--uc-panel, rgba(20,16,30,.82)); border:1px solid rgba(255,143,163,.2); border-radius:8px; color:var(--uc-text, #e8e8f0); font:11px var(--uc-font, sans-serif); }
+.vnccs-uc-qwen21-title { display:flex; align-items:center; gap:6px; color:var(--uc-accent, #ff8fa3); font-weight:800; font-size:12px; letter-spacing:.02em; }
+.vnccs-uc-qwen21-panel .vnccs-uc-field { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.vnccs-uc-qwen21-panel input[type="checkbox"] { accent-color:var(--uc-accent, #ff8fa3); }
+.vnccs-uc-spectrum-panel { display:grid; gap:6px; border-top:1px solid var(--uc-border, rgba(255,255,255,.08)); padding-top:6px; }
+.vnccs-uc-spectrum-title { display:flex; align-items:center; gap:6px; color:var(--uc-accent-2, #b8a9e8); font-weight:700; font-size:11px; }
+.vnccs-uc-spectrum-param { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.vnccs-uc-spectrum-label { flex:1 1 96px; min-width:0; color:var(--uc-muted, #9898a8); font-size:10px; line-height:1.1; }
+.vnccs-uc-spectrum-param .vnccs-uc-range { flex:1 1 80px; accent-color:var(--uc-accent, #ff8fa3); }
+.vnccs-uc-spectrum-param .vnccs-uc-input { width:54px; }
+.vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border, rgba(255,255,255,.14)); color:var(--uc-muted, #9898a8); font-size:10px; cursor:help; position:relative; }
+.vnccs-uc-help:hover::after { content: attr(data-tip); position:absolute; bottom:130%; left:50%; transform:translateX(-50%); width:230px; padding:6px 8px; border-radius:8px; background:#0a0a0f; border:1px solid var(--uc-border, rgba(255,255,255,.14)); color:var(--uc-text, #e8e8f0); font-size:11px; line-height:1.4; z-index:30; text-transform:none; letter-spacing:normal; }
+`;
+  doc.head.appendChild(style);
+}
+
+// Help "?" icon with a hover tooltip explaining what a control is for.
+function buildQwen21Help(key) {
+  const help = document.createElement("span");
+  help.className = "vnccs-uc-help";
+  help.textContent = "?";
+  help.dataset.tip = QWEN21_HELP_TEXTS[key] || "";
+  help.title = QWEN21_HELP_TEXTS[key] || "";
+  return help;
+}
+
 function buildPanelShell() {
+  ensureQwen21PanelStyles();
   const panel = document.createElement("div");
   panel.className = "vnccs-uc-qwen21-panel";
   panel.dataset.qwen21Panel = "";
@@ -167,12 +210,14 @@ function buildPanelShell() {
 
   const title = document.createElement("div");
   title.className = "vnccs-uc-qwen21-title";
-  title.textContent = "Qwen-Image-2.1";
+  title.textContent = "Qwen-Image-2.1 ";
+  title.appendChild(buildQwen21Help("qwen21"));
   panel.appendChild(title);
 
   const opaqueLabel = document.createElement("label");
   opaqueLabel.className = "vnccs-uc-field";
   opaqueLabel.textContent = "opaque output ";
+  opaqueLabel.appendChild(buildQwen21Help("opaque"));
   const opaqueInput = document.createElement("input");
   opaqueInput.type = "checkbox";
   opaqueInput.dataset.qwen21Setting = "qwen21_opaque_output";
@@ -182,6 +227,7 @@ function buildPanelShell() {
   const aspectLabel = document.createElement("label");
   aspectLabel.className = "vnccs-uc-field";
   aspectLabel.textContent = "2K aspect preset ";
+  aspectLabel.appendChild(buildQwen21Help("aspect"));
   const aspectSelect = document.createElement("select");
   aspectSelect.className = "vnccs-uc-select";
   aspectSelect.dataset.qwen21Setting = "qwen21_aspect_preset";
@@ -204,7 +250,8 @@ function buildPanelShell() {
 
   const spectrumTitle = document.createElement("div");
   spectrumTitle.className = "vnccs-uc-spectrum-title";
-  spectrumTitle.textContent = "Spectrum acceleration";
+  spectrumTitle.textContent = "Spectrum acceleration ";
+  spectrumTitle.appendChild(buildQwen21Help("spectrum"));
   spectrum.appendChild(spectrumTitle);
 
   const enableLabel = document.createElement("label");
@@ -219,6 +266,7 @@ function buildPanelShell() {
   const presetLabel = document.createElement("label");
   presetLabel.className = "vnccs-uc-field";
   presetLabel.textContent = "Preset ";
+  presetLabel.appendChild(buildQwen21Help("preset"));
   const presetSelect = document.createElement("select");
   presetSelect.className = "vnccs-uc-select";
   presetSelect.dataset.spectrumPreset = "";
@@ -260,12 +308,14 @@ function buildPanelShell() {
       // every "input" event (repository realtime rule); "change" only commits.
       const range = document.createElement("input");
       range.type = "range";
+      range.className = "vnccs-uc-range";
       range.min = String(param.min);
       range.max = String(param.max);
       range.step = String(param.step);
       range.dataset.spectrumRange = param.name;
       const number = document.createElement("input");
       number.type = "number";
+      number.className = "vnccs-uc-input";
       number.min = String(param.min);
       number.max = String(param.max);
       number.step = String(param.step);

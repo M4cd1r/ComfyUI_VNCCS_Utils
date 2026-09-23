@@ -514,6 +514,21 @@ app.registerExtension({
       }
       this.configWidget = new UniCanvasConfigWidget(this);
       this.addDOMWidget("vnccs_config_ui", "ui", this.configWidget.container, { serialize: false, hideOnZoom: false });
+      // The widget needs room to render its rows correctly (user request): the
+      // node never goes below 300 px wide.
+      const MIN_NODE_WIDTH = 300;
+      const originalComputeSize = this.computeSize;
+      this.computeSize = function () {
+        const size = originalComputeSize ? originalComputeSize.apply(this, arguments) : [MIN_NODE_WIDTH, 60];
+        return [Math.max(MIN_NODE_WIDTH, size[0] || MIN_NODE_WIDTH), size[1]];
+      };
+      if (this.size[0] < MIN_NODE_WIDTH) this.setSize([MIN_NODE_WIDTH, this.size[1]]);
+      const originalOnResize = this.onResize;
+      this.onResize = function (size) {
+        if (size && size[0] < MIN_NODE_WIDTH) size[0] = MIN_NODE_WIDTH;
+        if (this.size && this.size[0] < MIN_NODE_WIDTH) this.size[0] = MIN_NODE_WIDTH;
+        return originalOnResize ? originalOnResize.apply(this, arguments) : undefined;
+      };
     };
     const onConnectionsChange = nodeType.prototype.onConnectionsChange;
     nodeType.prototype.onConnectionsChange = function () {

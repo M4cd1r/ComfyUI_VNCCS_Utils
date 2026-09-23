@@ -57,3 +57,8 @@ test("the LoRA picker scales: search, folders, recents and bulk actions", () => 
     }
     assert.ok(widget.includes("installCustomSelects"), "native selects stay on the shared custom selector");
 });
+
+test("the VNCSS Config node never shrinks below 300 px", () => {
+    assert.ok(widget.includes("MIN_NODE_WIDTH = 300"), "the node must enforce a 300 px minimum width");
+    assert.ok(widget.includes("originalOnResize"), "manual resizes must be clamped too");
+});

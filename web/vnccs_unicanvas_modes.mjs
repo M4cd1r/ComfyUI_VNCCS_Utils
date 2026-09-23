@@ -15,6 +15,7 @@ const UNICANVAS_STANDALONE_BODY_CLASS = "vnccs-unicanvas-standalone-mode";
 const UNICANVAS_PANELS_HIDDEN_CLASS = "vnccs-uc2-panels-hidden";
 const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";
 const UNICANVAS_MODE_STYLE_ID = "vnccs-unicanvas-modes-styles";
+const UNICANVAS_FULLSCREEN_CLASS = "vnccs-uc-fullscreen";
 
 // Inline SVG data URI behind the sidebar icon class: the ComfyUI sidebar tab
 // strip renders the icon value as a CSS class on an <i> element, so painting the
@@ -66,6 +67,7 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .vnccs-uc2-output-actions { display: flex; gap: 6px; padding: 8px 8px 0; }
 .vnccs-uc2-output-actions .vnccs-uc-btn { flex: 1 1 auto; }
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
+.vnccs-uc-fullscreen .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
 `;
 
 export function ensureUniCanvasModeStyles() {
@@ -239,6 +241,8 @@ export function enterUniCanvasFullscreen(widget) {
   // Same widget instance is re-parented into the fixed portal; no reload.
   portal.append(chrome, container);
   document.body.appendChild(portal);
+  // The vertical tools column renders 50% smaller while fullscreen (user request).
+  container.classList.add(UNICANVAS_FULLSCREEN_CLASS);
 
   // Keyboard isolation for the duration of the fullscreen: window-level
   // capture-phase listeners swallow every key event that is not targeted at
@@ -303,6 +307,7 @@ export function exitUniCanvasFullscreen(widget) {
   window.removeEventListener("keypress", state.onKeyPress, true);
   document.removeEventListener("fullscreenchange", state.onFullscreenChange);
   widget.container._vnccsUniCanvasGraphNavigationSuspended = false;
+  widget.container.classList.remove(UNICANVAS_FULLSCREEN_CLASS);
   if (document.fullscreenElement === state.portal) {
     const leaving = document.exitFullscreen?.();
     leaving?.catch?.(() => {});

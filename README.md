@@ -101,7 +101,7 @@ order all work — but brush, eraser and rectangle painting are blocked on them;
 use **Rasterize** from the layer context menu when the pixels should become a
 normal raster layer.
 
-*   **Add pose layer** (Layers section, next to *Add raster* / *Add mask*) creates the layer and subscribes on the `vnccs:unicanvas:pose-layer` window CustomEvent bus. A linked Pose Studio answers with PNG renders (with alpha) plus metadata, and the layer pixels follow the posing interactively: previews are coalesced through `requestAnimationFrame` at ~15–20 fps while you interact, with a full-quality capture committed on release as a single undo step. Stale renders are dropped — the newest one always wins.
+*   **Add pose layer** (Layers section, next to *Add raster* / *Add mask*) creates the layer, opens the mannequin editor right away so posing works without any Pose Studio node (the live link stays optional), and subscribes on the `vnccs:unicanvas:pose-layer` window CustomEvent bus. A linked Pose Studio answers with PNG renders (with alpha) plus metadata, and the layer pixels follow the posing interactively: previews are coalesced through `requestAnimationFrame` at ~15–20 fps while you interact, with a full-quality capture committed on release as a single undo step. Stale renders are dropped — the newest one always wins.
 *   **Status chip** on the layer row shows `linked to Pose Studio` / `waiting…` / `disconnected`, with a manual **capture now** action for a full-quality grab at any time.
 *   **Character dropdown** (Pose Studio Characters panel) offers `Mannequin` plus saved VNCCS characters from `/vnccs/list_characters`; picking one applies its morphs through the existing `applyExternalCharacterCreatorValues()` path. Without the VNCCS character pack the list degrades to `Mannequin` and the status chip says so. The dropdown is the single source of truth for the layer character; the UniCanvas pose panel mirrors the selection read-only.
 *   **Mannequin tool** (tools column): with a pose layer active it enters in-place pose editing — the layer pixels are temporarily replaced by an interactive mannequin loaded from `layer.poseData` (pose, character morphs, camera), reusing the Pose Studio viewer and morph runtime embedded over the stage. **Save pose** re-renders the mannequin with the stored settings and the new pose and rebuilds the layer pixels and `poseData`; **Cancel** restores the previous render untouched.
@@ -112,20 +112,13 @@ render: { transparent: true, size } }`) and is persisted with the canvas state.
 
 ### Input tools
 
-*   **Brush-size gesture**: with the brush, eraser, or mask tool active, hold
-    **Alt + right mouse button** and drag to resize the brush. Dragging right
-    grows it, dragging left shrinks it (about 0.5 px radius per pointer pixel).
-    The tool preview circle, a floating pixel badge, and the Size slider all
-    update live while you drag; releasing the button records a single undo
-    entry. The gesture suppresses the browser context menu and never opens the
-    radial HUD.
-*   **Radial HUD**: a plain **right mouse button hold** (without Alt) opens a
-    four-sector radial HUD at the cursor. Drag up for **size**, right for
+*   **Radial HUD**: a **right mouse button hold** opens a four-sector radial HUD
+    at the cursor (for every tool except SAM). Drag up for **size**, right for
     **opacity**, down for **hardness**, or left for the **foreground color**;
     once a sector is selected, keep dragging to adjust its value live and
-    release to commit. Holding Alt disables the HUD because that chord belongs
-    to the brush-size gesture. The HUD is also intentionally disabled for the
-    SAM tool, where right-click keeps its subtract-point meaning.
+    release to commit. The HUD is the only right-button gesture (the former
+    Alt + right-button brush-size drag was removed by request); the SAM tool
+    keeps its right-click subtract-point meaning.
 *   **Brush hardness**: a new brush-engine setting (0-1) with a slider in the
     brush tool settings and a radial HUD sector. Values below 1 render strokes
     with radial-gradient stamps for soft edges; the effect is immediate while
@@ -256,6 +249,7 @@ button at the top-right of the stage:
   suspended. Text fields keep working normally.
 - Fullscreen chrome shows the title, a **✕** exit button, and an optional "true
   fullscreen" toggle that uses `requestFullscreen()`.
+- The vertical tools column renders **50% smaller** while fullscreen.
 - The UniCanvas shortcut map works whenever the canvas has focus (fullscreen or not):
 
 | Shortcut | Action |

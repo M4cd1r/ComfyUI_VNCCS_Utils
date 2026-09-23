@@ -22,7 +22,7 @@ export const BRUSH_SIZE_MIN = 1;
 export const BRUSH_SIZE_MAX = 220;
 // Brush gestures move the brush RADIUS at 0.5 px per pointer px (spec 8.1);
 // brushSize is the stroke width, so it changes at twice that rate.
-export const BRUSH_RADIUS_GESTURE_SENSITIVITY = 0.5;
+export const RADIAL_HUD_SIZE_SENSITIVITY = 0.5;
 export const DEFAULT_BRUSH_HARDNESS = 1;
 export const RADIAL_HUD_SECTOR_THRESHOLD_PX = 8;
 export const RADIAL_HUD_VALUE_SENSITIVITY = 0.005;
@@ -142,20 +142,6 @@ function toolSettingsChanged(uc, before) {
       || before.fg !== uc.fg);
 }
 
-function startBrushSizeGesture(uc, e) {
-  const state = uc._vnccsInputTools;
-  state.gesture = {
-    kind: "size",
-    pointerId: e.pointerId,
-    startClientX: e.clientX,
-    startScreen: uc.canvasPointFromEvent(e),
-    lastScreen: uc.canvasPointFromEvent(e),
-    values: { brushSize: uc.brushSize },
-    before: captureToolSettings(uc),
-    sector: null,
-  };
-}
-
 function openRadialHud(uc, e) {
   const state = uc._vnccsInputTools;
   state.gesture = {
@@ -183,7 +169,7 @@ function applyHudSectorValue(uc, gesture, dx) {
   if (!sector) return;
   const start = gesture.values;
   if (sector.key === "size") {
-    uc.brushSize = Math.round(clamp(start.brushSize + dx * BRUSH_RADIUS_GESTURE_SENSITIVITY * 2, BRUSH_SIZE_MIN, BRUSH_SIZE_MAX));
+    uc.brushSize = Math.round(clamp(start.brushSize + dx * RADIAL_HUD_SIZE_SENSITIVITY * 2, BRUSH_SIZE_MIN, BRUSH_SIZE_MAX));
   } else if (sector.key === "opacity") {
     uc.opacity = clamp01(start.opacity + dx * RADIAL_HUD_VALUE_SENSITIVITY);
   } else if (sector.key === "hardness") {
@@ -201,11 +187,7 @@ function updateGesture(uc, e) {
   // Keep the tool preview circle under the cursor while the gesture runs.
   uc.hoverPoint = uc.worldFromCanvasPoint(gesture.lastScreen);
   const dx = e.clientX - gesture.startClientX;
-  if (gesture.kind === "size") {
-    uc.brushSize = Math.round(clamp(gesture.values.brushSize + dx * BRUSH_RADIUS_GESTURE_SENSITIVITY * 2, BRUSH_SIZE_MIN, BRUSH_SIZE_MAX));
-    syncBrushControlInputs(uc);
-    uc.setStatus(`[VNCCS UniCanvas] Brush size ${Math.round(uc.brushSize)} px`);
-  } else if (gesture.kind === "hud") {
+  if (gesture.kind === "hud") {
     const dy = e.clientY - gesture.startClientY;
     if (!gesture.sector) gesture.sector = pickHudSector(dx, dy);
     if (gesture.sector) applyHudSectorValue(uc, gesture, dx);
@@ -224,9 +206,7 @@ function commitGesture(uc) {
     return;
   }
   let message = "";
-  if (gesture.kind === "size") {
-    message = `[VNCCS UniCanvas] Brush size ${Math.round(uc.brushSize)} px`;
-  } else if (gesture.sector) {
+  if (gesture.sector) {
     const key = gesture.sector.key;
     const value = key === "color" ? uc.fg : (key === "size" ? uc.brushSize : (key === "opacity" ? uc.opacity : uc.brushHardness));
     message = `[VNCCS UniCanvas] ${gesture.sector.label} ${formatHudValue(key, value)}`;
@@ -291,28 +271,9 @@ function drawInputToolsOverlay(uc) {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  if (gesture.kind === "size") {
-    drawSizeBadge(ctx, gesture, uc.brushSize);
-  } else if (gesture.kind === "hud") {
+  if (gesture.kind === "hud") {
     drawRadialHud(ctx, uc, gesture);
   }
-}
-
-function drawSizeBadge(ctx, gesture, brushSize) {
-  const { x, y } = gesture.lastScreen;
-  const label = `${Math.round(brushSize)} px`;
-  ctx.save();
-  ctx.font = "12px sans-serif";
-  const width = ctx.measureText(label).width + 14;
-  ctx.fillStyle = "rgba(10,10,15,.85)";
-  ctx.strokeStyle = "rgba(255,255,255,.25)";
-  ctx.beginPath();
-  ctx.roundRect(x + 16, y + 14, width, 20, 6);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = "#e8e8f0";
-  ctx.fillText(label, x + 23, y + 28);
-  ctx.restore();
 }
 
 function drawRadialHud(ctx, uc, gesture) {
@@ -432,11 +393,9 @@ export function installUniCanvasInputTools(uc) {
     e.preventDefault();
     e.stopPropagation();
     uc.canvas.setPointerCapture?.(e.pointerId);
-    if (e.altKey) {
-      // Alt + right drag owns the brush-size gesture (8.1) - the HUD never opens here.
-      if (BRUSH_FAMILY_TOOLS.has(uc.tool)) startBrushSizeGesture(uc, e);
-    } else if (uc.tool !== "sam") {
-      // Plain right-button hold opens the radial HUD (8.2).
+    if (uc.tool !== "sam") {
+      // Right-button hold opens the radial HUD - the only right-button gesture
+      // (the former Alt brush-size drag was removed by request).
       openRadialHud(uc, e);
     }
     uc.updateToolPreviewOverlay();

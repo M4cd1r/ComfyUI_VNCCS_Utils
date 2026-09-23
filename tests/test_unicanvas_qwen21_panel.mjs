@@ -107,3 +107,17 @@ test("Qwen-Image-2.1 output switch and native 2K presets are exposed", () => {
     }
     assert.match(panelSource, /data-qwen21-panel/, "Qwen-Image-2.1 panel root marker missing");
 });
+
+test("QI2.1 panel matches the UniCanvas palette and ships help tooltips", () => {
+    assert.ok(panelSource.includes("vnccs-uc-qwen21-styles"), "the panel must inject its UniCanvas-palette styles");
+    assert.ok(panelSource.includes("buildQwen21Help"), "help tooltips must be attached");
+    assert.ok(panelSource.includes("data-tip"), "tooltips must carry explanation text");
+    assert.match(panelSource, /range\.className = "vnccs-uc-range"/, "spectrum sliders must use the shared range styling");
+});
+
+test("edit families show a full-width Steps field with a hint and hide the generic one", () => {
+    assert.match(mainSource, /data-edit-steps-panel/, "an edit-steps panel must exist");
+    assert.match(mainSource, /data-edit-steps-hint/, "the panel needs a hint element");
+    assert.match(mainSource, /data-generic-steps/, "the generic Steps field must be toggleable");
+    assert.ok(mainSource.includes("<image1>"), "the QI2.1 hint must name the image1 convention");
+});

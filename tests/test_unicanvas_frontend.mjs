@@ -20,3 +20,8 @@ test("imported UniCanvas images immediately refresh the layer list", () => {
     assert.ok(listRenderIndex > invalidateIndex, "layer list must refresh after imported pixels are ready");
     assert.ok(canvasRenderIndex > listRenderIndex, "canvas redraw must follow the layer-list refresh");
 });
+
+test("re-importing the same image file works after its layer was deleted", () => {
+    assert.match(source, /this\.fileInput\.addEventListener\("change"[\s\S]{0,260}?this\.fileInput\.value = "";/,
+        "the file input must reset so picking the same file re-fires change");
+});

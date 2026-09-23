@@ -26,11 +26,11 @@ test("widget source installs both tool packs", () => {
   assert.match(widgetSource, /installUniCanvasLayerTools\(this\);/);
 });
 
-test("Alt guard keeps the brush-size gesture and the radial HUD apart", () => {
-  assert.match(inputTools, /if \(e\.altKey\) \{[\s\S]*?startBrushSizeGesture\(uc, e\);/);
-  assert.match(inputTools, /else if \(uc\.tool !== "sam"\) \{[\s\S]*?openRadialHud\(uc, e\);/);
-  assert.ok(inputTools.includes("BRUSH_FAMILY_TOOLS.has(uc.tool)"), "the size gesture must be limited to brush-family tools");
-  assert.ok(inputTools.includes("BRUSH_RADIUS_GESTURE_SENSITIVITY = 0.5"), "radius sensitivity must stay at ~0.5 px per pointer px");
+test("the radial HUD is the only right-button gesture (no Alt drag)", () => {
+  assert.ok(!inputTools.includes("startBrushSizeGesture"), "the Alt brush-size gesture must be gone");
+  assert.match(inputTools, /if \(uc\.tool !== "sam"\) \{[\s\S]*?openRadialHud\(uc, e\);/, "right-button hold opens the HUD regardless of Alt");
+  assert.ok(inputTools.includes('kind: "hud"'), "the HUD gesture must exist");
+  assert.ok(inputTools.includes("RADIAL_HUD_SIZE_SENSITIVITY = 0.5"), "HUD size sector sensitivity must stay at ~0.5 px radius per pointer px");
   assert.ok(inputTools.includes("uc.hoverPoint = uc.worldFromCanvasPoint(gesture.lastScreen)"), "the preview circle must track the cursor during the gesture");
 });
 

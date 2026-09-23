@@ -481,24 +481,34 @@ function nextUniCanvasPoseLayerName(widget) {
 }
 
 export function createUniCanvasPoseLayer(widget) {
-  const state = getUniCanvasPoseLayerState(widget);
-  const layer = widget.addLayer(POSE_LAYER_TYPE, nextUniCanvasPoseLayerName(widget), true, true);
-  layer.poseData = buildPoseLayerData({
-    pose: {},
-    character: defaultUniCanvasPoseLayerCharacter(),
-    camera: {},
-    size: {
-      width: widget.bbox?.width || 1024,
-      height: widget.bbox?.height || 1024,
-    },
-  });
-  ensureUniCanvasPoseLayerSubscription(state, layer);
-  widget.renderLayerList();
-  widget.requestRender();
-  widget.syncLightStateToWidget();
-  widget.scheduleFullSync();
-  widget.setStatus("[VNCCS UniCanvas] Pose layer added - waiting for Pose Studio");
-  return layer;
+  try {
+    const state = getUniCanvasPoseLayerState(widget);
+    const layer = widget.addLayer(POSE_LAYER_TYPE, nextUniCanvasPoseLayerName(widget), true, true);
+    layer.poseData = buildPoseLayerData({
+      pose: {},
+      character: defaultUniCanvasPoseLayerCharacter(),
+      camera: {},
+      size: {
+        width: widget.bbox?.width || 1024,
+        height: widget.bbox?.height || 1024,
+      },
+    });
+    ensureUniCanvasPoseLayerSubscription(state, layer);
+    widget.renderLayerList();
+    widget.requestRender();
+    widget.syncLightStateToWidget();
+    widget.scheduleFullSync();
+    widget.setStatus("[VNCCS UniCanvas] Pose layer added - editing the mannequin (Pose Studio link optional)");
+    // Open the mannequin editor right away so the layer is immediately usable
+    // without any Pose Studio node (spec 7.3 is the local editing path).
+    void editUniCanvasPoseLayer(widget, layer).catch((err) => {
+      widget.setStatus(`[VNCCS UniCanvas] Pose editor failed: ${err?.message || err}`, true);
+    });
+    return layer;
+  } catch (err) {
+    widget.setStatus(`[VNCCS UniCanvas] Could not add a pose layer: ${err?.message || err}`, true);
+    return null;
+  }
 }
 
 /**
@@ -999,7 +1009,11 @@ export async function editUniCanvasPoseLayer(widget, layer) {
     session.viewer = viewer;
     await viewer.init();
     if (session.closed) return null;
-    viewer.resize(Math.max(1, Math.round(rect.width)), Math.max(1, Math.round(rect.height)));
+    const viewWidth = Math.round(rect.width);
+    const viewHeight = Math.round(rect.height);
+    // A zero-size overlay would give the viewer a 1x1 canvas; fall back to sane
+    // defaults so the mannequin is always visible.
+    viewer.resize(viewWidth > 2 ? viewWidth : 480, viewHeight > 2 ? viewHeight : 320);
     if (typeof globalThis.ResizeObserver === "function") {
       session.resizeObserver = new globalThis.ResizeObserver(() => {
         const bounds = session.overlay?.getBoundingClientRect();

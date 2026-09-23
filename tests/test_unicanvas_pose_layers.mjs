@@ -249,3 +249,12 @@ test("fix-round hygiene: probe-only availability, own pose group, visible captur
     assert.match(poseStudioSource, /\[VNCCS Pose Studio\] Pose layer capture failed/);
     assert.match(poseStudioSource, /console\.warn\("\[VNCCS Pose Studio\] Pose layer character morph solve failed"/);
 });
+
+test("pose layer creation opens the mannequin editor and failures are visible", async () => {
+    const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+    assert.match(widgetSource, /this\.addPoseLayer\(\);/, "the mannequin tool must create a pose layer when none exists");
+    assert.match(widgetSource, /editPoseLayer\(layer\)\?\.catch/, "editor failures must surface instead of dying silently");
+    const poseSource = await readFile(new URL("../web/vnccs_unicanvas_pose_layers.mjs", import.meta.url), "utf8");
+    assert.match(poseSource, /void editUniCanvasPoseLayer\(widget, layer\)\.catch/, "Add pose layer must open the editor right away");
+    assert.match(poseSource, /viewWidth > 2 \? viewWidth : 480/, "the editor must fall back to a sane size on a zero-size overlay");
+});

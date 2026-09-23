@@ -987,8 +987,12 @@ class UniCanvasWidget {
         <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label>
         <div class="vnccs-uc-h3-hint">REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.</div>
       </div>
+      <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
+        <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label>
+        <div class="vnccs-uc-h3-hint" data-edit-steps-hint></div>
+      </div>
       <div class="vnccs-uc-generation-grid">
-        <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
+        <label class="vnccs-uc-field" data-generic-steps>Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
         <label class="vnccs-uc-field">Sampler<select class="vnccs-uc-select" data-setting="sampler_name"></select></label>
         <label class="vnccs-uc-field">CFG<input class="vnccs-uc-input" data-setting="cfg" type="number" lang="en-US" inputmode="decimal" step="0.1"></label>
         <label class="vnccs-uc-field">Scheduler<select class="vnccs-uc-select" data-setting="scheduler"></select></label>
@@ -1615,7 +1619,13 @@ class UniCanvasWidget {
       }
       this.clearInputHistoryMarker(target);
     });
-    this.fileInput.addEventListener("change", () => this.importFile(this.fileInput.files?.[0]));
+    this.fileInput.addEventListener("change", () => {
+    const file = this.fileInput.files?.[0];
+    // Reset so choosing the SAME file again re-fires "change" (e.g. after its
+    // layer was deleted) - a kept value would silently swallow the import.
+    this.fileInput.value = "";
+    return this.importFile(file);
+  });
     this.denoiseControl.addEventListener("input", (e) => {
       const target = e.target;
       if (!(target instanceof HTMLInputElement) || target.dataset.setting !== "denoise") return;
@@ -2002,9 +2012,30 @@ class UniCanvasWidget {
       }
     }
     const h3Panel = this.container.querySelector("[data-h3-panel]");
+    const moduleKey = getUniCanvasModelModule(this.settings.generation_mode).key;
     if (h3Panel) {
-      const h3Active = getUniCanvasModelModule(this.settings.generation_mode).key === "minimax_h3";
+      const h3Active = moduleKey === "minimax_h3";
       h3Panel.style.display = h3Active ? "" : "none";
+    }
+    // Edit-mode families own a full-width Steps field with an explanation of
+    // their reference convention (spec section 9 style, user request); the
+    // generic Steps row is hidden for every family that owns one.
+    const editStepsHints = {
+      qwen_image_edit: "Region edit - the working area is the source image; the first Edit model reference (reference_image_1) conditions the subject. Steps control the edit sampling (fewer steps stay closer to the source).",
+      flux_klein: "Guided edit - the working area is re-sampled under the prompt and denoise settings; Edit model references condition the result. Steps control the sampling depth.",
+      qwen_image21: "Reference edit - working area is <image1>, Edit model references are <image2..5>; the prompt is the edit instruction in the <image N> convention.",
+    };
+    const editStepsPanel = this.container.querySelector("[data-edit-steps-panel]");
+    if (editStepsPanel) {
+      const hint = editStepsHints[moduleKey] || "";
+      editStepsPanel.style.display = hint ? "" : "none";
+      const hintEl = editStepsPanel.querySelector("[data-edit-steps-hint]");
+      if (hintEl) hintEl.textContent = hint;
+    }
+    const genericSteps = this.container.querySelector("[data-generic-steps]");
+    if (genericSteps) {
+      const ownsSteps = moduleKey === "minimax_h3" || Boolean(editStepsHints[moduleKey]);
+      genericSteps.style.display = ownsSteps ? "none" : "";
     }
     // Qwen-Image-2.1 family: mount and gate the Spectrum acceleration panel.
     syncQwen21SpectrumPanel(this);
@@ -6681,12 +6712,20 @@ class UniCanvasWidget {
   editPoseLayer(layer) { return editUniCanvasPoseLayer(this, layer); }
   refreshPoseLayerUI() { return refreshUniCanvasPoseLayerUI(this); }
   activatePoseMannequinTool() {
-    const layer = this.activeLayer;
-    if (layer?.type === POSE_LAYER_TYPE) {
-      this.editPoseLayer(layer);
+    let layer = this.activeLayer;
+    if (layer?.type !== POSE_LAYER_TYPE) {
+      layer = this.layers.find((item) => item.type === POSE_LAYER_TYPE) || null;
+    }
+    if (!layer) {
+      // The mannequin tool is self-sufficient: create the pose layer and open
+      // its editor right away (a Pose Studio link stays optional).
+      this.addPoseLayer();
       return;
     }
-    this.setStatus("[VNCCS UniCanvas] Select a pose layer to edit the pose", true);
+    this.activeLayerId = layer.id;
+    this.renderLayerList();
+    void this.editPoseLayer(layer)?.catch?.((err) =>
+      this.setStatus(`[VNCCS UniCanvas] Pose editor failed: ${err?.message || err}`, true));
   }
 
   dispose() {
