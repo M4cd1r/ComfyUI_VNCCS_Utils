@@ -7050,6 +7050,12 @@ class UniCanvasWidget {
     this._vnccsSettingsPopover = panel;
     this._vnccsSettingsOutside = (event) => {
       if (panel.contains(event.target) || this.gearBtn.contains(event.target)) return;
+      // Custom selects open their option menu on document.body with
+      // bubble-phase guards, so a click on a row would reach this capture-phase
+      // handler first and dismiss the whole panel mid-edit. The menu belongs to
+      // the select inside the panel: choosing an option commits the value and
+      // keeps the panel open (spec 4.3/4.4).
+      if (event.target?.closest?.(".vnccs-custom-select-menu")) return;
       panel.remove();
       this._vnccsSettingsPopover = null;
       document.removeEventListener("pointerdown", this._vnccsSettingsOutside, true);
