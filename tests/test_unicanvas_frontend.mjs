@@ -57,3 +57,14 @@ test("edit model reference images upload next to Steps with Picture markers", ()
     assert.ok(source.includes("edit_reference_images"), "the uploads must persist in the widget settings");
     assert.match(source, /openEditReferenceImages\(\)/, "the popover entry point must exist");
 });
+
+test("settings popover carries the anchored class and size contract", () => {
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*min-width:\s*400px/,
+        "the settings popover must be at least 400px wide");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*font-size:\s*13px/,
+        "the settings popover must use the larger 13px type");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*max-height:\s*70vh/,
+        "the settings popover must cap its height at 70vh");
+    assert.match(source, /anchorPopoverTo\(panel,\s*this\.gearBtn,\s*this\.container\)/,
+        "the settings popover must be anchored under the gear inside the widget");
+});
