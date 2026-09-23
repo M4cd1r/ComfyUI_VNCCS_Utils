@@ -215,3 +215,9 @@ __marimo__/
 /PoseLibrary/.repository_git_cache/
 
 .worktrees/
+
+# Playwright E2E harness (tests/e2e): dependencies, run output and local evidence.
+tests/e2e/node_modules/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+tests/e2e/evidence/
