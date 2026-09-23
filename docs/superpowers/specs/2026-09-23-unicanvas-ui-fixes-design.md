@@ -24,7 +24,8 @@ In scope:
    the torso center with the mannequin centered in the canvas.
 5. Playwright E2E harness for items 1-4, parameterized by the ComfyUI URL of a test pod.
 6. Docker test platform (Dockerfile + docker-compose) that boots ComfyUI with the VNCSS and
-   VNCCS_Utils custom nodes preinstalled.
+   VNCCS_Utils custom nodes preinstalled — Lane A: local CPU-only Docker (primary), Lane B:
+   optional Runpod GPU pod for GPU-dependent verification.
 7. Repository `AGENTS.md` documentation of the E2E harness and the test platform.
 
 Out of scope: any change to `ComfyUI_VNCCS`; generation quality and model plumbing; new
@@ -134,10 +135,11 @@ this is the intended fix behavior and is noted in `CHANGELOG.md`.
 dependency-free and the existing `node --test` / pytest CI is untouched. Tests are plain JS
 (`.spec.mjs`) to match the repository style.
 
-7.2 **Target.** The only input is the ComfyUI URL of a running test pod:
-`COMFYUI_URL=https://<pod>.proxy.runpod.net npx playwright test`. No `webServer`, no local
-ComfyUI, no authentication. `fullyParallel:false`, one worker (a single shared ComfyUI
-state), `retries:1`, chromium only.
+7.2 **Target.** The only input is the ComfyUI URL of the running platform:
+`COMFYUI_URL=http://localhost:8188` (Lane A, local Docker CPU) or
+`COMFYUI_URL=https://<pod>.proxy.runpod.net` (Lane B, Runpod). No `webServer`, no
+authentication. `fullyParallel:false`, one worker (a single shared ComfyUI state),
+`retries:1`, chromium only.
 
 7.3 **Fixtures & measurement basis.** Helpers to: open the standalone "Unicanvas" sidebar
 tab (no workflow), add a pose layer, enter/leave `Edit pose`, run an edit->save cycle, and
@@ -168,38 +170,60 @@ PR is opened).
 
 ## 8. Test platform image (Dockerfile + compose) — item 6
 
-8.1 **Goal.** A pod created from this image serves a ready-to-test ComfyUI within ~3
-minutes: no clone/pip work per session. This replaces the ~25 minute manual install of the
-2026-09-23 session and is the main cost saving on Runpod.
+8.1 **Goal — two lanes.** The platform boots a ComfyUI with the VNCSS and VNCCS_Utils
+custom nodes preinstalled and no per-session clone/pip work.
 
-8.2 **`tests/e2e/platform/Dockerfile`.** Base `runpod/comfyui:cuda12.8` (ComfyUI 0.26.x +
-CUDA 12.8, matching the Runpod policy). Build steps: clone `AHEKOT/ComfyUI_VNCCS` and
-`M4cd1r/ComfyUI_VNCCS_Utils` into `custom_nodes/` at build-arg refs (`VNCSS_REF` default
-`main`, `VNCSS_UTILS_REF` default `unicanvas-next`; both overridable, and pinned to commit
-SHAs for reproducible release builds), then
-preinstall the Python requirements of both custom nodes (the expensive part) and run one
-headless ComfyUI boot as a build-time sanity check.
+- **Lane A (primary): local Docker, CPU-only.** The four fixes under test are browser-side
+  (DOM + client-side WebGL mannequin), so no GPU is needed to browse and drive the UI. The
+  whole E2E suite runs against `http://localhost:8188` on the developer machine. Zero
+  Runpod cost.
+- **Lane B (optional): Runpod GPU pod** from the CUDA variant of the same image, used only
+  for GPU-dependent verification (image generation, remove-bg backends, Generate character).
+  Boot-to-test under ~3 minutes instead of the ~25 minute manual install of the 2026-09-23
+  session.
 
-8.3 **`tests/e2e/platform/docker-compose.yml`.** Local parity and smoke-testing on this
-machine (Docker 29.x is available): service `comfyui`, `8188:8188`, and a bind mount of the
-working tree over `custom_nodes/ComfyUI_VNCCS_Utils` so WIP code is testable without
-rebuilding the image. The same file documents the volume/ports the pod uses.
+**No fork-specific hardcodes.** The repository under test is a parameter everywhere
+(build args, env, script parameters) because this fork merges into the mainline later:
+`VNCSS_UTILS_REPO` (default `https://github.com/M4cd1r/ComfyUI_VNCCS_Utils`) and
+`VNCSS_UTILS_REF` (default `unicanvas-next`) are build args, `sync-wip.ps1` takes the
+working tree and target URL as parameters, and the registry name is documented as
+configurable.
 
-8.4 **WIP code on the pod.** The image is immutable; code under test is refreshed at run
-time with `tests/e2e/platform/sync-wip.ps1` (packs `web/`, `nodes/`, `tests/` from the
-working tree, sends them over `runpodctl send`/scp and restarts ComfyUI). Rebuilding the
-image is needed only when Python requirements change.
+8.2 **`tests/e2e/platform/Dockerfile`.** One parameterized file, `ARG BASE_IMAGE`
+(default `python:3.12-slim` = Lane A CPU) with a documented CUDA build using
+`runpod/comfyui:cuda12.8` as `BASE_IMAGE` (Lane B, ComfyUI 0.26.x + CUDA 12.8 per the
+Runpod policy). Common steps: clone ComfyUI (CPU lane only — the CUDA base ships it),
+`VNCSS_UTILS_REPO`/`VNCSS_UTILS_REF` + `VNCSS_REPO`/`VNCSS_REF` (defaults
+`https://github.com/AHEKOT/ComfyUI_VNCCS` / `main`) into `custom_nodes/`, CPU torch wheels
+on Lane A (torch is preinstalled on Lane B), preinstall the Python requirements of ComfyUI
+and both custom nodes (the expensive part), then one headless ComfyUI boot as a build-time
+sanity check.
 
-8.5 **Registry.** `ghcr.io/m4cd1r/comfyui-vnccs-test` (GitHub `gh` CLI auth already in use).
-Build/push runs manually from this machine and is documented in AGENTS.md
-(`docker buildx build --push`); a CI workflow is explicitly out of scope for this round and
-gets added only if local build/push proves impossible.
+8.3 **`tests/e2e/platform/docker-compose.yml` (Lane A).** Local CPU-only run: service
+`comfyui`, `8188:8188`, `ipc:host`, a healthcheck on `/system_stats`, and a bind mount of
+the working tree over `custom_nodes/ComfyUI_VNCCS_Utils` so WIP code is testable without
+rebuilding the image. `docker compose up` on any CPU machine is the whole setup before
+`COMFYUI_URL=http://localhost:8188 npx playwright test`.
 
-8.6 **Runpod usage (policy-bound).** `create-pod` with the image above: 1× cheapest GPU with
-≥24 GB VRAM and CUDA 12.8 (RTX 4090 preferred), 150 GB container disk, no network volume,
-ports `8188/http` + `22/tcp`, `startSsh`, a pre-declared lifetime with a kill task scheduled
-at launch, and the hard $1 per-session cost cap from `~/.dsh/AGENTS.md`. Teardown: stop and
-terminate the pod and confirm no stray pods remain.
+8.4 **WIP code injection.** The image is immutable; code under test is refreshed at run
+time. Lane A uses the compose bind mount (8.3). Lane B uses
+`tests/e2e/platform/sync-wip.ps1` (parameters: `-Source` working tree, `-Target` pod SSH
+destination; packs `web/`, `nodes/`, `tests/`, sends them and restarts ComfyUI). Rebuilding
+the image is needed only when Python requirements change.
+
+8.5 **Image name & registry (parameterized).** Lane A never needs a registry — the image is
+built locally (`docker compose build`). Lane B publishes for pod pulls; the name is a
+parameter with the documented default `ghcr.io/m4cd1r/comfyui-vnccs-test` (GitHub `gh` CLI
+auth already in use; Docker Hub as fallback). Build/push runs manually from this machine
+and is documented in AGENTS.md (`docker buildx build --push`); a CI workflow is explicitly
+out of scope for this round and gets added only if local build/push proves impossible.
+
+8.6 **Runpod usage — Lane B only (policy-bound).** Used when GPU inference must be
+exercised. `create-pod` with the CUDA image: 1× cheapest GPU with ≥24 GB VRAM and CUDA 12.8
+(RTX 4090 preferred), 150 GB container disk, no network volume, ports `8188/http` + `22/tcp`,
+`startSsh`, a pre-declared lifetime with a kill task scheduled at launch, and the hard $1
+per-session cost cap from `~/.dsh/AGENTS.md`. Teardown: stop and terminate the pod and
+confirm no stray pods remain.
 
 ## 9. Documentation (item 7)
 
@@ -210,9 +234,12 @@ English sections:
   `COMFYUI_URL`, the install/run commands, the spec inventory and what each spec guards,
   evidence mode and its output layout, and the rule that E2E must never trigger GPU
   generation or model downloads.
-- **Test platform (Docker)** — what the image ships, build args, local compose usage,
-  `sync-wip.ps1`, the GHCR target, and the Runpod cost guardrails (cheapest ≥24 GB CUDA 12.8
-  GPU, kill task at launch, $1 cap, terminate after testing).
+- **Test platform (Docker)** — the two lanes (Lane A local CPU Docker as primary, Lane B
+  Runpod GPU pod for GPU-dependent verification only), what the image ships, the build args
+  (`VNCSS_UTILS_REPO`/`REF`, `VNCSS_REPO`/`REF`, `BASE_IMAGE`), compose usage,
+  `sync-wip.ps1`, the configurable image target, the note that nothing is hardcoded to this
+  fork (it merges into the mainline later), and the Runpod cost guardrails (cheapest ≥24 GB
+  CUDA 12.8 GPU, kill task at launch, $1 cap, terminate after testing).
 
 ## 10. Testing & verification
 
@@ -237,8 +264,11 @@ English sections:
   buffer.
 - **Rig bone names** differ between MakeHuman-derived builds; 6.1 pins them in tests and the
   fallback chain keeps framing sane if a name is missing.
-- **Image size** (~8-12 GB) makes builds slow; the image is dependency-stable and WIP code
-  syncs at run time (8.4), so rebuilds are rare.
+- **Image size** (~2-3 GB CPU lane, ~8-12 GB CUDA lane) makes builds slow; the image is
+  dependency-stable and WIP code syncs at run time (8.4), so rebuilds are rare.
+- **CUDA-only imports** in custom-node Python code must not break the CPU lane at import
+  time; the Docker build-time boot (8.2) catches this, and any offending import is guarded
+  rather than the lane being dropped.
 - **Legacy layers re-frame** on first save (6.3) — accepted and documented behavior change.
 - **Root-cause uncertainty for Bug A** — 5.4 names both fix locations; if neither makes the
   round trip an identity, the work stops and the architecture of the pose storage is
