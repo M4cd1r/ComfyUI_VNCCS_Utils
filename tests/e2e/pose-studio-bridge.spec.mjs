@@ -9,9 +9,19 @@ import { measureAlphaBBoxInPage } from "./helpers/measure.mjs";
 // the layer's previous alpha bounds, shrinking the mannequin ~4x per push
 // (measured live: 142x355 -> 52x207 -> 20x121 -> 8x71).
 
-const TOLERANCE = 0.05; // width, height and area stay within 5% of the baseline
+const TOLERANCE = 0.05; // 5% on the drawn size, bridge push to bridge push
+// Size only. Absolute coordinates/centroids are not a percentage gate, so the
+// stability loop never divides a position by its previous value.
+const SIZE_KEYS = ["width", "height", "area"];
 
-async function loadPoseStudioOnly(page) {
+// One single page load for the whole scenario. The studio this spec waits for
+// must be the studio that answers the pose layer's hello: re-navigating after
+// loading the graph would hand liveness over to ComfyUI's unasserted workflow
+// auto-restore, and with a dead bridge `capture now` is a silent no-op
+// (captureUniCanvasPoseLayerNow returns false before drawing unless the layer
+// status is POSE_LAYER_STATUS_LINKED), i.e. every size assertion below would
+// pass at 0% deviation.
+async function bootComfyApp(page) {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(
     () => !!(window.app?.loadGraphData || window.comfyAPI?.app?.app?.loadGraphData),
@@ -25,6 +35,9 @@ async function loadPoseStudioOnly(page) {
   // Let the extension bundles finish registering custom node types before
   // loadGraphData (same settle delay as the controller's probe).
   await page.waitForTimeout(1_500);
+}
+
+async function loadPoseStudioOnly(page) {
   const workflow = JSON.parse(
     await readFile(resolve(import.meta.dirname, "fixtures", "unicanvas-pose-studio-wf.json"), "utf8"),
   );
@@ -50,6 +63,35 @@ async function loadPoseStudioOnly(page) {
   );
 }
 
+/**
+ * Liveness gate - runs BEFORE the baseline is measured, so a dead bridge fails
+ * loudly instead of turning every capture-now assertion into a vacuous pass.
+ * Both halves are needed: (a) a registered studio can answer at all, and (b)
+ * the layer's link chip really received the hello. The chip starts as
+ * "disconnected"/"waiting..." and only flips to "linked to Pose Studio" when a
+ * live studio answers the subscribe message.
+ */
+async function assertPoseBridgeLive(page) {
+  const studioLive = await page.evaluate(
+    () => !!window.__vnccsPoseStudioPoseLayerBridge?.pickStudio?.(),
+  );
+  expect(
+    studioLive,
+    "no initialized Pose Studio is registered, so the bridge cannot answer capture-now",
+  ).toBe(true);
+  const poseLayerId = await page.evaluate(() => {
+    const layers = window.__VNCCS_UC_E2E__.listLayers();
+    const pose = layers.find((layer) => layer.type === "pose");
+    return pose?.id ?? null;
+  });
+  expect(poseLayerId, "the pose layer must exist before the liveness gate").not.toBeNull();
+  await expect(
+    page.locator(`[data-pose-status="${poseLayerId}"]`).first(),
+    "the pose layer chip must read 'linked to Pose Studio' - it starts as 'disconnected' and only a live studio answers the subscribe hello",
+  ).toHaveText("linked to Pose Studio", { timeout: 30_000 });
+  return poseLayerId;
+}
+
 async function measurePoseLayer(page) {
   const bbox = await page.evaluate(async () => {
     const layers = window.__VNCCS_UC_E2E__.listLayers();
@@ -63,6 +105,18 @@ async function measurePoseLayer(page) {
   return measureAlphaBBoxInPage(page, bbox);
 }
 
+/** 5% gate on the drawn size only: width, height and area. */
+function assertSameSize(current, reference, label) {
+  for (const key of SIZE_KEYS) {
+    expect(current[key], `${label}: ${key} must be measured`).toBeGreaterThan(0);
+    const deviation = Math.abs(current[key] / reference[key] - 1);
+    expect(
+      deviation,
+      `${label}: ${key} ${current[key]} vs ${reference[key]} = ${(deviation * 100).toFixed(2)}% off`,
+    ).toBeLessThan(TOLERANCE);
+  }
+}
+
 async function clickCaptureNow(page) {
   await page.locator("button").filter({ hasText: /capture now/i }).first().click({ timeout: 10_000 });
   // The bridge answers capture-request with a final-quality render.
@@ -71,30 +125,43 @@ async function clickCaptureNow(page) {
 
 test.describe("Pose Studio bridge render path", () => {
   test("capture now pushes keep the mannequin size and placement (no scaling)", async ({ page }) => {
+    await bootComfyApp(page);
+    // Tab first, then the graph, in ONE document (no re-navigation): the studio
+    // waited for below is the studio that answers the layer.
+    await openUnicanvas(page, { navigate: false });
     await loadPoseStudioOnly(page);
-    await openUnicanvas(page);
     await addPoseLayer(page);
     // Adding the layer opens the mannequin editor; save once so the layer has
-    // real pixels (the baseline footprint).
+    // real pixels (the editor-render footprint).
     await savePose(page);
-    const baseline = await measurePoseLayer(page);
-    expect(baseline.area).toBeGreaterThan(0);
+    await assertPoseBridgeLive(page);
 
-    // Three "capture now" pushes through the live bridge: the bbox must not
-    // shrink (RED before the fix: ~22-25% of the previous area per push).
-    const bboxes = [baseline];
-    for (let push = 1; push <= 3; push += 1) {
-      await clickCaptureNow(page);
-      const current = await measurePoseLayer(page);
-      bboxes.push(current);
-      for (const [key, value] of Object.entries(current)) {
-        const reference = baseline[key];
-        expect(
-          Math.abs(value / reference - 1),
-          `capture now #${push}: ${key} ${value} vs baseline ${reference}`,
-        ).toBeLessThan(TOLERANCE);
-      }
+    const editorBaseline = await measurePoseLayer(page);
+    expect(editorBaseline.area).toBeGreaterThan(0);
+
+    // Three "capture now" pushes through the live bridge. Push #1 is the
+    // BRIDGE baseline: the editor render and the studio render are two
+    // different cameras, so their delta is informational only (measured
+    // ~4.8% on area - 0.19 pp of headroom in the 5% budget, which is why it is
+    // not the gate). The scaling bug is a push-to-push collapse: on the pre-fix
+    // build push #2 kept 38% of push #1's width and push #3 kept 15%.
+    await clickCaptureNow(page);
+    const bridgeBaseline = await measurePoseLayer(page);
+    for (const key of SIZE_KEYS) {
+      const delta = Math.abs(bridgeBaseline[key] / editorBaseline[key] - 1);
+      console.log(
+        `informational editor->studio ${key}: ${editorBaseline[key]} -> ${bridgeBaseline[key]} ` +
+          `(${(delta * 100).toFixed(2)}% off, not asserted)`,
+      );
     }
+
+    await clickCaptureNow(page);
+    const push2 = await measurePoseLayer(page);
+    assertSameSize(push2, bridgeBaseline, "capture now #2 vs capture now #1");
+
+    await clickCaptureNow(page);
+    const push3 = await measurePoseLayer(page);
+    assertSameSize(push3, bridgeBaseline, "capture now #3 vs capture now #1");
 
     // Placement stability (spec 5.1b): move the layer with the move tool,
     // push once more, and the content must not jump back to the canvas centre.
@@ -107,17 +174,12 @@ test.describe("Pose Studio bridge render path", () => {
     await page.mouse.up();
     const afterMove = await measurePoseLayer(page);
     // The move tool bakes the placement into the bitmap: the content really moved.
-    expect(Math.abs(afterMove.centroidX - bboxes[3].centroidX)).toBeGreaterThan(5);
-    expect(Math.abs(afterMove.centroidY - bboxes[3].centroidY)).toBeGreaterThan(5);
+    expect(Math.abs(afterMove.centroidX - push3.centroidX)).toBeGreaterThan(5);
+    expect(Math.abs(afterMove.centroidY - push3.centroidY)).toBeGreaterThan(5);
     await clickCaptureNow(page);
     const afterPush = await measurePoseLayer(page);
     // Same size (1:1 draw)...
-    for (const [key, value] of Object.entries(afterPush)) {
-      expect(
-        Math.abs(value / afterMove[key] - 1),
-        `push after move: ${key} ${value} vs moved ${afterMove[key]}`,
-      ).toBeLessThan(TOLERANCE);
-    }
+    assertSameSize(afterPush, afterMove, "push after move vs the moved layer");
     // ...and the content stayed where the move tool put it (no jump to centre).
     expect(Math.abs(afterPush.centroidX - afterMove.centroidX)).toBeLessThanOrEqual(
       Math.max(8, afterMove.width * 0.05),
@@ -133,10 +195,10 @@ test.describe("Pose Studio bridge render path", () => {
       resolve(outDir, "probe.json"),
       JSON.stringify(
         {
-          baseline: round(baseline),
-          push1: round(bboxes[1]),
-          push2: round(bboxes[2]),
-          push3: round(bboxes[3]),
+          editorBaseline: round(editorBaseline),
+          bridgeBaseline: round(bridgeBaseline),
+          push2: round(push2),
+          push3: round(push3),
           afterMove: round(afterMove),
           afterPushAfterMove: round(afterPush),
         },
@@ -156,4 +218,3 @@ const round = (bbox) => ({
   centroidX: Math.round(bbox.centroidX),
   centroidY: Math.round(bbox.centroidY),
 });
-

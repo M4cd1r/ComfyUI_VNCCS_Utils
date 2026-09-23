@@ -10,9 +10,13 @@ const PROGRESS_LABEL = ".vnccs-uc-generation-progress .vnccs-uc-progress-label";
 const UNICANVAS_TAB =
   '[data-testid="vnccs-unicanvas-standalone-tab-button"], [data-label="Unicanvas"], button[title="Unicanvas"]';
 
-/** Open the standalone Unicanvas sidebar tab and wait for the widget chrome. */
-export async function openUnicanvas(page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+/**
+ * Open the standalone Unicanvas sidebar tab and wait for the widget chrome.
+ * `navigate: false` skips the page load so a spec can keep the document (and
+ * everything registered in it, e.g. a live Pose Studio) across the call.
+ */
+export async function openUnicanvas(page, { navigate = true } = {}) {
+  if (navigate) await page.goto("/", { waitUntil: "domcontentloaded" });
   const tab = page.locator(UNICANVAS_TAB).first();
   await expect(tab).toBeVisible({ timeout: 30_000 });
   await tab.click();
@@ -56,12 +60,9 @@ export async function enterPoseEdit(page) {
   if (!(await entry.isVisible().catch(() => false))) {
     // Right-click a POSE-typed row: the widget seeds mask/raster layers whose
     // context menu has no "Edit pose" entry, so the first row would dead-end.
-    // Pose layers are always named "Pose <n>" (nextUniCanvasPoseLayerName).
-    await page
-      .locator("[data-layer-id]")
-      .filter({ hasText: /^Pose\b/ })
-      .first()
-      .click({ button: "right" });
+    // createLayerRow() stamps data-layer-type on every row
+    // (web/vnccs_unicanvas.js:4978), so this survives a user rename.
+    await page.locator('[data-layer-type="pose"]').first().click({ button: "right" });
   }
   await entry.click();
   await waitForPoseEditorReady(page);
