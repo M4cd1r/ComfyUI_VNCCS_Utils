@@ -49,6 +49,11 @@ Specs and what each one guards:
 - `pose-framing.spec.mjs` - Edit pose frames the mannequin on the torso center (horizontal
   midline within 2%, torso third within 3% of frame center), so the saved capture matches the
   edit view (spec 6.1/6.2).
+- `pose-studio-bridge.spec.mjs` - Pose Studio bridge pushes never scale the mannequin (spec
+  5.1b on the bridge path): with a live `VNCCS_PoseStudio` node loaded from
+  `fixtures/unicanvas-pose-studio-wf.json`, three `capture now` pushes keep the layer bbox
+  width, height and area within 5% of the baseline, and a push after moving the layer keeps
+  the moved placement instead of jumping back to the canvas center.
 
 The suite never calls GPU generation and never downloads models; CPU is enough because the
 mannequin pipeline is client-side WebGL. Geometric assertions read the saved pose layer pixels

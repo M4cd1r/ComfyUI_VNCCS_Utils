@@ -388,7 +388,18 @@ async function applyUniCanvasPoseLayerRenderPixels(widget, sub, detail, commit) 
   if (Number.isFinite(seq) && sub.latestSeq !== null && seq < sub.latestSeq) return false;
   const layer = widget.layers.find((item) => item.id === sub.layerId);
   if (!layer || layer.type !== POSE_LAYER_TYPE) return false;
-  drawUniCanvasPoseRenderIntoLayer(widget, layer, image, detail.render);
+  // Bridge draws (previews at ~18 FPS and committed "capture now" alike) land
+  // 1:1 at natural render size, anchored on the layer's previous content
+  // centre. The old call went through the alpha-crop branch, squeezing the
+  // fresh capture into the previous footprint and shrinking the mannequin on
+  // every push (owner-reported, measured 142x355 -> 52x207 -> 20x121 -> 8x71).
+  drawUniCanvasPoseBridgeRenderIntoLayer(
+    widget,
+    layer,
+    image,
+    detail.render,
+    resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer),
+  );
   if (commit) {
     layer.poseData = mergeUniCanvasPoseLayerDetail(layer, detail);
     // The character selection made in the Pose Studio Characters panel is
@@ -466,6 +477,62 @@ function resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta) {
     };
   }
   return resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
+}
+
+/**
+ * Placement anchor for bridge draws (spec 5.1b on the bridge path): the
+ * widget-space centre of the layer's PREVIOUS content, so the incoming frame
+ * centre lands there and a moved layer keeps its placement. The torso-anchored
+ * capture of spec 6.2 keeps the mannequin centred in its frame, so frame
+ * centre ~ content centre and repeated pushes do not drift.
+ *
+ * Performance (binding - previews arrive at ~18 FPS): the anchor is cached on
+ * the subscription and only refreshed when the widget's cached layer bounds
+ * identity changes (i.e. after a committed render, a move or a transform
+ * invalidated the cache). Between those events `getLayerAlphaBounds` returns
+ * the warm `layer._boundsCache`, so a preview frame costs one property read -
+ * never a scan of the capture or of the layer bitmap.
+ */
+export function resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer) {
+  const bounds = widget.getLayerAlphaBounds(layer);
+  if (!bounds || !(bounds.width > 0) || !(bounds.height > 0)) return null;
+  const cached = sub.placementAnchor;
+  const centerX = widget.origin.x + bounds.x + bounds.width / 2;
+  const centerY = widget.origin.y + bounds.y + bounds.height / 2;
+  if (!cached || cached.boundsRef !== bounds || cached.x !== centerX || cached.y !== centerY) {
+    sub.placementAnchor = { boundsRef: bounds, x: centerX, y: centerY };
+  }
+  return sub.placementAnchor;
+}
+
+/**
+ * Bridge draw: the capture lands 1:1 (natural render size, never scaled),
+ * shifted so its frame centre sits on `anchor` when one exists. A layer with
+ * no previous content keeps the centred natural rect. No branch squeezes the
+ * capture into a previous footprint.
+ */
+export function drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, renderMeta, anchor) {
+  const natural = resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
+  let target = natural;
+  if (anchor) {
+    target = {
+      x: Math.round(natural.x + (anchor.x - (natural.x + natural.width / 2))),
+      y: Math.round(natural.y + (anchor.y - (natural.y + natural.height / 2))),
+      width: natural.width,
+      height: natural.height,
+    };
+  }
+  const ctx = widget.configureImageContext(layer.canvas.getContext("2d"), true);
+  ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+  ctx.drawImage(
+    image,
+    target.x - widget.origin.x,
+    target.y - widget.origin.y,
+    target.width,
+    target.height,
+  );
+  layer.hiresCanvas = null;
+  layer.hiresRect = null;
 }
 
 /**
