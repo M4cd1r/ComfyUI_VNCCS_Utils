@@ -38,3 +38,20 @@ test("the settings Close button closes the panel and the gear reopens it", async
   await gear.click(); // the closed panel must leave no stale outside-click state behind
   await expect(panel).toHaveCount(1);
 });
+
+// Spec 4.3: the popover must never land over the left sidebar, not even on a host
+// too narrow for the position anchored under the gear. 700/660px viewports really
+// used to overlap; 900px documents that a mid-narrow host already clears it.
+for (const width of [900, 700, 660]) {
+  test(`the settings panel stays off the left sidebar on a ${width}px viewport`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await openUnicanvas(page);
+    await page.locator('[title="Settings"]').first().click();
+    const panel = page.locator(".vnccs-uc-settings-popover");
+    await expect(panel).toHaveCount(1);
+
+    const [panelBox, leftBox] = [await panel.boundingBox(), await page.locator(".vnccs-uc-left").boundingBox()];
+    const overlapsLeft = panelBox.x < leftBox.x + leftBox.width && panelBox.x + panelBox.width > leftBox.x;
+    expect(overlapsLeft).toBe(false); // never over the left sidebar
+  });
+}

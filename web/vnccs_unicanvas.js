@@ -6879,10 +6879,13 @@ class UniCanvasWidget {
     const hostRect = host.getBoundingClientRect();
     const rect = anchorEl.getBoundingClientRect();
     const width = panel.offsetWidth || 400;
-    const left = Math.min(
-      Math.max(4, rect.right - hostRect.left - width),
-      Math.max(4, hostRect.width - width - 4),
-    );
+    let left = Math.max(4, rect.right - hostRect.left - width);
+    // The left sidebar starts at the host's left edge, so push the panel clear of it
+    // on narrow hosts (spec 4.3).
+    left = Math.max(left, this.left.getBoundingClientRect().right - hostRect.left + 4);
+    // Host bounds are the last clamp: on a host too narrow for both rules to hold,
+    // staying fully inside the host wins.
+    left = Math.min(left, Math.max(4, hostRect.width - width - 4));
     const top = Math.min(rect.bottom - hostRect.top + 6, Math.max(4, hostRect.height - panel.offsetHeight - 4));
     panel.style.left = `${left}px`;
     panel.style.top = `${top}px`;
