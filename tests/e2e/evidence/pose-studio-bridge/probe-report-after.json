@@ -1,0 +1,65 @@
+{
+  "steps": [
+    {
+      "step": "studio",
+      "studios": 1,
+      "picked": true
+    },
+    {
+      "step": "01-after-first-save",
+      "bbox": {
+        "x": 835,
+        "y": 783,
+        "w": 378,
+        "h": 595,
+        "area": 59257
+      },
+      "centroid": {
+        "x": 1023,
+        "y": 1057
+      }
+    },
+    {
+      "step": "02-capture-now-1",
+      "bbox": {
+        "x": 835,
+        "y": 782,
+        "w": 378,
+        "h": 595,
+        "area": 59257
+      },
+      "centroid": {
+        "x": 1023,
+        "y": 1056
+      }
+    },
+    {
+      "step": "02-capture-now-2",
+      "bbox": {
+        "x": 835,
+        "y": 781,
+        "w": 378,
+        "h": 595,
+        "area": 59257
+      },
+      "centroid": {
+        "x": 1023,
+        "y": 1055
+      }
+    },
+    {
+      "step": "02-capture-now-3",
+      "bbox": {
+        "x": 835,
+        "y": 780,
+        "w": 378,
+        "h": 595,
+        "area": 59257
+      },
+      "centroid": {
+        "x": 1023,
+        "y": 1054
+      }
+    }
+  ]
+}

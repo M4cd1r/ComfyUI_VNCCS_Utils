@@ -1,0 +1,40 @@
+{
+  "crop": {
+    "x": 380,
+    "y": 120,
+    "width": 1320,
+    "height": 960
+  },
+  "sources": {
+    "before": "C:\\Users\\admin\\dsh-local\\vnccs-work\\ComfyUI_VNCCS_Utils\\tests\\e2e\\evidence\\pose-studio-probe\\11-after-captures.png",
+    "after": "C:\\Users\\admin\\dsh-local\\vnccs-work\\ComfyUI_VNCCS_Utils\\.worktrees\\t8-bridge-scale\\tests\\e2e\\evidence\\pose-studio-bridge\\after-captures.png"
+  },
+  "measured": {
+    "before": {
+      "sourceSize": [
+        1700,
+        1100
+      ],
+      "mannequinInCrop": {
+        "x": 540,
+        "y": 497,
+        "width": 5,
+        "height": 29,
+        "pixels": 56
+      }
+    },
+    "after": {
+      "sourceSize": [
+        1700,
+        1100
+      ],
+      "mannequinInCrop": {
+        "x": 381,
+        "y": 261,
+        "width": 324,
+        "height": 508,
+        "pixels": 28769
+      }
+    }
+  }
+}

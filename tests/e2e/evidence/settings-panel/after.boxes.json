@@ -1,0 +1,58 @@
+{
+  "root": {
+    "selector": ".vnccs-unicanvas",
+    "x": 56,
+    "y": 0,
+    "width": 1544,
+    "height": 1000,
+    "fontSize": "11px",
+    "minWidth": "0px",
+    "maxWidth": "none",
+    "maxHeight": "none",
+    "position": "relative",
+    "zIndex": "auto",
+    "overflowY": "hidden"
+  },
+  "leftSidebar": {
+    "selector": ".vnccs-uc-left",
+    "x": 56,
+    "y": 0,
+    "width": 292.8,
+    "height": 1000,
+    "fontSize": "11px",
+    "minWidth": "auto",
+    "maxWidth": "none",
+    "maxHeight": "100%",
+    "position": "static",
+    "zIndex": "auto",
+    "overflowY": "hidden"
+  },
+  "gear": {
+    "selector": "[title=\"Settings\"]",
+    "x": 1303.6,
+    "y": 7.3,
+    "width": 27.4,
+    "height": 25.6,
+    "fontSize": "11px",
+    "minWidth": "auto",
+    "maxWidth": "none",
+    "maxHeight": "none",
+    "position": "static",
+    "zIndex": "auto",
+    "overflowY": "visible"
+  },
+  "panel": {
+    "selector": ".vnccs-uc-settings-popover",
+    "x": 931,
+    "y": 38.9,
+    "width": 400,
+    "height": 653,
+    "fontSize": "13px",
+    "minWidth": "400px",
+    "maxWidth": "min(520px, 100% - 8px)",
+    "maxHeight": "700px",
+    "position": "absolute",
+    "zIndex": "30",
+    "overflowY": "auto"
+  }
+}

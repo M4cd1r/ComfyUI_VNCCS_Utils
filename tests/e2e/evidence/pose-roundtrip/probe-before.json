@@ -1,0 +1,62 @@
+[
+  {
+    "cycle": 1,
+    "minX": 835,
+    "minY": 725,
+    "maxX": 1212,
+    "maxY": 1319,
+    "width": 378,
+    "height": 595,
+    "centroidX": 1023.4946926101558,
+    "centroidY": 998.6315709536426,
+    "area": 59257
+  },
+  {
+    "cycle": 2,
+    "minX": 954,
+    "minY": 849,
+    "maxX": 1093,
+    "maxY": 1194,
+    "width": 140,
+    "height": 346,
+    "centroidX": 1023.5367613200307,
+    "centroidY": 1008.3739063699156,
+    "area": 13030
+  },
+  {
+    "cycle": 3,
+    "minX": 998,
+    "minY": 920,
+    "maxX": 1049,
+    "maxY": 1121,
+    "width": 52,
+    "height": 202,
+    "centroidX": 1023.5101970273073,
+    "centroidY": 1013.3245765641203,
+    "area": 2893
+  },
+  {
+    "cycle": 4,
+    "minX": 1014,
+    "minY": 962,
+    "maxX": 1033,
+    "maxY": 1079,
+    "width": 20,
+    "height": 118,
+    "centroidX": 1023.4985673352436,
+    "centroidY": 1015.4498567335244,
+    "area": 698
+  },
+  {
+    "cycle": 5,
+    "minX": 1020,
+    "minY": 986,
+    "maxX": 1027,
+    "maxY": 1054,
+    "width": 8,
+    "height": 69,
+    "centroidX": 1023.5,
+    "centroidY": 1017.7613636363636,
+    "area": 176
+  }
+]

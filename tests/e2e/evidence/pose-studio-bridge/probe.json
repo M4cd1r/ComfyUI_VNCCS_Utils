@@ -1,0 +1,56 @@
+{
+  "editorBaseline": {
+    "x": 835,
+    "y": 725,
+    "w": 378,
+    "h": 595,
+    "area": 59257,
+    "centroidX": 1023,
+    "centroidY": 999
+  },
+  "bridgeBaseline": {
+    "x": 835,
+    "y": 725,
+    "w": 378,
+    "h": 595,
+    "area": 59257,
+    "centroidX": 1023,
+    "centroidY": 999
+  },
+  "push2": {
+    "x": 835,
+    "y": 725,
+    "w": 378,
+    "h": 595,
+    "area": 59257,
+    "centroidX": 1023,
+    "centroidY": 999
+  },
+  "push3": {
+    "x": 835,
+    "y": 725,
+    "w": 378,
+    "h": 595,
+    "area": 59257,
+    "centroidX": 1023,
+    "centroidY": 999
+  },
+  "afterMove": {
+    "x": 1146,
+    "y": 963,
+    "w": 378,
+    "h": 595,
+    "area": 59257,
+    "centroidX": 1334,
+    "centroidY": 1237
+  },
+  "afterPushAfterMove": {
+    "x": 1146,
+    "y": 962,
+    "w": 378,
+    "h": 595,
+    "area": 59257,
+    "centroidX": 1334,
+    "centroidY": 1236
+  }
+}

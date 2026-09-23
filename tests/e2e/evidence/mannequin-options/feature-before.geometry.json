@@ -1,0 +1,37 @@
+{
+  "widget": {
+    "x": 56,
+    "y": 0,
+    "width": 1544,
+    "height": 1000,
+    "display": "grid",
+    "border": "0px none"
+  },
+  "leftColumn": {
+    "x": 56,
+    "y": 0,
+    "width": 293,
+    "height": 1000,
+    "display": "flex",
+    "border": "0px none"
+  },
+  "optionsSection": null,
+  "modalOverlay": {
+    "x": 56,
+    "y": 0,
+    "width": 1544,
+    "height": 1000,
+    "display": "grid",
+    "border": "0px none"
+  },
+  "modal": {
+    "x": 548,
+    "y": 150,
+    "width": 560,
+    "height": 700,
+    "display": "flex",
+    "border": "1px solid"
+  },
+  "firstSlider": null,
+  "modalCount": 1
+}

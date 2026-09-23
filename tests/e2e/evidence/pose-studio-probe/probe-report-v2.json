@@ -1,0 +1,218 @@
+{
+  "steps": [
+    {
+      "step": "studio",
+      "studios": 1,
+      "picked": true
+    },
+    {
+      "step": "01-after-first-save",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 953,
+        "y": 903,
+        "w": 142,
+        "h": 355,
+        "area": 13631
+      },
+      "centroid": {
+        "x": 1023,
+        "y": 1066
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "02-capture-now-1",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 998,
+        "y": 976,
+        "w": 52,
+        "h": 207,
+        "area": 3011
+      },
+      "centroid": {
+        "x": 1024,
+        "y": 1072
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "02-capture-now-2",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 1014,
+        "y": 1019,
+        "w": 20,
+        "h": 121,
+        "area": 710
+      },
+      "centroid": {
+        "x": 1024,
+        "y": 1074
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "02-capture-now-3",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 1020,
+        "y": 1044,
+        "w": 8,
+        "h": 71,
+        "area": 180
+      },
+      "centroid": {
+        "x": 1024,
+        "y": 1076
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "save-error-2",
+      "message": "TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.vnccs-uc-pose-edit-bar button:has-text(\"Save pose\")')\u001b[22m\n"
+    },
+    {
+      "step": "03-after-pose-library-save",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 1022,
+        "y": 1066,
+        "w": 4,
+        "h": 34,
+        "area": 60
+      },
+      "centroid": {
+        "x": 1024,
+        "y": 1084
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "save-error-loop",
+      "cycle": 1,
+      "message": "TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.vnccs-uc-pose-edit-bar button:has-text(\"Save pose\")')\u001b[22m\n"
+    },
+    {
+      "step": "04-save-loop-1",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 1022,
+        "y": 1066,
+        "w": 4,
+        "h": 34,
+        "area": 60
+      },
+      "centroid": {
+        "x": 1024,
+        "y": 1084
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "save-error-loop",
+      "cycle": 2,
+      "message": "TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.vnccs-uc-pose-edit-bar button:has-text(\"Save pose\")')\u001b[22m\n"
+    },
+    {
+      "step": "04-save-loop-2",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 1022,
+        "y": 1066,
+        "w": 4,
+        "h": 34,
+        "area": 60
+      },
+      "centroid": {
+        "x": 1024,
+        "y": 1084
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "save-error-loop",
+      "cycle": 3,
+      "message": "TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.vnccs-uc-pose-edit-bar button:has-text(\"Save pose\")')\u001b[22m\n"
+    },
+    {
+      "step": "04-save-loop-3",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 1022,
+        "y": 1066,
+        "w": 4,
+        "h": 34,
+        "area": 60
+      },
+      "centroid": {
+        "x": 1024,
+        "y": 1084
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "05-after-move",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 1220,
+        "y": 1230,
+        "w": 2,
+        "h": 2,
+        "area": 4
+      },
+      "centroid": {
+        "x": 1221,
+        "y": 1231
+      },
+      "poseBones": 1,
+      "rel": false
+    },
+    {
+      "step": "06-after-move-save",
+      "layerId": "uc_d5o4cx6v",
+      "chip": "linked to Pose Studio",
+      "captureBtn": true,
+      "bbox": {
+        "x": 1220,
+        "y": 1230,
+        "w": 2,
+        "h": 2,
+        "area": 4
+      },
+      "centroid": {
+        "x": 1221,
+        "y": 1231
+      },
+      "poseBones": 1,
+      "rel": false
+    }
+  ]
+}
