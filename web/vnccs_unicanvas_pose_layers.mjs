@@ -435,16 +435,13 @@ function mergeUniCanvasPoseLayerDetail(layer, detail) {
   });
 }
 
-function resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta) {
-  const crop = widget.getLayerAlphaBounds(layer);
-  if (crop && crop.width > 0 && crop.height > 0) {
-    return {
-      x: widget.origin.x + crop.x,
-      y: widget.origin.y + crop.y,
-      width: crop.width,
-      height: crop.height,
-    };
-  }
+/**
+ * Natural-size target rect: the capture lands 1:1 (its render.size), centered
+ * on the canvas. This is the fixed point of the editor save draw - reusing it
+ * for every save keeps the mannequin footprint constant instead of shrinking
+ * into the previous frame's alpha bounds.
+ */
+function resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta) {
   const width = clampRenderSide(renderMeta?.size?.width, image.naturalWidth || image.width || 1024);
   const height = clampRenderSide(renderMeta?.size?.height, image.naturalHeight || image.height || 1024);
   const centerX = widget.origin.x + widget.size.width / 2;
@@ -457,8 +454,26 @@ function resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta) {
   };
 }
 
-function drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta) {
-  const target = resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta);
+function resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta) {
+  const crop = widget.getLayerAlphaBounds(layer);
+  if (crop && crop.width > 0 && crop.height > 0) {
+    return {
+      x: widget.origin.x + crop.x,
+      y: widget.origin.y + crop.y,
+      width: crop.width,
+      height: crop.height,
+    };
+  }
+  return resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
+}
+
+export function drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta, { respectLayerCrop = true } = {}) {
+  // respectLayerCrop=false is the editor save path: squeezing the fresh
+  // capture into the previous alpha bounds scales the mannequin down on every
+  // edit -> save cycle (Bug A). Bridge previews keep the crop alignment.
+  const target = respectLayerCrop
+    ? resolveUniCanvasPoseLayerTargetRect(widget, layer, image, renderMeta)
+    : resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
   const ctx = widget.configureImageContext(layer.canvas.getContext("2d"), true);
   ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
   ctx.drawImage(
@@ -1161,7 +1176,7 @@ function shapedRestPositionOf(viewer, name) {
   return viewer?.shapedBoneRestPositions?.[name] || viewer?.initialBoneStates?.[name]?.position || null;
 }
 
-function relativizeUniCanvasPoseBones(viewer, pose) {
+export function relativizeUniCanvasPoseBones(viewer, pose) {
   const absolute = pose && pose.bonePositions;
   if (!absolute || !viewer) return pose;
   const relative = {};
@@ -1176,7 +1191,7 @@ function relativizeUniCanvasPoseBones(viewer, pose) {
   return { ...pose, bonePositions: relative, bonePositionsRel: true };
 }
 
-function absolutizeUniCanvasPoseBones(viewer, pose) {
+export function absolutizeUniCanvasPoseBones(viewer, pose) {
   const relative = pose && pose.bonePositions;
   if (!relative || !pose.bonePositionsRel || !viewer) return pose;
   const absolute = {};
@@ -1247,7 +1262,13 @@ async function applyUniCanvasPoseEditCapture(widget, { closeSession }) {
   });
   if (png) {
     const image = await loadUniCanvasPoseRenderImage(png);
-    if (image) drawUniCanvasPoseRenderIntoLayer(widget, layer, image, session.poseData.render);
+    if (image) {
+      // Natural size, centered: the capture camera framing is fixed, so every
+      // save redraws the same footprint and the round trip stays the identity
+      // (squeezing into the layer's previous alpha bounds shrank the mannequin
+      // on each edit -> save cycle - Bug A).
+      drawUniCanvasPoseRenderIntoLayer(widget, layer, image, session.poseData.render, { respectLayerCrop: false });
+    }
   }
   widget.markLayerPixelsChanged(layer, null, false);
   widget.refreshLayerRow(layer.id);

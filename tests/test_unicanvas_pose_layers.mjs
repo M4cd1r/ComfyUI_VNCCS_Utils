@@ -3,15 +3,21 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+    absolutizeUniCanvasPoseBones,
     buildPoseLayerData,
+    buildUniCanvasPoseOptionsSection,
+    drawUniCanvasPoseRenderIntoLayer,
     MANNEQUIN_TOOL_ICON,
+    mountUniCanvasPoseOptions,
     normalizePoseLayerData,
     normalizePoseLayerMorphs,
     POSE_LAYER_ADD_ICON,
     POSE_LAYER_BUS_EVENT,
     POSE_LAYER_STATUS,
     POSE_LAYER_TYPE,
+    relativizeUniCanvasPoseBones,
     saveUniCanvasPoseEdit,
+    unmountUniCanvasPoseOptions,
 } from "../web/vnccs_unicanvas_pose_layers.mjs";
 
 
@@ -268,7 +274,7 @@ test("pose edits round-trip without drift and ship the library/options tools", a
     assert.match(poseSource, /viewer\.setPose\(absolutizeUniCanvasPoseBones\(viewer, poseData\.pose\) \|\| \{\}, true\)/, "edit sessions must keep the default framing");
     assert.ok(poseSource.includes("restoreUniCanvasViewerCamera"), "captures must not move the view camera");
     assert.ok(poseSource.includes("openUniCanvasPoseLibrary"), "the editor must offer the Pose Library");
-    assert.ok(poseSource.includes("openUniCanvasPoseOptions"), "the editor must offer mannequin options");
+    assert.ok(poseSource.includes("buildUniCanvasPoseOptionsSection"), "the editor must offer mannequin options");
     assert.ok(poseSource.includes("background:transparent"), "the editor overlay must stay transparent so the canvas shows through");
 });
 
@@ -342,9 +348,9 @@ test("Save pose persists the session morphs into layer.poseData.character.morphs
 });
 
 
-test("the mannequin options modal ports the full Pose Studio mesh params", () => {
-    const optionsStart = poseLayerSource.indexOf("function openUniCanvasPoseOptions");
-    assert.ok(optionsStart >= 0, "openUniCanvasPoseOptions not found");
+test("the mannequin options sidebar section ports the full Pose Studio mesh params", () => {
+    const optionsStart = poseLayerSource.indexOf("export function buildUniCanvasPoseOptionsSection");
+    assert.ok(optionsStart >= 0, "buildUniCanvasPoseOptionsSection not found");
     // Gender toggle (meshParams.gender: 1.0 = male, 0.0 = female).
     assert.match(poseLayerSource, /maleBtn\.addEventListener\("click", \(\) => setGender\(1\)\)/);
     assert.match(poseLayerSource, /femaleBtn\.addEventListener\("click", \(\) => setGender\(0\)\)/);
@@ -384,4 +390,340 @@ test("proportion morph keys scale the skeleton before the pose is applied", () =
     assert.ok(setPoseIndex > proportionsIndex, "proportions must apply BEFORE setPose");
     // The stored relativized pose must be absolutized before reaching setPose.
     assert.match(poseLayerSource, /absolutizeUniCanvasPoseBones\(viewer, session\.poseData\.pose/);
+});
+
+
+// ---------------------------------------------------------------------------
+// Mannequin options sidebar section (spec section 3).
+//
+// The section builder is plain DOM code, so the test drives it with a minimal
+// fake document (class/text/event/containment only - the very API surface the
+// builder uses) instead of pulling jsdom into the repo.
+// ---------------------------------------------------------------------------
+
+class FakeElement {
+    constructor(tagName = "div", ownerDocument = null) {
+        this.tagName = String(tagName).toUpperCase();
+        this.ownerDocument = ownerDocument;
+        this.children = [];
+        this.parentElement = null;
+        this.textContent = "";
+        this.value = "";
+        this.checked = false;
+        this.type = "";
+        this.style = {};
+        this.dataset = {};
+        this.listeners = new Map();
+        this._classes = new Set();
+    }
+
+    get className() {
+        return [...this._classes].join(" ");
+    }
+
+    set className(value) {
+        this._classes = new Set(String(value).split(/\s+/).filter(Boolean));
+    }
+
+    get classList() {
+        const classes = this._classes;
+        return {
+            add: (...names) => { for (const name of names) classes.add(name); },
+            remove: (...names) => { for (const name of names) classes.delete(name); },
+            contains: (name) => classes.has(name),
+            toggle: (name, force) => {
+                const next = force === undefined ? !classes.has(name) : Boolean(force);
+                if (next) classes.add(name);
+                else classes.delete(name);
+                return next;
+            },
+        };
+    }
+
+    append(...nodes) {
+        for (const node of nodes) this.appendChild(node);
+    }
+
+    appendChild(node) {
+        if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((child) => child !== node);
+        node.parentElement = this;
+        this.children.push(node);
+        return node;
+    }
+
+    remove() {
+        if (!this.parentElement) return;
+        this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+        this.parentElement = null;
+    }
+
+    contains(node) {
+        if (this === node) return true;
+        return this.children.some((child) => child.contains?.(node) === true);
+    }
+
+    addEventListener(type, handler) {
+        if (!this.listeners.has(type)) this.listeners.set(type, []);
+        this.listeners.get(type).push(handler);
+    }
+
+    dispatchEvent(event) {
+        for (const handler of this.listeners.get(event?.type) || []) handler(event);
+        return true;
+    }
+
+    /** Class-selector and tag-selector support only - enough for these tests. */
+    querySelectorAll(selector) {
+        const wanted = String(selector);
+        const matches = (element) => (wanted.startsWith(".")
+            ? element._classes.has(wanted.slice(1))
+            : element.tagName === wanted.toUpperCase());
+        const found = [];
+        const walk = (element) => {
+            for (const child of element.children) {
+                if (matches(child)) found.push(child);
+                walk(child);
+            }
+        };
+        walk(this);
+        return found;
+    }
+
+    querySelector(selector) {
+        return this.querySelectorAll(selector)[0] ?? null;
+    }
+}
+
+function createFakeDocument() {
+    const document = {
+        createElement(tagName) {
+            return new FakeElement(tagName, document);
+        },
+        getElementById() {
+            return null;
+        },
+        querySelector() {
+            return null;
+        },
+        querySelectorAll() {
+            return [];
+        },
+    };
+    document.head = new FakeElement("head", document);
+    document.body = new FakeElement("body", document);
+    return document;
+}
+
+function descendantsOf(root) {
+    const all = [];
+    const walk = (element) => {
+        for (const child of element.children) {
+            all.push(child);
+            walk(child);
+        }
+    };
+    walk(root);
+    return all;
+}
+
+function makePoseEditFixture() {
+    const fakeDocument = createFakeDocument();
+    const previousDocument = globalThis.document;
+    globalThis.document = fakeDocument;
+    const widget = {
+        container: new FakeElement("div", fakeDocument),
+        left: new FakeElement("div", fakeDocument),
+        layers: [],
+    };
+    const session = {
+        layerId: "pose-1",
+        morphs: normalizePoseLayerMorphs({ age: 25 }, {}),
+        optionsSection: null,
+        applyExternalCharacterCreatorValues: () => true,
+    };
+    const state = {
+        widget,
+        subs: new Map(),
+        session,
+        stylesInstalled: true,
+    };
+    widget._poseLayerState = state;
+    return {
+        widget,
+        state,
+        session,
+        restore() {
+            if (previousDocument === undefined) delete globalThis.document;
+            else globalThis.document = previousDocument;
+        },
+    };
+}
+
+
+test("mannequin options render as a sidebar section, never as a modal overlay", () => {
+    const fixture = makePoseEditFixture();
+    try {
+        const { widget, state, session } = fixture;
+        const section = buildUniCanvasPoseOptionsSection(state, session);
+        assert.equal(section.className, "vnccs-uc-pose-options-section");
+        assert.equal(section.querySelector(".vnccs-uc-pose-panel-title")?.textContent, "Mannequin options");
+        assert.equal(section.querySelectorAll(".vnccs-uc-modal-overlay").length, 0, "the section is not a modal");
+        assert.equal(section.querySelectorAll(".vnccs-uc-modal").length, 0, "the section is not a modal");
+
+        mountUniCanvasPoseOptions(widget, session);
+        assert.ok(widget.left.contains(session.optionsSection), "options mount into the left column");
+        assert.equal(widget.container.querySelectorAll(".vnccs-uc-modal-overlay").length, 0, "no dimming overlay");
+
+        unmountUniCanvasPoseOptions(widget);
+        assert.equal(session.optionsSection, null);
+        assert.equal(widget.left.contains(section), false, "unmount detaches the section");
+    } finally {
+        fixture.restore();
+    }
+});
+
+
+test("mannequin options apply morphs live through requestAnimationFrame", () => {
+    const fixture = makePoseEditFixture();
+    const previousRaf = globalThis.requestAnimationFrame;
+    try {
+        const { state, session } = fixture;
+        const applied = [];
+        session.applyExternalCharacterCreatorValues = (morphs) => {
+            applied.push({ ...morphs });
+            return true;
+        };
+        const frames = [];
+        globalThis.requestAnimationFrame = (callback) => {
+            frames.push(callback);
+            return frames.length;
+        };
+        const section = buildUniCanvasPoseOptionsSection(state, session);
+        const range = descendantsOf(section).find((element) => element.type === "range");
+        assert.ok(range, "the section must expose morph sliders");
+        assert.equal(range.value, "25", "the slider starts at the session morph value");
+
+        range.value = "42";
+        range.dispatchEvent({ type: "input" });
+        assert.equal(session.morphs.age, 42, "the newest control value wins immediately");
+        assert.equal(frames.length, 1, "morph application is coalesced into one frame");
+        frames[0](0);
+        assert.deepEqual(applied, [{ ...session.morphs }]);
+
+        range.dispatchEvent({ type: "input" });
+        assert.equal(frames.length, 2);
+    } finally {
+        if (previousRaf === undefined) delete globalThis.requestAnimationFrame;
+        else globalThis.requestAnimationFrame = previousRaf;
+        fixture.restore();
+    }
+});
+
+
+// --- Task 5: pose round-trip idempotence (Bug A) -----------------------------
+
+// Minimal 2D-context stub: records drawImage destination rects so the pose
+// layer draw geometry is assertable without a browser canvas.
+function makeDrawRecorder() {
+    const draws = [];
+    const context = {
+        clearRect() {},
+        drawImage(_image, x, y, width, height) { draws.push({ x, y, width, height }); },
+    };
+    return { context, draws };
+}
+
+test("editor pose saves draw the capture at its natural render size, never squeezed into the previous alpha bounds", () => {
+    // Bug A geometry: the first editor save left a 378x595 mannequin footprint
+    // on a 2048 canvas. The next save squeezed the whole 1024x1024 capture
+    // into that footprint, shrinking the mannequin on every edit -> save cycle.
+    const recorder = makeDrawRecorder();
+    const widget = {
+        origin: { x: 0, y: 0 },
+        size: { width: 2048, height: 2048 },
+        getLayerAlphaBounds: () => ({ x: 835, y: 725, width: 378, height: 595 }),
+        configureImageContext: (context) => context,
+    };
+    const layer = { canvas: { width: 2048, height: 2048, getContext: () => recorder.context } };
+    const image = { naturalWidth: 1024, naturalHeight: 1024, width: 1024, height: 1024 };
+    const renderMeta = { transparent: true, size: { width: 1024, height: 1024 } };
+
+    drawUniCanvasPoseRenderIntoLayer(widget, layer, image, renderMeta, { respectLayerCrop: false });
+
+    assert.equal(recorder.draws.length, 1);
+    const { x, y, width, height } = recorder.draws[0];
+    // Natural capture size, centered on the canvas: a fixed point across save
+    // cycles, independent of the mannequin footprint left by earlier saves.
+    assert.deepEqual([width, height], [1024, 1024]);
+    assert.deepEqual([x, y], [512, 512]);
+});
+
+
+test("the editor capture path opts out of the layer alpha-crop squeeze", () => {
+    const captureStart = poseLayerSource.indexOf("async function applyUniCanvasPoseEditCapture");
+    assert.ok(captureStart >= 0, "applyUniCanvasPoseEditCapture not found");
+    const capture = poseLayerSource.slice(captureStart, captureStart + 2600);
+    assert.match(
+        capture,
+        /drawUniCanvasPoseRenderIntoLayer\(widget, layer, image, session\.poseData\.render, \{ respectLayerCrop: false \}\)/,
+        "the editor capture must draw the fresh render at natural size, not into the previous alpha bounds",
+    );
+});
+
+
+// Faithful stub of the viewer semantics the storage round trip relies on:
+// getPose() -> absolute local positions; setPose() resets to rest then
+// applies; updateBoneLengthScale() rescales a child offset from the UN-shaped
+// initial state and re-caches the shaped rest (vnccs_pose_studio_core.js
+// _setBoneOffsetScale/_cacheShapedRestBonePositions/updateBoneLengthScale).
+// CHILD_OF mirrors _boneLengthChildrenForGroup output for the seeded groups.
+const poseVec = ([x, y, z]) => ({ x, y, z });
+const POSE_CHILD_OF = { shoulder_l: "upperarm_l", spine: "spine_02" };
+
+class PoseRoundTripViewerStub {
+    constructor(initialOffsets) {
+        this.initialBoneStates = Object.fromEntries(
+            Object.entries(initialOffsets).map(([name, position]) => [name, { position: poseVec(position) }]),
+        );
+        this.shapedBoneRestPositions = {};
+        this.scaled = {};
+        this.positions = {};
+        this.restyle();
+    }
+    restyle() {
+        for (const [name, initial] of Object.entries(this.initialBoneStates)) {
+            const scale = this.scaled[name] ?? 1;
+            const rest = [initial.position.x * scale, initial.position.y * scale, initial.position.z * scale];
+            this.shapedBoneRestPositions[name] = poseVec(rest);
+            this.positions[name] = [...rest];
+        }
+    }
+    getPose() {
+        return { bonePositions: Object.fromEntries(Object.entries(this.positions).map(([n, p]) => [n, [...p]])) };
+    }
+    setPose(pose) {
+        this.restyle();
+        for (const [name, p] of Object.entries(pose.bonePositions || {})) this.positions[name] = [...p];
+    }
+    updateBoneLengthScale(group, value) {
+        this.scaled[POSE_CHILD_OF[group]] = 0.5 + value;
+        this.restyle();
+    }
+}
+
+test("relativize -> absolutize over a reshaped rest is the identity across 10 edit->save cycles", () => {
+    // Binary-exact offsets so the float arithmetic is deterministic (the
+    // identity must hold bit-for-bit, not approximately).
+    const viewer = new PoseRoundTripViewerStub({ upperarm_l: [2, 0, 0], spine_02: [0, 2, 0] });
+    const first = relativizeUniCanvasPoseBones(viewer, {
+        bonePositions: { upperarm_l: [3.5, 0.5, 0], spine_02: [0, 3, 0.5] },
+    });
+    let current = first;
+    for (let cycle = 0; cycle < 10; cycle += 1) {
+        viewer.updateBoneLengthScale("shoulder_l", 0.5); // neutral 1.0 scale, re-caches rest
+        current = relativizeUniCanvasPoseBones(viewer, absolutizeUniCanvasPoseBones(viewer, current));
+    }
+    assert.deepEqual(current.bonePositions, first.bonePositions);
+    // The saved pose stays tagged relative so the next edit absolutizes it.
+    assert.equal(current.bonePositionsRel, true);
 });
