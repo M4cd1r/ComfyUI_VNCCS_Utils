@@ -678,7 +678,8 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       mountContainer = container;
       if (!widget) widget = createStandaloneWidget(UniCanvasWidgetClass);
       // Read-only E2E hook (tests/e2e): exposes full-resolution pose layer
-      // pixels for geometric assertions. No behavior change.
+      // pixels and a deep clone of the layer poseData for stability
+      // assertions (spec 5.1). No behavior change.
       globalThis.__VNCCS_UC_E2E__ = {
         listLayers: () => (widget.layers || []).map((l) => ({ id: l.id, type: l.type })),
         getLayerPixels: (layerId) => {
@@ -689,6 +690,11 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             height: layer.canvas.height,
             dataURL: layer.canvas.toDataURL("image/png"),
           };
+        },
+        getLayerPoseData: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          // Deep clone: the caller must not be able to mutate layer state.
+          return layer?.poseData ? JSON.parse(JSON.stringify(layer.poseData)) : null;
         },
       };
       if (!tabWatcher) tabWatcher = watchUniCanvasStandaloneTab(setActive);
