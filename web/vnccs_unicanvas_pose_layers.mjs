@@ -1191,11 +1191,65 @@ function absolutizeUniCanvasPoseBones(viewer, pose) {
   return { ...pose, bonePositions: absolute, bonePositionsRel: false };
 }
 
+// Spec 6.1: torso center = centroid of the pelvis/spine/chest joints, with
+// head/neck excluded defensively. Limb joints (arms, shoulders, thighs) are
+// deliberately NOT in the pattern: they sit at shoulder height and would drag
+// the anchor up toward the head - the exact bug this fixes.
+const TORSO_BONE_PATTERN = /(pelvis|hips|spine|chest)/i;
+const EXCLUDED_BONE_PATTERN = /(head|neck)/i;
+
+export function computeTorsoAnchor(viewer) {
+  const bones = viewer?.bones || {};
+  const names = Object.keys(bones).filter(
+    (name) => TORSO_BONE_PATTERN.test(name) && !EXCLUDED_BONE_PATTERN.test(name),
+  );
+  const points = [];
+  // Real Three.js bones require a genuine Vector3 target (getWorldPosition
+  // calls target.setFromMatrixPosition); plain-object targets are kept for
+  // stubbed viewers (unit tests) whose bones fill {x, y, z} directly.
+  const v = viewer.THREE ? new viewer.THREE.Vector3() : { x: 0, y: 0, z: 0 };
+  for (const name of names) {
+    const bone = bones[name];
+    if (typeof bone?.getWorldPosition === "function") {
+      bone.getWorldPosition(v);
+      points.push({ x: v.x, y: v.y, z: v.z });
+    }
+  }
+  if (!points.length) {
+    // Unknown rig: fall back to the mesh bounding-box center so the framing
+    // still lands on the figure instead of the viewer default (head height).
+    const c = viewer?.meshCenter;
+    return c ? { x: c.x, y: c.y, z: c.z } : null;
+  }
+  const sum = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y, z: acc.z + p.z }), { x: 0, y: 0, z: 0 });
+  return { x: sum.x / points.length, y: sum.y / points.length, z: sum.z / points.length };
+}
+
+// Spec 6.2: one framing for the edit view and the capture - both aim at the
+// torso anchor. The live view keeps the user's orbit direction, the capture
+// keeps its stored zoom and zero offsets (6.3 re-frame).
+export function applyUniCanvasPoseFraming(viewer) {
+  const anchor = computeTorsoAnchor(viewer);
+  if (!anchor || !viewer.orbit) return null;
+  const THREE = viewer.THREE;
+  viewer.sceneCameraTarget = new THREE.Vector3(anchor.x, anchor.y, anchor.z);
+  viewer.orbit.target.copy(viewer.sceneCameraTarget);
+  const dist = 45; // matches updateCaptureCamera (vnccs_pose_studio_core.js)
+  const dir = viewer.camera.position.clone().sub(viewer.orbit.target);
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+  viewer.camera.position.copy(viewer.orbit.target).add(dir.normalize().multiplyScalar(dist));
+  viewer.orbit.update();
+  viewer.requestRender?.();
+  return anchor;
+}
+
 function captureUniCanvasPoseEditPNG(session) {
   const viewer = session.viewer;
   if (!viewer?.isInitialized?.()) return null;
   const size = session.poseData.render.size;
-  return captureUniCanvasPoseLayerPNG(viewer, size.width, size.height, session.poseData.camera);
+  // Spec 6.3 re-frame: capture and stored framing share zero offsets, so the
+  // PNG frames the torso anchor exactly like the next edit session will.
+  return captureUniCanvasPoseLayerPNG(viewer, size.width, size.height, { ...session.poseData.camera, offset_x: 0, offset_y: 0 });
 }
 
 function closeUniCanvasPoseEditSession(state) {
@@ -1242,7 +1296,7 @@ async function applyUniCanvasPoseEditCapture(widget, { closeSession }) {
       ...(layer.poseData?.character || session.poseData.character || {}),
       morphs: { ...session.morphs },
     },
-    camera: session.poseData.camera,
+    camera: { ...session.poseData.camera, offset_x: 0, offset_y: 0 }, // spec 6.3: re-frame on the torso anchor
     size: session.poseData.render.size,
   });
   if (png) {
@@ -1374,9 +1428,11 @@ export async function editUniCanvasPoseLayer(widget, layer) {
     session.morphPack = await morphRuntime.loadMorphPack();
     if (session.closed) return null;
     await applyUniCanvasPoseEditMorphs(session, session.morphs);
-    // preserveCamera keeps every edit session on the default framing so the
-    // saved pose round-trips without view drift.
+    // preserveCamera keeps the view from drifting between morph reloads; the
+    // torso framing below re-aims BOTH the edit view and the capture on the
+    // torso anchor so the mannequin is centered, not framed on its head.
     viewer.setPose(absolutizeUniCanvasPoseBones(viewer, poseData.pose) || {}, true);
+    applyUniCanvasPoseFraming(viewer);
     widget.setStatus("[VNCCS UniCanvas] Edit pose - drag the mannequin, then Save pose or Cancel");
   } catch (err) {
     console.warn("[VNCCS UniCanvas] Pose editor failed to start", err);

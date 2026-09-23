@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
     buildPoseLayerData,
+    computeTorsoAnchor,
     MANNEQUIN_TOOL_ICON,
     normalizePoseLayerData,
     normalizePoseLayerMorphs,
@@ -265,7 +266,7 @@ test("pose edits round-trip without drift and ship the library/options tools", a
     const poseSource = await readFile(new URL("../web/vnccs_unicanvas_pose_layers.mjs", import.meta.url), "utf8");
     assert.ok(poseSource.includes("relativizeUniCanvasPoseBones"), "bone positions must be stored relative to the shaped rest");
     assert.ok(poseSource.includes("bonePositionsRel"), "the relative layout must be tagged");
-    assert.match(poseSource, /viewer\.setPose\(absolutizeUniCanvasPoseBones\(viewer, poseData\.pose\) \|\| \{\}, true\)/, "edit sessions must keep the default framing");
+    assert.match(poseSource, /viewer\.setPose\(absolutizeUniCanvasPoseBones\(viewer, poseData\.pose\) \|\| \{\}, true\)/, "edit sessions must set the absolutized stored pose");
     assert.ok(poseSource.includes("restoreUniCanvasViewerCamera"), "captures must not move the view camera");
     assert.ok(poseSource.includes("openUniCanvasPoseLibrary"), "the editor must offer the Pose Library");
     assert.ok(poseSource.includes("openUniCanvasPoseOptions"), "the editor must offer mannequin options");
@@ -384,4 +385,70 @@ test("proportion morph keys scale the skeleton before the pose is applied", () =
     assert.ok(setPoseIndex > proportionsIndex, "proportions must apply BEFORE setPose");
     // The stored relativized pose must be absolutized before reaching setPose.
     assert.match(poseLayerSource, /absolutizeUniCanvasPoseBones\(viewer, session\.poseData\.pose/);
+});
+
+
+// Minimal stand-in for a Three.js bone: getWorldPosition(target) fills target.
+function boneStub(map) {
+    const bones = {};
+    for (const [name, [x, y, z]] of Object.entries(map)) {
+        bones[name] = {
+            getWorldPosition(target) {
+                Object.assign(target, { x, y, z });
+                return target;
+            },
+        };
+    }
+    return bones;
+}
+
+
+test("computeTorsoAnchor centers between pelvis and upper chest, never the head", () => {
+    const viewer = {
+        bones: boneStub({
+            root: [0, 0, 0], pelvis: [0, 3, 0], spine_02: [0, 4, 0], spine_03: [0, 5, 0],
+            neck: [0, 6, 0], head: [0, 7, 0], upperarm_l: [-1, 5.5, 0], upperarm_r: [1, 5.5, 0],
+            thigh_l: [-0.5, 2.5, 0], thigh_r: [0.5, 2.5, 0],
+        }),
+    };
+    const anchor = computeTorsoAnchor(viewer);
+    assert.ok(anchor, "anchor resolved");
+    // Mid-torso: between pelvis (3) and upper chest (5) -> ~4; the head (7) must
+    // not drag the anchor up.
+    assert.ok(Math.abs(anchor.y - 4) < 0.35, `anchor.y=${anchor.y} expected ~4`);
+    assert.ok(Math.abs(anchor.x) < 1e-6);
+});
+
+test("computeTorsoAnchor falls back to the mesh center on an unknown rig", () => {
+    const viewer = { bones: boneStub({ something: [0, 1, 0] }), meshCenter: { x: 0, y: 2, z: 0 } };
+    const anchor = computeTorsoAnchor(viewer);
+    assert.deepEqual(anchor, { x: 0, y: 2, z: 0 });
+});
+
+test("pose edit framing is torso-anchored and saves a re-centered camera", () => {
+    // Edit entry re-frames the viewer on the torso anchor after setPose (spec 6.2).
+    const setPoseIndex = poseLayerSource.indexOf("viewer.setPose(absolutizeUniCanvasPoseBones(viewer, poseData.pose) || {}, true)");
+    assert.ok(setPoseIndex >= 0, "edit entry setPose call not found");
+    const editTail = poseLayerSource.slice(setPoseIndex);
+    const framingIndex = editTail.indexOf("applyUniCanvasPoseFraming(viewer)");
+    assert.ok(framingIndex >= 0, "edit entry must apply the torso framing after setPose");
+    assert.ok(
+        framingIndex < editTail.indexOf('widget.setStatus("[VNCCS UniCanvas] Edit pose'),
+        "the framing must be applied before the editor reports ready",
+    );
+    // The anchor must hit BOTH the live orbit target and the capture camera
+    // target, or the saved PNG and the edit view would frame different centers.
+    assert.match(poseLayerSource, /viewer\.sceneCameraTarget = /);
+    assert.match(poseLayerSource, /viewer\.orbit\.target\.copy\(viewer\.sceneCameraTarget\)/);
+    // Save/capture zero the stored offsets so the stored framing re-frames on
+    // the torso anchor exactly like the captured PNG (spec 6.3 re-frame).
+    const captureStart = poseLayerSource.indexOf("function captureUniCanvasPoseEditPNG(session)");
+    assert.ok(captureStart >= 0, "captureUniCanvasPoseEditPNG not found");
+    // Cut at the object literal's closing brace: CRLF + comment tolerant.
+    const capture = poseLayerSource.slice(captureStart, poseLayerSource.indexOf("}", captureStart) + 1);
+    assert.match(capture, /offset_x: 0,\s*offset_y: 0/);
+    const storedCameraIndex = poseLayerSource.indexOf("camera: { ...session.poseData.camera");
+    assert.ok(storedCameraIndex >= 0, "saved poseData.camera must zero the offsets");
+    const storedCamera = poseLayerSource.slice(storedCameraIndex, storedCameraIndex + 200);
+    assert.match(storedCamera, /offset_x: 0,\s*offset_y: 0/);
 });
