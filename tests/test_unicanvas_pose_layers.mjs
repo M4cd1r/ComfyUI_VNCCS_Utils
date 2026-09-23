@@ -4,7 +4,9 @@ import test from "node:test";
 
 import {
     buildPoseLayerData,
+    buildUniCanvasPoseOptionsSection,
     MANNEQUIN_TOOL_ICON,
+    mountUniCanvasPoseOptions,
     normalizePoseLayerData,
     normalizePoseLayerMorphs,
     POSE_LAYER_ADD_ICON,
@@ -12,6 +14,7 @@ import {
     POSE_LAYER_STATUS,
     POSE_LAYER_TYPE,
     saveUniCanvasPoseEdit,
+    unmountUniCanvasPoseOptions,
 } from "../web/vnccs_unicanvas_pose_layers.mjs";
 
 
@@ -268,7 +271,7 @@ test("pose edits round-trip without drift and ship the library/options tools", a
     assert.match(poseSource, /viewer\.setPose\(absolutizeUniCanvasPoseBones\(viewer, poseData\.pose\) \|\| \{\}, true\)/, "edit sessions must keep the default framing");
     assert.ok(poseSource.includes("restoreUniCanvasViewerCamera"), "captures must not move the view camera");
     assert.ok(poseSource.includes("openUniCanvasPoseLibrary"), "the editor must offer the Pose Library");
-    assert.ok(poseSource.includes("openUniCanvasPoseOptions"), "the editor must offer mannequin options");
+    assert.ok(poseSource.includes("buildUniCanvasPoseOptionsSection"), "the editor must offer mannequin options");
     assert.ok(poseSource.includes("background:transparent"), "the editor overlay must stay transparent so the canvas shows through");
 });
 
@@ -342,9 +345,9 @@ test("Save pose persists the session morphs into layer.poseData.character.morphs
 });
 
 
-test("the mannequin options modal ports the full Pose Studio mesh params", () => {
-    const optionsStart = poseLayerSource.indexOf("function openUniCanvasPoseOptions");
-    assert.ok(optionsStart >= 0, "openUniCanvasPoseOptions not found");
+test("the mannequin options sidebar section ports the full Pose Studio mesh params", () => {
+    const optionsStart = poseLayerSource.indexOf("export function buildUniCanvasPoseOptionsSection");
+    assert.ok(optionsStart >= 0, "buildUniCanvasPoseOptionsSection not found");
     // Gender toggle (meshParams.gender: 1.0 = male, 0.0 = female).
     assert.match(poseLayerSource, /maleBtn\.addEventListener\("click", \(\) => setGender\(1\)\)/);
     assert.match(poseLayerSource, /femaleBtn\.addEventListener\("click", \(\) => setGender\(0\)\)/);
@@ -384,4 +387,231 @@ test("proportion morph keys scale the skeleton before the pose is applied", () =
     assert.ok(setPoseIndex > proportionsIndex, "proportions must apply BEFORE setPose");
     // The stored relativized pose must be absolutized before reaching setPose.
     assert.match(poseLayerSource, /absolutizeUniCanvasPoseBones\(viewer, session\.poseData\.pose/);
+});
+
+
+// ---------------------------------------------------------------------------
+// Mannequin options sidebar section (spec section 3).
+//
+// The section builder is plain DOM code, so the test drives it with a minimal
+// fake document (class/text/event/containment only - the very API surface the
+// builder uses) instead of pulling jsdom into the repo.
+// ---------------------------------------------------------------------------
+
+class FakeElement {
+    constructor(tagName = "div", ownerDocument = null) {
+        this.tagName = String(tagName).toUpperCase();
+        this.ownerDocument = ownerDocument;
+        this.children = [];
+        this.parentElement = null;
+        this.textContent = "";
+        this.value = "";
+        this.checked = false;
+        this.type = "";
+        this.style = {};
+        this.dataset = {};
+        this.listeners = new Map();
+        this._classes = new Set();
+    }
+
+    get className() {
+        return [...this._classes].join(" ");
+    }
+
+    set className(value) {
+        this._classes = new Set(String(value).split(/\s+/).filter(Boolean));
+    }
+
+    get classList() {
+        const classes = this._classes;
+        return {
+            add: (...names) => { for (const name of names) classes.add(name); },
+            remove: (...names) => { for (const name of names) classes.delete(name); },
+            contains: (name) => classes.has(name),
+            toggle: (name, force) => {
+                const next = force === undefined ? !classes.has(name) : Boolean(force);
+                if (next) classes.add(name);
+                else classes.delete(name);
+                return next;
+            },
+        };
+    }
+
+    append(...nodes) {
+        for (const node of nodes) this.appendChild(node);
+    }
+
+    appendChild(node) {
+        if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((child) => child !== node);
+        node.parentElement = this;
+        this.children.push(node);
+        return node;
+    }
+
+    remove() {
+        if (!this.parentElement) return;
+        this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+        this.parentElement = null;
+    }
+
+    contains(node) {
+        if (this === node) return true;
+        return this.children.some((child) => child.contains?.(node) === true);
+    }
+
+    addEventListener(type, handler) {
+        if (!this.listeners.has(type)) this.listeners.set(type, []);
+        this.listeners.get(type).push(handler);
+    }
+
+    dispatchEvent(event) {
+        for (const handler of this.listeners.get(event?.type) || []) handler(event);
+        return true;
+    }
+
+    /** Class-selector and tag-selector support only - enough for these tests. */
+    querySelectorAll(selector) {
+        const wanted = String(selector);
+        const matches = (element) => (wanted.startsWith(".")
+            ? element._classes.has(wanted.slice(1))
+            : element.tagName === wanted.toUpperCase());
+        const found = [];
+        const walk = (element) => {
+            for (const child of element.children) {
+                if (matches(child)) found.push(child);
+                walk(child);
+            }
+        };
+        walk(this);
+        return found;
+    }
+
+    querySelector(selector) {
+        return this.querySelectorAll(selector)[0] ?? null;
+    }
+}
+
+function createFakeDocument() {
+    const document = {
+        createElement(tagName) {
+            return new FakeElement(tagName, document);
+        },
+        getElementById() {
+            return null;
+        },
+        querySelector() {
+            return null;
+        },
+        querySelectorAll() {
+            return [];
+        },
+    };
+    document.head = new FakeElement("head", document);
+    document.body = new FakeElement("body", document);
+    return document;
+}
+
+function descendantsOf(root) {
+    const all = [];
+    const walk = (element) => {
+        for (const child of element.children) {
+            all.push(child);
+            walk(child);
+        }
+    };
+    walk(root);
+    return all;
+}
+
+function makePoseEditFixture() {
+    const fakeDocument = createFakeDocument();
+    const previousDocument = globalThis.document;
+    globalThis.document = fakeDocument;
+    const widget = {
+        container: new FakeElement("div", fakeDocument),
+        left: new FakeElement("div", fakeDocument),
+        layers: [],
+    };
+    const session = {
+        layerId: "pose-1",
+        morphs: normalizePoseLayerMorphs({ age: 25 }, {}),
+        optionsSection: null,
+        applyExternalCharacterCreatorValues: () => true,
+    };
+    const state = {
+        widget,
+        subs: new Map(),
+        session,
+        stylesInstalled: true,
+    };
+    widget._poseLayerState = state;
+    return {
+        widget,
+        state,
+        session,
+        restore() {
+            if (previousDocument === undefined) delete globalThis.document;
+            else globalThis.document = previousDocument;
+        },
+    };
+}
+
+
+test("mannequin options render as a sidebar section, never as a modal overlay", () => {
+    const fixture = makePoseEditFixture();
+    try {
+        const { widget, state, session } = fixture;
+        const section = buildUniCanvasPoseOptionsSection(state, session);
+        assert.equal(section.className, "vnccs-uc-pose-options-section");
+        assert.equal(section.querySelector(".vnccs-uc-pose-panel-title")?.textContent, "Mannequin options");
+        assert.equal(section.querySelectorAll(".vnccs-uc-modal-overlay").length, 0, "the section is not a modal");
+        assert.equal(section.querySelectorAll(".vnccs-uc-modal").length, 0, "the section is not a modal");
+
+        mountUniCanvasPoseOptions(widget, session);
+        assert.ok(widget.left.contains(session.optionsSection), "options mount into the left column");
+        assert.equal(widget.container.querySelectorAll(".vnccs-uc-modal-overlay").length, 0, "no dimming overlay");
+
+        unmountUniCanvasPoseOptions(widget);
+        assert.equal(session.optionsSection, null);
+        assert.equal(widget.left.contains(section), false, "unmount detaches the section");
+    } finally {
+        fixture.restore();
+    }
+});
+
+
+test("mannequin options apply morphs live through requestAnimationFrame", () => {
+    const fixture = makePoseEditFixture();
+    const previousRaf = globalThis.requestAnimationFrame;
+    try {
+        const { state, session } = fixture;
+        const applied = [];
+        session.applyExternalCharacterCreatorValues = (morphs) => {
+            applied.push({ ...morphs });
+            return true;
+        };
+        const frames = [];
+        globalThis.requestAnimationFrame = (callback) => {
+            frames.push(callback);
+            return frames.length;
+        };
+        const section = buildUniCanvasPoseOptionsSection(state, session);
+        const range = descendantsOf(section).find((element) => element.type === "range");
+        assert.ok(range, "the section must expose morph sliders");
+        assert.equal(range.value, "25", "the slider starts at the session morph value");
+
+        range.value = "42";
+        range.dispatchEvent({ type: "input" });
+        assert.equal(session.morphs.age, 42, "the newest control value wins immediately");
+        assert.equal(frames.length, 1, "morph application is coalesced into one frame");
+        frames[0](0);
+        assert.deepEqual(applied, [{ ...session.morphs }]);
+
+        range.dispatchEvent({ type: "input" });
+        assert.equal(frames.length, 2);
+    } finally {
+        if (previousRaf === undefined) delete globalThis.requestAnimationFrame;
+        else globalThis.requestAnimationFrame = previousRaf;
+        fixture.restore();
+    }
 });

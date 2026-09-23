@@ -66,6 +66,7 @@ const POSE_LAYER_STYLES = `
 .vnccs-uc-pose-status.waiting { color:#ffd45c; border-color:rgba(255,212,92,.4); }
 .vnccs-uc-pose-status.disconnected { color:var(--uc-danger); border-color:rgba(255,71,87,.4); }
 .vnccs-uc-pose-status-note { color:var(--uc-muted); font-size:10px; }
+.vnccs-uc-pose-options-section { display:flex; flex-direction:column; gap:6px; padding:6px; border:1px solid var(--uc-border); border-radius:8px; flex:0 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
 .vnccs-uc-pose-capture { height:22px; padding:0 8px; font-size:10px; }
 .vnccs-uc-pose-panel { display:flex; flex-direction:column; gap:6px; padding:6px; border-bottom:1px solid var(--uc-border); }
 .vnccs-uc-pose-panel-title { color:var(--uc-accent); font-weight:700; }
@@ -774,20 +775,16 @@ function buildUniCanvasPoseEditOverlay(state, session) {
     () => openUniCanvasPoseLibrary(state, session),
     "Load a pose from the Pose Library",
   );
-  const optsBtn = widget._button(
-    "Options",
-    "vnccs-uc-btn",
-    () => openUniCanvasPoseOptions(state, session),
-    "Mannequin options (morphs)",
-  );
-  bar.append(title, libBtn, optsBtn, saveBtn, cancelBtn);
+  // Spec 3.6: no Options button - the mannequin options section is always
+  // visible in the left column for the whole edit session.
+  bar.append(title, libBtn, saveBtn, cancelBtn);
   overlay.append(canvas, bar);
   widget.stageWrap.appendChild(overlay);
   return { overlay, canvas, saveBtn, cancelBtn };
 }
 
 // Legacy morph key list (age/gender/weight/muscle/height) kept for backward
-// compatibility; the options modal now exposes the full mannequin set below.
+// compatibility; the options section now exposes the full mannequin set below.
 const POSE_EDIT_MORPH_KEYS = Object.freeze([
   { key: "age", label: "Age", min: 1, max: 90, step: 1, value: 25 },
   { key: "gender", label: "Gender", min: 0, max: 1, step: 0.01, value: 0.5 },
@@ -890,21 +887,24 @@ function openUniCanvasPoseLibrary(state, session) {
     });
 }
 
-function openUniCanvasPoseOptions(state, session) {
-  const widget = state.widget;
-  const overlay = document.createElement("div");
-  overlay.className = "vnccs-uc-modal-overlay";
-  const modal = document.createElement("div");
-  modal.className = "vnccs-uc-modal";
-  modal.style.maxHeight = "70vh";
-  modal.style.overflowY = "auto";
+/**
+ * Mannequin options (spec 3.1-3.5): the morph controls are a plain section of
+ * the widget's left column for the whole edit session. There is deliberately no
+ * modal and no dimming overlay - the stage, the layer stack and the mannequin
+ * stay visible while morphing. Every control drives the mannequin from `input`
+ * through one requestAnimationFrame-coalesced morph apply (repo realtime rule).
+ */
+export function buildUniCanvasPoseOptionsSection(state, session) {
+  ensureUniCanvasPoseLayerStyles(state);
+  const section = document.createElement("section");
+  section.className = "vnccs-uc-pose-options-section";
   const title = document.createElement("div");
-  title.className = "vnccs-uc-modal-title";
+  title.className = "vnccs-uc-pose-panel-title";
   title.textContent = "Mannequin options";
   const hint = document.createElement("div");
-  hint.className = "vnccs-uc-modal-message";
+  hint.className = "vnccs-uc-pose-status-note";
   hint.textContent = "Morphs update live; double-click a slider to reset it.";
-  modal.append(title, hint);
+  section.append(title, hint);
 
   let raf = 0;
   const scheduleMorphApply = () => {
@@ -922,13 +922,13 @@ function openUniCanvasPoseOptions(state, session) {
   const isFemaleGender = () => Number(session.morphs?.gender ?? 0.5) < 0.5;
 
   const addSection = (label) => {
-    const section = document.createElement("div");
+    const group = document.createElement("div");
     const heading = document.createElement("div");
     heading.className = "vnccs-uc-modal-message";
     heading.textContent = label;
-    section.appendChild(heading);
-    modal.appendChild(section);
-    return section;
+    group.appendChild(heading);
+    section.appendChild(group);
+    return group;
   };
   const addSlider = (container, spec) => {
     const row = document.createElement("label");
@@ -961,7 +961,7 @@ function openUniCanvasPoseOptions(state, session) {
   femaleBtn.textContent = "Female";
   genderToggle.append(maleBtn, femaleBtn);
   genderField.appendChild(genderToggle);
-  modal.appendChild(genderField);
+  section.appendChild(genderField);
 
   const bodySection = addSection("Body");
   for (const spec of POSE_EDIT_BODY_MORPH_KEYS) addSlider(bodySection, spec);
@@ -1012,10 +1012,24 @@ function openUniCanvasPoseOptions(state, session) {
   updateGenderUI();
   updateGenderVisibility();
 
-  const closeBtn = widget._button("Close", "vnccs-uc-btn", () => overlay.remove(), "Close mannequin options");
-  modal.appendChild(closeBtn);
-  overlay.appendChild(modal);
-  widget.container.appendChild(overlay);
+  return section;
+}
+
+/** Mount the mannequin options section into the widget's left column. */
+export function mountUniCanvasPoseOptions(widget, session) {
+  unmountUniCanvasPoseOptions(widget);
+  const section = buildUniCanvasPoseOptionsSection(getUniCanvasPoseLayerState(widget), session);
+  widget.left.appendChild(section);
+  session.optionsSection = section;
+  installCustomSelects(section);
+  return section;
+}
+
+/** Remove the section with the edit session (spec 3.2: no permanent footprint). */
+export function unmountUniCanvasPoseOptions(widget) {
+  const session = widget?._poseLayerState?.session;
+  session?.optionsSection?.remove();
+  if (session) session.optionsSection = null;
 }
 
 export function buildUniCanvasPoseViewerModelData(result, staticData) {
@@ -1210,6 +1224,7 @@ function closeUniCanvasPoseEditSession(state) {
   session.viewer = null;
   session.resizeObserver?.disconnect?.();
   session.resizeObserver = null;
+  unmountUniCanvasPoseOptions(state.widget);
   session.overlay?.remove();
   state.session = null;
 }
@@ -1332,6 +1347,9 @@ export async function editUniCanvasPoseLayer(widget, layer) {
   session.overlay = ui.overlay;
   session.canvas = ui.canvas;
   state.session = session;
+  // Spec 3.1: the mannequin options live in the left column for the whole edit
+  // session, so the editor never needs a modal to reach them.
+  mountUniCanvasPoseOptions(widget, session);
   // The layer's pixels are temporarily replaced by the interactive mannequin.
   layer._poseEditing = true;
   widget.renderLayerList();
