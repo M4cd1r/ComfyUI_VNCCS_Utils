@@ -8,6 +8,8 @@ import {
     buildUniCanvasPoseOptionsSection,
     computeTorsoAnchor,
     drawUniCanvasPoseRenderIntoLayer,
+    resolveUniCanvasPoseLayerBridgeAnchor,
+    drawUniCanvasPoseBridgeRenderIntoLayer,
     MANNEQUIN_TOOL_ICON,
     mountUniCanvasPoseOptions,
     normalizePoseLayerData,
@@ -759,6 +761,60 @@ test("the editor capture path opts out of the layer alpha-crop squeeze", () => {
         capture,
         /drawUniCanvasPoseRenderIntoLayer\(widget, layer, image, session\.poseData\.render, \{ respectLayerCrop: false \}\)/,
         "the editor capture must draw the fresh render at natural size, not into the previous alpha bounds",
+    );
+});
+
+
+// --- Task 8: the Pose Studio bridge path never scales ------------------------
+
+test("bridge draws land 1:1 at natural size, frame centre on the previous content centre", () => {
+    // The bridge used the alpha-crop branch: every capture now squeezed the
+    // fresh 1024x1024 render into the previous footprint (e.g. 378x595) and
+    // the mannequin shrank on every push.
+    const recorder = makeDrawRecorder();
+    const bounds = { x: 835, y: 725, width: 378, height: 595 };
+    const widget = {
+        origin: { x: 0, y: 0 },
+        size: { width: 2048, height: 2048 },
+        getLayerAlphaBounds: () => bounds,
+        configureImageContext: (context) => context,
+    };
+    const layer = { canvas: { width: 2048, height: 2048, getContext: () => recorder.context } };
+    const image = { naturalWidth: 1024, naturalHeight: 1024, width: 1024, height: 1024 };
+    const renderMeta = { transparent: true, size: { width: 1024, height: 1024 } };
+    const sub = {};
+    const anchor = resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer);
+    // Anchor = centre of the previous content: (835+189, 725+297.5).
+    assert.deepEqual([anchor.x, anchor.y], [1024, 1022.5]);
+
+    drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, renderMeta, anchor);
+
+    assert.equal(recorder.draws.length, 1);
+    const { x, y, width, height } = recorder.draws[0];
+    // Natural capture size 1:1 - never the previous footprint.
+    assert.deepEqual([width, height], [1024, 1024]);
+    // The frame centre sits on the anchor: x + 512 = 1024, y + 512 ~ 1022.5
+    // (rounded), so y = round(512 - 1.5) = 511.
+    assert.deepEqual([x, y], [512, 511]);
+    // Repeated pushes reuse the cached anchor without recomputing the bounds
+    // centre: the anchor object is stable across calls.
+    const again = resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer);
+    assert.equal(again, anchor);
+});
+
+test("the bridge render path never goes through the alpha-crop draw branch", () => {
+    const bridgeStart = poseLayerSource.indexOf("async function applyUniCanvasPoseLayerRenderPixels");
+    assert.ok(bridgeStart >= 0, "applyUniCanvasPoseLayerRenderPixels not found");
+    const bridge = poseLayerSource.slice(bridgeStart, poseLayerSource.indexOf("\nfunction commitUniCanvasPoseLayerGesture", bridgeStart));
+    assert.match(
+        bridge,
+        /drawUniCanvasPoseBridgeRenderIntoLayer\(/,
+        "the bridge must draw through the 1:1 bridge path",
+    );
+    assert.doesNotMatch(
+        bridge,
+        /drawUniCanvasPoseRenderIntoLayer\(/,
+        "the bridge must not call the crop-capable draw any more",
     );
 });
 
