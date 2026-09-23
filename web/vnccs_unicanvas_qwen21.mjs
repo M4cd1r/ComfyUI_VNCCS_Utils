@@ -165,7 +165,65 @@ const QWEN21_HELP_TEXTS = {
   aspect: "Forces one of the official 2K aspect presets; auto (match canvas) keeps the current canvas aspect ratio.",
   spectrum: "Training-free sampling acceleration (Spectrum, arXiv 2603.01623): selected steps are forecast with a Chebyshev fit instead of running the 32-block transformer. Fail-closed: any unsafe forecast degrades to a real forward.",
   preset: "Tunes the acceleration parameters: moderate (paper default), aggressive (more speedup), quality (safer forecasts).",
+  turbo: "Runs the Viggle 4-step DMD turbo LoRA (huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) over the base transformer and switches Steps to 4 / CFG to 1 (the distillation runs without classifier-free guidance). The LoRA downloads into models/loras/viggle/ on first use.",
 };
+
+// Viggle turbo (4-step) constants + profile swap, mirroring the other turbo switches.
+export const QWEN21_TURBO_LORA_NAME = "viggle/Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors";
+export const QWEN21_TURBO_SETTINGS = { steps: 4, cfg: 1 };
+export const QWEN21_TURBO_STATUS_ROUTE = "/vnccs/unicanvas/qwen21_turbo";
+
+export function applyQwen21TurboProfile(widget, enabled) {
+  const settings = widget && widget.settings;
+  if (!settings) return;
+  if (enabled) {
+    if (!settings.qwen21_turbo_previous_settings) {
+      settings.qwen21_turbo_previous_settings = {
+        steps: settings.steps,
+        cfg: settings.cfg,
+        sampler_name: settings.sampler_name,
+        scheduler: settings.scheduler,
+      };
+    }
+    settings.qwen21_turbo_enabled = true;
+    settings.qwen_lora_name = QWEN21_TURBO_LORA_NAME;
+    settings.qwen_lora_strength = 1;
+    settings.steps = QWEN21_TURBO_SETTINGS.steps;
+    settings.cfg = QWEN21_TURBO_SETTINGS.cfg;
+    return;
+  }
+  settings.qwen21_turbo_enabled = false;
+  settings.qwen_lora_name = "";
+  settings.qwen_lora_strength = 0;
+  const previous = settings.qwen21_turbo_previous_settings;
+  if (previous && typeof previous === "object") {
+    if (Number.isFinite(Number(previous.steps))) settings.steps = Number(previous.steps);
+    if (Number.isFinite(Number(previous.cfg))) settings.cfg = Number(previous.cfg);
+    if (previous.sampler_name) settings.sampler_name = previous.sampler_name;
+    if (previous.scheduler) settings.scheduler = previous.scheduler;
+  }
+  settings.qwen21_turbo_previous_settings = null;
+}
+
+export function requestQwen21TurboDownload() {
+  return fetch(QWEN21_TURBO_STATUS_ROUTE, { method: "POST" })
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error("HTTP " + res.status))))
+    .catch(() => null);
+}
+
+async function refreshQwen21TurboStatus(panel) {
+  const statusEl = panel.querySelector("[data-qwen21-turbo-status]");
+  if (!statusEl) return;
+  try {
+    const res = await fetch(QWEN21_TURBO_STATUS_ROUTE + "?t=" + Date.now());
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.status === "success") statusEl.textContent = "LoRA installed";
+    else statusEl.textContent = data.message || data.status || "";
+  } catch {
+    statusEl.textContent = "";
+  }
+}
 
 const QWEN21_PANEL_STYLE_ID = "vnccs-uc-qwen21-styles";
 
@@ -243,6 +301,29 @@ function buildPanelShell() {
   }
   aspectLabel.appendChild(aspectSelect);
   panel.appendChild(aspectLabel);
+
+  const turboRow = document.createElement("div");
+  turboRow.className = "vnccs-uc-spectrum-param";
+  turboRow.dataset.qwen21TurboRow = "";
+  const turboLabel = document.createElement("span");
+  turboLabel.className = "vnccs-uc-spectrum-label";
+  turboLabel.textContent = "Viggle turbo (4-step) ";
+  turboLabel.appendChild(buildQwen21Help("turbo"));
+  const turboToggle = document.createElement("input");
+  turboToggle.type = "checkbox";
+  turboToggle.dataset.qwen21TurboToggle = "";
+  turboToggle.title = "Enable the Viggle 4-step turbo LoRA";
+  const turboDownload = document.createElement("button");
+  turboDownload.type = "button";
+  turboDownload.className = "vnccs-uc-btn";
+  turboDownload.dataset.qwen21TurboDownload = "";
+  turboDownload.textContent = "Download LoRA";
+  turboDownload.title = "Download the Viggle turbo LoRA into models/loras/viggle/";
+  const turboStatus = document.createElement("span");
+  turboStatus.className = "vnccs-uc-spectrum-label";
+  turboStatus.dataset.qwen21TurboStatus = "";
+  turboRow.append(turboLabel, turboToggle, turboDownload, turboStatus);
+  panel.appendChild(turboRow);
 
   const spectrum = document.createElement("div");
   spectrum.className = "vnccs-uc-spectrum-panel";
@@ -414,6 +495,9 @@ function refreshPanel(widget, panel) {
   if (opaque) opaque.checked = Boolean(widget.settings.qwen21_opaque_output);
   const aspect = panel.querySelector('[data-qwen21-setting="qwen21_aspect_preset"]');
   if (aspect) aspect.value = String(widget.settings.qwen21_aspect_preset || "");
+  const turboToggle = panel.querySelector("[data-qwen21-turbo-toggle]");
+  if (turboToggle) turboToggle.checked = Boolean(widget.settings.qwen21_turbo_enabled);
+  void refreshQwen21TurboStatus(panel);
 }
 
 function bindPanelEvents(widget, panel) {
@@ -430,9 +514,22 @@ function bindPanelEvents(widget, panel) {
       widget.settings.qwen21_opaque_output = Boolean(target.checked);
     }
   });
+  panel.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.qwen21TurboDownload !== undefined) {
+      void requestQwen21TurboDownload().then(() => refreshQwen21TurboStatus(panel));
+    }
+  });
   panel.addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+    if (target.dataset.qwen21TurboToggle !== undefined) {
+      applyQwen21TurboProfile(widget, Boolean(target.checked));
+      refreshPanel(widget, panel);
+      commitSettings(widget);
+      return;
+    }
     const spectrum = spectrumSettings(widget);
     if (!spectrum) return;
     if (target.dataset.spectrumToggle !== undefined) {

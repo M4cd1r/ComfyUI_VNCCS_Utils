@@ -786,13 +786,55 @@ function buildUniCanvasPoseEditOverlay(state, session) {
   return { overlay, canvas, saveBtn, cancelBtn };
 }
 
-// Morph keys shared with the VNCCS character creator (age/gender/weight/muscle/height).
+// Legacy morph key list (age/gender/weight/muscle/height) kept for backward
+// compatibility; the options modal now exposes the full mannequin set below.
 const POSE_EDIT_MORPH_KEYS = Object.freeze([
   { key: "age", label: "Age", min: 1, max: 90, step: 1, value: 25 },
   { key: "gender", label: "Gender", min: 0, max: 1, step: 0.01, value: 0.5 },
   { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01, value: 0.5 },
   { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01, value: 0.5 },
   { key: "height", label: "Height", min: 0, max: 1, step: 0.01, value: 0.5 },
+]);
+
+// Full mannequin options ported from Pose Studio (web/vnccs_pose_studio.js
+// meshParams). Gender is a toggle (meshParams.gender: 1.0 = male, 0.0 = female).
+const POSE_EDIT_BODY_MORPH_KEYS = Object.freeze([
+  { key: "age", label: "Age", min: 1, max: 90, step: 1, value: 25 },
+  { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "height", label: "Height", min: 0, max: 2, step: 0.01, value: 0.5 },
+]);
+
+const POSE_EDIT_FEMALE_MORPH_KEYS = Object.freeze([
+  { key: "breast_size", label: "Breast size", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01, value: 0.5 },
+]);
+
+const POSE_EDIT_MALE_MORPH_KEYS = Object.freeze([
+  { key: "penis_len", label: "Penis length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "penis_circ", label: "Penis girth", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01, value: 0.5 },
+]);
+
+// Client-side bone scaling proportions (DEFAULT_POSE_STUDIO_MESH_PROPORTIONS).
+const POSE_EDIT_PROPORTION_KEYS = Object.freeze([
+  { key: "head_size", label: "Head size", min: 0.5, max: 2, step: 0.01, value: 1 },
+  { key: "arm_size", label: "Arm size", min: 0.5, max: 2, step: 0.01, value: 1 },
+  { key: "hand_size", label: "Hand size", min: 0.5, max: 2, step: 0.01, value: 1 },
+  { key: "foot_size", label: "Foot size", min: 0.5, max: 2, step: 0.01, value: 1 },
+  { key: "shoulder_l_length", label: "Shoulder L length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "shoulder_r_length", label: "Shoulder R length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "hip_l_length", label: "Hip L length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "hip_r_length", label: "Hip R length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "upper_arm_l_length", label: "Upper arm L length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "upper_arm_r_length", label: "Upper arm R length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "forearm_l_length", label: "Forearm L length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "forearm_r_length", label: "Forearm R length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "thigh_l_length", label: "Thigh L length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "thigh_r_length", label: "Thigh R length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "shin_l_length", label: "Shin L length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "shin_r_length", label: "Shin R length", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "spine_length", label: "Spine length", min: 0, max: 1, step: 0.01, value: 0.5 },
 ]);
 
 function openUniCanvasPoseLibrary(state, session) {
@@ -854,6 +896,8 @@ function openUniCanvasPoseOptions(state, session) {
   overlay.className = "vnccs-uc-modal-overlay";
   const modal = document.createElement("div");
   modal.className = "vnccs-uc-modal";
+  modal.style.maxHeight = "70vh";
+  modal.style.overflowY = "auto";
   const title = document.createElement("div");
   title.className = "vnccs-uc-modal-title";
   title.textContent = "Mannequin options";
@@ -861,8 +905,32 @@ function openUniCanvasPoseOptions(state, session) {
   hint.className = "vnccs-uc-modal-message";
   hint.textContent = "Morphs update live; double-click a slider to reset it.";
   modal.append(title, hint);
+
   let raf = 0;
-  for (const spec of POSE_EDIT_MORPH_KEYS) {
+  const scheduleMorphApply = () => {
+    if (raf) return;
+    // Coalesce morph application to one frame (repo realtime rule).
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      void session.applyExternalCharacterCreatorValues?.(session.morphs);
+    });
+  };
+  const setMorphValue = (key, value) => {
+    session.morphs = normalizePoseLayerMorphs({ [key]: value }, session.morphs);
+    scheduleMorphApply();
+  };
+  const isFemaleGender = () => Number(session.morphs?.gender ?? 0.5) < 0.5;
+
+  const addSection = (label) => {
+    const section = document.createElement("div");
+    const heading = document.createElement("div");
+    heading.className = "vnccs-uc-modal-message";
+    heading.textContent = label;
+    section.appendChild(heading);
+    modal.appendChild(section);
+    return section;
+  };
+  const addSlider = (container, spec) => {
     const row = document.createElement("label");
     row.className = "vnccs-uc-modal-message";
     row.textContent = spec.label + " ";
@@ -873,19 +941,77 @@ function openUniCanvasPoseOptions(state, session) {
       step: spec.step,
       value: Number.isFinite(current) ? current : spec.value,
       resetValue: spec.value,
-      onInput: (value) => {
-        session.morphs = normalizePoseLayerMorphs({ [spec.key]: value }, session.morphs);
-        if (raf) return;
-        // Coalesce morph application to one frame (repo realtime rule).
-        raf = requestAnimationFrame(() => {
-          raf = 0;
-          void session.applyExternalCharacterCreatorValues?.(session.morphs);
-        });
-      },
+      onInput: (value) => setMorphValue(spec.key, value),
     });
     row.appendChild(pair.root);
-    modal.appendChild(row);
-  }
+    container.appendChild(row);
+  };
+
+  // Gender toggle (meshParams.gender: 1.0 = male, 0.0 = female).
+  const genderField = document.createElement("div");
+  genderField.className = "vnccs-uc-modal-message";
+  genderField.textContent = "Gender ";
+  const genderToggle = document.createElement("div");
+  genderToggle.className = "vnccs-uc-gender-toggle";
+  const maleBtn = document.createElement("button");
+  maleBtn.type = "button";
+  maleBtn.textContent = "Male";
+  const femaleBtn = document.createElement("button");
+  femaleBtn.type = "button";
+  femaleBtn.textContent = "Female";
+  genderToggle.append(maleBtn, femaleBtn);
+  genderField.appendChild(genderToggle);
+  modal.appendChild(genderField);
+
+  const bodySection = addSection("Body");
+  for (const spec of POSE_EDIT_BODY_MORPH_KEYS) addSlider(bodySection, spec);
+
+  // Female options show only while gender < 0.5 (Pose Studio rule).
+  const femaleSection = addSection("Female");
+  for (const spec of POSE_EDIT_FEMALE_MORPH_KEYS) addSlider(femaleSection, spec);
+
+  // Male options show only while gender >= 0.5.
+  const maleSection = addSection("Male");
+  const genitalsRow = document.createElement("label");
+  genitalsRow.className = "vnccs-uc-modal-message";
+  genitalsRow.textContent = "Show genitals ";
+  const genitalsInput = document.createElement("input");
+  genitalsInput.type = "checkbox";
+  genitalsInput.checked = session.morphs?.show_genitals === true;
+  genitalsRow.appendChild(genitalsInput);
+  maleSection.appendChild(genitalsRow);
+  for (const spec of POSE_EDIT_MALE_MORPH_KEYS) addSlider(maleSection, spec);
+
+  const proportionSection = addSection("Proportions");
+  for (const spec of POSE_EDIT_PROPORTION_KEYS) addSlider(proportionSection, spec);
+
+  const updateGenderUI = () => {
+    const female = isFemaleGender();
+    maleBtn.classList.toggle("vnccs-uc-toggle-active", !female);
+    femaleBtn.classList.toggle("vnccs-uc-toggle-active", female);
+  };
+  const updateGenderVisibility = () => {
+    const female = isFemaleGender();
+    femaleSection.style.display = female ? "" : "none";
+    maleSection.style.display = female ? "none" : "";
+  };
+  const setGender = (value) => {
+    setMorphValue("gender", value);
+    updateGenderUI();
+    updateGenderVisibility();
+  };
+  maleBtn.addEventListener("click", () => setGender(1));
+  femaleBtn.addEventListener("click", () => setGender(0));
+  genitalsInput.addEventListener("change", () => {
+    const shown = genitalsInput.checked === true;
+    setMorphValue("show_genitals", shown);
+    // modelUsesGenitals needs show_genitals === true AND gender >= 0.99, so
+    // enabling genitals forces the male body.
+    if (shown) setGender(1);
+  });
+  updateGenderUI();
+  updateGenderVisibility();
+
   const closeBtn = widget._button("Close", "vnccs-uc-btn", () => overlay.remove(), "Close mannequin options");
   modal.appendChild(closeBtn);
   overlay.appendChild(modal);
@@ -922,6 +1048,40 @@ export function buildUniCanvasPoseViewerModelData(result, staticData) {
   };
 }
 
+// Proportion morph keys are client-side bone scaling (the Pose Studio
+// meshParams proportions); solveMorph/calculateMorphFactors only understand
+// body morphs, so these are applied straight to the viewer skeleton.
+const POSE_PROPORTION_SIZE_SETTERS = Object.freeze({
+  head_size: ["updateHeadScale", "setHeadScale"],
+  arm_size: ["updateArmScale", "setArmScale"],
+  hand_size: ["updateHandScale", "setHandScale"],
+  foot_size: ["updateFootScale", "setFootScale"],
+});
+
+function applyUniCanvasPoseProportionParams(viewer, morphs) {
+  if (!viewer || !morphs) return;
+  for (const [key, rawValue] of Object.entries(morphs)) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) continue;
+    if (key.endsWith("_length")) {
+      // Slider 0..1 maps to a bone offset scale in the viewer core.
+      const group = key.slice(0, -"_length".length);
+      if (!group) continue;
+      if (typeof viewer.updateBoneLengthScale === "function") viewer.updateBoneLengthScale(group, value);
+      continue;
+    }
+    const setterNames = POSE_PROPORTION_SIZE_SETTERS[key];
+    if (!setterNames) continue;
+    for (const name of setterNames) {
+      // Skip silently when the viewer core does not expose the setter.
+      if (typeof viewer[name] === "function") {
+        viewer[name](value);
+        break;
+      }
+    }
+  }
+}
+
 async function applyUniCanvasPoseEditMorphs(session, morphs) {
   const token = ++session.loadToken;
   const runtime = session.morphRuntime;
@@ -934,7 +1094,13 @@ async function applyUniCanvasPoseEditMorphs(session, morphs) {
   if (session.closed || token !== session.loadToken) return false;
   const currentPose = viewer.isInitialized?.() ? viewer.getPose() : null;
   viewer.loadData(buildUniCanvasPoseViewerModelData(result, staticData), true);
-  viewer.setPose(currentPose || session.poseData.pose || {}, true);
+  // Proportion keys reshape the skeleton and re-cache the shaped rest bone
+  // positions; apply them BEFORE setPose so pose offsets land on the new rest.
+  applyUniCanvasPoseProportionParams(viewer, morphs);
+  // The stored pose is relativized to the shaped rest; absolutize it before it
+  // can reach setPose (the live getPose() result is already absolute).
+  const fallbackPose = absolutizeUniCanvasPoseBones(viewer, session.poseData.pose || {}) || {};
+  viewer.setPose(currentPose || fallbackPose, true);
   return true;
 }
 
@@ -1069,7 +1235,13 @@ async function applyUniCanvasPoseEditCapture(widget, { closeSession }) {
   widget.recordHistoryBefore();
   layer.poseData = buildPoseLayerData({
     pose,
-    character: layer.poseData?.character || session.poseData.character,
+    // Persist the session morphs (Mannequin options + character creator):
+    // keeping the OLD character.morphs would rebuild the next edit session
+    // with a differently shaped rest = visible drift on every save cycle.
+    character: {
+      ...(layer.poseData?.character || session.poseData.character || {}),
+      morphs: { ...session.morphs },
+    },
     camera: session.poseData.camera,
     size: session.poseData.render.size,
   });

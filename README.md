@@ -126,7 +126,11 @@ render: { transparent: true, size } }`) and is persisted with the canvas state.
 
 ### Settings (gear icon)
 
-The gear icon in the Layers toolbar opens the UniCanvas settings: the background-removal model (default QI2.1) and the character-generation recipe - generation family, model checkpoint, pose studio LoRA + strength, steps, CFG, sampler, scheduler and the character prompt template (`{character}` is replaced with the selected character's name).
+The gear icon sits in the canvas corner bar, next to *Snap to grid*, and opens the UniCanvas settings: the background-removal backend - **edit model / BiRefNet / rembg / SAM 3** (default **BiRefNet**; the edit-model backend offers Qwen Image 2.1 and MiniMax H3, the RGBA-VAE edit models) and the character-generation recipe - generation family, model checkpoint, pose studio LoRA + strength, steps, CFG, sampler, scheduler and the character prompt template (`{character}` is replaced with the selected character's name).
+
+### Edit model reference images
+
+Next to the full-width *Steps* field of every edit-model family sits a stacked-cards icon with a count badge. It opens the reference-image popover: up to 4 uploaded images condition the edit model, each thumbnail labelled `Picture 2`, `Picture 3`, ... so the positive prompt can refer to them by name (the working area is always `Picture 1` / `<image1>`). The uploads are an alternative to wiring `reference_image_N` inputs through the `VNCSS Config` node and travel in the same numbered slots.
 
 ### Layer utilities
 
@@ -138,12 +142,11 @@ Right-click a layer row to open the layer context menu:
     through `POST /vnccs/unicanvas/save_output`. Both export entries crop the
     layer to its alpha bounds, so the PNG contains the visible artwork rather
     than the full canvas backing store.
-*   **Remove bg – QI2.1**: extracts the subject over the layer's pixels with
-    the Qwen-Image-2.1 RGBA subject-extraction pipeline (requires a QI2.1
-    stack) and applies the returned alpha.
-*   **Remove bg – BiRefNet**: uses the vendored BiRefNet-lite path
-    (`auto_mask_bgr()`, auto-downloaded on first use) and applies the mask as
-    alpha. Both remove-bg entries are one-shot operations with status-line
+*   **Remove background**: runs the backend chosen in the settings (gear icon)
+    and applies the result as alpha - **edit model** (Qwen Image 2.1 or
+    MiniMax H3 RGBA subject extraction), **BiRefNet** (vendored BiRefNet-lite
+    path, auto-downloaded on first use), **rembg** or **SAM 3** (automatic
+    subject mask from the SAM stack). One-shot operation with status-line
     progress and a single undo entry.
 *   **Color match to below**: matches the active layer's colors to the
     composite of the visible layers below it (or, failing that, the composite
@@ -152,8 +155,12 @@ Right-click a layer row to open the layer context menu:
     plus a strength slider (0-10) with a live preview while dragging and a
     commit on release. Backed by the `color-matcher` package with a pure
     Reinhard (LAB mean/std) fallback.
-*   **Rasterize** / **Edit pose**: pose layers only.
-*   **Remove bg**: runs the background-removal model chosen in the settings (gear icon, default QI2.1).
+*   **Rasterize** / **Edit pose**: pose layers only. *Edit pose* opens the
+    mannequin editor with the full Pose Studio mannequin options - gender
+    toggle, age, weight, muscle, height, breast size/firmness, male options and
+    the full proportions set (head/arm/hand/foot scale, per-bone lengths) -
+    plus the pose library. Option morphs persist with the layer, so repeated
+    edit/save cycles never drift.
 *   **Generate character** (pose layers with a selected VNCCS character): renders the character into the layer with the VNCCS character-creator recipe - edit model plus the pose studio LoRA, steps/CFG/sampler and the `{character}` prompt template all come from the settings.
 
 **Import PSD** sits next to **Export Layers as PSD** and loads raster layers
@@ -312,8 +319,13 @@ picker (node widget and standalone host):
   and the background is transparent.`) and staging keeps the alpha channel, so accepted results are
   layers with real transparency. The **`opaque output`** switch is available for the rare case where
   alpha is unwanted: it disables the RGBA prompting and flattens the result.
-- `Remove bg – QI2.1` in the layer context menu runs the Qwen-Image-2.1 RGBA subject-extraction
-  flow over the layer pixels and applies the extracted alpha.
+- `Remove background` with the **edit model** backend set to Qwen Image 2.1 runs the
+  Qwen-Image-2.1 RGBA subject-extraction flow over the layer pixels and applies the extracted alpha.
+- **Viggle turbo (4-step)** switch (the same pattern as the other turbo switches): enables the
+  [Viggle Qwen-Image-2.1-viggle-turbo](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo)
+  4-step DMD LoRA over the base transformer and switches Steps to 4 / CFG to 1 (the distillation
+  runs without classifier-free guidance). The LoRA downloads into `models/loras/viggle/` on first
+  use; switching it off restores the previous steps/CFG/sampler/scheduler.
 
 ### Spectrum acceleration
 

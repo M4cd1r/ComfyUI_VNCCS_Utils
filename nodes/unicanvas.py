@@ -822,6 +822,9 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
                 },
             )
 
+        for slot, value in sorted(_reference_image_slots(image_tensor, gen_settings).items()):
+            if slot != 1 and torch.is_tensor(value):
+                vl_references.append(value)
         positive, negative, latent = self._encode_qwen_edit(
             clip=gen_settings.get("_qwen_edit_clip"),
             vae=vae,
@@ -1161,6 +1164,58 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         if hasattr(decoded, "shape") and len(decoded.shape) == 4 and decoded.shape[0] > 1:
             return decoded[:1]  # H3 returns a frame packet; the still is the first frame
         return decoded
+
+    def remove_background(self, image: torch.Tensor) -> torch.Tensor:
+        """MiniMax H3 RGBA subject extraction (spec 10.3).
+
+        Edit-model remove-bg contract: (H,W,3) float 0..1 in, (H,W,4) float 0..1
+        out with the extracted subject in alpha. Runs the family's region-edit
+        flow with the subject-extraction instruction and keeps the RGBA-VAE
+        alpha channel.
+        """
+        if not torch.is_tensor(image) or image.ndim != 3 or int(image.shape[-1]) != 3 or not torch.is_floating_point(image):
+            raise ValueError(
+                "[VNCCS UniCanvas] Remove bg – Edit model (MiniMax H3) expects a float (H,W,3) image tensor."
+            )
+        pixels = image.clamp(0.0, 1.0).unsqueeze(0)
+        draw_id = "remove_background"
+        height, width = int(pixels.shape[1]), int(pixels.shape[2])
+        gen_settings = dict(self.defaults)
+        gen_settings["draw_mode"] = "img2img"
+        gen_settings["_draw_id"] = draw_id
+        try:
+            model, _clip, vae = _load_generation_assets(gen_settings)
+        except Exception as exc:
+            raise RuntimeError(
+                f"[VNCCS UniCanvas] Remove bg – Edit model (MiniMax H3) requires the MiniMax H3 stack: {exc}"
+            ) from exc
+        gen_settings["_h3_prompt"] = QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
+        gen_settings["_h3_reference_image"] = pixels
+        positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
+        latent = self.create_empty_latent(width, height, gen_settings, draw_id)
+        sampled = self.sample_latent(
+            model=model,
+            positive=positive,
+            negative=negative,
+            latent=latent,
+            seed=0,
+            steps=int(self.defaults.get("steps", 20)),
+            cfg=1.0,
+            sampler_name=str(self.defaults.get("sampler_name", "res_multistep")),
+            scheduler=str(self.defaults.get("scheduler", "simple")),
+            denoise=1.0,
+            gen_settings=gen_settings,
+            draw_id=draw_id,
+            width=width,
+            height=height,
+        )
+        decoded = self.decode_samples(vae, sampled, gen_settings)
+        result = decoded[0] if torch.is_tensor(decoded) and decoded.ndim == 4 else decoded
+        if not torch.is_tensor(result) or result.ndim != 3 or int(result.shape[-1]) != 4:
+            raise RuntimeError(
+                "[VNCCS UniCanvas] Remove bg – Edit model (MiniMax H3) subject extraction must return an RGBA image."
+            )
+        return result.clamp(0.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -3954,6 +4009,24 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         # selection keys so the external block always wins; non-external draws are untouched.
         gen_settings.pop("model_selection_mode", None)
         gen_settings.pop("selected_preset_id", None)
+    # Widget-uploaded Edit model reference images (spec 9): the upload popover is
+    # an alternative to the VNCSS Config reference inputs and occupies the same
+    # numbered slots (reference_image_N -> <Picture N+1>).
+    edit_refs = gen_settings.get("edit_reference_images")
+    if isinstance(edit_refs, list) and edit_refs:
+        external_block = gen_settings.get("_external")
+        if not isinstance(external_block, dict):
+            external_block = {}
+            gen_settings["_external"] = external_block
+        references = external_block.get("references")
+        if not isinstance(references, dict):
+            references = {}
+            external_block["references"] = references
+        uploads = [item for item in edit_refs if isinstance(item, str) and item][:4]
+        for index, value in enumerate(uploads):
+            name = f"reference_image_{index + 1}"
+            if references.get(name) is None:
+                references[name] = _pil_to_image_tensor(_decode_data_url(value, "RGB"))
     settings = _normalize_gen_settings(gen_settings)
     settings["draw_mode"] = mode
     seed = int(settings.get("seed", 0))
@@ -4730,7 +4803,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 # UniCanvas layer utilities (Plan 4): background removal + color matching.
 # Deliberately appended region so the shared draw pipeline above stays
 # untouched for parallel branches. Registers:
-#   POST /vnccs/unicanvas/remove_bg   { method: "qi21" | "birefnet", image }
+#   POST /vnccs/unicanvas/remove_bg   { method: "edit" | "birefnet" | "rembg" | "sam3", edit_model?, image }
 #   POST /vnccs/unicanvas/color_match { image, reference, method, strength }
 # ============================================================================
 
@@ -4781,17 +4854,87 @@ def _uc_load_birefnet_masker():
     return auto_mask_bgr
 
 
+UC_REMOVE_BG_METHODS = ("edit", "birefnet", "rembg", "sam3")
+UC_REMOVE_BG_EDIT_MODELS = ("qwen_image21", "minimax_h3")
+UC_EDIT_REMOVE_BG_UNAVAILABLE = (
+    "[VNCCS UniCanvas] Remove bg – Edit model requires an RGBA-VAE edit model module ({model})."
+)
+UC_REMBG_REMOVE_BG_UNAVAILABLE = (
+    "[VNCCS UniCanvas] Remove bg – rembg requires the 'rembg' package (pip install rembg)."
+)
+UC_SAM3_REMOVE_BG_UNAVAILABLE = (
+    "[VNCCS UniCanvas] Remove bg – SAM 3 needs the SAM stack: {error}"
+)
+
+
+def _uc_resolve_edit_remove_bg_module(edit_model: str):
+    try:
+        module = _get_unicanvas_model_module(edit_model)
+    except Exception:
+        module = None
+    if module is None or not callable(getattr(module, "remove_background", None)):
+        if edit_model == "qwen_image21":
+            raise RuntimeError(UC_QI21_REMOVE_BG_UNAVAILABLE)
+        raise RuntimeError(UC_EDIT_REMOVE_BG_UNAVAILABLE.format(model=edit_model))
+    return module
+
+
+def _uc_remove_bg_rembg(image: Image.Image) -> Image.Image:
+    try:
+        from rembg import remove as rembg_remove
+    except ImportError as exc:
+        raise RuntimeError(UC_REMBG_REMOVE_BG_UNAVAILABLE) from exc
+    result = rembg_remove(image)
+    return result if getattr(result, "mode", "") == "RGBA" else result.convert("RGBA")
+
+
+def _uc_remove_bg_sam3(image: Image.Image) -> Image.Image:
+    """SAM-stack automatic subject mask (the extension's SAM 3 pipeline).
+
+    Reuses the interactive segmentation logic with automatic prompts: one
+    centre-positive point plus corner-negative points, then the largest
+    predicted mask becomes the kept subject.
+    """
+    width, height = image.size
+    points = [
+        {"x": width * 0.5, "y": height * 0.5, "label": 1},
+        {"x": 1, "y": 1, "label": 0},
+        {"x": width - 2, "y": 1, "label": 0},
+        {"x": 1, "y": height - 2, "label": 0},
+        {"x": width - 2, "y": height - 2, "label": 0},
+    ]
+    try:
+        result = _run_unicanvas_segment({
+            "model": "sam2_large",
+            "image": _encode_png_data_url(image.convert("RGB")),
+            "points": points,
+        })
+    except Exception as exc:
+        raise RuntimeError(UC_SAM3_REMOVE_BG_UNAVAILABLE.format(error=exc)) from exc
+    return _decode_data_url(str(result.get("mask") or ""), "RGBA")
+
+
 def _run_unicanvas_remove_bg(payload: dict[str, Any]) -> dict[str, Any]:
     payload = payload or {}
-    method = str(payload.get("method") or "").strip().lower()
-    if method not in ("qi21", "birefnet"):
-        raise ValueError(f"[VNCCS UniCanvas] Unknown remove bg method '{method}'.")
+    raw_method = str(payload.get("method") or "").strip().lower()
+    method = "edit" if raw_method == "qi21" else raw_method
+    edit_model = str(payload.get("edit_model") or "qwen_image21").strip().lower()
+    if method not in UC_REMOVE_BG_METHODS:
+        raise ValueError(f"[VNCCS UniCanvas] Unknown remove bg method '{raw_method}'.")
+    if method == "edit" and edit_model not in UC_REMOVE_BG_EDIT_MODELS:
+        raise ValueError(f"[VNCCS UniCanvas] Unknown remove bg edit model '{edit_model}'.")
     # Fail fast before any pixel work when the requested stack is unavailable.
-    module = _uc_resolve_qi21_module() if method == "qi21" else None
+    module = _uc_resolve_edit_remove_bg_module(edit_model) if method == "edit" else None
+    if method == "rembg":
+        _uc_require_rembg_available()
     image = _decode_data_url(str(payload.get("image") or ""), "RGB")
-    if method == "qi21":
+    if method == "edit":
         rgba = module.remove_background(_uc_image_to_rgb_tensor(image))
         result = _uc_rgba_tensor_to_image(rgba)
+    elif method == "rembg":
+        result = _uc_remove_bg_rembg(image)
+    elif method == "sam3":
+        result = _uc_remove_bg_sam3(image)
     else:
         masker = _uc_load_birefnet_masker()
         img_bgr = np.asarray(image, dtype=np.uint8)[:, :, ::-1].copy()
@@ -4804,7 +4947,15 @@ def _run_unicanvas_remove_bg(payload: dict[str, Any]) -> dict[str, Any]:
         "width": result.width,
         "height": result.height,
         "method": method,
+        "edit_model": edit_model if method == "edit" else None,
     }
+
+
+def _uc_require_rembg_available() -> None:
+    try:
+        import rembg  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(UC_REMBG_REMOVE_BG_UNAVAILABLE) from exc
 
 
 def _reinhard_lab_transfer_np(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
@@ -4954,6 +5105,31 @@ def register_unicanvas_layer_routes() -> None:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/qwen21_turbo")
+    async def vnccs_unicanvas_qwen21_turbo_status(request):
+        import folder_paths
+
+        status = dict(_QWEN21_TURBO_LORA_DOWNLOAD)
+        installed = bool(_get_full_path_agnostic(folder_paths, "loras", QWEN21_TURBO_LORA_NAME))
+        if installed and status.get("status") != "downloading":
+            status = {"status": "success", "progress": 1.0, "message": "Installed"}
+        return web.json_response({"lora_name": QWEN21_TURBO_LORA_NAME, **status})
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/qwen21_turbo")
+    async def vnccs_unicanvas_qwen21_turbo_download(request):
+        if _QWEN21_TURBO_LORA_DOWNLOAD.get("status") == "downloading":
+            return web.json_response({"queued": True, "lora_name": QWEN21_TURBO_LORA_NAME})
+        _QWEN21_TURBO_LORA_DOWNLOAD.update({"status": "queued", "progress": 0.0, "message": "Queued"})
+
+        def _download_worker() -> None:
+            try:
+                resolve_qwen21_turbo_lora()
+            except Exception:
+                pass  # the status payload carries the failure message
+
+        threading.Thread(target=_download_worker, daemon=True).start()
+        return web.json_response({"queued": True, "lora_name": QWEN21_TURBO_LORA_NAME})
+
     @PromptServer.instance.routes.post("/vnccs/unicanvas/color_match")
     async def vnccs_unicanvas_color_match(request):
         if not _content_length_ok(request, _MAX_UPLOAD_BYTES * 2 + 1024 * 1024):
@@ -5048,6 +5224,57 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "lora_stack": [],
     "spectrum": dict(QWEN21_SPECTRUM_DEFAULTS),
 }
+
+# Viggle QI2.1 turbo (4-step DMD distillation, https://huggingface.co/Viggle/
+# Qwen-Image-2.1-viggle-turbo): the LoRA student variant applied over the base
+# transformer, following the same "turbo switch" pattern as the other families.
+QWEN21_TURBO_LORA_REPO_ID = "Viggle/Qwen-Image-2.1-viggle-turbo"
+QWEN21_TURBO_LORA_FILENAME = "Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors"
+QWEN21_TURBO_LORA_NAME = f"viggle/{QWEN21_TURBO_LORA_FILENAME}"
+
+_QWEN21_TURBO_LORA_LOCK = threading.Lock()
+_QWEN21_TURBO_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
+
+
+def resolve_qwen21_turbo_lora() -> str:
+    """Resolve (downloading when missing) the Viggle QI2.1 turbo LoRA.
+
+    Returns the ComfyUI loras-relative name used by _apply_lora_cached. The
+    download lands in models/loras/viggle/ exactly like the preset turbo assets.
+    """
+    import shutil
+
+    import folder_paths
+
+    def installed_path() -> str | None:
+        path = _get_full_path_agnostic(folder_paths, "loras", QWEN21_TURBO_LORA_NAME)
+        return path if path and os.path.exists(path) else None
+
+    if installed_path():
+        return QWEN21_TURBO_LORA_NAME
+    with _QWEN21_TURBO_LORA_LOCK:
+        if installed_path():
+            return QWEN21_TURBO_LORA_NAME
+        _QWEN21_TURBO_LORA_DOWNLOAD.update(
+            {"status": "downloading", "progress": 0.1, "message": "Downloading Viggle QI2.1 turbo LoRA"}
+        )
+        try:
+            from huggingface_hub import hf_hub_download
+
+            cached = hf_hub_download(repo_id=QWEN21_TURBO_LORA_REPO_ID, filename=QWEN21_TURBO_LORA_FILENAME, token=False)
+            lora_dirs = _safe_get_folder_paths(folder_paths, "loras")
+            if not lora_dirs:
+                raise RuntimeError("no ComfyUI loras folder is configured")
+            target_dir = os.path.join(lora_dirs[0], "viggle")
+            os.makedirs(target_dir, exist_ok=True)
+            target = os.path.join(target_dir, QWEN21_TURBO_LORA_FILENAME)
+            if os.path.abspath(cached) != os.path.abspath(target):
+                shutil.copyfile(cached, target)
+            _QWEN21_TURBO_LORA_DOWNLOAD.update({"status": "success", "progress": 1.0, "message": "Installed"})
+            return QWEN21_TURBO_LORA_NAME
+        except Exception as exc:
+            _QWEN21_TURBO_LORA_DOWNLOAD.update({"status": "error", "progress": 0.0, "message": str(exc)})
+            raise RuntimeError(f"[VNCCS UniCanvas] Viggle QI2.1 turbo LoRA download failed: {exc}") from exc
 
 
 def _reference_image_slots(image_tensor: Any, gen_settings: dict[str, Any] | None) -> dict[int, Any]:
@@ -5206,6 +5433,20 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         reference images in socket order.
         """
         return _reference_image_slots(image_tensor, gen_settings)
+
+    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
+        lora_name = str(gen_settings.get("qwen_lora_name") or "")
+        if lora_name and float(gen_settings.get("qwen_lora_strength", 0.0) or 0.0) > 0:
+            if _lora_name_matches(lora_name, QWEN21_TURBO_LORA_NAME):
+                lora_name = resolve_qwen21_turbo_lora()
+            model, clip = _apply_lora_cached(
+                model,
+                clip,
+                lora_name,
+                float(gen_settings.get("qwen_lora_strength", 1.0)),
+                0.0,
+            )
+        return super().apply_loras(model, clip, gen_settings)
 
     def assemble_instruction(self, prompt: str, slots, opaque_output: bool = False) -> str:
         """Assemble the QI2.1 instruction: <image N> slot framing, the user

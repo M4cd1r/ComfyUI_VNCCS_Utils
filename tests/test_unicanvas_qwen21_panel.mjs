@@ -121,3 +121,20 @@ test("edit families show a full-width Steps field with a hint and hide the gener
     assert.match(mainSource, /data-generic-steps/, "the generic Steps field must be toggleable");
     assert.ok(mainSource.includes("<image1>"), "the QI2.1 hint must name the image1 convention");
 });
+
+test("QI2.1 Viggle turbo switch mirrors the other turbo switches", () => {
+  assert.match(panelSource, /QWEN21_TURBO_LORA_NAME/, "the Viggle turbo LoRA name must be defined");
+  assert.match(panelSource, /Viggle\/Qwen-Image-2\.1-viggle-turbo/, "the HuggingFace repo id must be referenced");
+  assert.match(panelSource, /applyQwen21TurboProfile/, "the turbo profile swap helper must exist");
+  assert.match(panelSource, /dataset\.qwen21TurboToggle/, "the turbo enable switch must exist");
+  assert.match(panelSource, /dataset\.qwen21TurboDownload/, "the LoRA download button must exist");
+  assert.match(panelSource, /QWEN21_TURBO_SETTINGS = \{ steps: 4, cfg: 1 \}/, "turbo must switch to the 4-step / no-CFG profile");
+  assert.match(panelSource, /qwen21_turbo_previous_settings/, "the pre-turbo steps/cfg must be saved and restored");
+  assert.match(panelSource, /qwen21_turbo_enabled/, "the switch state must persist in settings");
+});
+
+test("edit model reference images upload exists in the main widget", () => {
+  assert.match(mainSource, /data-edit-refs-badge/, "the cards icon must carry a count badge");
+  assert.ok(mainSource.includes('data-action="edit-refs"'), "the cards icon button must exist");
+  assert.ok(mainSource.includes('remove_bg_model: "birefnet"'), "BiRefNet must be the default remove bg backend");
+});

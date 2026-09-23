@@ -188,6 +188,15 @@ const STYLES = `
 .vnccs-uc-turbo-section { display:flex; flex-direction:column; gap:6px; padding-top:2px; }
 .vnccs-uc-h3-panel { display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid rgba(184,169,232,.28); border-radius:8px; background:rgba(184,169,232,.06); }
 .vnccs-uc-h3-hint { color:var(--uc-muted); font-size:10px; line-height:1.35; }
+.vnccs-uc-edit-steps-row { display:flex; align-items:flex-end; gap:6px; }
+.vnccs-uc-edit-steps-row .vnccs-uc-field { flex:1 1 auto; }
+.vnccs-uc-refs-btn { position:relative; flex:0 0 auto; }
+.vnccs-uc-refs-badge { position:absolute; top:-4px; right:-4px; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:var(--uc-accent); color:#14101e; font-size:9px; font-weight:900; line-height:14px; text-align:center; }
+.vnccs-uc-refs-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; }
+.vnccs-uc-refs-cell { position:relative; display:grid; gap:2px; justify-items:center; padding:4px; border:1px solid rgba(255,255,255,.12); border-radius:6px; }
+.vnccs-uc-refs-cell img { width:100%; max-height:84px; object-fit:contain; }
+.vnccs-uc-refs-label { font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:var(--uc-accent); }
+.vnccs-uc-refs-cell .vnccs-uc-icon { position:absolute; top:2px; right:2px; }
 .vnccs-uc-turbo-title { color:var(--uc-accent); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
 .vnccs-uc-toggle { position:relative; flex:0 0 auto; width:42px; height:22px; border:1px solid rgba(255,143,163,.5); border-radius:999px; background:rgba(255,143,163,.16); }
 .vnccs-uc-toggle::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:var(--uc-muted); transition:left .14s ease, background .14s ease; }
@@ -647,7 +656,11 @@ function makeDefaultUniCanvasSettings() {
     model_selection_mode: "presets",
     generation_mode: "illustrious",
     minimax_h3_steps: 20,
-    remove_bg_model: "qi21",
+    remove_bg_model: "birefnet",
+    remove_bg_edit_model: "qwen_image21",
+    edit_reference_images: [],
+    qwen21_turbo_enabled: false,
+    qwen21_turbo_previous_settings: null,
     char_gen_mode: "qwen_image_edit",
     char_gen_ckpt_name: "",
     char_gen_lora_name: "",
@@ -953,7 +966,6 @@ class UniCanvasWidget {
       [UI_ICONS.plus, "Add raster", () => this.addLayer("raster")],
       [UI_ICONS.mask, "Add mask", () => this.addLayer("mask")],
       [POSE_LAYER_ADD_ICON, "Add pose layer", () => this.addPoseLayer()],
-      ["\u2699", "Settings", () => this.openUniCanvasSettings()],
       [UI_ICONS.duplicate, "Duplicate selected", () => this.duplicateActiveLayer()],
       [UI_ICONS.up, "Move selected up", () => this.moveActiveLayer(-1)],
       [UI_ICONS.down, "Move selected down", () => this.moveActiveLayer(1)],
@@ -995,11 +1007,11 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-turbo-section" data-turbo-panel></div>
       <div class="vnccs-uc-h3-panel" data-h3-panel style="display:none">
-        <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
         <div class="vnccs-uc-h3-hint">REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.</div>
       </div>
       <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
-        <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
         <div class="vnccs-uc-h3-hint" data-edit-steps-hint></div>
       </div>
       <div class="vnccs-uc-generation-grid">
@@ -1071,9 +1083,10 @@ class UniCanvasWidget {
     this.redoBtn = this._button(UI_ICONS.redo, "vnccs-uc-icon", () => this.redo(), "Redo");
     this.fitBtn = this._button("Fit", "vnccs-uc-btn", () => this.fitView(), "Fit");
     this.snapBtn = this._button(UI_ICONS.snap, "vnccs-uc-icon", () => this.toggleSnapToGrid(), "Snap to grid");
+    this.gearBtn = this._button("⚙", "vnccs-uc-icon", () => this.openUniCanvasSettings(), "Settings");
     const settingsSpacer = document.createElement("div");
     settingsSpacer.className = "vnccs-uc-settings-spacer";
-    this.settingsBar.append(this.undoBtn, this.redoBtn, this.fitBtn, settingsSpacer, this.snapBtn);
+    this.settingsBar.append(this.undoBtn, this.redoBtn, this.fitBtn, settingsSpacer, this.snapBtn, this.gearBtn);
     this.updateHistoryButtons();
     this.updateSnapButton();
     this.fileInput = document.createElement("input");
@@ -1560,6 +1573,9 @@ class UniCanvasWidget {
         this.settings.seed_mode = (this.settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
         this.syncSeedModeControl();
         this.syncSettingsToWidget();
+      } else if (btn.dataset.action === "edit-refs") {
+        e.preventDefault();
+        this.openEditReferenceImages();
       } else if (btn.dataset.modelSelectionMode) {
         e.preventDefault();
         this.settings.model_selection_mode = btn.dataset.modelSelectionMode === "custom" ? "custom" : "presets";
@@ -2050,6 +2066,7 @@ class UniCanvasWidget {
     }
     // Qwen-Image-2.1 family: mount and gate the Spectrum acceleration panel.
     syncQwen21SpectrumPanel(this);
+    this.updateEditRefsBadge();
   }
 
   presetRuntimeSettingKeys(preset) {
@@ -6742,6 +6759,115 @@ class UniCanvasWidget {
   // Gear (\u2699) settings: background-removal model choice and the character
   // generation recipe (edit model + pose studio LoRA, mirroring the VNCCS
   // Character Creator workflow).
+  editReferenceImages() {
+    const list = Array.isArray(this.settings.edit_reference_images) ? this.settings.edit_reference_images : [];
+    return list.filter((item) => typeof item === "string" && item).slice(0, 4);
+  }
+
+  updateEditRefsBadge() {
+    const count = this.editReferenceImages().length;
+    this.container.querySelectorAll("[data-edit-refs-badge]").forEach((badge) => {
+      badge.textContent = String(count);
+      badge.hidden = count === 0;
+    });
+  }
+
+  setEditReferenceImages(list) {
+    this.settings.edit_reference_images = list.slice(0, 4);
+    this.syncSettingsToWidget();
+    this.updateEditRefsBadge();
+  }
+
+  openEditReferenceImages() {
+    if (this._vnccsRefsPopover) {
+      this._vnccsRefsPopover.remove();
+      this._vnccsRefsPopover = null;
+      return;
+    }
+    const panel = document.createElement("div");
+    panel.dataset.editRefsPopover = "1";
+    panel.style.cssText = "position:absolute; z-index:30; min-width:250px; padding:10px; border-radius:10px; background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.12); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px;";
+    const title = document.createElement("div");
+    title.style.fontWeight = "600";
+    title.textContent = "Edit model reference images";
+    const hint = document.createElement("div");
+    hint.style.color = "rgba(232,232,240,.6)";
+    hint.textContent = "Up to 4 images. The first uploaded image is Picture 2 in the prompt.";
+    panel.append(title, hint);
+    const grid = document.createElement("div");
+    grid.className = "vnccs-uc-refs-grid";
+    panel.appendChild(grid);
+    const render = () => {
+      grid.innerHTML = "";
+      this.editReferenceImages().forEach((data, index) => {
+        const label = "Picture " + (index + 2);
+        const cell = document.createElement("div");
+        cell.className = "vnccs-uc-refs-cell";
+        const marker = document.createElement("div");
+        marker.className = "vnccs-uc-refs-label";
+        marker.textContent = label;
+        const img = document.createElement("img");
+        img.src = data;
+        img.alt = label;
+        const removeBtn = this._button("\u00d7", "vnccs-uc-icon", () => {
+          const list = this.editReferenceImages();
+          list.splice(index, 1);
+          this.setEditReferenceImages(list);
+          render();
+        }, "Remove " + label);
+        cell.append(marker, img, removeBtn);
+        grid.appendChild(cell);
+      });
+      this.updateEditRefsBadge();
+    };
+    render();
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.multiple = true;
+    fileInput.className = "vnccs-uc-file";
+    fileInput.addEventListener("change", () => {
+      const files = [...(fileInput.files || [])];
+      fileInput.value = "";
+      const room = 4 - this.editReferenceImages().length;
+      if (room <= 0) {
+        this.setStatus("[VNCCS UniCanvas] Reference images: the maximum is 4.", true);
+        return;
+      }
+      if (files.length > room) this.setStatus("[VNCCS UniCanvas] Reference images: the maximum is 4.", true);
+      files.slice(0, room).forEach((file) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result !== "string") return;
+          const list = this.editReferenceImages();
+          if (list.length >= 4) return;
+          list.push(reader.result);
+          this.setEditReferenceImages(list);
+          render();
+        };
+        reader.readAsDataURL(file);
+      });
+    });
+    const addBtn = this._button("Add image", "vnccs-uc-btn", () => fileInput.click(), "Add a reference image");
+    const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
+      panel.remove();
+      this._vnccsRefsPopover = null;
+    }, "Close reference images");
+    panel.append(fileInput, addBtn, closeBtn);
+    this.container.appendChild(panel);
+    const anchor = this.container.querySelector("[data-action='edit-refs']");
+    const rect = anchor ? anchor.getBoundingClientRect() : null;
+    const host = this.container.getBoundingClientRect();
+    if (rect) {
+      panel.style.left = Math.max(4, Math.min(rect.left - host.left - 180, Math.max(4, host.width - 260))) + "px";
+      panel.style.top = Math.max(4, rect.bottom - host.top + 6) + "px";
+    } else {
+      panel.style.left = "24px";
+      panel.style.top = "48px";
+    }
+    this._vnccsRefsPopover = panel;
+  }
+
   openUniCanvasSettings() {
     if (this._vnccsSettingsPopover) {
       this._vnccsSettingsPopover.remove();
@@ -6762,6 +6888,7 @@ class UniCanvasWidget {
       wrap.textContent = label;
       wrap.appendChild(control);
       panel.appendChild(wrap);
+      return wrap;
     };
     const makeSelect = (options, value) => {
       const el = document.createElement("select");
@@ -6791,10 +6918,34 @@ class UniCanvasWidget {
       return el;
     };
 
-    // Background removal model (spec 10.3), default QI2.1.
-    const removeBg = makeSelect([["qi21", "QI2.1"], ["birefnet", "BiRefNet"]], s.remove_bg_model || "qi21");
-    removeBg.addEventListener("input", () => { s.remove_bg_model = removeBg.value; commit(); });
-    bind("Remove bg model", removeBg);
+    // Background removal backend (spec 10.3): edit model / birefnet / rembg / sam 3,
+    // default BiRefNet. The edit-model backend extracts the subject through an
+    // RGBA-VAE edit model (Qwen Image 2.1 or MiniMax H3).
+    const resolveRemoveBgSelection = () => {
+      const raw = String(s.remove_bg_model || "birefnet");
+      const method = raw === "qi21" ? "edit" : raw;
+      const editModel = s.remove_bg_edit_model === "minimax_h3" ? "minimax_h3" : "qwen_image21";
+      return { method, editModel };
+    };
+    const removeBgSelection = resolveRemoveBgSelection();
+    const removeBg = makeSelect([
+      ["edit", "Edit model"],
+      ["birefnet", "BiRefNet"],
+      ["rembg", "rembg"],
+      ["sam3", "SAM 3"],
+    ], removeBgSelection.method);
+    const removeBgEditModel = makeSelect([
+      ["qwen_image21", "Qwen Image 2.1"],
+      ["minimax_h3", "MiniMax H3"],
+    ], removeBgSelection.editModel);
+    const removeBgEditRow = bind("Remove bg edit model (RGBA VAE)", removeBgEditModel);
+    const syncRemoveBgRows = () => {
+      removeBgEditRow.style.display = removeBg.value === "edit" ? "" : "none";
+    };
+    removeBg.addEventListener("input", () => { s.remove_bg_model = removeBg.value; syncRemoveBgRows(); commit(); });
+    removeBgEditModel.addEventListener("input", () => { s.remove_bg_edit_model = removeBgEditModel.value; commit(); });
+    bind("Remove bg model (edit model / birefnet / rembg / sam 3)", removeBg);
+    syncRemoveBgRows();
 
     // Character generation from a pose layer: edit model + pose studio LoRA.
     const family = makeSelect([

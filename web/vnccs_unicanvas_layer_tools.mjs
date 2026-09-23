@@ -28,9 +28,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
   { id: "save-image", label: "Save layer as image" },
-  { id: "remove-bg-quick", label: "Remove bg" },
-  { id: "remove-bg-qi21", label: "Remove bg – QI2.1" },
-  { id: "remove-bg-birefnet", label: "Remove bg – BiRefNet" },
+  { id: "remove-bg", label: "Remove background" },
   { id: "color-match", label: "Color match to below" },
   { id: "rasterize", label: "Rasterize", poseOnly: true },
   { id: "edit-pose", label: "Edit pose", poseOnly: true },
@@ -216,8 +214,22 @@ async function saveLayerAsImage(uc, layer) {
   }
 }
 
-async function removeLayerBackground(uc, layer, method) {
-  const label = method === "qi21" ? "Remove bg – QI2.1" : "Remove bg – BiRefNet";
+// Backend selection mirrors the UniCanvas settings popover: edit model /
+// birefnet / rembg / sam 3 (legacy "qi21" maps to the edit-model backend).
+export function resolveRemoveBgSelection(settings) {
+  const source = settings || {};
+  const raw = String(source.remove_bg_model || "birefnet");
+  const method = raw === "qi21" ? "edit" : raw;
+  const editModel = source.remove_bg_edit_model === "minimax_h3" ? "minimax_h3" : "qwen_image21";
+  return { method, editModel };
+}
+
+async function removeLayerBackground(uc, layer) {
+  const { method, editModel } = resolveRemoveBgSelection(uc.settings);
+  const editModelLabel = editModel === "minimax_h3" ? "MiniMax H3" : "Qwen Image 2.1";
+  const label = method === "edit"
+    ? `Remove bg – Edit model (${editModelLabel})`
+    : `Remove bg – ${{ birefnet: "BiRefNet", rembg: "rembg", sam3: "SAM 3" }[method] || "Edit model"}`;
   const crop = uc.getLayerAlphaBounds(layer);
   if (!crop) {
     uc.setStatus("[VNCCS UniCanvas] Remove bg: layer is empty.", true);
@@ -234,7 +246,7 @@ async function removeLayerBackground(uc, layer, method) {
     const res = await fetch(REMOVE_BG_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ method: method === "qi21" ? "qi21" : "birefnet", image: source.toDataURL("image/png") }),
+      body: JSON.stringify({ method, edit_model: editModel, image: source.toDataURL("image/png") }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
@@ -523,9 +535,7 @@ function openLayerContextMenu(uc, layer, e) {
 function runLayerMenuAction(uc, layer, item) {
   if (item.id === "copy-clipboard") return copyLayerToClipboard(uc, layer);
   if (item.id === "save-image") return saveLayerAsImage(uc, layer);
-  if (item.id === "remove-bg-qi21") return removeLayerBackground(uc, layer, "qi21");
-  if (item.id === "remove-bg-birefnet") return removeLayerBackground(uc, layer, "birefnet");
-  if (item.id === "remove-bg-quick") return removeLayerBackground(uc, layer, uc.settings?.remove_bg_model || "qi21");
+  if (item.id === "remove-bg") return removeLayerBackground(uc, layer);
   if (item.id === "generate-character") {
     if (typeof uc.generateCharacterFromPoseLayer === "function") return uc.generateCharacterFromPoseLayer(layer);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE, true);

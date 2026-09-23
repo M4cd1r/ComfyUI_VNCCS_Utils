@@ -6,10 +6,12 @@ import {
     buildPoseLayerData,
     MANNEQUIN_TOOL_ICON,
     normalizePoseLayerData,
+    normalizePoseLayerMorphs,
     POSE_LAYER_ADD_ICON,
     POSE_LAYER_BUS_EVENT,
     POSE_LAYER_STATUS,
     POSE_LAYER_TYPE,
+    saveUniCanvasPoseEdit,
 } from "../web/vnccs_unicanvas_pose_layers.mjs";
 
 
@@ -268,4 +270,118 @@ test("pose edits round-trip without drift and ship the library/options tools", a
     assert.ok(poseSource.includes("openUniCanvasPoseLibrary"), "the editor must offer the Pose Library");
     assert.ok(poseSource.includes("openUniCanvasPoseOptions"), "the editor must offer mannequin options");
     assert.ok(poseSource.includes("background:transparent"), "the editor overlay must stay transparent so the canvas shows through");
+});
+
+
+test("Save pose persists the session morphs into layer.poseData.character.morphs", async () => {
+    const layer = {
+        id: "pose-1",
+        type: POSE_LAYER_TYPE,
+        poseData: buildPoseLayerData({
+            pose: { bonePositions: { spine: [1, 2, 3] } },
+            character: { id: "vnccs-1", name: "Saved character", source: "vnccs", morphs: { age: 30, gender: 0.2 } },
+            size: { width: 64, height: 64 },
+        }),
+    };
+    const viewer = {
+        isInitialized: () => true,
+        getPose: () => ({ bonePositions: { spine: [1, 2, 3] } }),
+        setPose: () => {},
+        capture: () => "stub-png",
+        dispose: () => {},
+        requestRender: () => {},
+        setDirectionalSkydomeVisible: () => {},
+        shapedBoneRestPositions: { spine: { x: 0, y: 1, z: 0 } },
+    };
+    const session = {
+        layerId: layer.id,
+        poseData: buildPoseLayerData({ size: { width: 64, height: 64 } }),
+        beforePixels: null,
+        beforePoseData: null,
+        // Session morphs: the stored ones merged with Mannequin options edits.
+        morphs: normalizePoseLayerMorphs(
+            { age: 44, breast_size: 0.8, show_genitals: true, spine_length: 0.7 },
+            { age: 30, gender: 0.2 },
+        ),
+        viewer,
+        overlay: null,
+        resizeObserver: null,
+        loadToken: 0,
+        closed: false,
+    };
+    const widget = {
+        layers: [layer],
+        _poseLayerState: { widget: null, subs: new Map(), session },
+        recordHistoryBefore: () => {},
+        markLayerPixelsChanged: () => {},
+        refreshLayerRow: () => {},
+        renderLayerList: () => {},
+        requestRender: () => {},
+        syncLightStateToWidget: () => {},
+        scheduleFullSync: () => {},
+        setStatus: () => {},
+        setTool: () => {},
+    };
+    widget._poseLayerState.widget = widget;
+
+    assert.equal(await saveUniCanvasPoseEdit(widget), true);
+    const saved = layer.poseData;
+    // The character identity survives while morphs come from the session.
+    assert.equal(saved.character.id, "vnccs-1");
+    assert.equal(saved.character.name, "Saved character");
+    assert.equal(saved.character.source, "vnccs");
+    assert.deepEqual(saved.character.morphs, {
+        age: 44,
+        gender: 0.2,
+        breast_size: 0.8,
+        show_genitals: true,
+        spine_length: 0.7,
+    });
+    // The saved pose stays relativized so the next edit session cannot drift.
+    assert.equal(saved.pose.bonePositionsRel, true);
+});
+
+
+test("the mannequin options modal ports the full Pose Studio mesh params", () => {
+    const optionsStart = poseLayerSource.indexOf("function openUniCanvasPoseOptions");
+    assert.ok(optionsStart >= 0, "openUniCanvasPoseOptions not found");
+    // Gender toggle (meshParams.gender: 1.0 = male, 0.0 = female).
+    assert.match(poseLayerSource, /maleBtn\.addEventListener\("click", \(\) => setGender\(1\)\)/);
+    assert.match(poseLayerSource, /femaleBtn\.addEventListener\("click", \(\) => setGender\(0\)\)/);
+    assert.match(poseLayerSource, /"Male"/);
+    assert.match(poseLayerSource, /"Female"/);
+    // Gender-conditional sections flip live with the gender value.
+    assert.match(poseLayerSource, /femaleSection\.style\.display = female \? "" : "none"/);
+    assert.match(poseLayerSource, /maleSection\.style\.display = female \? "none" : ""/);
+    for (const key of [
+        "breast_size",
+        "firmness",
+        "show_genitals",
+        "penis_len",
+        "penis_circ",
+        "penis_test",
+        "head_size",
+        "spine_length",
+    ]) {
+        assert.ok(poseLayerSource.includes('"' + key + '"'), "missing mannequin option key: " + key);
+    }
+    // Sliders keep the repo realtime rule: rAF-coalesced live updates.
+    const options = poseLayerSource.slice(optionsStart);
+    assert.ok(options.includes("requestAnimationFrame"), "options must apply morphs through requestAnimationFrame");
+    assert.match(options, /session\.applyExternalCharacterCreatorValues\?\.\(session\.morphs\)/);
+});
+
+
+test("proportion morph keys scale the skeleton before the pose is applied", () => {
+    const morphsStart = poseLayerSource.indexOf("async function applyUniCanvasPoseEditMorphs");
+    assert.ok(morphsStart >= 0, "applyUniCanvasPoseEditMorphs not found");
+    const morphs = poseLayerSource.slice(morphsStart, morphsStart + 1600);
+    assert.match(poseLayerSource, /key\.endsWith\("_length"\)/);
+    assert.match(poseLayerSource, /viewer\.updateBoneLengthScale\(group, value\)/);
+    const proportionsIndex = morphs.indexOf("applyUniCanvasPoseProportionParams(viewer, morphs)");
+    const setPoseIndex = morphs.indexOf("viewer.setPose(currentPose || fallbackPose, true)");
+    assert.ok(proportionsIndex >= 0, "proportion params must be applied on morph updates");
+    assert.ok(setPoseIndex > proportionsIndex, "proportions must apply BEFORE setPose");
+    // The stored relativized pose must be absolutized before reaching setPose.
+    assert.match(poseLayerSource, /absolutizeUniCanvasPoseBones\(viewer, session\.poseData\.pose/);
 });

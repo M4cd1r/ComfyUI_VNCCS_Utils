@@ -32,3 +32,28 @@ test("settings gear drives remove bg and character generation", () => {
     assert.ok(source.includes("char_gen_lora_name"), "the character recipe includes a pose studio LoRA");
     assert.ok(source.includes("remove_bg_model"), "the settings choose the remove-bg model");
 });
+
+test("the settings gear sits next to the snap-to-grid icon", () => {
+    assert.match(source, /this\.gearBtn = this\._button\("⚙", "vnccs-uc-icon", \(\) => this\.openUniCanvasSettings\(\), "Settings"\);/,
+        "a gear button must be created for the corner bar");
+    assert.match(source, /this\.settingsBar\.append\(this\.undoBtn, this\.redoBtn, this\.fitBtn, settingsSpacer, this\.snapBtn, this\.gearBtn\);/,
+        "the gear must sit in the corner bar right after Snap to grid");
+    assert.ok(!/\["\\u2699", "Settings"/.test(source), "the old Layers-section gear entry must be gone");
+});
+
+test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet default", () => {
+    assert.ok(source.includes('remove_bg_model: "birefnet"'), "BiRefNet must be the default backend");
+    for (const marker of ['["edit", "Edit model"]', '["birefnet", "BiRefNet"]', '["rembg", "rembg"]', '["sam3", "SAM 3"]']) {
+        assert.ok(source.includes(marker), "missing remove bg backend option: " + marker);
+    }
+    assert.ok(source.includes('["qwen_image21", "Qwen Image 2.1"]'), "the edit-model backend needs the QI2.1 choice");
+    assert.ok(source.includes('["minimax_h3", "MiniMax H3"]'), "the edit-model backend needs the MiniMax H3 choice");
+});
+
+test("edit model reference images upload next to Steps with Picture markers", () => {
+    assert.ok(source.includes('data-action="edit-refs"'), "the cards icon button must exist");
+    assert.ok(source.includes("data-edit-refs-badge"), "the icon must carry a count badge");
+    assert.ok(source.includes('"Picture " + (index + 2)'), "uploaded images must be marked Picture 2..");
+    assert.ok(source.includes("edit_reference_images"), "the uploads must persist in the widget settings");
+    assert.match(source, /openEditReferenceImages\(\)/, "the popover entry point must exist");
+});

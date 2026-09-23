@@ -55,7 +55,8 @@ def test_qi21_contract_stub_receives_rgb_tensor(monkeypatch):
     assert out.mode == "RGBA"
     assert out.size == (4, 3)
     assert abs(out.getpixel((0, 0))[3] - 128) <= 1
-    assert result["method"] == "qi21"
+    assert result["method"] == "edit"
+    assert result["edit_model"] == "qwen_image21"
 
 
 def test_qi21_fails_fast_without_qwen_image21_module(monkeypatch):
@@ -124,6 +125,68 @@ def test_birefnet_applies_mask_as_alpha(monkeypatch):
     assert out.getpixel((2, 0))[3] == 0
     assert out.getpixel((3, 2))[3] == 0
     assert result["method"] == "birefnet"
+
+
+def test_edit_model_minimax_h3_routes_to_module(monkeypatch):
+    fake = _FakeQi21Module()
+    monkeypatch.setitem(unicanvas.UNICANVAS_MODEL_MODULES, "minimax_h3", fake)
+
+    image = Image.new("RGB", (4, 3), (200, 100, 50))
+    result = _run_unicanvas_remove_bg(
+        {"method": "edit", "edit_model": "minimax_h3", "image": png_data_url(image)}
+    )
+
+    assert isinstance(fake.received, torch.Tensor)
+    assert result["method"] == "edit"
+    assert result["edit_model"] == "minimax_h3"
+
+
+def test_edit_model_unknown_model_is_rejected():
+    with pytest.raises(ValueError, match=r"Unknown remove bg edit model"):
+        _run_unicanvas_remove_bg(
+            {"method": "edit", "edit_model": "sdxl", "image": png_data_url(Image.new("RGB", (2, 2)))}
+        )
+
+
+def test_edit_model_without_remove_background_fails_fast(monkeypatch):
+    monkeypatch.setitem(unicanvas.UNICANVAS_MODEL_MODULES, "minimax_h3", _ModuleWithoutSubjectExtraction())
+
+    with pytest.raises(RuntimeError, match=r"RGBA-VAE edit model module"):
+        _run_unicanvas_remove_bg(
+            {"method": "edit", "edit_model": "minimax_h3", "image": png_data_url(Image.new("RGB", (2, 2)))}
+        )
+
+
+def test_rembg_fails_fast_without_the_package(monkeypatch):
+    monkeypatch.setitem(sys.modules, "rembg", None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _run_unicanvas_remove_bg({"method": "rembg", "image": png_data_url(Image.new("RGB", (2, 2)))})
+
+    assert str(excinfo.value) == unicanvas.UC_REMBG_REMOVE_BG_UNAVAILABLE
+
+
+def test_sam3_reuses_the_segment_route(monkeypatch):
+    calls = []
+
+    def fake_segment(payload):
+        calls.append(payload)
+        return {
+            "mask": png_data_url(Image.new("RGBA", (4, 3), (255, 255, 255, 128))),
+        }
+
+    monkeypatch.setattr(unicanvas, "_run_unicanvas_segment", fake_segment)
+
+    image = Image.new("RGB", (4, 3), (10, 20, 30))
+    result = _run_unicanvas_remove_bg({"method": "sam3", "image": png_data_url(image)})
+
+    assert len(calls) == 1
+    points = calls[0]["points"]
+    assert points[0]["label"] == 1
+    assert [point["label"] for point in points[1:]] == [0, 0, 0, 0]
+    out = decode_png_data_url(result["alpha"])
+    assert out.mode == "RGBA"
+    assert result["method"] == "sam3"
 
 
 def test_unknown_remove_bg_method_is_rejected():

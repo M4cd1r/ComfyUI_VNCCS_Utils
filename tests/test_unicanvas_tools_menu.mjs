@@ -12,9 +12,7 @@ const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.
 const MENU_LABELS = [
   "Copy layer as image to clipboard",
   "Save layer as image",
-  "Remove bg",
-  "Remove bg \u2013 QI2.1",
-  "Remove bg \u2013 BiRefNet",
+  "Remove background",
   "Color match to below",
   "Rasterize",
   "Edit pose",
@@ -54,8 +52,15 @@ test("layer context menu defines all seven entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 9, "the shipped menu must define exactly nine entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 7, "the shipped menu must define exactly seven entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
+});
+
+test("remove background runs through the settings-chosen backend", () => {
+  assert.ok(layerTools.includes("resolveRemoveBgSelection"), "the backend must resolve from the widget settings");
+  assert.ok(layerTools.includes("edit_model"), "the edit-model backend must forward its model choice");
+  assert.ok(!layerTools.includes("remove-bg-qi21") && !layerTools.includes("remove-bg-birefnet"),
+    "the three legacy remove-bg entries must be merged into one");
 });
 
 test("pose entries guard the parallel-branch methods with a status fallback", () => {
