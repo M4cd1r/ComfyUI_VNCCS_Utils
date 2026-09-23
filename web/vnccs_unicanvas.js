@@ -240,6 +240,12 @@ const STYLES = `
 .vnccs-uc-modal-message { color:var(--uc-text); line-height:1.5; }
 .vnccs-uc-modal-actions { display:flex; justify-content:flex-end; gap:8px; }
 .vnccs-uc-modal-actions .vnccs-uc-btn { height:34px; padding:0 14px; font-size:14px; }
+.vnccs-uc-settings-popover {
+  position:absolute; z-index:30; min-width:400px; max-width:min(520px, calc(100% - 8px));
+  max-height:70vh; overflow-y:auto; padding:12px; border-radius:10px;
+  background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.18);
+  box-shadow:0 12px 32px rgba(0,0,0,.55); color:#e8e8f0; font-family:sans-serif; font-size:13px; display:grid; gap:8px;
+}
 `;
 
 if (!document.getElementById("vnccs-unicanvas-styles")) {
@@ -6868,15 +6874,30 @@ class UniCanvasWidget {
     this._vnccsRefsPopover = panel;
   }
 
+  // Anchor a popover below `anchorEl`, clamped inside `host` (spec 4.1-4.2).
+  anchorPopoverTo(panel, anchorEl, host) {
+    const hostRect = host.getBoundingClientRect();
+    const rect = anchorEl.getBoundingClientRect();
+    const width = panel.offsetWidth || 400;
+    const left = Math.min(
+      Math.max(4, rect.right - hostRect.left - width),
+      Math.max(4, hostRect.width - width - 4),
+    );
+    const top = Math.min(rect.bottom - hostRect.top + 6, Math.max(4, hostRect.height - panel.offsetHeight - 4));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  }
+
   openUniCanvasSettings() {
     if (this._vnccsSettingsPopover) {
       this._vnccsSettingsPopover.remove();
       this._vnccsSettingsPopover = null;
+      document.removeEventListener("pointerdown", this._vnccsSettingsOutside, true);
       return;
     }
     const s = this.settings;
     const panel = document.createElement("div");
-    panel.style.cssText = "position:absolute; z-index:30; min-width:280px; padding:10px; border-radius:10px; background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.12); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px;";
+    panel.className = "vnccs-uc-settings-popover";
     const title = document.createElement("div");
     title.style.fontWeight = "600";
     title.textContent = "UniCanvas settings";
@@ -7003,13 +7024,20 @@ class UniCanvasWidget {
     const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
       panel.remove();
       this._vnccsSettingsPopover = null;
+      document.removeEventListener("pointerdown", this._vnccsSettingsOutside, true);
     }, "Close settings");
     panel.appendChild(closeBtn);
     this.container.appendChild(panel);
-    panel.style.left = "24px";
-    panel.style.top = "48px";
+    this.anchorPopoverTo(panel, this.gearBtn, this.container);
     installCustomSelects(panel);
     this._vnccsSettingsPopover = panel;
+    this._vnccsSettingsOutside = (event) => {
+      if (panel.contains(event.target) || this.gearBtn.contains(event.target)) return;
+      panel.remove();
+      this._vnccsSettingsPopover = null;
+      document.removeEventListener("pointerdown", this._vnccsSettingsOutside, true);
+    };
+    document.addEventListener("pointerdown", this._vnccsSettingsOutside, true);
   }
 
   // Render the selected VNCCS character (character creator recipe: edit model +
