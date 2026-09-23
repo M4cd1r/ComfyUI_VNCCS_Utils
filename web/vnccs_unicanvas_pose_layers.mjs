@@ -540,16 +540,20 @@ export function resolveUniCanvasPoseLayerBridgeAnchor(widget, sub, layer) {
 
 /**
  * Bridge draw: the capture lands 1:1 (natural render size, never scaled). When
- * the anchor carries a recorded rect the frame is redrawn there verbatim;
- * otherwise its centre is shifted onto the anchor, and a layer with no
- * previous content keeps the centred natural rect. No branch squeezes the
- * capture into a previous footprint. Returns the rect it drew.
+ * the anchor carries a recorded rect of the same size the frame is redrawn
+ * there verbatim; otherwise its centre is shifted onto the anchor, and a layer
+ * with no previous content keeps the centred natural rect. No branch squeezes
+ * the capture into a previous footprint. Returns the rect it drew.
  */
 export function drawUniCanvasPoseBridgeRenderIntoLayer(widget, layer, image, renderMeta, anchor) {
   const natural = resolveUniCanvasPoseLayerNaturalRect(widget, image, renderMeta);
   let target = natural;
   if (anchor?.rect) {
-    target = { ...anchor.rect };
+    // Frame reuse only while the recorded frame has the size this render asks
+    // for; a changed render size falls back to the centred natural rect.
+    if (anchor.rect.width === natural.width && anchor.rect.height === natural.height) {
+      target = { ...anchor.rect };
+    }
   } else if (anchor) {
     target = {
       x: Math.round(natural.x + (anchor.x - (natural.x + natural.width / 2))),
