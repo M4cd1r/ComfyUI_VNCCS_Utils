@@ -12,11 +12,13 @@ const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.
 const MENU_LABELS = [
   "Copy layer as image to clipboard",
   "Save layer as image",
+  "Remove bg",
   "Remove bg \u2013 QI2.1",
   "Remove bg \u2013 BiRefNet",
   "Color match to below",
   "Rasterize",
   "Edit pose",
+  "Generate character",
 ];
 
 test("widget source installs both tool packs", () => {
@@ -52,7 +54,7 @@ test("layer context menu defines all seven entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 7, "the shipped menu must define exactly seven entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 9, "the shipped menu must define exactly nine entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
 });
 

@@ -28,11 +28,13 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
   { id: "save-image", label: "Save layer as image" },
+  { id: "remove-bg-quick", label: "Remove bg" },
   { id: "remove-bg-qi21", label: "Remove bg – QI2.1" },
   { id: "remove-bg-birefnet", label: "Remove bg – BiRefNet" },
   { id: "color-match", label: "Color match to below" },
   { id: "rasterize", label: "Rasterize", poseOnly: true },
   { id: "edit-pose", label: "Edit pose", poseOnly: true },
+  { id: "generate-character", label: "Generate character", characterOnly: true },
 ]);
 
 export const PSD_SKIP_REASONS = Object.freeze({
@@ -498,6 +500,7 @@ function openLayerContextMenu(uc, layer, e) {
   menu.style.cssText = `position:absolute; z-index:40; min-width:230px; padding:6px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.12); display:grid; gap:2px; font:11px sans-serif;`;
   for (const item of LAYER_MENU_ITEMS) {
     if (item.poseOnly && layer.type !== "pose") continue;
+    if (item.characterOnly && (layer.type !== "pose" || layer.poseData?.character?.source !== "vnccs")) continue;
     const entry = document.createElement("button");
     entry.type = "button";
     entry.textContent = item.label;
@@ -522,6 +525,12 @@ function runLayerMenuAction(uc, layer, item) {
   if (item.id === "save-image") return saveLayerAsImage(uc, layer);
   if (item.id === "remove-bg-qi21") return removeLayerBackground(uc, layer, "qi21");
   if (item.id === "remove-bg-birefnet") return removeLayerBackground(uc, layer, "birefnet");
+  if (item.id === "remove-bg-quick") return removeLayerBackground(uc, layer, uc.settings?.remove_bg_model || "qi21");
+  if (item.id === "generate-character") {
+    if (typeof uc.generateCharacterFromPoseLayer === "function") return uc.generateCharacterFromPoseLayer(layer);
+    uc.setStatus(POSE_TOOLS_UNAVAILABLE, true);
+    return undefined;
+  }
   if (item.id === "color-match") return openColorMatchPopover(uc, layer);
   if (item.id === "rasterize") {
     // Method provided by a parallel branch (contract #2).

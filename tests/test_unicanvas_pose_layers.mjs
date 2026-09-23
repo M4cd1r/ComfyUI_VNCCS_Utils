@@ -258,3 +258,14 @@ test("pose layer creation opens the mannequin editor and failures are visible", 
     assert.match(poseSource, /void editUniCanvasPoseLayer\(widget, layer\)\.catch/, "Add pose layer must open the editor right away");
     assert.match(poseSource, /viewWidth > 2 \? viewWidth : 480/, "the editor must fall back to a sane size on a zero-size overlay");
 });
+
+test("pose edits round-trip without drift and ship the library/options tools", async () => {
+    const poseSource = await readFile(new URL("../web/vnccs_unicanvas_pose_layers.mjs", import.meta.url), "utf8");
+    assert.ok(poseSource.includes("relativizeUniCanvasPoseBones"), "bone positions must be stored relative to the shaped rest");
+    assert.ok(poseSource.includes("bonePositionsRel"), "the relative layout must be tagged");
+    assert.match(poseSource, /viewer\.setPose\(absolutizeUniCanvasPoseBones\(viewer, poseData\.pose\) \|\| \{\}, true\)/, "edit sessions must keep the default framing");
+    assert.ok(poseSource.includes("restoreUniCanvasViewerCamera"), "captures must not move the view camera");
+    assert.ok(poseSource.includes("openUniCanvasPoseLibrary"), "the editor must offer the Pose Library");
+    assert.ok(poseSource.includes("openUniCanvasPoseOptions"), "the editor must offer mannequin options");
+    assert.ok(poseSource.includes("background:transparent"), "the editor overlay must stay transparent so the canvas shows through");
+});

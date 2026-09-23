@@ -647,6 +647,16 @@ function makeDefaultUniCanvasSettings() {
     model_selection_mode: "presets",
     generation_mode: "illustrious",
     minimax_h3_steps: 20,
+    remove_bg_model: "qi21",
+    char_gen_mode: "qwen_image_edit",
+    char_gen_ckpt_name: "",
+    char_gen_lora_name: "",
+    char_gen_lora_strength: 1,
+    char_gen_steps: 30,
+    char_gen_cfg: 4,
+    char_gen_sampler: "er_sde",
+    char_gen_scheduler: "simple",
+    char_gen_prompt: "high quality character art of {character}, full body, white background",
     minimax_h3_frame_count: 5,
     draw_id: "",
     selected_preset_id: "sdxl",
@@ -943,6 +953,7 @@ class UniCanvasWidget {
       [UI_ICONS.plus, "Add raster", () => this.addLayer("raster")],
       [UI_ICONS.mask, "Add mask", () => this.addLayer("mask")],
       [POSE_LAYER_ADD_ICON, "Add pose layer", () => this.addPoseLayer()],
+      ["\u2699", "Settings", () => this.openUniCanvasSettings()],
       [UI_ICONS.duplicate, "Duplicate selected", () => this.duplicateActiveLayer()],
       [UI_ICONS.up, "Move selected up", () => this.moveActiveLayer(-1)],
       [UI_ICONS.down, "Move selected down", () => this.moveActiveLayer(1)],
@@ -6728,6 +6739,194 @@ class UniCanvasWidget {
       this.setStatus(`[VNCCS UniCanvas] Pose editor failed: ${err?.message || err}`, true));
   }
 
+  // Gear (\u2699) settings: background-removal model choice and the character
+  // generation recipe (edit model + pose studio LoRA, mirroring the VNCCS
+  // Character Creator workflow).
+  openUniCanvasSettings() {
+    if (this._vnccsSettingsPopover) {
+      this._vnccsSettingsPopover.remove();
+      this._vnccsSettingsPopover = null;
+      return;
+    }
+    const s = this.settings;
+    const panel = document.createElement("div");
+    panel.style.cssText = "position:absolute; z-index:30; min-width:280px; padding:10px; border-radius:10px; background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.12); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px;";
+    const title = document.createElement("div");
+    title.style.fontWeight = "600";
+    title.textContent = "UniCanvas settings";
+    panel.appendChild(title);
+    const commit = () => this.flushSettingsToWidget?.();
+    const bind = (label, control) => {
+      const wrap = document.createElement("label");
+      wrap.style.cssText = "display:grid; gap:4px;";
+      wrap.textContent = label;
+      wrap.appendChild(control);
+      panel.appendChild(wrap);
+    };
+    const makeSelect = (options, value) => {
+      const el = document.createElement("select");
+      el.className = "vnccs-uc-select";
+      for (const pair of options) {
+        const option = document.createElement("option");
+        option.value = pair[0];
+        option.textContent = pair[1];
+        if (pair[0] === value) option.selected = true;
+        el.appendChild(option);
+      }
+      return el;
+    };
+    const optionSource = (setting, fallback) => {
+      const select = this.container.querySelector('select[data-setting=\'' + setting + '\']');
+      const list = [...(select?.options || [])].map((o) => [o.value, o.textContent]);
+      return list.length ? list : fallback.map((name) => [name, name]);
+    };
+    const makeNumber = (value, min, max, step) => {
+      const el = document.createElement("input");
+      el.className = "vnccs-uc-input";
+      el.type = "number";
+      el.min = String(min);
+      el.max = String(max);
+      el.step = String(step);
+      el.value = String(value);
+      return el;
+    };
+
+    // Background removal model (spec 10.3), default QI2.1.
+    const removeBg = makeSelect([["qi21", "QI2.1"], ["birefnet", "BiRefNet"]], s.remove_bg_model || "qi21");
+    removeBg.addEventListener("input", () => { s.remove_bg_model = removeBg.value; commit(); });
+    bind("Remove bg model", removeBg);
+
+    // Character generation from a pose layer: edit model + pose studio LoRA.
+    const family = makeSelect([
+      ["qwen_image_edit", "Qwen Image Edit 2511"],
+      ["qwen_image21", "QwenImage21"],
+      ["minimax_h3", "MiniMaxH3"],
+    ], s.char_gen_mode || "qwen_image_edit");
+    family.addEventListener("input", () => { s.char_gen_mode = family.value; commit(); });
+    bind("Character generation family", family);
+
+    const ckptOptions = [["", "(use Custom panel selection)"]].concat((this.assets?.checkpoints || []).map((name) => [name, name]));
+    const ckpt = makeSelect(ckptOptions, s.char_gen_ckpt_name || "");
+    ckpt.addEventListener("input", () => { s.char_gen_ckpt_name = ckpt.value; commit(); });
+    bind("Character model checkpoint", ckpt);
+
+    const lora = makeSelect([["", "(none)"]], s.char_gen_lora_name || "");
+    lora.addEventListener("input", () => { s.char_gen_lora_name = lora.value; commit(); });
+    bind("Pose studio LoRA", lora);
+    fetch("/vnccs/unicanvas/loras")
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("HTTP " + res.status))))
+      .then((data) => {
+        for (const name of data.loras || []) {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          if (name === (s.char_gen_lora_name || "")) option.selected = true;
+          lora.appendChild(option);
+        }
+      })
+      .catch(() => {});
+
+    const loraStrength = makeNumber(s.char_gen_lora_strength ?? 1, 0, 2, 0.05);
+    loraStrength.addEventListener("input", () => { s.char_gen_lora_strength = Number(loraStrength.value); commit(); });
+    bind("LoRA strength", loraStrength);
+
+    const steps = makeNumber(s.char_gen_steps ?? 30, 1, 60, 1);
+    steps.addEventListener("input", () => { s.char_gen_steps = Number(steps.value); commit(); });
+    bind("Steps", steps);
+    const cfg = makeNumber(s.char_gen_cfg ?? 4, 0, 20, 0.5);
+    cfg.addEventListener("input", () => { s.char_gen_cfg = Number(cfg.value); commit(); });
+    bind("CFG", cfg);
+    const sampler = makeSelect(optionSource("sampler_name", ["euler", "er_sde", "res_multistep"]), s.char_gen_sampler || "er_sde");
+    sampler.addEventListener("input", () => { s.char_gen_sampler = sampler.value; commit(); });
+    bind("Sampler", sampler);
+    const scheduler = makeSelect(optionSource("scheduler", ["normal", "simple"]), s.char_gen_scheduler || "simple");
+    scheduler.addEventListener("input", () => { s.char_gen_scheduler = scheduler.value; commit(); });
+    bind("Scheduler", scheduler);
+    const prompt = document.createElement("textarea");
+    prompt.className = "vnccs-uc-textarea";
+    prompt.rows = 2;
+    prompt.value = String(s.char_gen_prompt || "");
+    prompt.addEventListener("input", () => { s.char_gen_prompt = prompt.value; commit(); });
+    bind("Character prompt ({character} = its name)", prompt);
+
+    const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
+      panel.remove();
+      this._vnccsSettingsPopover = null;
+    }, "Close settings");
+    panel.appendChild(closeBtn);
+    this.container.appendChild(panel);
+    panel.style.left = "24px";
+    panel.style.top = "48px";
+    installCustomSelects(panel);
+    this._vnccsSettingsPopover = panel;
+  }
+
+  // Render the selected VNCCS character (character creator recipe: edit model +
+  // pose studio LoRA) from the pose layer render into the layer pixels.
+  async generateCharacterFromPoseLayer(layer) {
+    if (!layer || layer.type !== POSE_LAYER_TYPE) {
+      this.setStatus("[VNCCS UniCanvas] Generate character requires a pose layer", true);
+      return;
+    }
+    const character = layer.poseData?.character;
+    if (!character || character.source !== "vnccs") {
+      this.setStatus("[VNCCS UniCanvas] Select a VNCCS character first", true);
+      return;
+    }
+    const s = this.settings;
+    const prompt = String(s.char_gen_prompt || "").split("{character}").join(character.name || "character");
+    const source = layer.canvas?.toDataURL?.("image/png");
+    if (!source) {
+      this.setStatus("[VNCCS UniCanvas] The pose layer has no pixels to render from", true);
+      return;
+    }
+    const genSettings = {
+      generation_mode: String(s.char_gen_mode || "qwen_image_edit"),
+      model_loader: "checkpoint",
+      ckpt_name: String(s.char_gen_ckpt_name || s.ckpt_name || ""),
+      steps: Math.max(1, Math.round(Number(s.char_gen_steps) || 30)),
+      cfg: Number(s.char_gen_cfg) || 4,
+      sampler_name: String(s.char_gen_sampler || "er_sde"),
+      scheduler: String(s.char_gen_scheduler || "simple"),
+      seed: Number(s.seed) || 0,
+      positive: prompt,
+      negative: "",
+      denoise: Number(s.denoise) || 0.65,
+      inference_scale: 1,
+      lora_stack: s.char_gen_lora_name
+        ? [{ name: String(s.char_gen_lora_name), strength: Number(s.char_gen_lora_strength) || 1, enabled: true }]
+        : [],
+    };
+    this.setStatus("[VNCCS UniCanvas] Generating character...");
+    if (this.drawBtn) this.drawBtn.disabled = true;
+    try {
+      const res = await fetch("/vnccs/unicanvas/draw", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "img2img", image: source, settings: genSettings }),
+      });
+      const result = await res.json();
+      const first = (result && (result.images || result.data || []))[0];
+      const dataUrl = typeof first === "string" ? first : first && (first.url || first.dataURL);
+      const image = dataUrl ? await this.loadImage(dataUrl) : null;
+      if (!image) throw new Error((result && result.error) || "no image in response");
+      this.recordHistoryBefore();
+      const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
+      ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+      ctx.drawImage(image, 0, 0, layer.canvas.width, layer.canvas.height);
+      this.invalidateLayerCaches(layer);
+      this.markLayerPixelsChanged(layer, null, false);
+      this.renderLayerList();
+      this.requestRender();
+      this.syncLightStateToWidget();
+      this.scheduleFullSync();
+      this.setStatus("[VNCCS UniCanvas] Character rendered into the pose layer");
+    } catch (err) {
+      this.setStatus(`[VNCCS UniCanvas] Generate character failed: ${err?.message || err}`, true);
+    } finally {
+      if (this.drawBtn) this.drawBtn.disabled = false;
+    }
+  }
   dispose() {
     if (this._disposed) return;
     try {

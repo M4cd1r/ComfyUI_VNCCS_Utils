@@ -36,6 +36,7 @@
  * runtime (web/vnccs_pose_studio_core.js viewer and morph runtime).
  */
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { createSliderNumber } from "./vnccs_config_ui.mjs";
 
 export const POSE_LAYER_TYPE = "pose";
 export const POSE_LAYER_BUS_EVENT = "vnccs:unicanvas:pose-layer";
@@ -68,7 +69,7 @@ const POSE_LAYER_STYLES = `
 .vnccs-uc-pose-capture { height:22px; padding:0 8px; font-size:10px; }
 .vnccs-uc-pose-panel { display:flex; flex-direction:column; gap:6px; padding:6px; border-bottom:1px solid var(--uc-border); }
 .vnccs-uc-pose-panel-title { color:var(--uc-accent); font-weight:700; }
-.vnccs-uc-pose-edit-overlay { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; background:rgba(7,7,12,.55); }
+.vnccs-uc-pose-edit-overlay { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; background:transparent; }
 .vnccs-uc-pose-edit-canvas { flex:1 1 auto; width:100%; min-height:0; display:block; touch-action:none; }
 .vnccs-uc-pose-edit-bar { display:flex; align-items:center; gap:8px; padding:8px; background:rgba(10,10,15,.92); border-top:1px solid var(--uc-border); }
 .vnccs-uc-pose-edit-title { color:var(--uc-accent); font-weight:800; margin-right:auto; }
@@ -767,10 +768,128 @@ function buildUniCanvasPoseEditOverlay(state, session) {
     () => cancelUniCanvasPoseEdit(widget),
     "Restore the previous render untouched",
   );
-  bar.append(title, saveBtn, cancelBtn);
+  const libBtn = widget._button(
+    "Pose Library",
+    "vnccs-uc-btn",
+    () => openUniCanvasPoseLibrary(state, session),
+    "Load a pose from the Pose Library",
+  );
+  const optsBtn = widget._button(
+    "Options",
+    "vnccs-uc-btn",
+    () => openUniCanvasPoseOptions(state, session),
+    "Mannequin options (morphs)",
+  );
+  bar.append(title, libBtn, optsBtn, saveBtn, cancelBtn);
   overlay.append(canvas, bar);
   widget.stageWrap.appendChild(overlay);
   return { overlay, canvas, saveBtn, cancelBtn };
+}
+
+// Morph keys shared with the VNCCS character creator (age/gender/weight/muscle/height).
+const POSE_EDIT_MORPH_KEYS = Object.freeze([
+  { key: "age", label: "Age", min: 1, max: 90, step: 1, value: 25 },
+  { key: "gender", label: "Gender", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { key: "height", label: "Height", min: 0, max: 1, step: 0.01, value: 0.5 },
+]);
+
+function openUniCanvasPoseLibrary(state, session) {
+  const widget = state.widget;
+  const overlay = document.createElement("div");
+  overlay.className = "vnccs-uc-modal-overlay";
+  const modal = document.createElement("div");
+  modal.className = "vnccs-uc-modal";
+  modal.style.maxHeight = "70vh";
+  modal.style.overflowY = "auto";
+  const title = document.createElement("div");
+  title.className = "vnccs-uc-modal-title";
+  title.textContent = "Pose Library";
+  const list = document.createElement("div");
+  list.style.display = "grid";
+  list.style.gap = "4px";
+  const message = document.createElement("div");
+  message.className = "vnccs-uc-modal-message";
+  message.textContent = "Loading poses...";
+  list.appendChild(message);
+  const closeBtn = widget._button("Close", "vnccs-uc-btn", () => overlay.remove(), "Close the pose library");
+  modal.append(title, list, closeBtn);
+  overlay.appendChild(modal);
+  widget.container.appendChild(overlay);
+  fetch("/vnccs/pose_library/list?full=true")
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error("HTTP " + res.status))))
+    .then((data) => {
+      list.textContent = "";
+      const entries = Array.isArray(data) ? data : (data?.poses || data?.items || data?.entries || []);
+      if (!entries.length) {
+        message.textContent = "No poses in the library yet.";
+        list.appendChild(message);
+        return;
+      }
+      for (const entry of entries) {
+        const pose = entry.pose || entry.poseData?.pose || entry.data?.pose || null;
+        const name = String(entry.name || entry.title || entry.id || "pose");
+        const btn = widget._button(name, "vnccs-uc-btn", () => {
+          if (!pose || !session.viewer?.isInitialized?.()) {
+            widget.setStatus("[VNCCS UniCanvas] This pose cannot be applied here", true);
+            return;
+          }
+          session.viewer.setPose(absolutizeUniCanvasPoseBones(session.viewer, pose) || {}, true);
+          widget.setStatus(`[VNCCS UniCanvas] Pose loaded: ${name}`);
+        }, "Apply this pose to the mannequin");
+        list.appendChild(btn);
+      }
+    })
+    .catch((err) => {
+      list.textContent = "";
+      message.textContent = "Pose library unavailable: " + (err?.message || err);
+      list.appendChild(message);
+    });
+}
+
+function openUniCanvasPoseOptions(state, session) {
+  const widget = state.widget;
+  const overlay = document.createElement("div");
+  overlay.className = "vnccs-uc-modal-overlay";
+  const modal = document.createElement("div");
+  modal.className = "vnccs-uc-modal";
+  const title = document.createElement("div");
+  title.className = "vnccs-uc-modal-title";
+  title.textContent = "Mannequin options";
+  const hint = document.createElement("div");
+  hint.className = "vnccs-uc-modal-message";
+  hint.textContent = "Morphs update live; double-click a slider to reset it.";
+  modal.append(title, hint);
+  let raf = 0;
+  for (const spec of POSE_EDIT_MORPH_KEYS) {
+    const row = document.createElement("label");
+    row.className = "vnccs-uc-modal-message";
+    row.textContent = spec.label + " ";
+    const current = Number(session.morphs?.[spec.key] ?? spec.value);
+    const pair = createSliderNumber({
+      min: spec.min,
+      max: spec.max,
+      step: spec.step,
+      value: Number.isFinite(current) ? current : spec.value,
+      resetValue: spec.value,
+      onInput: (value) => {
+        session.morphs = normalizePoseLayerMorphs({ [spec.key]: value }, session.morphs);
+        if (raf) return;
+        // Coalesce morph application to one frame (repo realtime rule).
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          void session.applyExternalCharacterCreatorValues?.(session.morphs);
+        });
+      },
+    });
+    row.appendChild(pair.root);
+    modal.appendChild(row);
+  }
+  const closeBtn = widget._button("Close", "vnccs-uc-btn", () => overlay.remove(), "Close mannequin options");
+  modal.appendChild(closeBtn);
+  overlay.appendChild(modal);
+  widget.container.appendChild(overlay);
 }
 
 export function buildUniCanvasPoseViewerModelData(result, staticData) {
@@ -824,11 +943,29 @@ async function applyUniCanvasPoseEditMorphs(session, morphs) {
  * hide the scene background and skydome so the PNG keeps real alpha, capture
  * with the stored framing, then restore the editor view.
  */
+function snapshotUniCanvasViewerCamera(viewer) {
+  const cam = viewer?.camera;
+  if (!cam?.position) return null;
+  return {
+    position: [cam.position.x, cam.position.y, cam.position.z],
+    target: viewer.orbit?.target ? [viewer.orbit.target.x, viewer.orbit.target.y, viewer.orbit.target.z] : null,
+  };
+}
+
+function restoreUniCanvasViewerCamera(viewer, state) {
+  if (!state || !viewer?.camera?.position) return;
+  viewer.camera.position.set(state.position[0], state.position[1], state.position[2]);
+  if (state.target && viewer.orbit?.target) viewer.orbit.target.set(state.target[0], state.target[1], state.target[2]);
+}
+
 export function captureUniCanvasPoseLayerPNG(viewer, width, height, camera) {
   const framing = normalizePoseLayerCamera(camera);
   const scene = viewer.scene;
   const previousBackground = scene ? scene.background : null;
   const skydomeWasVisible = viewer.directionalSkydomeVisible !== false;
+  // viewer.capture() syncs the VIEW camera to the capture camera; snapshot and
+  // restore it so edit->save cycles cannot accumulate camera drift.
+  const cameraState = snapshotUniCanvasViewerCamera(viewer);
   if (scene) scene.background = null;
   viewer.setDirectionalSkydomeVisible?.(false);
   try {
@@ -845,8 +982,47 @@ export function captureUniCanvasPoseLayerPNG(viewer, width, height, camera) {
   } finally {
     if (scene) scene.background = previousBackground;
     viewer.setDirectionalSkydomeVisible?.(skydomeWasVisible);
+    restoreUniCanvasViewerCamera(viewer, cameraState);
     viewer.requestRender?.();
   }
+}
+
+// Pose round-trip (user report: the mannequin receded in Z on every
+// edit -> save cycle). bonePositions are stored RELATIVE to the shaped rest so
+// the viewer's morph-driven bone-offset re-scaling cannot accumulate across
+// sessions; legacy poses (no tag) pass through as absolute positions.
+function shapedRestPositionOf(viewer, name) {
+  return viewer?.shapedBoneRestPositions?.[name] || viewer?.initialBoneStates?.[name]?.position || null;
+}
+
+function relativizeUniCanvasPoseBones(viewer, pose) {
+  const absolute = pose && pose.bonePositions;
+  if (!absolute || !viewer) return pose;
+  const relative = {};
+  for (const [name, position] of Object.entries(absolute)) {
+    const rest = shapedRestPositionOf(viewer, name);
+    if (rest && Array.isArray(position) && position.length >= 3) {
+      relative[name] = [position[0] - rest.x, position[1] - rest.y, position[2] - rest.z];
+    } else {
+      relative[name] = position;
+    }
+  }
+  return { ...pose, bonePositions: relative, bonePositionsRel: true };
+}
+
+function absolutizeUniCanvasPoseBones(viewer, pose) {
+  const relative = pose && pose.bonePositions;
+  if (!relative || !pose.bonePositionsRel || !viewer) return pose;
+  const absolute = {};
+  for (const [name, delta] of Object.entries(relative)) {
+    const rest = shapedRestPositionOf(viewer, name);
+    if (rest && Array.isArray(delta) && delta.length >= 3) {
+      absolute[name] = [delta[0] + rest.x, delta[1] + rest.y, delta[2] + rest.z];
+    } else {
+      absolute[name] = delta;
+    }
+  }
+  return { ...pose, bonePositions: absolute, bonePositionsRel: false };
 }
 
 function captureUniCanvasPoseEditPNG(session) {
@@ -886,7 +1062,7 @@ async function applyUniCanvasPoseEditCapture(widget, { closeSession }) {
     widget.setStatus("[VNCCS UniCanvas] Pose editor is still loading", true);
     return false;
   }
-  const pose = viewer.getPose();
+  const pose = relativizeUniCanvasPoseBones(viewer, viewer.getPose());
   const png = captureUniCanvasPoseEditPNG(session);
   // One history command: Save pose rebuilds the layer pixels and poseData
   // together, so undo restores both.
@@ -1026,7 +1202,9 @@ export async function editUniCanvasPoseLayer(widget, layer) {
     session.morphPack = await morphRuntime.loadMorphPack();
     if (session.closed) return null;
     await applyUniCanvasPoseEditMorphs(session, session.morphs);
-    viewer.setPose(poseData.pose || {}, false);
+    // preserveCamera keeps every edit session on the default framing so the
+    // saved pose round-trips without view drift.
+    viewer.setPose(absolutizeUniCanvasPoseBones(viewer, poseData.pose) || {}, true);
     widget.setStatus("[VNCCS UniCanvas] Edit pose - drag the mannequin, then Save pose or Cancel");
   } catch (err) {
     console.warn("[VNCCS UniCanvas] Pose editor failed to start", err);

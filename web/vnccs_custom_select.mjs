@@ -38,7 +38,7 @@ function installStyles(doc) {
     style.textContent = `
 .vnccs-custom-select-menu {
     position: fixed;
-    z-index: 1000000;
+    z-index: 2147483600;
     display: flex;
     flex-direction: column;
     gap: 2px;

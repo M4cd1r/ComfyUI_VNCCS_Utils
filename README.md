@@ -104,7 +104,7 @@ normal raster layer.
 *   **Add pose layer** (Layers section, next to *Add raster* / *Add mask*) creates the layer, opens the mannequin editor right away so posing works without any Pose Studio node (the live link stays optional), and subscribes on the `vnccs:unicanvas:pose-layer` window CustomEvent bus. A linked Pose Studio answers with PNG renders (with alpha) plus metadata, and the layer pixels follow the posing interactively: previews are coalesced through `requestAnimationFrame` at ~15–20 fps while you interact, with a full-quality capture committed on release as a single undo step. Stale renders are dropped — the newest one always wins.
 *   **Status chip** on the layer row shows `linked to Pose Studio` / `waiting…` / `disconnected`, with a manual **capture now** action for a full-quality grab at any time.
 *   **Character dropdown** (Pose Studio Characters panel) offers `Mannequin` plus saved VNCCS characters from `/vnccs/list_characters`; picking one applies its morphs through the existing `applyExternalCharacterCreatorValues()` path. Without the VNCCS character pack the list degrades to `Mannequin` and the status chip says so. The dropdown is the single source of truth for the layer character; the UniCanvas pose panel mirrors the selection read-only.
-*   **Mannequin tool** (tools column): with a pose layer active it enters in-place pose editing — the layer pixels are temporarily replaced by an interactive mannequin loaded from `layer.poseData` (pose, character morphs, camera), reusing the Pose Studio viewer and morph runtime embedded over the stage. **Save pose** re-renders the mannequin with the stored settings and the new pose and rebuilds the layer pixels and `poseData`; **Cancel** restores the previous render untouched.
+*   **Mannequin tool** (tools column): with a pose layer active it enters in-place pose editing — the layer pixels are temporarily replaced by an interactive mannequin loaded from `layer.poseData` (pose, character morphs, camera), reusing the Pose Studio viewer and morph runtime embedded over the stage. **Save pose** re-renders the mannequin with the stored settings and the new pose and rebuilds the layer pixels and `poseData`; **Cancel** restores the previous render untouched. The editor overlay is transparent, so the whole canvas (and the layers below) stays visible behind the mannequin; a **Pose Library** button loads predefined poses and **Options** offers live mannequin morphs (age, gender, weight, muscle, height). Save/pose round-trips are drift-free (bone positions are stored relative to the shaped rest).
 
 Everything needed to rebuild the render lives in `layer.poseData`
 (`{ schemaVersion, pose, character: { id, name, source, morphs }, camera,
@@ -123,6 +123,10 @@ render: { transparent: true, size } }`) and is persisted with the canvas state.
     brush tool settings and a radial HUD sector. Values below 1 render strokes
     with radial-gradient stamps for soft edges; the effect is immediate while
     painting.
+
+### Settings (gear icon)
+
+The gear icon in the Layers toolbar opens the UniCanvas settings: the background-removal model (default QI2.1) and the character-generation recipe - generation family, model checkpoint, pose studio LoRA + strength, steps, CFG, sampler, scheduler and the character prompt template (`{character}` is replaced with the selected character's name).
 
 ### Layer utilities
 
@@ -149,6 +153,8 @@ Right-click a layer row to open the layer context menu:
     commit on release. Backed by the `color-matcher` package with a pure
     Reinhard (LAB mean/std) fallback.
 *   **Rasterize** / **Edit pose**: pose layers only.
+*   **Remove bg**: runs the background-removal model chosen in the settings (gear icon, default QI2.1).
+*   **Generate character** (pose layers with a selected VNCCS character): renders the character into the layer with the VNCCS character-creator recipe - edit model plus the pose studio LoRA, steps/CFG/sampler and the `{character}` prompt template all come from the settings.
 
 **Import PSD** sits next to **Export Layers as PSD** and loads raster layers
 (name, visibility, opacity, blend mode, stacking order) from a PSD file with

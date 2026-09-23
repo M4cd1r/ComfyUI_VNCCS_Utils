@@ -25,3 +25,10 @@ test("re-importing the same image file works after its layer was deleted", () =>
     assert.match(source, /this\.fileInput\.addEventListener\("change"[\s\S]{0,260}?this\.fileInput\.value = "";/,
         "the file input must reset so picking the same file re-fires change");
 });
+
+test("settings gear drives remove bg and character generation", () => {
+    assert.match(source, /openUniCanvasSettings\(\)/, "a settings entry must exist");
+    assert.match(source, /generateCharacterFromPoseLayer/, "pose layers can generate the selected character");
+    assert.ok(source.includes("char_gen_lora_name"), "the character recipe includes a pose studio LoRA");
+    assert.ok(source.includes("remove_bg_model"), "the settings choose the remove-bg model");
+});
