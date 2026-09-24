@@ -182,7 +182,7 @@ test("graph navigation forwarding is suspended during fullscreen", () => {
 });
 
 test("modal keydown stops propagation so Esc cannot exit fullscreen behind a modal", () => {
-    const modal = region(widgetSource, "overlay.addEventListener(\"keydown\"", "this.container.appendChild(overlay)");
+    const modal = region(widgetSource, "overlay.addEventListener(\"keydown\", (e) =>", "this.container.appendChild(overlay)");
     assert.ok(/e\.key === "Escape"[\s\S]{0,160}?e\.stopPropagation\(\)/.test(modal),
         "Escape in the modal keydown handler must stopPropagation before close");
     assert.ok(/e\.key === "Enter"[\s\S]{0,160}?e\.stopPropagation\(\)/.test(modal),

@@ -54,11 +54,13 @@ _PRESET_MODEL_SETTING_KEYS = {
     "clip_name",
     "vae_name",
     "clip_type",
+    "krea2_edit_lora_name",
 }
 _PRESET_MIN_MODEL_FILE_SIZE = 1024
 _PRESET_DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
+_MAX_PANORAMA_PIXELS = 8192 * 4096
 UNICANVAS_DEBUG = 0
 def _unicanvas_runtime_temp_root() -> str:
     try:
@@ -128,6 +130,22 @@ FLUX_KLEIN_DEFAULTS = {
     "scheduler": "simple",
     "steps": 4,
     "cfg": 1.0,
+}
+
+KREA2_EDIT_DEFAULTS = {
+    "generation_mode": "krea2_edit",
+    "model_loader": "diffusion_model",
+    "diffusion_model_name": "krea2_turbo_fp8_scaled.safetensors",
+    "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+    "vae_name": "qwen_image_vae.safetensors",
+    "clip_type": "krea2",
+    "krea2_edit_lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
+    "krea2_likeness": 4.0,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "steps": 10,
+    "cfg": 1.0,
+    "denoise": 1.0,
 }
 
 Z_IMAGE_DEFAULTS = {
@@ -471,6 +489,58 @@ class UniCanvasModelModule:
 
 
 @dataclass(frozen=True)
+class Krea2EditUniCanvasModule(UniCanvasModelModule):
+    """Identity Edit v1.2: mandatory LoRA, grounded Qwen3-VL and clean source tokens."""
+
+    def apply_loras(self, model, clip, gen_settings):
+        name = str(gen_settings.get("krea2_edit_lora_name") or KREA2_EDIT_DEFAULTS["krea2_edit_lora_name"])
+        model, clip = _apply_lora_cached(model, clip, name, 1.0, clip_strength=0.0)
+        # The edit adapter is mandatory and must not be applied twice by the optional stack.
+        settings = dict(gen_settings)
+        settings["lora_stack"] = [item for item in gen_settings.get("lora_stack", []) or []
+                                  if isinstance(item, dict) and not _lora_name_matches(
+                                      item.get("name") or item.get("lora_name"), name)]
+        return super().apply_loras(model, clip, settings)
+
+    def encode_prompt(self, clip, text, gen_settings):
+        # Defer until the exact bbox reference is prepared, including outpaint pixels.
+        gen_settings["_krea2_edit_clip"] = clip
+        return text or ""
+
+    def prepare_reference_conditioning(self, positive, negative, vae, image_tensor, gen_settings, draw_id="unknown"):
+        from .unicanvas_krea2_edit import Krea2EditGroundedEncode
+
+        clip = gen_settings.pop("_krea2_edit_clip")
+        encoder = Krea2EditGroundedEncode()
+        positive = encoder.encode(clip, positive, image=image_tensor, grounding_px=768)[0]
+        # Trained unconditional: the SAME reference image with an empty instruction.
+        negative = encoder.encode(clip, "", image=image_tensor, grounding_px=768)[0]
+        gen_settings["_krea2_edit_image"] = image_tensor
+        gen_settings["_krea2_edit_vae"] = vae
+        return positive, negative
+
+    def create_empty_latent(self, width, height, gen_settings, draw_id="unknown"):
+        latent = _call_node_method(["EmptySD3LatentImage"], ["generate"], width=width, height=height,
+                                  batch_size=max(1, int(gen_settings.get("batch_size", 1))))
+        if latent is None:
+            raise ValueError("Krea2 Edit requires EmptySD3LatentImage. Update ComfyUI.")
+        return latent
+
+    def sample_latent(self, model, positive, negative, latent, seed, steps, cfg, sampler_name,
+                      scheduler, denoise, gen_settings, draw_id="unknown", width=None, height=None):
+        from .unicanvas_krea2_edit import patch_krea2_edit
+
+        model = patch_krea2_edit(model, gen_settings.pop("_krea2_edit_vae"),
+                                gen_settings.pop("_krea2_edit_image"), latent,
+                                gen_settings["krea2_likeness"])
+        return super().sample_latent(model, positive, negative, latent, seed, steps, cfg,
+                                     sampler_name, scheduler, 1.0, gen_settings, draw_id, width, height)
+
+    def decode_samples(self, vae, samples, gen_settings):
+        return vae.decode(_unwrap_latent_samples(samples))
+
+
+@dataclass(frozen=True)
 class SDXLUniCanvasModule(UniCanvasModelModule):
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
         lora_name = str(gen_settings.get("dmd_lora_name") or "")
@@ -693,7 +763,10 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
             "vae": vae,
             "image_tensor": image_tensor,
         }
-        _run_pipeline_steps(self.pipeline.reference, context, draw_id)
+        references = gen_settings.get("_pose_edit_images") or [image_tensor]
+        for reference in references:
+            context["image_tensor"] = reference
+            _run_pipeline_steps(self.pipeline.reference, context, draw_id)
         _uc_log(
             draw_id,
             "Flux Klein reference conditioning prepared",
@@ -798,10 +871,12 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         draw_id: str = "unknown",
     ) -> tuple[Any, Any]:
         reference = image_tensor
-        vl_references = [image_tensor]
+        vl_references = gen_settings.get("_pose_edit_images") or [image_tensor]
+        if gen_settings.get("_pose_edit_images"):
+            reference = vl_references[0]
         draw_mode = str(gen_settings.get("draw_mode") or "")
         mask = gen_settings.get("_qwen_edit_mask")
-        if draw_mode in {"inpaint", "outpaint"} and torch.is_tensor(mask):
+        if not gen_settings.get("_pose_edit_images") and draw_mode in {"inpaint", "outpaint"} and torch.is_tensor(mask):
             pixel_mask = torch.nn.functional.interpolate(
                 mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).float(),
                 size=(reference.shape[1], reference.shape[2]),
@@ -1522,6 +1597,9 @@ class DiffusionModelUniCanvasLoader(UniCanvasModelLoader):
         vae_name = gen_settings.get("vae_name")
         clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
 
+        if gen_settings.get("generation_mode") == "krea2_edit" and not hasattr(comfy.sd.CLIPType, "KREA2"):
+            raise ValueError("Krea2 Edit requires native Krea2 and Qwen3-VL support. Update ComfyUI before using this preset.")
+
         if not diffusion_model_name:
             raise ValueError("No Diffusion Model selected for UniCanvas")
         if not clip_name:
@@ -1702,6 +1780,9 @@ def _register_unicanvas_model_module(module: UniCanvasModelModule) -> None:
         UNICANVAS_MODEL_MODULES[alias] = module
 
 
+_register_unicanvas_model_module(Krea2EditUniCanvasModule(
+    "krea2_edit", ("krea2-edit", "krea2_identity_edit"), KREA2_EDIT_DEFAULTS, is_edit_model=True
+))
 _register_unicanvas_model_module(SDXLUniCanvasModule("sdxl", ("illustrious",), ILLUSTRIOUS_DEFAULTS))
 _register_unicanvas_model_module(AnimaUniCanvasModule("anima", (), ANIMA_DEFAULTS))
 _register_unicanvas_model_module(
@@ -1852,6 +1933,7 @@ def _get_draw_result(draw_id: str) -> dict[str, Any]:
 _QUEUED_DRAW_COMPOSITION_KEYS = (
     "mode",
     "image",
+    "pose_edit",
     "mask",
     "source_empty",
     "bbox",
@@ -2013,7 +2095,7 @@ def _content_length_ok(request, max_bytes: int) -> bool:
         return False
 
 
-def _decode_data_url(data_url: str, mode: str) -> Image.Image:
+def _decode_data_url(data_url: str, mode: str, max_pixels: int = _MAX_PIXELS) -> Image.Image:
     if not isinstance(data_url, str) or not data_url:
         raise ValueError("Missing image data")
     payload = data_url.split(",", 1)[1] if "," in data_url else data_url
@@ -2021,7 +2103,7 @@ def _decode_data_url(data_url: str, mode: str) -> Image.Image:
     if len(raw) > _MAX_UPLOAD_BYTES:
         raise ValueError("Image upload is too large")
     image = Image.open(io.BytesIO(raw))
-    if image.width * image.height > _MAX_PIXELS:
+    if image.width * image.height > max_pixels:
         raise ValueError("Image dimensions are too large")
     return image.convert(mode)
 
@@ -2332,30 +2414,54 @@ def _alpha_composite_with_blend(backdrop: Image.Image, source: Image.Image, mode
 
 def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
     state = _load_unicanvas_state(unicanvas_state)
+    panorama = state.get("panorama")
+    if panorama is not None:
+        if not isinstance(panorama, dict) or panorama.get("projection") != "equirectangular":
+            raise ValueError("Unsupported UniCanvas panorama projection")
+        try:
+            pano_width, pano_height = int(panorama["width"]), int(panorama["height"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Invalid panorama dimensions") from exc
+        if not (0 < pano_width <= 8192 and 0 < pano_height <= 8192 and pano_width * pano_height <= _MAX_PANORAMA_PIXELS):
+            raise ValueError("UniCanvas panorama dimensions are too large or invalid")
+        # Panorama layers already contain spherical edits in full equirectangular
+        # coordinates. The perspective bbox and camera never crop node output.
+        state = {**state, "origin": {"x": 0, "y": 0}, "bbox": {"x": 0, "y": 0, "width": pano_width, "height": pano_height}}
     origin = _rect_from_state(state.get("origin"), {"x": 0, "y": 0, "width": 1, "height": 1})
     bbox = _rect_from_state(state.get("bbox"), {"x": 0, "y": 0, "width": 1024, "height": 1024})
     width = max(1, int(round(bbox["width"])))
     height = max(1, int(round(bbox["height"])))
-    if width * height > _MAX_PIXELS:
+    pixel_limit = _MAX_PANORAMA_PIXELS if panorama else _MAX_PIXELS
+    if width * height > pixel_limit:
         raise ValueError("UniCanvas output dimensions are too large")
     bbox_local_x = bbox["x"] - origin["x"]
     bbox_local_y = bbox["y"] - origin["y"]
     out = Image.new("RGBA", (width, height), (0, 0, 0, 0))
 
-    for layer in reversed(state.get("layers") or []):
+    layers = state.get("layers") or []
+    if panorama:
+        base_id = panorama.get("baseLayerId")
+        if not any(isinstance(layer, dict) and layer.get("id") == base_id and layer.get("type") == "raster" for layer in layers):
+            raise ValueError("The panorama base layer is missing")
+        layers = sorted(layers, key=lambda layer: isinstance(layer, dict) and layer.get("id") == base_id)
+    for layer in reversed(layers):
         if not isinstance(layer, dict):
             continue
-        if layer.get("type") != "raster" or layer.get("visible") is False:
+        if layer.get("type") not in {"raster", "pose"} or layer.get("visible") is False:
             continue
         crop = layer.get("crop")
         data_url = layer.get("dataURL")
         if not isinstance(crop, dict) or not data_url:
+            if panorama:
+                raise ValueError("Panorama layer pixels are missing")
             continue
 
         layer_x = int(round(_number(crop.get("x"), 0)))
         layer_y = int(round(_number(crop.get("y"), 0)))
         layer_w = max(1, int(round(_number(crop.get("width"), 1))))
         layer_h = max(1, int(round(_number(crop.get("height"), 1))))
+        if panorama and (layer_x, layer_y, layer_w, layer_h) != (0, 0, width, height):
+            raise ValueError("Panorama layer dimensions do not match the document")
         dst_x = int(round(layer_x - bbox_local_x))
         dst_y = int(round(layer_y - bbox_local_y))
         inter_left = max(0, dst_x)
@@ -2365,7 +2471,9 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         if inter_right <= inter_left or inter_bottom <= inter_top:
             continue
 
-        image = _decode_data_url(str(data_url), "RGBA")
+        image = _decode_data_url(str(data_url), "RGBA", max_pixels=pixel_limit)
+        if panorama and image.size != (width, height):
+            raise ValueError("Panorama layer dimensions do not match the document")
         src_left = inter_left - dst_x
         src_top = inter_top - dst_y
         src_right = src_left + (inter_right - inter_left)
@@ -2834,6 +2942,12 @@ def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
         merged["sampler_name"] = merged["sampler"]
     if "sampler_name" in merged:
         merged["sampler"] = merged["sampler_name"]
+    if module.key == "krea2_edit":
+        likeness = float(merged.get("krea2_likeness", 4.0))
+        if not math.isfinite(likeness) or not 0 <= likeness <= 10:
+            raise ValueError("Krea2 Edit likeness must be between 0 and 10")
+        merged["krea2_likeness"] = likeness
+        merged["denoise"] = 1.0
     return merged
 
 
@@ -3677,6 +3791,7 @@ def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str
         "_z_image_fun_controlnet_patch_model",
         "_anima_lllite_image",
         "_anima_lllite_mask",
+        "_pose_edit_images",
         "_qwen_edit_reference_image",
         "_qwen_edit_mask",
         "_qwen_edit_latent",
@@ -3685,6 +3800,9 @@ def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str
         "_qwen21_prompts",
         "_qwen21_prompt",
         "_qwen21_negative_prompt",
+        "_krea2_edit_clip",
+        "_krea2_edit_image",
+        "_krea2_edit_vae",
     ):
         if key in gen_settings:
             gen_settings.pop(key, None)
@@ -3924,6 +4042,7 @@ def _unicanvas_download_worker_loop() -> None:
                 repo_id=repo_id,
                 filename=filename,
                 repo_type="model",
+                revision=asset.get("hf_revision") or None,
                 token=False,
             )
             size = os.path.getsize(cached_path)
@@ -3986,6 +4105,28 @@ def _get_unicanvas_assets() -> dict[str, Any]:
     }
 
 
+def _prepare_pose_edit_images(payload: dict[str, Any], model_key: str, size: tuple[int, int]) -> list[Image.Image] | None:
+    """Validate the explicit Pose Studio contract before loading model assets."""
+    pose_edit = payload.get("pose_edit")
+    if pose_edit is None:
+        return None
+    if model_key not in {"qwen_image_edit", "flux_klein"}:
+        raise ValueError("Pose layers require QiE2511 or Klein9b")
+    if payload.get("mode") != "img2img" or payload.get("source_empty"):
+        raise ValueError("Pose editing requires img2img with two reference images")
+    if not isinstance(pose_edit, dict) or set(pose_edit) != {"image1", "image2"}:
+        raise ValueError("Pose editing requires image1 (pose) and image2 (background and character)")
+    images = []
+    for key in ("image1", "image2"):
+        rgba = _decode_data_url(str(pose_edit[key] or ""), "RGBA")
+        if rgba.size != size:
+            raise ValueError(f"Pose {key} dimensions must match inference_size")
+        background = Image.new("RGBA", size, (255, 255, 255, 255))
+        background.alpha_composite(rgba)
+        images.append(background.convert("RGB"))
+    return images
+
+
 def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     draw_id = str(payload.get("debug_id") or f"{int(time.time() * 1000)}")
     _set_draw_progress(draw_id, "queued", 0.01, 0, 0, "Queued")
@@ -4028,6 +4169,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             if references.get(name) is None:
                 references[name] = _pil_to_image_tensor(_decode_data_url(value, "RGB"))
     settings = _normalize_gen_settings(gen_settings)
+    settings.pop("_pose_edit_images", None)
     settings["draw_mode"] = mode
     seed = int(settings.get("seed", 0))
     batch_size = max(1, min(99, int(settings.get("batch_size", 1) or 1)))
@@ -4092,12 +4234,22 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         },
     )
 
-    source_rgba = _decode_data_url(str(payload.get("image") or ""), "RGBA")
+    pose_payload = payload.get("pose_edit")
+    source_url = pose_payload.get("image2") if isinstance(pose_payload, dict) else payload.get("image")
+    source_rgba = _decode_data_url(str(source_url or ""), "RGBA")
     source = source_rgba.convert("RGB")
     reference_source = source
     source_for_composite = source
     width, height = source.size
     source_empty = bool(payload.get("source_empty"))
+    pose_images = _prepare_pose_edit_images(payload, model_module.key, (width, height))
+    if pose_images:
+        denoise = 1.0
+        settings["denoise"] = 1.0
+        source = reference_source = source_for_composite = pose_images[1]
+        settings["qwen_latent_image_index"] = 1
+    if model_module.key == "krea2_edit" and (mode == "txt2img" or source_empty or source_rgba.getextrema()[3][1] == 0):
+        raise ValueError("Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.")
     inference_payload = payload.get("inference_size") or {}
     expected_width = int(inference_payload.get("width") or width)
     expected_height = int(inference_payload.get("height") or height)
@@ -4222,6 +4374,8 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             _uc_log(draw_id, "edit-model txt2img source replaced with black reference image", {"size": source.size})
         image_tensor = _pil_to_image_tensor(source)
         reference_image_tensor = _pil_to_image_tensor(reference_source)
+        if pose_images:
+            settings["_pose_edit_images"] = [_pil_to_image_tensor(image) for image in pose_images]
         _uc_log(
             draw_id,
             "source prepared",
@@ -4284,7 +4438,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(latent, dict):
                 latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
             _uc_log(draw_id, "Qwen-Image-2.1 latent prepared", {"mode": mode, "latent": _latent_debug(latent)})
-        elif mode == "txt2img" or (source_empty and mask is None):
+        elif model_module.key == "krea2_edit" or mode == "txt2img" or (source_empty and mask is None):
             latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
         elif mode in {"inpaint", "outpaint"} and mask is not None:
             positive, negative, latent = _prepare_masked_generation_latent(
