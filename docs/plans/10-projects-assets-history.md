@@ -18,7 +18,7 @@ This plan adds three layers, delivered in phases:
 
 - **Phase A - Provenance and projects:** `layer.meta` provenance on every layer, and
   durable server-side **project files** holding **multiple scenes**, saved incrementally.
-- **Phase B - Asset library:** reusable characters, backgrounds, props, poses, preview skins
+- **Phase B - Asset library:** reusable characters, backgrounds, props, poses
   and generation presets, shared across scenes and projects.
 - **Phase C - Generation history:** every generation is recorded with its full settings and
   all its results, browsable in a gallery, restorable and re-runnable.
@@ -48,9 +48,14 @@ seed?, character?: { id, name }, sourceName?, derivedFrom?, assetId?, heightFact
 
 A **project** holds scenes, a project-level asset library (phase B) and a history (phase C).
 
-Storage lives under ComfyUI's user directory: `folder_paths.get_user_directory()` /
-`<comfy user>` / `vnccs_unicanvas/projects/<projectId>/`. It is durable, per ComfyUI user,
-outside temp and outside `output/`. Layout:
+Storage lives in the **ComfyUI user directory**: `folder_paths.get_user_directory()` /
+`<comfy user>` / `vnccs_unicanvas/projects/<projectId>/`, i.e. `ComfyUI/user/default/vnccs_unicanvas/`
+on a single-user install. The comfy user comes from the request the same way ComfyUI's own
+userdata routes resolve it (`PromptServer.instance.user_manager.get_request_user_id(request)`),
+so multi-user installs keep separate projects. It is durable, per ComfyUI user, outside temp
+(which ComfyUI wipes on startup) and outside `output/`. It never falls back to the temp
+directory. If the user directory is not writable, the routes return an error and the status
+line says so. Layout:
 
 - `project.json`: `{ schemaVersion, id, name, createdAt, updatedAt, rev, scenes: [{ id,
   name, order, thumbnail, updatedAt }], activeSceneId, settings }`.
@@ -117,7 +122,7 @@ to stay inside the projects root.
 ## Phase B - Asset library
 
 Two scopes with the same format: **project assets** (`projects/<id>/assets/`) and the **global
-library** (`vnccs_unicanvas/library/`), for cross-project reuse (a recurring cast, a UI skin).
+library** (`vnccs_unicanvas/library/`), for cross-project reuse (a recurring cast, a house style).
 
 Asset kinds and payloads (`asset.json` + blobs):
 
@@ -130,7 +135,8 @@ Asset kinds and payloads (`asset.json` + blobs):
 - `prop`: an image with alpha and an anchor.
 - `pose`: a pose layer's `layer.pose` (the studio scene, viewport and rect, single or
   multi-character, plan 01), without the bound references.
-- `skin`: a VN preview skin (plan 07).
+- `skin`: reserved for plan 07's future custom-interface import. It is not part of this plan's
+  scope, but the kind name is reserved so the format does not change later.
 - `preset`: a generation settings snapshot (model family, ckpt, LoRA stack, sampler, steps,
   cfg, prompt templates), so the look of a VN stays the same across scenes.
 

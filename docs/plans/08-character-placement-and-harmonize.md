@@ -65,7 +65,9 @@ heightPx }, groundTint }`, serialized with the state.
   depth gradient vanishes: fit a plane to the lower-third depth samples and intersect it with
   infinity. The proposal is shown as a ghost line with Accept/Discard. The depth model is
   `depth-anything/Depth-Anything-V2-Small-hf` (Apache-2.0) through the `transformers`
-  depth-estimation pipeline. It is lazy-downloaded into `models/depth/` on first use, with the
+  depth-estimation pipeline. It is lazy-downloaded into `models/depth/` on first use as a
+  helper-model job with the visible status line and progress bar from plan 05
+  (`Downloading depth model… 58%`), with the
   same caching/unloading pattern as plan 05's naming models. Route:
   `POST /vnccs/unicanvas/depth` -> a 16-bit PNG depth map at the input size. It is cached per
   background layer pixel revision (`bumpLayerPixelRevision`), so the model runs once per

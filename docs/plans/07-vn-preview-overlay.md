@@ -74,10 +74,11 @@ Shipped skins:
    without any Ren'Py assets).
 4. `Mobile bubble` (for 9:16).
 
-A skin can be **imported** from a JSON file and optionally from a PNG for the textbox frame
-(9-slice fields in the JSON). That makes it possible to preview the real game's UI art
-without it ever entering the scene. Imported skins persist with the project (plan 10) or,
-before plan 10, in `localStorage` under a UniCanvas key (the per-viewer convenience rule).
+The shipped skins are **example interfaces**. Their job is to show what a typical VN UI looks
+like over the scene and how well the composition fits it. In v1 the user picks one of them and
+cannot load their own game's UI (see **Future work**). The skin JSON format is still kept
+generic (reference-pixel rects, colors, fonts, 9-slice fields reserved) so that future work
+needs no format change.
 
 ## Placeholder text
 
@@ -117,7 +118,7 @@ because it is a deliberate layout change.
 - New `web/vnccs_unicanvas_vn_preview.mjs`: frame handling, skin loading/validation,
   lorem generator, text layout, the overlay pass, occlusion detection, the popover and the
   shortcut hook.
-- `web/assets/vn_preview_skins/*.json`: shipped skins.
+- `web/assets/vn_preview_skins/*.json`: shipped example skins (the only skin source in v1).
 - `web/vnccs_unicanvas.js`: one call at the end of `render()` (the screen-space pass) and
   one guard that asserts no export/generation path calls it. The guard is structural: the pass
   lives only in `render()`, never in `drawFlattenedLayers` / `makeExportCanvas`.
@@ -149,3 +150,10 @@ because it is a deliberate layout change.
 - Text layers, dialogue authoring, scripts and engine code generation.
 - Interactive UI (clickable choices, menus).
 - Typewriter text animation.
+
+## Future work
+
+- **Your own interface:** import a custom skin (the JSON described above, plus PNG textbox,
+  nameplate and button art laid out as 9-slice frames) to preview the actual game's UI over the
+  scene. Imported skins would persist with the project (plan 10) or in the global library as a
+  `skin` asset. The overlay rules stay the same: preview only, never pixels.

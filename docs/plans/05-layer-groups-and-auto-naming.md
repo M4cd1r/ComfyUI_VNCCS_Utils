@@ -129,8 +129,8 @@ batch requests: `[{ layerId, kind, prompt?, character?, thumbnail? }]` ->
 
 - **Text LLM** (default): `Qwen/Qwen3-0.6B` (Apache-2.0) through `transformers`, CPU-capable
   and GPU when available. It is lazy-downloaded with `huggingface_hub` into
-  `models/LLM/Qwen3-0.6B/` on first use (the same UX as the BiRefNet auto-download: a status
-  line "Downloading naming model..."). Thinking mode is disabled. The prompt is a fixed
+  `models/LLM/Qwen3-0.6B/` on first use (see **Download UX** below). Thinking mode is
+  disabled. The prompt is a fixed
   system instruction plus the generation prompt. It must answer with one JSON object
   `{"name": "<2-5 words, Title case>", "category": "<one of the list>"}`. Decoding is greedy,
   max 40 new tokens. The output is parsed strictly. On any parse failure the rules fallback is
@@ -143,6 +143,22 @@ batch requests: `[{ layerId, kind, prompt?, character?, thumbnail? }]` ->
   (a timer), and they share ComfyUI's model management only for device selection
   (`comfy.model_management.get_torch_device`). They never evict diffusion models. The
   service runs in `asyncio.to_thread` and serializes requests with a lock.
+- **Download UX (visible, with progress):** the first request that needs a model that is
+  not on disk returns `{ status: "downloading", job }` instead of names, and the layers keep
+  their rules names meanwhile. The download runs on the existing preset download worker
+  (`nodes/unicanvas/presets.py`: the `_PRESET_DOWNLOAD_QUEUE` worker and the
+  `_PRESET_DOWNLOAD_STATUS` dict) as a **helper-model job** (key `helper:qwen3-0.6b` /
+  `helper:smolvlm-256m`). It downloads each file of a pinned manifest (repo, revision, file
+  list, expected sizes) with byte progress into the status dict. The frontend polls the
+  existing `/vnccs/unicanvas/presets/status` route (the same `startPresetDownloadPolling`
+  loop) and shows:
+  - the **status line**: `Downloading naming model Qwen3-0.6B… 34% (410 / 1200 MB)`;
+  - the **progress bar** (`updateGenerationProgress`, with `stage: "download"` so it does not
+    look like a generation), which hides on completion;
+  - on failure, the status line error `Naming model download failed: <reason>`. Naming stays on
+    the rules until the user retries (the next naming request re-queues the job).
+  When the job finishes, the pending layers are named in one batch. The same helper-model job
+  and UX are reused by plan 08's depth model.
 - **Categories** (fixed list, used as the folder names): `Background`, `Characters`,
   `Props`, `Effects`, `Lighting`, `Overlays`, `Other`.
 
@@ -206,7 +222,11 @@ Rules + LLM (default) / Rules + LLM + vision`, and `Auto-file new layers into fo
   fallback name appears immediately, then the stubbed name. A user rename is never
   overwritten. Deleting a layer before the reply -> no error, and the reply is dropped.
   Organize -> preview -> apply -> one undo reverts it.
-- Backend unit test (pytest, no download): the strict JSON parser and the rules fallback on
+- `auto-naming.spec.mjs` also stubs the `downloading` state: the status line shows the
+  percentage from a stubbed `/presets/status` sequence, the progress bar appears and hides,
+  and the names arrive after the stubbed completion.
+- Backend unit test (pytest, no download): the helper-model job reports byte progress from a
+  mocked downloader, plus the strict JSON parser and the rules fallback on
   malformed model output.
 - Evidence topic `layer-groups`: before = a flat list of 14 layers, after = organized
   folders.

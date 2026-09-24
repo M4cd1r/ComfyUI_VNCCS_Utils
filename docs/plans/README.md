@@ -17,12 +17,12 @@ inside the plans.
 | # | Plan | Summary |
 |---|---|---|
 | 01 | [Multi-character pose scenes](01-multi-character-pose-scenes.md) | Every mannequin of a live pose layer (up to 4 per Pose Studio scene) is bound to its own character reference, with interaction presets, per-character visibility masks and split/merge. |
-| 02 | [Character bake and scene Generate](02-character-bake-and-scene-generate.md) | Every bound mannequin can be baked into its character on demand through the existing `pose_edit` path; the final GENERATE bakes every character that is still a mannequin, then runs the scene edit. |
+| 02 | [Character bake and scene Generate](02-character-bake-and-scene-generate.md) | Every mannequin with a character reference can be baked on demand through the existing `pose_edit` path; GENERATE first bakes the pending ones, then always runs the normal scene pass, in which unbound mannequins are replaced from the prompt and reference images. |
 | 03 | [Sprite sets](03-sprite-sets.md) | Expression and outfit variants of one character, pixel-aligned on one anchor, managed as one sprite layer. |
 | 04 | [Scene states](04-scene-states.md) | Named snapshots of layer visibility, placement, sprite variant and opacity (layer comps), switched in one click and exported in bulk. |
 | 05 | [Layer groups and auto naming](05-layer-groups-and-auto-naming.md) | Nested layer groups plus automatic layer and folder names from provenance and a small local LLM/VLM. |
 | 06 | [Timeline and animation](06-timeline-and-animation.md) | Scene timeline with keyframed layer transforms, pose interpolation, idle presets, enter/exit transitions and video export. |
-| 07 | [VN preview overlay](07-vn-preview-overlay.md) | Non-destructive in-game UI mock (textbox, nameplate, lorem ipsum, safe areas). It never becomes pixels or generation input. |
+| 07 | [VN preview overlay](07-vn-preview-overlay.md) | Example in-game interfaces (textbox, nameplate, lorem ipsum, safe areas) over the scene, to see how the composition fits a VN UI. Preview only: never pixels or generation input. Custom interfaces are future work. |
 | 08 | [Character placement and harmonize](08-character-placement-and-harmonize.md) | Horizon and ground plane with depth-correct scaling, contact shadows and a relight/harmonize pass that blends characters into the background. |
 | 10 | [Projects, asset library and generation history](10-projects-assets-history.md) | Server-side project files, a reusable asset library, and a generation history with full provenance. |
 
