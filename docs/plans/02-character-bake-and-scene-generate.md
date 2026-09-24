@@ -29,7 +29,7 @@ isolates identity per character, and the scene pass gives coherence.
   `denoise: 1`. The result is staged like any generation. **That call is already a bake of one
   pose layer over the bbox.** This plan turns it into a per-character, per-layer, stateful
   operation.
-- `nodes/unicanvas.py`: `_prepare_pose_edit_images` validates the two-image contract, and the
+- `nodes/unicanvas/draw.py`: `_prepare_pose_edit_images` validates the two-image contract, and the
   QiE2511/Klein9b adapters consume `_pose_edit_images`.
 - Remove background backends (`/vnccs/unicanvas/remove_bg`: edit model / BiRefNet / rembg /
   SAM 3, chosen in the settings popover).
@@ -153,7 +153,7 @@ camera and projected like its pixels are today.
   the GENERATE split menu, the settings popover "Character bake" group, and serialization of
   the two canvases.
 - `web/vnccs_unicanvas_layer_tools.mjs`: the `bake-characters` menu item.
-- `nodes/unicanvas.py`: none required. `_prepare_pose_edit_images` already takes arbitrary
+- `nodes/unicanvas/draw.py`: none required. `_prepare_pose_edit_images` already takes arbitrary
   sizes that match `inference_size`.
 
 ## Tests (CPU, generation stubbed)

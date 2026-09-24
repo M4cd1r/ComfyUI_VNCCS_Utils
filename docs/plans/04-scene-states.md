@@ -98,7 +98,7 @@ new-layer policy above.
   bounds and hit-test paths; the move tool routing; serialization; and the two history entry
   kinds.
 - `web/vnccs_unicanvas_modes.mjs`: the `Alt+digit` shortcuts.
-- `nodes/unicanvas.py`: the `subfolder` field on `save_output` (path-sanitized: no `..`, no
+- `nodes/unicanvas/save_output.py`: the `subfolder` field on `save_output` (path-sanitized: no `..`, no
   absolute paths, max depth 2).
 
 ## Tests

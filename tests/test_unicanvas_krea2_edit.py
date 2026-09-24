@@ -14,6 +14,8 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
+from helpers.unicanvas_package import UNICANVAS_DIR, load_unicanvas_package
+
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "vnccs_krea2_test"
 package = types.ModuleType(PACKAGE)
@@ -38,9 +40,15 @@ except ImportError:
     torch.Tensor = object
     HAS_TORCH = False
 
-with patch.dict(sys.modules, {"torch": torch}):
-    UC = load(PACKAGE + ".unicanvas", ROOT / "nodes/unicanvas.py")
-MODULE = UC._get_unicanvas_model_module("krea2_edit")
+UC = load_unicanvas_package(PACKAGE, torch_module=torch)
+BASE = UC.models.base
+DRAW = UC.draw
+GENERATION = UC.generation
+KREA2 = UC.models.krea2_edit
+PRESETS = UC.presets
+REGISTRY = UC.models.registry
+INFERENCE_MODULE = PACKAGE + ".unicanvas.models.krea2_edit_inference"
+MODULE = REGISTRY._get_unicanvas_model_module("krea2_edit")
 
 
 def source_url(alpha=255):
@@ -51,10 +59,10 @@ def source_url(alpha=255):
 
 class EditContractTests(unittest.TestCase):
     def settings(self, **kw):
-        return UC._normalize_gen_settings({**UC.KREA2_EDIT_DEFAULTS, **kw})
+        return GENERATION._normalize_gen_settings({**KREA2.KREA2_EDIT_DEFAULTS, **kw})
 
     def test_registry_aliases_and_likeness_preserve_zero(self):
-        self.assertIs(UC._get_unicanvas_model_module("krea2-edit"), MODULE)
+        self.assertIs(REGISTRY._get_unicanvas_model_module("krea2-edit"), MODULE)
         self.assertTrue(MODULE.is_edit_model)
         self.assertEqual(self.settings()["krea2_likeness"], 4)
         self.assertEqual(self.settings(krea2_likeness=0, denoise=.2)["krea2_likeness"], 0)
@@ -64,7 +72,7 @@ class EditContractTests(unittest.TestCase):
                 self.settings(krea2_likeness=value)
 
     def test_card_pins_four_required_assets_and_protects_edit_lora(self):
-        preset = next(p for p in UC._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")
+        preset = next(p for p in PRESETS._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")
         self.assertEqual(len(preset["assets"]), 4)
         self.assertNotIn("turbo", preset)
         for asset in preset["assets"]:
@@ -78,15 +86,15 @@ class EditContractTests(unittest.TestCase):
         self.assertEqual(normalized["krea2_likeness"], 6.2)
 
     def test_missing_edit_lora_keeps_card_uninstalled(self):
-        preset = next(p for p in UC._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")
-        with patch.object(UC, "_unicanvas_load_preset_registry", return_value={"presets": [preset]}), \
-             patch.object(UC.os.path, "exists", side_effect=lambda p: "identity_edit" not in p):
-            card = UC._get_unicanvas_presets()["presets"][0]
+        preset = next(p for p in PRESETS._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")
+        with patch.object(PRESETS, "_unicanvas_load_preset_registry", return_value={"presets": [preset]}), \
+             patch.object(PRESETS.os.path, "exists", side_effect=lambda p: "identity_edit" not in p):
+            card = PRESETS._get_unicanvas_presets()["presets"][0]
         self.assertFalse(card["installed"])
         self.assertEqual([a["installed"] for a in card["assets"]], [True, True, True, False])
 
     def test_raw_card_reuses_edit_dependencies_and_enables_guidance(self):
-        registry = {p["id"]: p for p in UC._unicanvas_load_preset_registry()["presets"]}
+        registry = {p["id"]: p for p in PRESETS._unicanvas_load_preset_registry()["presets"]}
         raw, turbo = registry["krea2_edit_raw"], registry["krea2_edit"]
         self.assertEqual(raw["assets"][1:], turbo["assets"][1:])
         normalized = self.settings(model_selection_mode="presets", selected_preset_id="krea2_edit_raw",
@@ -96,7 +104,7 @@ class EditContractTests(unittest.TestCase):
         self.assertEqual(normalized["steps"], 20)
 
     def test_card_download_passes_pinned_revision_without_credentials(self):
-        asset = next(p for p in UC._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")["assets"][3]
+        asset = next(p for p in PRESETS._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")["assets"][3]
         queue = Mock()
         queue.get.side_effect = [("test:edit", asset), StopIteration]
         hub = types.ModuleType("huggingface_hub")
@@ -107,32 +115,34 @@ class EditContractTests(unittest.TestCase):
             target = root / "models" / "loras" / "edit.safetensors"
             hub.hf_hub_download = Mock(return_value=str(cached))
             stack.enter_context(patch.dict(sys.modules, {"huggingface_hub": hub}))
-            stack.enter_context(patch.object(UC, "_PRESET_DOWNLOAD_QUEUE", queue))
-            stack.enter_context(patch.object(UC, "_PRESET_DOWNLOAD_STATUS", {}))
-            stack.enter_context(patch.object(UC, "_unicanvas_resolve_local_model_path", return_value=str(target)))
-            stack.enter_context(patch.object(UC, "_unicanvas_temp_dir", return_value=str(root / "temp")))
+            stack.enter_context(patch.object(PRESETS, "_PRESET_DOWNLOAD_QUEUE", queue))
+            stack.enter_context(patch.object(PRESETS, "_PRESET_DOWNLOAD_STATUS", {}))
+            stack.enter_context(patch.object(PRESETS, "_unicanvas_resolve_local_model_path", return_value=str(target)))
+            stack.enter_context(patch.object(PRESETS, "_unicanvas_temp_dir", return_value=str(root / "temp")))
             with self.assertRaises(StopIteration):
-                UC._unicanvas_download_worker_loop()
+                PRESETS._unicanvas_download_worker_loop()
             hub.hf_hub_download.assert_called_once_with(repo_id=asset["hf_repo"], filename=asset["hf_path"],
                                                        repo_type="model", revision=asset["hf_revision"], token=False)
             self.assertEqual(target.read_bytes(), cached.read_bytes())
-            self.assertEqual(UC._PRESET_DOWNLOAD_STATUS["test:edit"]["status"], "success")
+            self.assertEqual(PRESETS._PRESET_DOWNLOAD_STATUS["test:edit"]["status"], "success")
             queue.task_done.assert_called_once()
 
     def test_edit_lora_is_mandatory_fixed_strength_and_not_duplicated(self):
-        name = UC.KREA2_EDIT_DEFAULTS["krea2_edit_lora_name"]
-        with patch.object(UC, "_apply_lora_cached", return_value=("model", "clip")) as apply:
+        name = KREA2.KREA2_EDIT_DEFAULTS["krea2_edit_lora_name"]
+        # The edit LoRA (Krea2 module) and the optional stack (base module) share one loader.
+        apply = Mock(return_value=("model", "clip"))
+        with patch.object(KREA2, "_apply_lora_cached", apply), patch.object(BASE, "_apply_lora_cached", apply):
             MODULE.apply_loras("model", "clip", self.settings(turbo_enabled=False, lora_stack=[
                 {"name": name, "strength": .2}, {"name": "style.safetensors", "strength": .7}]))
         self.assertEqual(apply.call_count, 2)
         self.assertEqual(apply.call_args_list[0].args[2:], (name, 1.0))
         self.assertEqual(apply.call_args_list[0].kwargs, {"clip_strength": 0.0})
         self.assertEqual(apply.call_args_list[1].args[2:4], ("style.safetensors", .7))
-        with patch.object(UC, "_apply_lora_cached", side_effect=ValueError("LoRA not found")), self.assertRaisesRegex(ValueError, "LoRA not found"):
+        with patch.object(KREA2, "_apply_lora_cached", side_effect=ValueError("LoRA not found")), self.assertRaisesRegex(ValueError, "LoRA not found"):
             MODULE.apply_loras(None, None, self.settings())
 
     def test_prompt_is_image_grounded_on_both_branches_and_releases_clip(self):
-        helper = types.ModuleType(PACKAGE + ".unicanvas_krea2_edit")
+        helper = types.ModuleType(INFERENCE_MODULE)
         encoder = Mock()
         encoder.encode.side_effect = [("positive",), ("negative",)]
         helper.Krea2EditGroundedEncode = Mock(return_value=encoder)
@@ -150,13 +160,13 @@ class EditContractTests(unittest.TestCase):
         self.assertNotIn("_krea2_edit_clip", settings)
 
     def test_sampling_patches_same_target_latent_and_forces_full_denoise(self):
-        helper = types.ModuleType(PACKAGE + ".unicanvas_krea2_edit")
+        helper = types.ModuleType(INFERENCE_MODULE)
         helper.patch_krea2_edit = Mock(return_value="patched")
         settings = self.settings(krea2_likeness=7.1)
         settings.update(_krea2_edit_image="image", _krea2_edit_vae="vae")
         latent = {"samples": object()}
         with patch.dict(sys.modules, {helper.__name__: helper}), \
-             patch.object(UC, "_sample_generation_latent_default", return_value="result") as sample:
+             patch.object(BASE, "_sample_generation_latent_default", return_value="result") as sample:
             result = MODULE.sample_latent("original", "pos", "neg", latent, 17, 10, 1, "euler", "simple", .2, settings)
         self.assertEqual(result, "result")
         helper.patch_krea2_edit.assert_called_once_with("original", "vae", "image", latent, 7.1)
@@ -167,7 +177,7 @@ class EditContractTests(unittest.TestCase):
 
     def test_empty_latent_uses_sd3_channels_and_batch_contract(self):
         expected = {"samples": object()}
-        with patch.object(UC, "_call_node_method", return_value=expected) as node:
+        with patch.object(KREA2, "_call_node_method", return_value=expected) as node:
             self.assertIs(MODULE.create_empty_latent(1024, 768, {"batch_size": 3}), expected)
         self.assertEqual(node.call_args.args[0], ["EmptySD3LatentImage"])
         self.assertEqual(node.call_args.kwargs, {"width": 1024, "height": 768, "batch_size": 3})
@@ -175,8 +185,8 @@ class EditContractTests(unittest.TestCase):
     def test_text_only_or_empty_source_rejected_before_loading_weights(self):
         for mode, empty, alpha in [("txt2img", False, 255), ("img2img", True, 255), ("inpaint", False, 0)]:
             with self.subTest(mode=mode, empty=empty, alpha=alpha), \
-                 patch.object(UC, "_load_generation_assets") as loader, self.assertRaisesRegex(ValueError, "requires an image"):
-                UC._run_unicanvas_draw({"settings": self.settings(), "mode": mode, "source_empty": empty, "image": source_url(alpha)})
+                 patch.object(DRAW, "_load_generation_assets") as loader, self.assertRaisesRegex(ValueError, "requires an image"):
+                DRAW._run_unicanvas_draw({"settings": self.settings(), "mode": mode, "source_empty": empty, "image": source_url(alpha)})
             loader.assert_not_called()
 
     @unittest.skipUnless(HAS_TORCH, "CPU torch is optional in the lightweight CI job")
@@ -193,12 +203,12 @@ class EditContractTests(unittest.TestCase):
                     "_save_temp_image": {"filename": "result.png"},
                 }
                 for name, result in replacements.items():
-                    stack.enter_context(patch.object(UC, name, return_value=result))
-                stack.enter_context(patch.object(UC.Krea2EditUniCanvasModule, "prepare_reference_conditioning", prepared))
-                masked = stack.enter_context(patch.object(UC, "_prepare_masked_generation_latent", side_effect=AssertionError("must not use SD inpaint latent")))
-                encode = stack.enter_context(patch.object(UC, "_encode_source_latent", side_effect=AssertionError("must not initialize with source")))
-                sampler = stack.enter_context(patch.object(UC, "_sample_generation_latent", return_value=target))
-                result = UC._run_unicanvas_draw({"settings": self.settings(), "mode": mode, "image": source_url(), "mask": source_url()})
+                    stack.enter_context(patch.object(DRAW, name, return_value=result))
+                stack.enter_context(patch.object(KREA2.Krea2EditUniCanvasModule, "prepare_reference_conditioning", prepared))
+                masked = stack.enter_context(patch.object(DRAW, "_prepare_masked_generation_latent", side_effect=AssertionError("must not use SD inpaint latent")))
+                encode = stack.enter_context(patch.object(DRAW, "_encode_source_latent", side_effect=AssertionError("must not initialize with source")))
+                sampler = stack.enter_context(patch.object(DRAW, "_sample_generation_latent", return_value=target))
+                result = DRAW._run_unicanvas_draw({"settings": self.settings(), "mode": mode, "image": source_url(), "mask": source_url()})
                 self.assertEqual(result["generation_mode"], "krea2_edit")
                 self.assertEqual(result["width"], 64)
                 self.assertEqual(bool(result["mask"]), mode != "img2img")
@@ -229,7 +239,7 @@ class EditTensorTests(unittest.TestCase):
         self.context = patch.dict(sys.modules, comfy_stubs())
         self.context.start()
         self.addCleanup(self.context.stop)
-        self.core = load(PACKAGE + ".unicanvas_krea2_edit", ROOT / "nodes/unicanvas_krea2_edit.py")
+        self.core = load(INFERENCE_MODULE, UNICANVAS_DIR / "models" / "krea2_edit_inference.py")
 
     def test_likeness_is_log_bias_only_on_target_to_source(self):
         for boost in [0, .5, 1, 4, 10]:

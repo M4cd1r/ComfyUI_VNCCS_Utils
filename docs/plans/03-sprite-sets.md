@@ -121,7 +121,7 @@ one `historyGroup`.
   layer).
 - `web/vnccs_unicanvas_pose.mjs` / `web/vnccs_unicanvas_bake.mjs`: the bake records store the
   projected head and feet points used for `faceRect` and `anchor`.
-- `nodes/unicanvas.py`: none. It reuses the draw route with the existing inpaint mask payload.
+- `nodes/unicanvas/`: none. It reuses the draw route with the existing inpaint mask payload.
 
 ## Tests (CPU, generation stubbed)
 

@@ -76,7 +76,8 @@ them in full.
 - **New features live in their own `web/vnccs_unicanvas_<feature>.mjs` module**, installed from
   the widget constructor like `installUniCanvasLayerTools` / `installUniCanvasInputTools`, so
   `web/vnccs_unicanvas.js` (7k+ lines) only receives hook calls, not feature bodies.
-- **Backend routes live in `nodes/unicanvas.py`** under `/vnccs/unicanvas/...`. They run heavy
+- **Backend routes live in `nodes/unicanvas/routes.py`** (feature code in its own
+  `nodes/unicanvas/<feature>.py` module) under `/vnccs/unicanvas/...`. They run heavy
   work in `asyncio.to_thread`, return `{error}` with a non-2xx status on failure, and
   lazy-download models on first use like the BiRefNet path.
 - **Snapshot of the code base.** The plans are written against `unicanvas-next` after the

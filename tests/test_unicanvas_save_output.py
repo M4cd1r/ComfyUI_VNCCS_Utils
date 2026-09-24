@@ -21,7 +21,8 @@ import re
 import pytest
 from PIL import Image
 
-from nodes.unicanvas import _run_unicanvas_save_output, _unicanvas_save_output_image, register_unicanvas_routes
+from nodes.unicanvas import register_unicanvas_routes
+from nodes.unicanvas.save_output import _run_unicanvas_save_output, _unicanvas_save_output_image
 
 
 
@@ -61,7 +62,7 @@ def test_composite_save_returns_ok_json_and_unique_names(output_dir):
 
 
 def test_output_path_reservation_skips_taken_names(output_dir, monkeypatch):
-    import nodes.unicanvas as unicanvas_module
+    import nodes.unicanvas.save_output as unicanvas_module
 
     monkeypatch.setattr(unicanvas_module.time, "time", lambda: 1234.5)
     timestamp = 1234500

@@ -8,8 +8,9 @@ import torch
 from PIL import Image
 
 from helpers.unicanvas_images import decode_png_data_url, png_data_url
-from nodes import unicanvas
-from nodes.unicanvas import (
+from nodes.unicanvas import remove_bg
+from nodes.unicanvas.models.registry import UNICANVAS_MODEL_MODULES
+from nodes.unicanvas.remove_bg import (
     UC_QI21_REMOVE_BG_UNAVAILABLE,
     _run_unicanvas_remove_bg,
 )
@@ -40,7 +41,7 @@ class _ModuleWithoutSubjectExtraction:
 
 def test_qi21_contract_stub_receives_rgb_tensor(monkeypatch):
     fake = _FakeQi21Module()
-    monkeypatch.setitem(unicanvas.UNICANVAS_MODEL_MODULES, "qwen_image21", fake)
+    monkeypatch.setitem(UNICANVAS_MODEL_MODULES, "qwen_image21", fake)
 
     image = Image.new("RGB", (4, 3), (200, 100, 50))
     result = _run_unicanvas_remove_bg({"method": "qi21", "image": png_data_url(image)})
@@ -62,7 +63,7 @@ def test_qi21_contract_stub_receives_rgb_tensor(monkeypatch):
 def test_qi21_fails_fast_without_qwen_image21_module(monkeypatch):
     # Simulate the module being absent: the route must fail fast with the exact
     # contract message instead of reaching the real QI2.1 loading path.
-    monkeypatch.delitem(unicanvas.UNICANVAS_MODEL_MODULES, "qwen_image21", raising=False)
+    monkeypatch.delitem(UNICANVAS_MODEL_MODULES, "qwen_image21", raising=False)
     with pytest.raises(RuntimeError) as excinfo:
         _run_unicanvas_remove_bg({"method": "qi21", "image": png_data_url(Image.new("RGB", (2, 2)))})
 
@@ -71,7 +72,7 @@ def test_qi21_fails_fast_without_qwen_image21_module(monkeypatch):
 
 
 def test_qi21_fails_fast_without_remove_background(monkeypatch):
-    monkeypatch.setitem(unicanvas.UNICANVAS_MODEL_MODULES, "qwen_image21", _ModuleWithoutSubjectExtraction())
+    monkeypatch.setitem(UNICANVAS_MODEL_MODULES, "qwen_image21", _ModuleWithoutSubjectExtraction())
 
     with pytest.raises(RuntimeError) as excinfo:
         _run_unicanvas_remove_bg({"method": "qi21", "image": png_data_url(Image.new("RGB", (2, 2)))})
@@ -90,14 +91,14 @@ def test_birefnet_loader_resolves_with_dual_form_import(monkeypatch):
     monkeypatch.setitem(sys.modules, "cv2", types.ModuleType("cv2"))
     monkeypatch.setattr(sys.modules["folder_paths"], "models_dir", ".", raising=False)
 
-    masker = unicanvas._uc_load_birefnet_masker()
+    masker = remove_bg._uc_load_birefnet_masker()
 
     from vnccs_sam3d.processing.birefnet_mask import auto_mask_bgr
 
     assert callable(masker)
     assert masker is auto_mask_bgr
-    source = inspect.getsource(unicanvas._uc_load_birefnet_masker)
-    assert source.index("from ..vnccs_sam3d") < source.index("from vnccs_sam3d.processing.birefnet_mask")
+    source = inspect.getsource(remove_bg._uc_load_birefnet_masker)
+    assert source.index("from ...vnccs_sam3d") < source.index("from vnccs_sam3d.processing.birefnet_mask")
 
 
 def test_birefnet_applies_mask_as_alpha(monkeypatch):
@@ -109,7 +110,7 @@ def test_birefnet_applies_mask_as_alpha(monkeypatch):
         mask[:, :2] = 1
         return mask, np.array([[0, 0, 1, 1]], dtype=np.float32)
 
-    monkeypatch.setattr(unicanvas, "_uc_load_birefnet_masker", lambda: fake_masker)
+    monkeypatch.setattr(remove_bg, "_uc_load_birefnet_masker", lambda: fake_masker)
 
     image = Image.new("RGB", (4, 3), (10, 20, 30))
     result = _run_unicanvas_remove_bg({"method": "birefnet", "image": png_data_url(image)})
@@ -129,7 +130,7 @@ def test_birefnet_applies_mask_as_alpha(monkeypatch):
 
 def test_edit_model_minimax_h3_routes_to_module(monkeypatch):
     fake = _FakeQi21Module()
-    monkeypatch.setitem(unicanvas.UNICANVAS_MODEL_MODULES, "minimax_h3", fake)
+    monkeypatch.setitem(UNICANVAS_MODEL_MODULES, "minimax_h3", fake)
 
     image = Image.new("RGB", (4, 3), (200, 100, 50))
     result = _run_unicanvas_remove_bg(
@@ -149,7 +150,7 @@ def test_edit_model_unknown_model_is_rejected():
 
 
 def test_edit_model_without_remove_background_fails_fast(monkeypatch):
-    monkeypatch.setitem(unicanvas.UNICANVAS_MODEL_MODULES, "minimax_h3", _ModuleWithoutSubjectExtraction())
+    monkeypatch.setitem(UNICANVAS_MODEL_MODULES, "minimax_h3", _ModuleWithoutSubjectExtraction())
 
     with pytest.raises(RuntimeError, match=r"RGBA-VAE edit model module"):
         _run_unicanvas_remove_bg(
@@ -163,7 +164,7 @@ def test_rembg_fails_fast_without_the_package(monkeypatch):
     with pytest.raises(RuntimeError) as excinfo:
         _run_unicanvas_remove_bg({"method": "rembg", "image": png_data_url(Image.new("RGB", (2, 2)))})
 
-    assert str(excinfo.value) == unicanvas.UC_REMBG_REMOVE_BG_UNAVAILABLE
+    assert str(excinfo.value) == remove_bg.UC_REMBG_REMOVE_BG_UNAVAILABLE
 
 
 def test_sam3_reuses_the_segment_route(monkeypatch):
@@ -175,7 +176,7 @@ def test_sam3_reuses_the_segment_route(monkeypatch):
             "mask": png_data_url(Image.new("RGBA", (4, 3), (255, 255, 255, 128))),
         }
 
-    monkeypatch.setattr(unicanvas, "_run_unicanvas_segment", fake_segment)
+    monkeypatch.setattr(remove_bg, "_run_unicanvas_segment", fake_segment)
 
     image = Image.new("RGB", (4, 3), (10, 20, 30))
     result = _run_unicanvas_remove_bg({"method": "sam3", "image": png_data_url(image)})

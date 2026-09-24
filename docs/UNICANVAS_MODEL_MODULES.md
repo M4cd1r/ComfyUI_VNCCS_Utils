@@ -11,17 +11,29 @@ This split keeps model files independent from the inference graph. For example,
 `Diffusion Model` can load both Anima and Flux Klein, while `Checkpoint` always
 forces SDXL.
 
+## Where The Code Lives
+
+The backend is the `nodes/unicanvas/` package:
+
+- `loaders.py`: `UniCanvasModelLoader` subclasses and their registry.
+- `models/base.py`: `UniCanvasModelModule`, the base class of every family.
+- `models/<family>.py`: one module per model family (defaults, turbo LoRA names,
+  family-specific downloads and the adapter class).
+- `models/__init__.py`: registers every family, in one place.
+- `pipeline.py`: `UniCanvasNodeStep` / `UniCanvasPipeline`.
+- `latents.py`, `sampling.py`, `generation.py`, `draw.py`: the shared draw path.
+
 ## Adding A Loader
 
-Add a `UniCanvasModelLoader` subclass in `nodes/unicanvas.py` when a model file
-format needs a different Comfy loader node.
+Add a `UniCanvasModelLoader` subclass in `nodes/unicanvas/loaders.py` when a
+model file format needs a different Comfy loader node.
 
 Required methods:
 
 - `cache_key(settings)`: include every setting that changes loaded assets.
 - `load_assets(settings)`: return `(model, clip, vae)`.
 
-Register it with:
+Register it next to the built-in loaders at the bottom of the registry section:
 
 ```python
 _register_unicanvas_model_loader(MyLoader("my_loader", ("alias",), forced_mode=None))
@@ -33,8 +45,10 @@ loading as SDXL-only.
 
 ## Adding An Inference Module
 
-Add a `UniCanvasModelModule` subclass when the model needs different prompt,
-latent, sampler, reference, or decode behavior.
+Create `nodes/unicanvas/models/my_model.py` with the family defaults and, when
+the model needs different prompt, latent, sampler, reference, or decode
+behavior, a `UniCanvasModelModule` subclass. Then register it in
+`nodes/unicanvas/models/__init__.py`.
 
 Simple modules usually override only defaults:
 

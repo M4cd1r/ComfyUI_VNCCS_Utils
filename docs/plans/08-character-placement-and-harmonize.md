@@ -153,7 +153,7 @@ later leaves the occluder in place. A table stays a table.
   perspective/light edits.
 - `web/vnccs_unicanvas_layer_tools.mjs`: menu items `harmonize`, `add-contact-shadow`,
   `add-cast-shadow`, `create-occluder`.
-- `nodes/unicanvas.py`: the `depth` route with model download/cache/unload, and the extended
+- `nodes/unicanvas/` (new `depth.py`, registered in `routes.py`): the `depth` route with model download/cache/unload, and the extended
   color match reference option (it can be built client-side; no backend change unless the
   current route requires a full reference image).
 

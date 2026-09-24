@@ -27,7 +27,7 @@ list is flat, with only two fixed sections (masks and rasters), and names are
 - `getNextLayerName(type)` generates "Layer N" style names.
 - Layer rows: `createLayerRow` / `updateLayerRow` / `refreshLayerRow`, with inline rename.
 - `transformers` and `huggingface_hub` are already in `requirements.txt`. The BiRefNet path in
-  `nodes/unicanvas.py` shows the lazy-download-on-first-use pattern.
+  `nodes/unicanvas/remove_bg.py` shows the lazy-download-on-first-use pattern.
 
 ## Part A - Layer groups
 
@@ -123,7 +123,7 @@ layer to `auto` and names it again.
 
 ### The small models
 
-A backend service in `nodes/unicanvas.py`, `POST /vnccs/unicanvas/describe_layers`, handles
+A backend service in `nodes/unicanvas/describe_layers.py`, `POST /vnccs/unicanvas/describe_layers`, handles
 batch requests: `[{ layerId, kind, prompt?, character?, thumbnail? }]` ->
 `[{ layerId, name, category, confidence }]`.
 
@@ -188,7 +188,7 @@ Rules + LLM (default) / Rules + LLM + vision`, and `Auto-file new layers into fo
   `renderLayerList` / `createLayerRow` (indent, folder rows, multi-select), in the render and
   flatten loops (isolated group compositing), in the move tool (group move), and in
   serialization and history.
-- `nodes/unicanvas.py`: the `describe_layers` route, model download/cache/unload, and the
+- `nodes/unicanvas/describe_layers.py` (registered in `routes.py`): the `describe_layers` route, model download/cache/unload, and the
   prompt templates.
 - `web/vnccs_unicanvas_modes.mjs`: `Ctrl+G` / `Ctrl+Shift+G`.
 

@@ -1,43 +1,23 @@
 import base64
-import importlib.util
 import io
 import json
-import sys
 import types
 import unittest
-from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
+from helpers.unicanvas_package import load_unicanvas_package
 
-ROOT = Path(__file__).resolve().parents[1]
 
-
-def _load_unicanvas_module():
+def _stub_torch():
     fake_torch = types.ModuleType("torch")
     fake_torch.Tensor = object
-    previous_torch = sys.modules.get("torch")
-    sys.modules["torch"] = fake_torch
-    try:
-        name = "vnccs_unicanvas_render_testmodule"
-        spec = importlib.util.spec_from_file_location(name, ROOT / "nodes" / "unicanvas.py")
-        module = importlib.util.module_from_spec(spec)
-        # Lazy relative imports inside unicanvas.py (e.g. .vncss_config) resolve against nodes/.
-        module.__package__ = "nodes"
-        if str(ROOT) not in sys.path:
-            sys.path.insert(0, str(ROOT))
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        if previous_torch is None:
-            sys.modules.pop("torch", None)
-        else:
-            sys.modules["torch"] = previous_torch
+    return fake_torch
 
 
-UNICANVAS = _load_unicanvas_module()
+# The whole package under a private name with a stub torch: the suite runs without torch.
+UNICANVAS = load_unicanvas_package("vnccs_unicanvas_render_test", torch_module=_stub_torch())
 
 
 def _data_url(image):
@@ -65,32 +45,32 @@ class UniCanvasRenderTests(unittest.TestCase):
 
     def test_panorama_output_is_full_size_and_independent_of_camera_and_bbox(self):
         state = self.panorama_state()
-        expected = UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+        expected = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
         self.assertEqual(expected.size, (8, 4))
         self.assertEqual(expected.getpixel((0, 2)), (255, 0, 0, 255))
         self.assertEqual(expected.getpixel((7, 2)), (255, 0, 0, 255))
         for yaw, pitch in [(180, 0), (90, 90), (-90, -90), (360, 0)]:
             state["panorama"].update(yaw=yaw, pitch=pitch, fov=120)
             state["bbox"] = {"x": -9999, "y": 9999, "width": 1024, "height": 1024}
-            actual = UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+            actual = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
             self.assertEqual(actual.tobytes(), expected.tobytes())
 
     def test_panorama_base_stays_below_edits_even_if_serialized_out_of_order(self):
         state = self.panorama_state()
         state["layers"].reverse()
-        result = UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
         self.assertEqual(result.getpixel((0, 2)), (255, 0, 0, 255))
 
     def test_panorama_layer_visibility_opacity_and_masks(self):
         state = self.panorama_state()
         state["layers"][0]["opacity"] = .5
-        result = UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
         self.assertAlmostEqual(result.getpixel((0, 2))[0], 137, delta=1)
         state["layers"][0]["type"] = "mask"
-        result = UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
         self.assertEqual(result.getpixel((0, 2)), (20, 40, 60, 255))
         state["layers"][1]["visible"] = False
-        result = UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
         self.assertEqual(result.getbbox(), None)
 
     def test_panorama_invalid_dimensions_and_projection_are_rejected(self):
@@ -98,13 +78,13 @@ class UniCanvasRenderTests(unittest.TestCase):
             state = self.panorama_state()
             state["panorama"].update(changes)
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+                UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
 
     def test_panorama_rejects_layer_images_from_a_different_document_size(self):
         state = self.panorama_state()
         state["layers"][0]["dataURL"] = _data_url(Image.new("RGBA", (2, 2)))
         with self.assertRaisesRegex(ValueError, "dimensions do not match"):
-            UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+            UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
 
     def test_panorama_does_not_silently_export_incomplete_or_offset_layers(self):
         for mutation, message in [("missing_base", "base layer is missing"), ("missing_pixels", "pixels are missing"), ("offset_crop", "dimensions do not match")]:
@@ -116,7 +96,7 @@ class UniCanvasRenderTests(unittest.TestCase):
             else:
                 state["layers"][0]["crop"]["x"] = 10000
             with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, message):
-                UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+                UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
 
     def test_panorama_compact_state_preserves_cached_spherical_pixels(self):
         cached = self.panorama_state()
@@ -125,17 +105,17 @@ class UniCanvasRenderTests(unittest.TestCase):
         live["layers"][0]["opacity"] = .75
         for layer in live["layers"]:
             layer.update(dataURL=None, cached=True)
-        merged = UNICANVAS._merge_unicanvas_state_with_cache(live, cached)
+        merged = UNICANVAS.state._merge_unicanvas_state_with_cache(live, cached)
         self.assertEqual(merged["panorama"]["yaw"], 123)
         self.assertEqual(merged["layers"][0]["opacity"], .75)
         self.assertEqual(merged["layers"][0]["dataURL"], cached["layers"][0]["dataURL"])
-        self.assertEqual(UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(merged)).size, (8, 4))
+        self.assertEqual(UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(merged)).size, (8, 4))
 
     def test_multiply_blend_matches_canvas_formula(self):
         backdrop = Image.new("RGBA", (1, 1), (100, 200, 50, 255))
         source = Image.new("RGBA", (1, 1), (200, 100, 255, 255))
 
-        result = UNICANVAS._alpha_composite_with_blend(backdrop, source, "multiply")
+        result = UNICANVAS.render._alpha_composite_with_blend(backdrop, source, "multiply")
 
         expected = tuple(round(a * b / 255) for a, b in zip((100, 200, 50), (200, 100, 255))) + (255,)
         self.assertEqual(result.getpixel((0, 0)), expected)
@@ -152,52 +132,52 @@ class UniCanvasRenderTests(unittest.TestCase):
             ],
         }
 
-        result = UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
 
         self.assertEqual(result.getpixel((0, 0)), (64, 64, 64, 255))
 
     def test_all_widget_blend_modes_produce_finite_rgba(self):
         backdrop = Image.new("RGBA", (2, 2), (70, 130, 220, 190))
         source = Image.new("RGBA", (2, 2), (210, 80, 40, 140))
-        for mode in UNICANVAS._UNICANVAS_BLEND_MODES:
+        for mode in UNICANVAS.render._UNICANVAS_BLEND_MODES:
             with self.subTest(mode=mode):
-                values = np.asarray(UNICANVAS._alpha_composite_with_blend(backdrop, source, mode))
+                values = np.asarray(UNICANVAS.render._alpha_composite_with_blend(backdrop, source, mode))
                 self.assertEqual(values.shape, (2, 2, 4))
                 self.assertTrue(np.isfinite(values).all())
 
     def test_output_dimensions_are_limited_before_allocation(self):
         state = {
-            "bbox": {"x": 0, "y": 0, "width": UNICANVAS._MAX_PIXELS + 1, "height": 1},
+            "bbox": {"x": 0, "y": 0, "width": UNICANVAS.render._MAX_PIXELS + 1, "height": 1},
             "layers": [],
         }
 
         with self.assertRaisesRegex(ValueError, "dimensions are too large"):
-            UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
+            UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
 
     def test_debug_tensor_inspection_is_disabled_by_default(self):
-        previous = UNICANVAS.UNICANVAS_DEBUG
+        previous = UNICANVAS.debug.UNICANVAS_DEBUG
         try:
-            UNICANVAS.UNICANVAS_DEBUG = 0
-            self.assertEqual(UNICANVAS._tensor_debug(object()), {})
-            self.assertEqual(UNICANVAS._latent_debug({"samples": object()}), {})
+            UNICANVAS.debug.UNICANVAS_DEBUG = 0
+            self.assertEqual(UNICANVAS.debug._tensor_debug(object()), {})
+            self.assertEqual(UNICANVAS.debug._latent_debug({"samples": object()}), {})
         finally:
-            UNICANVAS.UNICANVAS_DEBUG = previous
+            UNICANVAS.debug.UNICANVAS_DEBUG = previous
 
     def test_draw_progress_is_bounded(self):
-        UNICANVAS._DRAW_PROGRESS.clear()
+        UNICANVAS.progress._DRAW_PROGRESS.clear()
         now = 10_000.0
-        for index in range(UNICANVAS._DRAW_PROGRESS_MAX + 20):
-            UNICANVAS._DRAW_PROGRESS[str(index)] = {
+        for index in range(UNICANVAS.progress._DRAW_PROGRESS_MAX + 20):
+            UNICANVAS.progress._DRAW_PROGRESS[str(index)] = {
                 "stage": "sampling",
                 "updated_at": now + index,
             }
 
-        UNICANVAS._prune_draw_progress(now + UNICANVAS._DRAW_PROGRESS_MAX + 20)
+        UNICANVAS.progress._prune_draw_progress(now + UNICANVAS.progress._DRAW_PROGRESS_MAX + 20)
 
-        self.assertEqual(len(UNICANVAS._DRAW_PROGRESS), UNICANVAS._DRAW_PROGRESS_MAX)
+        self.assertEqual(len(UNICANVAS.progress._DRAW_PROGRESS), UNICANVAS.progress._DRAW_PROGRESS_MAX)
 
     def test_selected_sdxl_preset_forces_its_checkpoint(self):
-        settings = UNICANVAS._normalize_gen_settings({
+        settings = UNICANVAS.generation._normalize_gen_settings({
             "model_selection_mode": "presets",
             "selected_preset_id": "sdxl",
             "generation_mode": "sdxl",
@@ -217,7 +197,7 @@ class UniCanvasRenderTests(unittest.TestCase):
         self.assertEqual(settings["steps"], 31)
 
     def test_custom_checkpoint_is_not_overridden_by_preset_registry(self):
-        settings = UNICANVAS._normalize_gen_settings({
+        settings = UNICANVAS.generation._normalize_gen_settings({
             "model_selection_mode": "custom",
             "selected_preset_id": "sdxl",
             "generation_mode": "sdxl",

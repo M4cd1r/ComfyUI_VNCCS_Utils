@@ -4,8 +4,8 @@ import torch
 from PIL import Image
 
 from helpers.unicanvas_images import decode_png_data_url, png_data_url
-from nodes import unicanvas
-from nodes.unicanvas import (
+from nodes.unicanvas import color_match
+from nodes.unicanvas.color_match import (
     UC_COLOR_MATCH_METHODS,
     _apply_color_match_strength,
     _color_match_transfer,
@@ -42,7 +42,7 @@ def test_every_method_runs_on_small_tensors(monkeypatch, method):
             calls.append(method)
             return np.asarray(ref, dtype=np.uint8).copy()
 
-    monkeypatch.setattr(unicanvas, "_load_color_matcher_class", lambda: RecordingMatcher)
+    monkeypatch.setattr(color_match, "_load_color_matcher_class", lambda: RecordingMatcher)
 
     matched, engine = _color_match_transfer(_SRC, _REF, method)
 
@@ -70,7 +70,7 @@ def test_strength_scaling_blends_toward_matched():
 
 
 def test_missing_dependency_falls_back_to_pure_reinhard(monkeypatch):
-    monkeypatch.setattr(unicanvas, "_load_color_matcher_class", lambda: None)
+    monkeypatch.setattr(color_match, "_load_color_matcher_class", lambda: None)
 
     matched, engine = _color_match_transfer(_SRC, _REF, "mkl")
 
@@ -90,7 +90,7 @@ def test_reinhard_lab_gpu_matches_pure_reinhard():
 
 
 def test_run_color_match_preserves_alpha_and_reports_engine(monkeypatch):
-    monkeypatch.setattr(unicanvas, "_load_color_matcher_class", lambda: None)
+    monkeypatch.setattr(color_match, "_load_color_matcher_class", lambda: None)
     target = Image.new("RGBA", (4, 4), (200, 40, 40, 128))
     reference = Image.new("RGB", (4, 4), (40, 200, 40))
 

@@ -163,7 +163,7 @@ tracks and effects animate the baked pixels instead. Per-frame baking is out of 
   flatten, bounds, hit test and brush mapping; serialization; history kind.
 - `web/vnccs_unicanvas_pose.mjs`: the hidden-activation frame stepping and capture used by
   the frame cache (the cache itself lives in the timeline module).
-- `nodes/unicanvas.py`: the animation export job routes (begin/frames/end/cancel) and the
+- `nodes/unicanvas/` (new `animation_export.py`, registered in `routes.py`): the animation export job routes (begin/frames/end/cancel) and the
   encoders.
 
 ## Tests

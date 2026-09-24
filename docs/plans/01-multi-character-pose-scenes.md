@@ -31,7 +31,7 @@ every character of the scene with its own identity.
   or `{ source: "upload", name, dataURL }`. It is set from the Character reference card
   (`buildCharacterMenu` / `refreshCharacterMenu`) and validated by `poseCharacterIssue`.
   Generation (`UniCanvasPoseEditor.generation` -> `pose_edit { image1, image2 }` ->
-  `_prepare_pose_edit_images` in `nodes/unicanvas.py`) sends the pose render as `image1` and
+  `_prepare_pose_edit_images` in `nodes/unicanvas/draw.py`) sends the pose render as `image1` and
   the lower composite plus **the one** reference as `image2`. With several mannequins, the
   model cannot know which identity belongs to which mannequin. That is the gap this plan closes.
 - The Pose Library (Scene tab) loads **scene assets with a `characters` array**

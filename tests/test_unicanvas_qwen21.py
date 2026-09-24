@@ -1,17 +1,17 @@
 import pytest
 import torch
 
-from nodes.unicanvas import (
+from nodes.unicanvas.models.qwen_image21 import (
     QWEN21_SPECTRUM_PRESETS,
     QWEN_IMAGE21_ASPECT_PRESETS,
     QWEN_IMAGE21_DEFAULTS,
     QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT,
     QwenImage21UniCanvasModule,
     _apply_qwen21_spectrum,
-    _get_unicanvas_model_module,
     _qwen21_spectrum_config,
     _qwen21_spectrum_settings,
 )
+from nodes.unicanvas.models.registry import _get_unicanvas_model_module
 
 
 def test_module_registered_with_aliases():
@@ -255,7 +255,7 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
             return decoded
 
     monkeypatch.setattr(
-        "nodes.unicanvas._load_generation_assets",
+        "nodes.unicanvas.models.qwen_image21._load_generation_assets",
         lambda settings: ("MODEL", "CLIP", FakeVae()),
     )
 
@@ -265,13 +265,13 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
             return ("POS", "NEG")
         raise AssertionError(f"unexpected node call: {class_name}")
 
-    monkeypatch.setattr("nodes.unicanvas._call_comfy_node", fake_call_comfy_node)
+    monkeypatch.setattr("nodes.unicanvas.models.qwen_image21._call_comfy_node", fake_call_comfy_node)
 
     def fake_sample(**kwargs):
         captured["sample_latent"] = kwargs["latent"]
         return kwargs["latent"]
 
-    monkeypatch.setattr("nodes.unicanvas._sample_generation_latent_default", fake_sample)
+    monkeypatch.setattr("nodes.unicanvas.models.base._sample_generation_latent_default", fake_sample)
 
     image = torch.rand(48, 80, 3)  # (H,W,3) contract input
     rgba = module.remove_background(image)

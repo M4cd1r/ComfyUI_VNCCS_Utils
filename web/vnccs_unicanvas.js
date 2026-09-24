@@ -2139,7 +2139,7 @@ class UniCanvasWidget {
   // A linked config supplies the model/clip/vae tensors from the graph (model_loader "external"), so
   // generation_mode belongs to the user's Mode-list pick and the preset paths must not write it. This
   // mirrors the backend, which drops model_selection_mode/selected_preset_id for external draws
-  // (nodes/unicanvas.py). Without a linked config this returns null and the preset keeps owning
+  // (nodes/unicanvas/draw.py). Without a linked config this returns null and the preset keeps owning
   // generation_mode exactly as before.
   _presetPinnedGenerationMode() {
     return this._isConfigLinked() ? this.settings.generation_mode : null;
@@ -2545,7 +2545,7 @@ class UniCanvasWidget {
   }
 
   // A linked VNCSS Config overrides the node's model, CLIP, VAE, LoRAs and reference images
-  // (nodes/unicanvas.py ignores the node's own values on external draws), so those controls are
+  // (nodes/unicanvas/draw.py ignores the node's own values on external draws), so those controls are
   // greyed out and inert while the link exists. Mode (model family) and sampling stay editable.
   syncConfigOverride() {
     const linked = this._isConfigLinked();

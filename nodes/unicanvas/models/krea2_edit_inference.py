@@ -2,7 +2,7 @@
 
 Upstream: https://github.com/lbouaraba/comfyui-krea2edit
 Revision: 86f886dac23013d88996e3a2e99093ba44d322fb (Apache-2.0).
-See ../licenses/comfyui-krea2edit-LICENSE and ../licenses/comfyui-krea2edit-NOTICE.
+See ../../../licenses/comfyui-krea2edit-LICENSE and ../../../licenses/comfyui-krea2edit-NOTICE.
 Changes: private single-source wrapper, mandatory image grounding, pre-sampling
 encoding, target-size validation; removed node registration and diagnostic prints.
 """

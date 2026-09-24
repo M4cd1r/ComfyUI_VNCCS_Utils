@@ -6,14 +6,10 @@ import pytest
 import torch
 from PIL import Image
 
-from nodes.unicanvas import (
-    _MODEL_CACHE,
-    MiniMaxH3UniCanvasModule,
-    _call_comfy_node,
-    _get_unicanvas_model_loader,
-    _get_unicanvas_model_module,
-    _load_generation_assets,
-)
+from nodes.unicanvas.comfy_bridge import _call_comfy_node
+from nodes.unicanvas.loaders import _MODEL_CACHE, _get_unicanvas_model_loader, _load_generation_assets
+from nodes.unicanvas.models.minimax_h3 import MiniMaxH3UniCanvasModule
+from nodes.unicanvas.models.registry import _get_unicanvas_model_module
 
 
 def test_module_registered_with_aliases():
@@ -111,7 +107,7 @@ def test_reference_mapping_order(monkeypatch):
             return ({"samples": torch.zeros(1, 4, 8, 8)}, {"samples": torch.zeros(1, 4, 8, 8)})
         raise AssertionError(name)
 
-    monkeypatch.setattr("nodes.unicanvas._call_comfy_node", fake_call)
+    monkeypatch.setattr("nodes.unicanvas.models.minimax_h3._call_comfy_node", fake_call)
     gen_settings = {
         "_h3_prompt": "Keep the face from <Picture 2>.",
         "_h3_reference_image": torch.zeros(1, 64, 64, 3),
@@ -153,7 +149,7 @@ def test_decode_samples_takes_first_frame(monkeypatch):
         captured.update(kwargs)
         return (frames,)
 
-    monkeypatch.setattr("nodes.unicanvas._call_comfy_node", fake_call)
+    monkeypatch.setattr("nodes.unicanvas.models.minimax_h3._call_comfy_node", fake_call)
     out = module.decode_samples("V", samples, {"_draw_id": "t"})
     assert out.shape[0] == 1
     assert torch.equal(out, frames[:1])
@@ -171,7 +167,7 @@ def test_decode_samples_single_frame_passes_through(monkeypatch):
     module = _get_unicanvas_model_module("minimax_h3")
     frame = torch.zeros(1, 32, 32, 3)
     monkeypatch.setattr(
-        "nodes.unicanvas._call_comfy_node",
+        "nodes.unicanvas.models.minimax_h3._call_comfy_node",
         lambda name, **kwargs: (frame,) if name == "VAEDecodeTiled" else (_ for _ in ()).throw(AssertionError(name)),
     )
     out = module.decode_samples("V", torch.zeros(1, 4, 8, 8), {"_draw_id": "t"})
@@ -194,7 +190,7 @@ def test_sample_latent_requires_audio_vae():
 
 
 def test_graph_generate_runs_draw_and_returns_tensor(monkeypatch):
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import node as uc
     from nodes.vncss_config import VNCCS_Config
 
     captured = {}
@@ -237,7 +233,7 @@ def test_graph_generate_runs_draw_and_returns_tensor(monkeypatch):
 
 
 def test_graph_generate_without_config_keeps_legacy_export(monkeypatch):
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import node as uc
 
     monkeypatch.setattr(
         uc, "_render_unicanvas_state_to_image_tensor", lambda state: torch.zeros(1, 4, 4, 3)
@@ -247,7 +243,7 @@ def test_graph_generate_without_config_keeps_legacy_export(monkeypatch):
 
 
 def test_result_store_roundtrip():
-    from nodes.unicanvas import _store_draw_result, _get_draw_result
+    from nodes.unicanvas.progress import _store_draw_result, _get_draw_result
 
     _store_draw_result("draw-x", {"images": ["data:x"], "mask": None})
     assert _get_draw_result("draw-x") == {"present": True, "images": ["data:x"], "mask": None}
@@ -258,7 +254,7 @@ def test_result_store_prunes_expired_entries():
     """Results are TTL-pruned on store and fetch; fresh entries survive both prunes."""
     import time
 
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import progress as uc
 
     uc._DRAW_RESULTS.clear()
     expired_at = time.time() - (uc._DRAW_RESULTS_TTL_SECONDS + 60)
@@ -279,7 +275,7 @@ def test_result_store_prunes_expired_entries():
 
 def test_external_payload_selects_external_loader(monkeypatch):
     """A graph-generation payload forwards its VNCSS_CONFIG block to the pass-through loader."""
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import draw as uc
 
     buffer = io.BytesIO()
     Image.new("RGB", (64, 64), (0, 0, 0)).save(buffer, format="PNG")
@@ -306,7 +302,7 @@ def test_external_payload_selects_external_loader(monkeypatch):
 
 def test_external_block_wins_over_preset_merge(monkeypatch):
     """Widget default settings select the 'sdxl' preset; a config-linked draw must still use the wired config."""
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import draw as uc
 
     image_buffer = io.BytesIO()
     Image.new("RGB", (64, 64), (0, 0, 0)).save(image_buffer, format="PNG")
@@ -344,7 +340,7 @@ def test_external_block_wins_over_preset_merge(monkeypatch):
 
 def test_external_config_overrides_node_loras_turbo_and_uploads(monkeypatch):
     """A linked config owns LoRAs and references: the node's greyed-out values never stack on top."""
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import draw as uc
 
     image_buffer = io.BytesIO()
     Image.new("RGB", (64, 64), (0, 0, 0)).save(image_buffer, format="PNG")
@@ -379,7 +375,7 @@ def test_external_config_overrides_node_loras_turbo_and_uploads(monkeypatch):
 
 def test_node_draw_keeps_its_own_loras_and_uploads(monkeypatch):
     """Without a config the node's LoRA stack and uploaded references still apply."""
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import draw as uc
 
     image_buffer = io.BytesIO()
     Image.new("RGB", (64, 64), (0, 0, 0)).save(image_buffer, format="PNG")
@@ -406,7 +402,7 @@ def test_node_draw_keeps_its_own_loras_and_uploads(monkeypatch):
 
 def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
     """The queued path replays the frontend draw() composition keys verbatim."""
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import node as uc
     from nodes.vncss_config import VNCCS_Config
 
     captured = {}
@@ -466,7 +462,7 @@ def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
 )
 def test_export_state_falls_back_to_canvas_render_without_queued_draw(monkeypatch, settings):
     """A plain Queue Prompt has no fresh composition: the node renders the canvas instead of raising."""
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import node as uc
     from nodes.vncss_config import VNCCS_Config
 
     rendered = []
@@ -494,7 +490,7 @@ def test_h3_without_connected_config_fails_fast():
     The Diffusion-Model loader is the reachable config-free case: it does not force a family, so a
     MiniMax H3 pick (the Mode list is enabled for that loader) reaches the H3 module.
     """
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import draw as uc
 
     with pytest.raises(
         RuntimeError,
@@ -509,7 +505,7 @@ def test_h3_without_connected_config_fails_fast():
 
 def test_h3_with_connected_config_reaches_the_external_loader(monkeypatch):
     """Regression guard for the H3 fail-fast: a forwarded external block still selects the pass-through loader."""
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import draw as uc
 
     captured = {}
 
@@ -535,7 +531,8 @@ def test_h3_with_connected_config_reaches_the_external_loader(monkeypatch):
 
 def test_queued_draw_payload_reaches_the_real_draw_pipeline(monkeypatch):
     """The forwarded composition gets past source decoding instead of dying on 'Missing image data'."""
-    from nodes import unicanvas as uc
+    from nodes.unicanvas import draw as uc_draw
+    from nodes.unicanvas import node as uc
     from nodes.vncss_config import VNCCS_Config
 
     image_buffer = io.BytesIO()
@@ -547,7 +544,7 @@ def test_queued_draw_payload_reaches_the_real_draw_pipeline(monkeypatch):
         captured.update(gen_settings)
         raise RuntimeError("stop after asset selection")
 
-    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    monkeypatch.setattr(uc_draw, "_load_generation_assets", fake_load_assets)
     config = VNCCS_Config().execute(
         '{"loras": [], "edit_model": False}', model="M", clip="C", vae="V",
     )[0]

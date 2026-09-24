@@ -7,7 +7,7 @@ and its persistence is fragile:
 
 - Node mode keeps a light state in the `unicanvas_state` widget and the full state in a
   **server cache under ComfyUI's temp directory** (`_UNICANVAS_STATE_CACHE_DIR` in
-  `nodes/unicanvas.py`). ComfyUI clears the temp directory on startup, so the full state
+  `nodes/unicanvas/state.py`). ComfyUI clears the temp directory on startup, so the full state
   survives only through the `localStorage` backup (`saveLocalStateBackup`), which silently
   gives up when the state is too large.
 - Standalone mode persists **only** to `localStorage` (`writeStandaloneState` in
@@ -76,7 +76,7 @@ are deleted.
 shows `Saved` / `Saving...` / `Offline - retrying`. Failed saves retry with backoff and keep
 the dirty set. Nothing is dropped.
 
-**Routes** (`nodes/unicanvas.py`, all under `/vnccs/unicanvas/projects`):
+**Routes** (`nodes/unicanvas/routes.py`, all under `/vnccs/unicanvas/projects`):
 
 - `GET` list (id, name, updatedAt, scene count, thumbnail)
 - `POST` create
@@ -196,10 +196,10 @@ blobs referenced by a scene or asset.
   (`scheduleStateUpload` / `flushStateUpload` route to the project when attached).
 - `web/vnccs_unicanvas_modes.mjs`: standalone persistence switches to projects and keeps only
   the last ids in `localStorage`.
-- New `nodes/unicanvas_projects.py` (keeps `nodes/unicanvas.py` from growing further):
+- New `nodes/unicanvas/projects.py`:
   storage, path safety, blob store, GC, zip export/import, and the routes. It is registered
   from the same `PromptServer` block as the other routes. `export_state` in
-  `nodes/unicanvas.py` gains the project read path.
+  `nodes/unicanvas/node.py` gains the project read path.
 
 ## Tests
 
