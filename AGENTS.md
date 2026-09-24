@@ -63,9 +63,12 @@ geometry) is produced by `node evidence.mjs --topic <topic> --phase before|after
 `<phase>.geometry.json` and, on `compose`, a labelled `<topic>.pair.png` plus a standalone
 `<topic>.after.png`. Keep the local copy and host it on an `evidence/<topic>` branch when
 opening a PR. Interaction-heavy topics may need their own scenario step in `evidence.mjs`
-(the per-task artifacts record which scenario a topic's pair came from); the
-`mannequin-options` default crop, for example, does not open the pose editor, so that topic's
-pair comes from the explicitly captured feature pair.
+(the per-task artifacts record which scenario a topic's pair came from). Built-in scenarios:
+`settings-panel` (opens the gear popover), `pose-editor` (imports `fixtures/backdrop.png`, then
+opens the pose editor - the Pose Studio tool, or `Add pose layer` on older builds),
+`config-override` (a `VNCCS_Config` node linked to a UniCanvas node) and `icons` (sidebar and
+tool column crop). ComfyUI resolves the custom-node path at startup, so a `before` capture of an
+older commit needs the server restarted on a worktree of that commit.
 
 ## Test platform (Docker)
 
