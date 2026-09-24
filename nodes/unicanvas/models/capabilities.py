@@ -185,14 +185,22 @@ class ModelCapabilities:
     def outputs(self) -> frozenset[MediaKind]:
         return frozenset(task.output for task in self.tasks)
 
-    def supports_task(self, key: str) -> bool:
-        return any(task.key == key and task.available for task in self.tasks)
-
-    def task(self, key: str) -> GenerationTask:
+    def declared_task(self, key: str) -> GenerationTask | None:
+        """The family's own declaration of a task (it may be planned), or None."""
         for task in self.tasks:
             if task.key == key:
                 return task
-        raise KeyError(key)
+        return None
+
+    def supports_task(self, key: str) -> bool:
+        task = self.declared_task(key)
+        return task is not None and task.available
+
+    def task(self, key: str) -> GenerationTask:
+        task = self.declared_task(key)
+        if task is None:
+            raise KeyError(key)
+        return task
 
     def describe(self) -> dict[str, Any]:
         return {

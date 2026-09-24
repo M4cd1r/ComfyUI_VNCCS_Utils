@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
@@ -46,6 +46,7 @@ QWEN_IMAGE_EDIT_DEFAULTS = {
 
 @dataclass(frozen=True)
 class QwenImageEditUniCanvasModule(UniCanvasModelModule):
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_qwen_edit_reference_image", "_qwen_edit_mask", "_qwen_edit_latent")
     capabilities: ModelCapabilities = ModelCapabilities(
         label="Qwen Edit",
         references=ReferenceInputs(max_images=10, slot_label="Picture {n}"),
@@ -353,3 +354,54 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
         return super().decode_samples(vae, samples, _gen_settings)
+
+    # -- draw hooks -----------------------------------------------------------------------
+
+    def prepare_pose_edit(self, ctx) -> None:
+        super().prepare_pose_edit(ctx)
+        ctx.settings["qwen_latent_image_index"] = 1
+
+    def bind_draw_assets(self, ctx) -> None:
+        ctx.settings["_qwen_edit_clip"] = ctx.clip
+        ctx.settings["_qwen_edit_vae"] = ctx.vae
+
+    def encode_draw_prompts(self, ctx) -> tuple[Any, Any]:
+        _uc_log(
+            ctx.draw_id,
+            "Qwen Image Edit prompt encoding deferred",
+            {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
+        )
+        return [], []
+
+    def on_mask_prepared(self, ctx) -> None:
+        if ctx.mask is not None:
+            ctx.settings["_qwen_edit_mask"] = ctx.mask
+
+    def prepare_generation_latent(self, ctx) -> Any:
+        reference_latent = ctx.settings.get("_qwen_edit_latent")
+        if ctx.latent_source == "source" and isinstance(reference_latent, dict):
+            _uc_log(
+                ctx.draw_id,
+                "Qwen Image Edit uses encoder reference latent",
+                {"reason": "matches VNCCS_QWEN_Encoder output latent", "latent": _latent_debug(reference_latent)},
+            )
+            return reference_latent
+        return super().prepare_generation_latent(ctx)
+
+    def prepare_masked_latent(self, ctx) -> tuple[Any, Any, Any]:
+        _uc_log(
+            ctx.draw_id,
+            "Qwen Image Edit masked latent uses prepared reference latent",
+            {"reason": "Qwen Image Edit 2511 edits from reference_latents instead of SDXL inpaint conditioning"},
+        )
+        image_tensor = ctx.image_tensor
+        batch_size = max(1, int((ctx.settings or {}).get("batch_size", 1) or 1))
+        return ctx.positive, ctx.negative, {
+            "samples": torch.zeros(
+                [batch_size, 16, max(1, image_tensor.shape[1] // 8), max(1, image_tensor.shape[2] // 8)],
+                dtype=image_tensor.dtype,
+            )
+        }
+
+    def after_latent_prepared(self, ctx) -> None:
+        ctx.settings["_qwen_edit_latent"] = ctx.latent

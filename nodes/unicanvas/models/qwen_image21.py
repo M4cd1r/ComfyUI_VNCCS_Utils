@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
@@ -269,6 +269,13 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     aliases: tuple[str, ...] = ("qwen-image-2.1", "qwen_image_21", "qwenimage21", "qi21", "qwen21")
     defaults: dict[str, Any] = field(default_factory=lambda: dict(QWEN_IMAGE21_DEFAULTS))
     is_edit_model: bool = True
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = (
+        "_qwen21_latent",
+        "_qwen21_clip",
+        "_qwen21_prompts",
+        "_qwen21_prompt",
+        "_qwen21_negative_prompt",
+    )
     lora_requirements: tuple[LoraRequirement, ...] = (
         LoraRequirement(
             name_setting="qwen_lora_name",
@@ -581,3 +588,19 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         if negative is None:
             negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in positive]
         return positive, negative
+
+    # -- draw hooks -----------------------------------------------------------------------
+
+    def prepare_generation_latent(self, ctx) -> Any:
+        # Qwen-Image-2.1 owns its 64-channel RGBA latents: the <image1> working-area latent
+        # is prepared during reference conditioning and inpaint/outpaint are img2img runs
+        # with mask paste-back (spec 9), so no InpaintModelConditioning context is built.
+        latent = ctx.settings.get("_qwen21_latent")
+        if not isinstance(latent, dict):
+            latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
+        _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
+        return latent
+
+    def prepare_model_for_sampling(self, ctx) -> Any:
+        # Spectrum acceleration runs after every model mutation (the LoRA stack included).
+        return _apply_qwen21_spectrum(ctx.model, ctx.settings, ctx.draw_id)

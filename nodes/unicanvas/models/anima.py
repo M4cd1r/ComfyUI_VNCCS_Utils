@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
@@ -46,6 +46,7 @@ ANIMA_DEFAULTS = {
 
 @dataclass(frozen=True)
 class AnimaUniCanvasModule(UniCanvasModelModule):
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_anima_lllite_image", "_anima_lllite_mask")
     capabilities: ModelCapabilities = ModelCapabilities(
         label="Anima",
         default_loader="diffusion_model",
@@ -205,6 +206,43 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         if decoded is not None:
             return decoded
         return vae.decode_tiled(latent_tensor, tile_x=512, tile_y=512, overlap=64)
+
+    # -- draw hooks -----------------------------------------------------------------------
+
+    def prepare_masked_inputs(self, ctx) -> None:
+        if not ctx.is_masked or not bool(ctx.settings.get("anima_lllite_inpaint", True)):
+            return
+        ctx.settings["_anima_lllite_image"] = ctx.image_tensor
+        ctx.settings["_anima_lllite_mask"] = ctx.mask
+        _uc_log(
+            ctx.draw_id,
+            "Anima LLLite inputs prepared",
+            {
+                "mode": ctx.mode,
+                "image": _tensor_debug(ctx.image_tensor),
+                "mask": _tensor_debug(ctx.mask),
+                "weights": ctx.settings.get("anima_lllite_name"),
+            },
+        )
+
+    def prepare_masked_latent(self, ctx) -> tuple[Any, Any, Any]:
+        if not bool((ctx.settings or {}).get("anima_lllite_inpaint", True)):
+            return super().prepare_masked_latent(ctx)
+        latent = self.create_empty_latent(
+            int(ctx.image_tensor.shape[2]),
+            int(ctx.image_tensor.shape[1]),
+            ctx.settings or {},
+            draw_id=ctx.draw_id,
+        )
+        _uc_log(
+            ctx.draw_id,
+            "Anima LLLite empty latent returned",
+            {
+                "reason": "Anima LLLite inpaint workflow uses an empty latent; structure comes through the bundled LLLite model wrapper",
+                "latent": _latent_debug(latent),
+            },
+        )
+        return ctx.positive, ctx.negative, latent
 
 
 def _ensure_anima_lllite_model(lllite_name: str, draw_id: str = "unknown") -> str:

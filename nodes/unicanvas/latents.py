@@ -218,49 +218,6 @@ def _prepare_masked_generation_latent(
     draw_id: str = "unknown",
     gen_settings: dict[str, Any] | None = None,
 ) -> tuple[Any, Any, dict[str, Any]]:
-    if model_module.key == "qwen_image_edit":
-        _uc_log(
-            draw_id,
-            "Qwen Image Edit masked latent uses prepared reference latent",
-            {"reason": "Qwen Image Edit 2511 edits from reference_latents instead of SDXL inpaint conditioning"},
-        )
-        batch_size = max(1, int((gen_settings or {}).get("batch_size", 1) or 1))
-        return positive, negative, {
-            "samples": torch.zeros(
-                [batch_size, 16, max(1, image_tensor.shape[1] // 8), max(1, image_tensor.shape[2] // 8)],
-                dtype=image_tensor.dtype,
-            )
-        }
-
-    if model_module.key == "z_image" and bool((gen_settings or {}).get("fun_controlnet_inpaint", True)):
-        latent = _encode_source_latent(vae, image_tensor, mask, grow_mask_by, draw_id=draw_id)
-        _uc_log(
-            draw_id,
-            "Z-image Fun ControlNet source latent returned",
-            {
-                "reason": "Fun ControlNet workflow uses VAE-encoded current source latent instead of an empty latent",
-                "latent": _latent_debug(latent),
-            },
-        )
-        return positive, negative, latent
-
-    if model_module.key == "anima" and bool((gen_settings or {}).get("anima_lllite_inpaint", True)):
-        latent = model_module.create_empty_latent(
-            int(image_tensor.shape[2]),
-            int(image_tensor.shape[1]),
-            gen_settings or {},
-            draw_id=draw_id,
-        )
-        _uc_log(
-            draw_id,
-            "Anima LLLite empty latent returned",
-            {
-                "reason": "Anima LLLite inpaint workflow uses an empty latent; structure comes through the bundled LLLite model wrapper",
-                "latent": _latent_debug(latent),
-            },
-        )
-        return positive, negative, latent
-
     if mode == "inpaint":
         positive, negative, native_latent = _prepare_inpaint_model_conditioning(
             positive=positive,

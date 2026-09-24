@@ -43,6 +43,7 @@ except ImportError:
 UC = load_unicanvas_package(PACKAGE, torch_module=torch)
 BASE = UC.models.base
 DRAW = UC.draw
+DRAW_PIPELINE = UC.draw_pipeline
 GENERATION = UC.generation
 KREA2 = UC.models.krea2_edit
 PRESETS = UC.presets
@@ -183,7 +184,7 @@ class EditContractTests(unittest.TestCase):
     def test_text_only_or_empty_source_rejected_before_loading_weights(self):
         for mode, empty, alpha in [("txt2img", False, 255), ("img2img", True, 255), ("inpaint", False, 0)]:
             with self.subTest(mode=mode, empty=empty, alpha=alpha), \
-                 patch.object(DRAW, "_load_generation_assets") as loader, self.assertRaisesRegex(ValueError, "requires an image"):
+                 patch.object(DRAW_PIPELINE, "_load_generation_assets") as loader, self.assertRaisesRegex(ValueError, "requires an image"):
                 DRAW._run_unicanvas_draw({"settings": self.settings(), "mode": mode, "source_empty": empty, "image": source_url(alpha)})
             loader.assert_not_called()
 
@@ -193,19 +194,19 @@ class EditContractTests(unittest.TestCase):
             with self.subTest(mode=mode), ExitStack() as stack:
                 prepared = Mock(return_value=([ [torch.zeros(1, 1, 1), {}] ], [ [torch.zeros(1, 1, 1), {}] ]))
                 target = {"samples": torch.zeros(1, 16, 8, 8)}
-                replacements = {
-                    "_load_generation_assets": (object(), object(), object()),
-                    "_apply_generation_loras": (object(), object()),
-                    "_create_empty_generation_latent": target,
-                    "_decode_generation_samples": torch.ones(1, 64, 64, 3),
-                    "_save_temp_image": {"filename": "result.png"},
-                }
-                for name, result in replacements.items():
-                    stack.enter_context(patch.object(DRAW, name, return_value=result))
-                stack.enter_context(patch.object(KREA2.Krea2EditUniCanvasModule, "prepare_reference_conditioning", prepared))
-                masked = stack.enter_context(patch.object(DRAW, "_prepare_masked_generation_latent", side_effect=AssertionError("must not use SD inpaint latent")))
-                encode = stack.enter_context(patch.object(DRAW, "_encode_source_latent", side_effect=AssertionError("must not initialize with source")))
-                sampler = stack.enter_context(patch.object(DRAW, "_sample_generation_latent", return_value=target))
+                family = KREA2.Krea2EditUniCanvasModule
+                for owner, name, result in [
+                    (DRAW_PIPELINE, "_load_generation_assets", (object(), object(), object())),
+                    (DRAW_PIPELINE, "_save_temp_image", {"filename": "result.png"}),
+                    (family, "apply_loras", (object(), object())),
+                    (family, "create_empty_latent", target),
+                    (family, "decode_samples", torch.ones(1, 64, 64, 3)),
+                ]:
+                    stack.enter_context(patch.object(owner, name, return_value=result))
+                stack.enter_context(patch.object(family, "prepare_reference_conditioning", prepared))
+                masked = stack.enter_context(patch.object(BASE, "_prepare_masked_generation_latent", side_effect=AssertionError("must not use SD inpaint latent")))
+                encode = stack.enter_context(patch.object(BASE, "_encode_source_latent", side_effect=AssertionError("must not initialize with source")))
+                sampler = stack.enter_context(patch.object(family, "sample_latent", return_value=target))
                 result = DRAW._run_unicanvas_draw({"settings": self.settings(), "mode": mode, "image": source_url(), "mask": source_url()})
                 self.assertEqual(result["generation_mode"], "krea2_edit")
                 self.assertEqual(result["width"], 64)

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
 from ..comfy_bridge import _call_node_method
 from ..debug import _conditioning_debug, _latent_debug, _tensor_debug, _uc_log
+from ..latents import _encode_source_latent
 from ..loras import _clone_model_clip, _load_model_patch
 from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
+from ..sampling import _preload_vae_for_direct_decode, _unload_vae_after_direct_decode
 from .base import UniCanvasModelModule
 from .capabilities import ModelCapabilities, PromptGuide
 
@@ -41,6 +44,13 @@ Z_IMAGE_DEFAULTS = {
 
 @dataclass(frozen=True)
 class ZImageUniCanvasModule(UniCanvasModelModule):
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = (
+        "_z_image_fun_controlnet_image",
+        "_z_image_fun_controlnet_mask",
+        "_z_image_fun_controlnet_vae",
+        "_z_image_fun_controlnet_patch_model",
+    )
+    decode_tile_size: ClassVar[int] = 256
     capabilities: ModelCapabilities = ModelCapabilities(
         label="Z-image",
         default_loader="diffusion_model",
@@ -297,6 +307,59 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
         return super().decode_samples(vae, latent_payload, _gen_settings)
 
+    # -- draw hooks -----------------------------------------------------------------------
+
+    def prepare_draw_assets(self, ctx) -> None:
+        _preload_z_image_fun_controlnet_patch(ctx.settings, ctx.mode, ctx.draw_id)
+
+    def preload_vae(self, ctx) -> None:
+        if _masked_draw(ctx.settings):
+            _preload_vae_for_direct_decode(ctx.vae, ctx.settings, ctx.draw_id)
+
+    def release_vae(self, ctx) -> None:
+        if _masked_draw(ctx.settings):
+            _unload_vae_after_direct_decode(ctx.vae, ctx.settings, ctx.draw_id)
+
+    def on_masked_mode_dropped(self, ctx) -> None:
+        if ctx.settings.pop("_z_image_fun_controlnet_patch_model", None) is None:
+            return
+        gc.collect()
+        with contextlib.suppress(Exception):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        _uc_log(ctx.draw_id, "Z-image Fun ControlNet patch released after empty mask mode switch", {"to_mode": ctx.mode})
+
+    def prepare_masked_inputs(self, ctx) -> None:
+        if not ctx.is_masked:
+            return
+        ctx.settings["_z_image_fun_controlnet_image"] = ctx.image_tensor
+        ctx.settings["_z_image_fun_controlnet_mask"] = ctx.mask
+        ctx.settings["_z_image_fun_controlnet_vae"] = ctx.vae
+        _uc_log(
+            ctx.draw_id,
+            "Z-image Fun ControlNet inputs prepared",
+            {
+                "mode": ctx.mode,
+                "image": _tensor_debug(ctx.image_tensor),
+                "mask": _tensor_debug(ctx.mask),
+                "patch": ctx.settings.get("fun_controlnet_patch_name"),
+            },
+        )
+
+    def prepare_masked_latent(self, ctx) -> tuple[Any, Any, Any]:
+        if not bool((ctx.settings or {}).get("fun_controlnet_inpaint", True)):
+            return super().prepare_masked_latent(ctx)
+        latent = _encode_source_latent(ctx.vae, ctx.image_tensor, ctx.mask, ctx.request.grow_mask_by, draw_id=ctx.draw_id)
+        _uc_log(
+            ctx.draw_id,
+            "Z-image Fun ControlNet source latent returned",
+            {
+                "reason": "Fun ControlNet workflow uses VAE-encoded current source latent instead of an empty latent",
+                "latent": _latent_debug(latent),
+            },
+        )
+        return ctx.positive, ctx.negative, latent
+
 
 def _preload_z_image_fun_controlnet_patch(gen_settings: dict[str, Any], mode: str, draw_id: str = "unknown") -> None:
     if str(gen_settings.get("generation_mode") or "").lower() != "z_image":
@@ -380,3 +443,7 @@ def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknow
 
     _uc_log(draw_id, "Z-image Fun ControlNet model downloaded", {"path": target_path})
     return basename
+
+
+def _masked_draw(settings: dict[str, Any]) -> bool:
+    return str((settings or {}).get("draw_mode") or "").lower() in {"inpaint", "outpaint"}

@@ -70,6 +70,8 @@ def test_capabilities_derive_accepted_inputs_from_tasks_and_references():
     assert capabilities.supports_task("image_to_video")
     assert not capabilities.supports_task("inpaint")
     assert capabilities.task("text_to_image").key == "text_to_image"
+    assert capabilities.declared_task("image_to_video").key == "image_to_video"
+    assert capabilities.declared_task("inpaint") is None
     with pytest.raises(KeyError):
         capabilities.task("inpaint")
 

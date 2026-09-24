@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import ClassVar
 
 from ..comfy_bridge import _call_node_method
 from ..latents import _unwrap_latent_samples
@@ -31,6 +33,8 @@ KREA2_EDIT_DEFAULTS = {
 @dataclass(frozen=True)
 class Krea2EditUniCanvasModule(UniCanvasModelModule):
     """Identity Edit v1.2: mandatory LoRA, grounded Qwen3-VL and clean source tokens."""
+
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_krea2_edit_clip", "_krea2_edit_image", "_krea2_edit_vae")
 
     capabilities: ModelCapabilities = ModelCapabilities(
         label="Krea2 Edit",
@@ -100,3 +104,18 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
 
     def decode_samples(self, vae, samples, gen_settings):
         return vae.decode(_unwrap_latent_samples(samples))
+
+    # -- settings and draw hooks ------------------------------------------------------------
+
+    def normalize_settings(self, settings):
+        likeness = float(settings.get("krea2_likeness", 4.0))
+        if not math.isfinite(likeness) or not 0 <= likeness <= 10:
+            raise ValueError("Krea2 Edit likeness must be between 0 and 10")
+        settings["krea2_likeness"] = likeness
+        settings["denoise"] = 1.0
+        return settings
+
+    def prepare_generation_latent(self, ctx):
+        # Every edit mode samples a fresh noise target; the source only enters through
+        # the grounded conditioning and the patched model, never as the initial latent.
+        return self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
