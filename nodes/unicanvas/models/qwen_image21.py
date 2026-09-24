@@ -10,6 +10,7 @@ VAELoader, driven through ``DiffusionModelUniCanvasLoader``.
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 from dataclasses import dataclass, field
@@ -18,10 +19,10 @@ from typing import Any, ClassVar
 import torch
 
 from ..comfy_bridge import _call_comfy_node
-from ..debug import _conditioning_debug, _latent_debug, _uc_log
+from ..debug import _conditioning_debug, _latent_debug, _uc_log, debug_enabled
 from ..loaders import _load_generation_assets
 from ..loras import LoraRequirement
-from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
+from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 
@@ -74,31 +75,49 @@ QWEN21_SPECTRUM_PRESETS: dict[str, dict[str, Any]] = {
 }
 QWEN21_SPECTRUM_DEFAULTS: dict[str, Any] = {"enabled": False, **QWEN21_SPECTRUM_MODERATE}
 
+def _qwen21_encoder_resolution(width: int, height: int) -> int:
+    """TextEncodeQwenImage21's ``resolution``: the side of a square with the generation's area.
+
+    The node resizes every reference to about ``resolution x resolution`` pixels (aspect kept,
+    multiples of 32). Passing the pixel count instead (width * height) asked it for a
+    million-by-million image and failed with a MemoryError.
+    """
+    side = math.sqrt(max(1, int(width)) * max(1, int(height)))
+    return max(32, int(round(side / 32)) * 32)
+
+
 QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "generation_mode": "qwen_image21",
     "model_loader": "diffusion_model",
     "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
-    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+    "clip_name": "qwen3vl_8b_int8_convrot_bf16vision.safetensors",
     "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
     "clip_type": "qwen_image",
     "sampler": "euler",
     "sampler_name": "euler",
     "scheduler": "simple",
-    "steps": 40,
+    # Viggle turbo on by default: 6 steps at CFG 1 (verified subject extraction in ~9 s).
+    "steps": 6,
     "cfg": 1.0,
     "denoise": 1.0,
+    "qwen21_turbo_enabled": True,
+    "qwen_lora_name": "",  # filled below with the turbo LoRA name
+    "qwen_lora_strength": 1.0,
     "qwen21_opaque_output": False,
     "qwen21_aspect_preset": "",
     "lora_stack": [],
     "spectrum": dict(QWEN21_SPECTRUM_DEFAULTS),
 }
 
-# Viggle QI2.1 turbo (4-step DMD distillation, https://huggingface.co/Viggle/
+# Viggle QI2.1 turbo (v0.2.1, 6-step DMD distillation, https://huggingface.co/Viggle/
 # Qwen-Image-2.1-viggle-turbo): the LoRA student variant applied over the base
 # transformer, following the same "turbo switch" pattern as the other families.
 QWEN21_TURBO_LORA_REPO_ID = "Viggle/Qwen-Image-2.1-viggle-turbo"
-QWEN21_TURBO_LORA_FILENAME = "Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors"
+QWEN21_TURBO_LORA_REVISION = "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
+QWEN21_TURBO_LORA_FILENAME = "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors"
 QWEN21_TURBO_LORA_NAME = f"viggle/{QWEN21_TURBO_LORA_FILENAME}"
+QWEN21_TURBO_STEPS = 6
+QWEN_IMAGE21_DEFAULTS["qwen_lora_name"] = QWEN21_TURBO_LORA_NAME
 
 _QWEN21_TURBO_LORA_LOCK = threading.Lock()
 _QWEN21_TURBO_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
@@ -114,22 +133,31 @@ def resolve_qwen21_turbo_lora() -> str:
 
     import folder_paths
 
-    def installed_path() -> str | None:
-        path = _get_full_path_agnostic(folder_paths, "loras", QWEN21_TURBO_LORA_NAME)
-        return path if path and os.path.exists(path) else None
+    def installed_name() -> str | None:
+        # Any installed copy counts (e.g. loras/qwen/<file>), not only loras/viggle/.
+        name = _resolve_model_filename(folder_paths, "loras", QWEN21_TURBO_LORA_NAME)
+        path = _get_full_path_agnostic(folder_paths, "loras", name)
+        return name if path and os.path.exists(path) else None
 
-    if installed_path():
-        return QWEN21_TURBO_LORA_NAME
+    found = installed_name()
+    if found:
+        return found
     with _QWEN21_TURBO_LORA_LOCK:
-        if installed_path():
-            return QWEN21_TURBO_LORA_NAME
+        found = installed_name()
+        if found:
+            return found
         _QWEN21_TURBO_LORA_DOWNLOAD.update(
             {"status": "downloading", "progress": 0.1, "message": "Downloading Viggle QI2.1 turbo LoRA"}
         )
         try:
             from huggingface_hub import hf_hub_download
 
-            cached = hf_hub_download(repo_id=QWEN21_TURBO_LORA_REPO_ID, filename=QWEN21_TURBO_LORA_FILENAME, token=False)
+            cached = hf_hub_download(
+                repo_id=QWEN21_TURBO_LORA_REPO_ID,
+                filename=QWEN21_TURBO_LORA_FILENAME,
+                revision=QWEN21_TURBO_LORA_REVISION,
+                token=False,
+            )
             lora_dirs = _safe_get_folder_paths(folder_paths, "loras")
             if not lora_dirs:
                 raise RuntimeError("no ComfyUI loras folder is configured")
@@ -186,7 +214,7 @@ def _qwen21_spectrum_config(gen_settings: dict[str, Any] | None):
         blend_weight=float(settings["blend_weight"]),
         cache_device=str(settings["cache_device"]),
         force_actual_on_control=bool(settings["force_actual_on_control"]),
-        debug=bool(settings["debug"]),
+        debug=bool(settings["debug"]) or debug_enabled(),
     )
 
 
@@ -324,6 +352,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             # Looked up at call time so the lazy download (and tests) can replace it.
             resolver=lambda: resolve_qwen21_turbo_lora(),
             resolve_match=QWEN21_TURBO_LORA_NAME,
+            dedupe_from_stack=True,
             description="Qwen-Image-2.1 LoRA (Viggle turbo downloads on first use)",
         ),
     )
@@ -425,7 +454,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             prompt=instruction,
             negative_prompt=negative_prompt,
             images=condition_images,
-            resolution=int(target_w) * int(target_h),
+            resolution=_qwen21_encoder_resolution(target_w, target_h),
             draw_id=draw_id,
         )
         gen_settings["_qwen21_latent"] = self._qwen21_working_latent(vae, image_tensor, gen_settings, draw_id)
@@ -451,14 +480,15 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             return (rgba[..., :3] * alpha + (1.0 - alpha)).clamp(0.0, 1.0)
         return decoded
 
-    def remove_background(self, image: torch.Tensor) -> torch.Tensor:
+    def remove_background(self, image: torch.Tensor, settings: dict[str, Any] | None = None) -> torch.Tensor:
         """QI2.1 RGBA subject extraction over the pixels (spec 10.3).
 
         Contract: (H,W,3) float 0..1 in, (H,W,4) float 0..1 out where the
-        alpha channel carries the extracted subject mask.
+        alpha channel carries the extracted subject mask. ``settings`` (loader,
+        model files, steps, cfg, scheduler, seed) override the family defaults.
         """
         pixels = self._require_rgb_pixels(image)
-        rgba = self._subject_extraction(pixels)
+        rgba = self._subject_extraction(pixels, settings)
         return self._coerce_rgba_result(rgba, pixels.shape[:2])
 
     def _require_rgb_pixels(self, image: Any) -> torch.Tensor:
@@ -495,7 +525,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             )[0].permute(1, 2, 0)
         return result.clamp(0.0, 1.0)
 
-    def _subject_extraction(self, pixels: torch.Tensor) -> torch.Tensor:
+    def _subject_extraction(self, pixels: torch.Tensor, settings: dict[str, Any] | None = None) -> torch.Tensor:
         """Run the QI2.1 RGBA subject-extraction flow over the pixels.
 
         Uses the by-name QI2.1 stack (UNETLoader/CLIPLoader/VAELoader
@@ -508,6 +538,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         if pixels.ndim == 3:
             pixels = pixels.unsqueeze(0)
         gen_settings = dict(QWEN_IMAGE21_DEFAULTS)
+        gen_settings.update(settings or {})
+        if "lora_stack" in (settings or {}):
+            # Remove bg picks its (turbo) LoRA explicitly, "None" included: no family default.
+            gen_settings["qwen_lora_name"] = ""
         gen_settings["draw_mode"] = "img2img"
         gen_settings["_draw_id"] = draw_id
         gen_settings["qwen21_opaque_output"] = False
@@ -518,8 +552,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
                 "[VNCCS UniCanvas] Remove bg – QI2.1 requires a Qwen-Image-2.1 stack "
                 f"(UNETLoader/CLIPLoader/VAELoader): {exc}"
             ) from exc
+        # The family's LoRA rules plus the optional turbo LoRA picked for Remove bg.
+        model, clip = self.apply_loras(model, clip, gen_settings)
         gen_settings["_qwen21_clip"] = clip
-        gen_settings["_qwen21_prompt"] = QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
+        gen_settings["_qwen21_prompt"] = str(gen_settings.get("prompt") or "").strip() or QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
         gen_settings["_qwen21_negative_prompt"] = ""
         positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
         latent = gen_settings.get("_qwen21_latent")
@@ -531,11 +567,11 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             positive=positive,
             negative=negative,
             latent=latent,
-            seed=0,
-            steps=int(self.defaults.get("steps", 40)),
-            cfg=float(self.defaults.get("cfg", 1.0)),
-            sampler_name=str(self.defaults.get("sampler_name", "euler")),
-            scheduler=str(self.defaults.get("scheduler", "simple")),
+            seed=int(gen_settings.get("seed") or 0),
+            steps=int(gen_settings.get("steps") or 40),
+            cfg=float(gen_settings.get("cfg") or 1.0),
+            sampler_name=str(gen_settings.get("sampler_name") or "euler"),
+            scheduler=str(gen_settings.get("scheduler") or "simple"),
             denoise=1.0,
             gen_settings=gen_settings,
             draw_id=draw_id,
@@ -599,12 +635,12 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         """Encode the instruction and <image N> condition images with the
         Qwen3-VL 8B text encoder through ComfyUI core's TextEncodeQwenImage21.
 
-        The node receives the condition images both as its dynamic
-        "images.image_N" inputs (how ComfyUI's executor keys them) and as one
-        merged "images" dict for signature-based methods.
+        The node takes the condition images as its Autogrow ``images`` dict
+        ({"image_1": ..., "image_2": ...}). V3 nodes are called through a
+        ``**kwargs`` wrapper, so executor-style "images.image_N" keys must not be
+        passed as well: execute() rejects them.
         """
         slot_images = {f"image_{slot}": tensor for slot, tensor in sorted(images.items())}
-        image_kwargs = {f"images.image_{slot}": tensor for slot, tensor in sorted(images.items())}
         encoded = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=clip,
@@ -613,7 +649,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             negative_prompt=negative_prompt or "",
             resolution=int(resolution),
             images=slot_images,
-            **image_kwargs,
         )
         if encoded is None:
             raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 text encoding returned no conditioning.")
@@ -638,6 +673,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
         _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
         return latent
+
+    def supports_step_cache(self, settings) -> bool:
+        # Spectrum already forecasts steps; stacking EasyCache on it compounds the error.
+        return not _qwen21_spectrum_settings(settings).get("enabled")
 
     def prepare_model_for_sampling(self, ctx) -> Any:
         # Spectrum acceleration runs after every model mutation (the LoRA stack included).

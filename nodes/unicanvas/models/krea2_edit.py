@@ -9,8 +9,8 @@ from typing import ClassVar
 from ..comfy_bridge import _call_node_method
 from ..latents import _unwrap_latent_samples
 from ..loras import LoraRequirement
-from .base import UniCanvasModelModule
-from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide
+from .base import UniCanvasModelModule, _reference_image_slots
+from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 
 
 KREA2_EDIT_DEFAULTS = {
@@ -20,6 +20,7 @@ KREA2_EDIT_DEFAULTS = {
     "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
     "vae_name": "qwen_image_vae.safetensors",
     "clip_type": "krea2",
+    # Found by file name in any loras subfolder (krea\, krea2\, Krea2/...): loras._get_lora_full_path.
     "krea2_edit_lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
     "krea2_likeness": 4.0,
     "sampler_name": "euler",
@@ -34,11 +35,14 @@ KREA2_EDIT_DEFAULTS = {
 class Krea2EditUniCanvasModule(UniCanvasModelModule):
     """Identity Edit v1.2: mandatory LoRA, grounded Qwen3-VL and clean source tokens."""
 
-    sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_krea2_edit_clip", "_krea2_edit_image", "_krea2_edit_vae")
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_krea2_edit_clip", "_krea2_edit_image", "_krea2_edit_image_b", "_krea2_edit_vae")
 
     capabilities: ModelCapabilities = ModelCapabilities(
         label="Krea2 Edit",
         tasks=tuple(STANDARD_TASKS[key] for key in ("image_to_image", "inpaint", "outpaint")),
+        # The LoRA was trained on at most two pictures: the working area (background) and one
+        # reference (the character to put into it).
+        references=ReferenceInputs(max_images=1, slot_label="image {n}"),
         requires_source_image=True,
         source_image_message="Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.",
         default_loader="diffusion_model",
@@ -87,10 +91,13 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
 
         clip = gen_settings.pop("_krea2_edit_clip")
         encoder = Krea2EditGroundedEncode()
-        positive = encoder.encode(clip, positive, image=image_tensor, grounding_px=768)[0]
-        # Trained unconditional: the SAME reference image with an empty instruction.
-        negative = encoder.encode(clip, "", image=image_tensor, grounding_px=768)[0]
+        # image = the working area (background), image_b = the one reference (character).
+        image_b = _reference_image_slots(image_tensor, gen_settings).get(2)
+        positive = encoder.encode(clip, positive, image=image_tensor, image_b=image_b, grounding_px=768)[0]
+        # Trained unconditional: the SAME images with an empty instruction.
+        negative = encoder.encode(clip, "", image=image_tensor, image_b=image_b, grounding_px=768)[0]
         gen_settings["_krea2_edit_image"] = image_tensor
+        gen_settings["_krea2_edit_image_b"] = image_b
         gen_settings["_krea2_edit_vae"] = vae
         return positive, negative
 
@@ -107,7 +114,8 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
 
         model = patch_krea2_edit(model, gen_settings.pop("_krea2_edit_vae"),
                                 gen_settings.pop("_krea2_edit_image"), latent,
-                                gen_settings["krea2_likeness"])
+                                gen_settings["krea2_likeness"],
+                                image_b=gen_settings.pop("_krea2_edit_image_b", None))
         return super().sample_latent(model, positive, negative, latent, seed, steps, cfg,
                                      sampler_name, scheduler, 1.0, gen_settings, draw_id, width, height)
 

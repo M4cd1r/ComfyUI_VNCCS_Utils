@@ -175,11 +175,11 @@ def test_decode_samples_single_frame_passes_through(monkeypatch):
     assert out.shape[0] == 1
 
 
-def test_sample_latent_requires_audio_vae():
+def test_sample_latent_requires_a_text_encoder_but_not_audio_vae(monkeypatch):
     module = _get_unicanvas_model_module("minimax_h3")
     import pytest
 
-    with pytest.raises(RuntimeError, match=r"\[VNCCS UniCanvas\] MiniMax H3 requires the audio VAE\."):
+    with pytest.raises(RuntimeError, match=r"MiniMax H3 needs its text encoder"):
         module.sample_latent(
             model="M", positive=None, negative=None, latent=None, seed=1,
             steps=20, cfg=1.0, sampler_name="res_multistep", scheduler="simple",
@@ -187,6 +187,28 @@ def test_sample_latent_requires_audio_vae():
             gen_settings={"_h3_prompt": "p", "_external": {}},
             draw_id="t", width=64, height=64,
         )
+
+    # The node's own loader: clip/vae stashed by encode_prompt / prepare_reference_conditioning,
+    # no config and no audio VAE.
+    calls = {}
+
+    def fake_node(name, **kwargs):
+        calls[name] = kwargs
+        if name == "MiniMaxH3ReferenceToVideo":
+            return ("POS", {"samples": torch.zeros(1, 4, 8, 8)})
+        return ("OUT",)
+
+    monkeypatch.setattr("nodes.unicanvas.models.minimax_h3._call_comfy_node", fake_node)
+    settings = {"_external": {}}
+    module.encode_prompt("CLIP", "p", settings)
+    module.prepare_reference_conditioning(None, None, "VAE", torch.zeros(1, 8, 8, 3), settings)
+    module.sample_latent(
+        model="M", positive=None, negative=None, latent=None, seed=1,
+        steps=20, cfg=1.0, sampler_name="res_multistep", scheduler="simple",
+        denoise=1.0, gen_settings=settings, draw_id="t", width=64, height=64,
+    )
+    h3 = calls["MiniMaxH3ReferenceToVideo"]
+    assert h3["clip"] == "CLIP" and h3["vae"] == "VAE" and h3["audio_vae"] is None
 
 
 def test_graph_generate_runs_draw_and_returns_tensor(monkeypatch):
@@ -484,24 +506,15 @@ def test_export_state_falls_back_to_canvas_render_without_queued_draw(monkeypatc
     assert rendered == [state_json]
 
 
-def test_h3_without_connected_config_fails_fast():
-    """MiniMax H3 is driven by the VNCSS Config node; without one the draw path stops with an actionable message.
+def test_h3_without_connected_config_passes_validation():
+    """MiniMax H3 no longer needs a VNCSS Config node: validation accepts a config-free draw."""
+    from types import SimpleNamespace
 
-    The Diffusion-Model loader is the reachable config-free case: it does not force a family, so a
-    MiniMax H3 pick (the Mode list is enabled for that loader) reaches the H3 module.
-    """
-    from nodes.unicanvas import draw as uc
+    from nodes.unicanvas.models.capabilities import STANDARD_TASKS
 
-    with pytest.raises(
-        RuntimeError,
-        match=r"\[VNCCS UniCanvas\] MiniMax H3 requires a connected VNCSS Config node \(clip, vae, audio_vae\)\.",
-    ):
-        uc._run_unicanvas_draw({
-            "debug_id": "h3-no-config",
-            "mode": "txt2img",
-            "settings": {"generation_mode": "minimax_h3", "model_loader": "diffusion_model"},
-        })
-
+    module = _get_unicanvas_model_module("minimax_h3")
+    request = SimpleNamespace(external=None, task=STANDARD_TASKS["image_to_image"])
+    module.validate_request(request)  # no RuntimeError about a VNCSS Config node
 
 def test_h3_with_connected_config_reaches_the_external_loader(monkeypatch):
     """Regression guard for the H3 fail-fast: a forwarded external block still selects the pass-through loader."""

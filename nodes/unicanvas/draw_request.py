@@ -22,7 +22,7 @@ from .progress import _set_draw_progress
 
 
 # Uploaded Edit model reference images occupy the VNCSS Config reference slots.
-MAX_UPLOADED_REFERENCES = 4
+MAX_UPLOADED_REFERENCES = 10  # the popover allows 4; VNCSS Config LoadImage references up to 10
 
 
 @dataclass

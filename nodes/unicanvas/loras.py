@@ -9,7 +9,7 @@ from typing import Any
 
 from .comfy_bridge import _call_node_method
 from .locks import _MODEL_CACHE_LOCK
-from .paths import _get_full_path_agnostic
+from .paths import _get_full_path_agnostic, _resolve_model_filename
 
 
 _LORA_CACHE: dict[str, Any] = {}
@@ -33,6 +33,12 @@ def _get_lora_full_path(lora_name: str) -> str:
     import folder_paths
 
     path = _get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
+    if not path:
+        # Defaults and presets name a subfolder ("Krea2/x.safetensors") the user may not use
+        # ("krea\x.safetensors"): fall back to the installed file with the same name.
+        resolved = _resolve_model_filename(folder_paths, "loras", lora_name)
+        if resolved != lora_name:
+            path = _get_full_path_agnostic(folder_paths, "loras", resolved, require_exists=True)
     if not path:
         raise ValueError(f"LoRA not found: {lora_name}")
     return path

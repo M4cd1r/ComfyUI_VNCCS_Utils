@@ -1,4 +1,5 @@
-"""MiniMax H3 model family, driven by models supplied through a VNCSS Config node."""
+"""MiniMax H3 model family: diffusion model + CLIP (type "minimax") + video VAE from the node's own
+loader, or the same tensors from an optional VNCSS Config node (which can also add an audio VAE)."""
 
 from __future__ import annotations
 
@@ -9,10 +10,8 @@ import torch
 
 from ..comfy_bridge import _call_comfy_node
 from ..debug import _uc_log
-from ..loaders import _load_generation_assets
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import CANVAS_TASKS, STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
-from .qwen_image21 import QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
 
 
 @dataclass(frozen=True)
@@ -37,8 +36,6 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
             ),
         ),
         references=ReferenceInputs(max_images=10, slot_label="<Picture {n}>"),
-        requires_external_config=True,
-        external_config_message="[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS Config node (clip, vae, audio_vae).",
         prompt_guide=PromptGuide(
             hint="Keep the identity from <Picture 2>. Use the pose from <Picture 3>.",
             guide=(
@@ -49,7 +46,8 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
                 "explicit assignments win over what the prompt does not mention. Keep it "
                 "preservation-first: say what must stay, then the one change you want, and that the "
                 "result must visibly show it.\n\n"
-                "It needs a connected VNCSS Config node (clip, vae, audio_vae). No mask is required: "
+                "Load the MiniMax H3 diffusion model, its Qwen3-VL text encoder (CLIP type minimax) "
+                "and the video VAE in the loader, or link a VNCSS Config node. No mask is required: "
                 "the bbox is the working area. There is no negative prompt."
             ),
             examples=(
@@ -66,6 +64,7 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
     key: str = "minimax_h3"
     aliases: tuple[str, ...] = ("minimaxh3", "minimax-h3", "h3")
     defaults: dict[str, Any] = field(default_factory=lambda: {
+        "clip_type": "minimax",
         "steps": 20,
         "sampler_name": "res_multistep",
         "scheduler": "simple",
@@ -87,6 +86,7 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         # by MiniMaxH3ReferenceToVideo inside sample_latent; stash the prompt and
         # return a placeholder that the pipeline never samples.
         gen_settings["_h3_prompt"] = text or ""
+        gen_settings["_h3_clip"] = clip
         return [[torch.zeros(1, 4), {}]]
 
     def validate_conditioning(self, positive, negative, gen_settings):
@@ -97,6 +97,7 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
 
     def prepare_reference_conditioning(self, positive, negative, vae, image_tensor, gen_settings, draw_id="unknown"):
         gen_settings["_h3_reference_image"] = image_tensor
+        gen_settings["_h3_vae"] = vae
         return positive, negative
 
     def _h3_reference_images(self, gen_settings: dict[str, Any]) -> dict[str, Any]:
@@ -120,12 +121,14 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         width: int | None = None,
         height: int | None = None,
     ):
+        # The node's own loader supplies clip/vae; a linked VNCSS Config wins and may add the
+        # (optional) audio VAE, which only matters for reference audio.
         external = gen_settings.get("_external") or {}
-        clip = external.get("clip")
-        vae = external.get("vae")
+        clip = external.get("clip") or gen_settings.get("_h3_clip")
+        vae = external.get("vae") or gen_settings.get("_h3_vae")
         audio_vae = external.get("audio_vae")
-        if audio_vae is None:
-            raise RuntimeError("[VNCCS UniCanvas] MiniMax H3 requires the audio VAE.")
+        if clip is None:
+            raise RuntimeError("[VNCCS UniCanvas] MiniMax H3 needs its text encoder: select a CLIP (type minimax) in the loader.")
         prompt = str(gen_settings.get("_h3_prompt") or "")
         refs = self._h3_reference_images(gen_settings)
         target_w = int(width or 1344) // 32 * 32
@@ -185,55 +188,3 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         if hasattr(decoded, "shape") and len(decoded.shape) == 4 and decoded.shape[0] > 1:
             return decoded[:1]  # H3 returns a frame packet; the still is the first frame
         return decoded
-
-    def remove_background(self, image: torch.Tensor) -> torch.Tensor:
-        """MiniMax H3 RGBA subject extraction (spec 10.3).
-
-        Edit-model remove-bg contract: (H,W,3) float 0..1 in, (H,W,4) float 0..1
-        out with the extracted subject in alpha. Runs the family's region-edit
-        flow with the subject-extraction instruction and keeps the RGBA-VAE
-        alpha channel.
-        """
-        if not torch.is_tensor(image) or image.ndim != 3 or int(image.shape[-1]) != 3 or not torch.is_floating_point(image):
-            raise ValueError(
-                "[VNCCS UniCanvas] Remove bg – Edit model (MiniMax H3) expects a float (H,W,3) image tensor."
-            )
-        pixels = image.clamp(0.0, 1.0).unsqueeze(0)
-        draw_id = "remove_background"
-        height, width = int(pixels.shape[1]), int(pixels.shape[2])
-        gen_settings = dict(self.defaults)
-        gen_settings["draw_mode"] = "img2img"
-        gen_settings["_draw_id"] = draw_id
-        try:
-            model, _clip, vae = _load_generation_assets(gen_settings)
-        except Exception as exc:
-            raise RuntimeError(
-                f"[VNCCS UniCanvas] Remove bg – Edit model (MiniMax H3) requires the MiniMax H3 stack: {exc}"
-            ) from exc
-        gen_settings["_h3_prompt"] = QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
-        gen_settings["_h3_reference_image"] = pixels
-        positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
-        latent = self.create_empty_latent(width, height, gen_settings, draw_id)
-        sampled = self.sample_latent(
-            model=model,
-            positive=positive,
-            negative=negative,
-            latent=latent,
-            seed=0,
-            steps=int(self.defaults.get("steps", 20)),
-            cfg=1.0,
-            sampler_name=str(self.defaults.get("sampler_name", "res_multistep")),
-            scheduler=str(self.defaults.get("scheduler", "simple")),
-            denoise=1.0,
-            gen_settings=gen_settings,
-            draw_id=draw_id,
-            width=width,
-            height=height,
-        )
-        decoded = self.decode_samples(vae, sampled, gen_settings)
-        result = decoded[0] if torch.is_tensor(decoded) and decoded.ndim == 4 else decoded
-        if not torch.is_tensor(result) or result.ndim != 3 or int(result.shape[-1]) != 4:
-            raise RuntimeError(
-                "[VNCCS UniCanvas] Remove bg – Edit model (MiniMax H3) subject extraction must return an RGBA image."
-            )
-        return result.clamp(0.0, 1.0)

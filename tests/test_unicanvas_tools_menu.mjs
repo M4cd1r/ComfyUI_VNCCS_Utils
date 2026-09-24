@@ -13,7 +13,9 @@ const MENU_LABELS = [
   "Copy layer as image to clipboard",
   "Save layer as image",
   "Remove background",
+  "Remove background with prompt...",
   "Color match to below",
+  "Auto-name",
   "Rasterize",
   "Edit pose",
 ];
@@ -47,11 +49,11 @@ test("brushHardness is a brush-engine setting with radial-gradient stamps", () =
   assert.match(inputTools, /addEventListener\("input"/, "the hardness slider must update continuously from input events");
 });
 
-test("layer context menu defines all six entries", () => {
+test("layer context menu defines all eight entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 6, "the shipped menu must define exactly six entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 8, "the shipped menu must define exactly eight entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
 });
 
@@ -85,6 +87,14 @@ test("PSD import reports every skipped non-raster construct", () => {
   }
   assert.match(layerTools, /PSD imported \$\{importedCount\} raster layers/, "the status line must report the imported count");
   assert.match(layerTools, /skipped \$\{skipped\.length\}/, "the status line must report skipped layers");
+});
+
+test("remove background with prompt appends the extra line to the universal prompt", async () => {
+  const { removeBgRunSettings } = await import("../web/vnccs_unicanvas_layer_tools.mjs");
+  const settings = { remove_bg_edit: { qwen_image21: { prompt: "Remove the background" } } };
+  assert.equal(removeBgRunSettings(settings, "qwen_image21", " keep the sword ").prompt, ["Remove the background", "keep the sword"].join("\n"));
+  assert.equal(removeBgRunSettings(settings, "qwen_image21", "").prompt, "Remove the background");
+  assert.equal(removeBgRunSettings({}, "qwen_image21", "keep the hat").prompt, ["Remove the background, and output a PNG image", "keep the hat"].join("\n"));
 });
 
 test("strength slider previews live and commits on release", () => {

@@ -245,6 +245,21 @@ function measureLongestOptionWidth(doc, options, selectStyle) {
 }
 
 
+// Vertical placement of the popup: it opens below the control unless that side is short and
+// the other one is roomier, and its max height is the space on the side it actually opens to,
+// so the list never runs past the viewport edge (e.g. a LoRA list in fullscreen UniCanvas).
+export function computeMenuVerticalPlacement(rectTop, rectBottom, viewportHeight, viewportGap = 8, offset = 4) {
+    const below = Math.max(0, viewportHeight - rectBottom - offset - viewportGap);
+    const above = Math.max(0, rectTop - offset - viewportGap);
+    // Below is kept while it has room for a useful list (180px); otherwise the roomier side wins.
+    const openAbove = below < 180 && above > below;
+    const maxHeight = Math.min(520, openAbove ? above : below);
+    return openAbove
+        ? { top: null, bottom: viewportHeight - rectTop + offset, maxHeight }
+        : { top: rectBottom + offset, bottom: null, maxHeight };
+}
+
+
 function positionMenu(state) {
     const { menu, select } = state;
     if (!menu?.isConnected || !select?.isConnected) return;
@@ -259,23 +274,25 @@ function positionMenu(state) {
     const desiredWidth = Math.max(rect.width, Math.min(560, longestTextWidth + 74));
     const width = Math.max(80, Math.min(desiredWidth, view.innerWidth - viewportGap * 2));
     const left = Math.min(Math.max(viewportGap, rect.left), view.innerWidth - viewportGap - width);
-    const below = view.innerHeight - rect.bottom - viewportGap;
-    const above = rect.top - viewportGap;
-    const maxHeight = Math.max(100, Math.min(520, Math.max(below, above)));
+    const placement = computeMenuVerticalPlacement(rect.top, rect.bottom, view.innerHeight, viewportGap);
 
     menu.style.left = `${Math.round(left)}px`;
     menu.style.width = `${Math.round(width)}px`;
-    menu.style.maxHeight = `${Math.round(maxHeight)}px`;
+    menu.style.maxHeight = `${Math.floor(placement.maxHeight)}px`;
     menu.style.fontFamily = selectStyle.fontFamily;
     menu.style.fontSize = selectStyle.fontSize;
     menu.style.fontWeight = selectStyle.fontWeight;
-    if (below < Math.min(180, maxHeight) && above > below) {
-        menu.style.top = "";
-        menu.style.bottom = `${Math.round(view.innerHeight - rect.top + 4)}px`;
-    } else {
-        menu.style.bottom = "";
-        menu.style.top = `${Math.round(rect.bottom + 4)}px`;
-    }
+    menu.style.top = placement.top === null ? "" : `${Math.round(placement.top)}px`;
+    menu.style.bottom = placement.bottom === null ? "" : `${Math.round(placement.bottom)}px`;
+}
+
+
+// The popup is mounted where it can be seen: inside the browser-fullscreen element when the
+// control lives there (the rest of the document is hidden behind the fullscreen top layer).
+function menuHost(select) {
+    const doc = select.ownerDocument;
+    const fullscreen = doc.fullscreenElement;
+    return fullscreen && fullscreen.contains(select) ? fullscreen : doc.body;
 }
 
 
@@ -412,7 +429,7 @@ function openCustomSelect(state) {
     menu.addEventListener("pointerdown", event => event.stopPropagation());
     menu.addEventListener("click", event => event.stopPropagation());
     menu.addEventListener("wheel", event => event.stopPropagation(), { passive: true });
-    doc.body.appendChild(menu);
+    menuHost(state.select).appendChild(menu);
     state.menu = menu;
     state.highlightedIndex = state.select.selectedIndex >= 0
         ? state.select.selectedIndex

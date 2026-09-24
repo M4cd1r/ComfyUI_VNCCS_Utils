@@ -68,6 +68,16 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .vnccs-uc2-true-fullscreen:hover { background: var(--uc-hover, rgba(255, 255, 255, 0.1)); }
 .vnccs-uc2-output-actions { display: flex; gap: 6px; padding: 8px 8px 0; }
 .vnccs-uc2-output-actions .vnccs-uc-btn { flex: 1 1 auto; }
+.vnccs-uc2-toasts { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 6px; width: min(420px, calc(100% - 24px)); pointer-events: none; }
+.vnccs-uc2-toast { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px 9px 12px; border: 1px solid rgba(80, 200, 140, 0.55); border-left-width: 3px; border-radius: 10px; background: rgba(18, 15, 26, 0.96); color: #e8e8f0; font: 12px/1.35 inherit; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); pointer-events: auto; }
+.vnccs-uc2-toast.error { border-color: rgba(229, 72, 77, 0.75); }
+.vnccs-uc2-toast-body { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.vnccs-uc2-toast-title { font-weight: 800; margin-bottom: 2px; }
+.vnccs-uc2-toast-close { flex: 0 0 auto; border: 0; background: none; color: inherit; opacity: 0.7; cursor: pointer; font: 700 14px/1 inherit; padding: 0 2px; }
+/* Save to output: top-right of the right sidebar, kept visible whatever the sidebar shows (pose editing too). */
+.vnccs-uc2-save-actions { display: flex; flex: 0 0 auto; }
+.vnccs-uc2-save-actions .vnccs-uc-btn { flex: 1 1 auto; }
+.vnccs-unicanvas.vnccs-uc-pose-editing .vnccs-uc-side > .vnccs-uc2-save-actions { display: flex !important; }
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
 .vnccs-uc-fullscreen .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
@@ -137,6 +147,23 @@ export function handleUniCanvasShortcut(widget, event) {
     widget.finishPoseEdit?.(true);
     return true;
   }
+  // An open Free Transform owns Enter (apply) and Esc (cancel), as in Photoshop.
+  if ((key === "Escape" || key === "Enter") && widget.transformDraft) {
+    consumeUniCanvasShortcut(event);
+    if (key === "Enter") widget.applyTransformDraft?.();
+    else widget.cancelTransformDraft?.();
+    return true;
+  }
+  // Pose editing: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z walk the mannequin's history from anywhere in
+  // the widget (the Pose Studio viewport has focus then, not the canvas).
+  const historyKey = (event.ctrlKey || event.metaKey) && !event.altKey ? key.toLowerCase() : "";
+  if ((historyKey === "z" || historyKey === "y") && widget.tool === "pose" && widget.poseEditSession
+    && widget.container?.contains?.(event.target)) {
+    consumeUniCanvasShortcut(event);
+    if (historyKey === "y" || event.shiftKey) widget.redo();
+    else widget.undo();
+    return true;
+  }
   // Esc exits fullscreen from anywhere inside the fullscreen (chrome behavior).
   if (key === "Escape" && widget._vnccsFullscreen) {
     consumeUniCanvasShortcut(event);
@@ -149,9 +176,9 @@ export function handleUniCanvasShortcut(widget, event) {
   const lower = key.toLowerCase();
   const modifier = event.ctrlKey || event.metaKey;
   // History: Ctrl+Z / Ctrl+Shift+Z.
-  if (modifier && !event.altKey && lower === "z") {
+  if (modifier && !event.altKey && (lower === "z" || lower === "y")) {
     consumeUniCanvasShortcut(event);
-    if (event.shiftKey) widget.redo();
+    if (lower === "y" || event.shiftKey) widget.redo();
     else widget.undo();
     return true;
   }
@@ -193,6 +220,23 @@ function installUniCanvasShortcuts(widget) {
   widget.container.addEventListener("keydown", (event) => {
     handleUniCanvasShortcut(widget, event);
   });
+  // Pose Studio's WebGL viewport does not take keyboard focus, so while a pose is edited the
+  // history keys arrive on the document. They count when the last click was inside this widget.
+  const controller = new AbortController();
+  widget._vnccsPoseKeysAbort = controller;
+  document.addEventListener("pointerdown", (event) => {
+    widget._vnccsPointerInside = Boolean(widget.container?.contains?.(event.target));
+  }, { capture: true, signal: controller.signal });
+  document.addEventListener("keydown", (event) => {
+    if (!widget.poseEditSession || widget.tool !== "pose" || !widget._vnccsPointerInside) return;
+    if (widget.container?.contains?.(event.target) || isUniCanvasTextTarget(event)) return; // the container handler has it
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const key = String(event.key || "").toLowerCase();
+    if (key !== "z" && key !== "y") return;
+    consumeUniCanvasShortcut(event);
+    if (key === "y" || event.shiftKey) widget.redo();
+    else widget.undo();
+  }, { signal: controller.signal });
 }
 
 function toggleUniCanvasTrueFullscreen(widget) {
@@ -346,6 +390,8 @@ function syncUniCanvasFullscreenButton(widget) {
 }
 
 function installUniCanvasFullscreenButton(widget) {
+  // The standalone tab already fills the window, so a fullscreen toggle there is redundant.
+  if (widget.standalone) return;
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "vnccs-uc-icon vnccs-uc2-fullscreen-btn";
@@ -361,6 +407,65 @@ function installUniCanvasFullscreenButton(widget) {
   else widget.stageWrap.appendChild(btn);
   widget._vnccsFullscreenButton = btn;
   syncUniCanvasFullscreenButton(widget);
+}
+
+// A toast inside the UniCanvas container: ComfyUI's own toasts sit under the standalone shell
+// and the browser-fullscreen portal, so they would never be seen there.
+export function showUniCanvasToast(widget, title, detail = "", kind = "success") {
+  const host = widget?.container;
+  if (!host) return null;
+  let stack = widget._vnccsToastStack;
+  if (!stack?.isConnected) {
+    stack = document.createElement("div");
+    stack.className = "vnccs-uc2-toasts";
+    stack.setAttribute("aria-live", "polite");
+    host.appendChild(stack);
+    widget._vnccsToastStack = stack;
+  }
+  const toast = document.createElement("div");
+  toast.className = `vnccs-uc2-toast ${kind === "error" ? "error" : "success"}`;
+  toast.setAttribute("role", kind === "error" ? "alert" : "status");
+  const body = document.createElement("div");
+  body.className = "vnccs-uc2-toast-body";
+  const head = document.createElement("div");
+  head.className = "vnccs-uc2-toast-title";
+  head.textContent = title;
+  body.appendChild(head);
+  if (detail) body.appendChild(document.createTextNode(detail));
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "vnccs-uc2-toast-close";
+  close.title = "Close";
+  close.textContent = "×";
+  const remove = () => toast.remove();
+  close.addEventListener("click", (event) => { event.stopPropagation(); remove(); });
+  toast.addEventListener("pointerdown", (event) => event.stopPropagation());
+  toast.append(body, close);
+  stack.appendChild(toast);
+  setTimeout(remove, kind === "error" ? 10000 : 5000);
+  return toast;
+}
+
+// Canvas-pixel rectangle of the generation bbox (world coords minus the canvas origin).
+export function uniCanvasBboxPixelRect(bbox, origin) {
+  return {
+    x: Math.round(Number(bbox?.x || 0) - Number(origin?.x || 0)),
+    y: Math.round(Number(bbox?.y || 0) - Number(origin?.y || 0)),
+    width: Math.max(1, Math.round(Number(bbox?.width) || 1)),
+    height: Math.max(1, Math.round(Number(bbox?.height) || 1)),
+  };
+}
+
+// Save to output: every visible image layer flattened, cropped to the generation bbox.
+export function buildUniCanvasBboxCompositeCanvas(widget) {
+  const full = buildUniCanvasCompositeCanvas(widget);
+  const rect = uniCanvasBboxPixelRect(widget.bbox, widget.origin);
+  const out = document.createElement("canvas");
+  out.width = rect.width;
+  out.height = rect.height;
+  const ctx = widget.configureImageContext(out.getContext("2d"), false);
+  ctx.drawImage(full, -rect.x, -rect.y);
+  return out;
 }
 
 export function buildUniCanvasCompositeCanvas(widget) {
@@ -387,18 +492,24 @@ export async function saveUniCanvasOutput(widget, layerId = null) {
       if (!layer) throw new Error(`[VNCCS UniCanvas] Layer '${layerId}' was not found.`);
       payload = { state: { version: 2, layers: [widget.serializeLayer(layer, true)] }, layer_id: String(layerId) };
     } else {
-      payload = { image: buildUniCanvasCompositeCanvas(widget).toDataURL("image/png") };
+      payload = { image: buildUniCanvasBboxCompositeCanvas(widget).toDataURL("image/png") };
     }
     const res = await fetch("/vnccs/unicanvas/save_output", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    let data = {};
+    try { data = await res.json(); } catch (_) { data = {}; }
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status} ${res.statusText || ""}`.trim());
+    const fileName = String(data.path || "").split(/[\\/]/).pop() || "image";
+    const size = data.width && data.height ? ` (${data.width}×${data.height})` : "";
     widget.setStatus(`[VNCCS UniCanvas] Saved ${data.path}`);
+    showUniCanvasToast(widget, "Saved to output", `${fileName}${size}`);
   } catch (err) {
-    widget.setStatus(`[VNCCS UniCanvas] Save to output failed: ${err?.message || err}`, true);
+    const message = String(err?.message || err).replace(/^\[VNCCS UniCanvas\]\s*/, "");
+    widget.setStatus(`[VNCCS UniCanvas] Save to output failed: ${message}`, true);
+    showUniCanvasToast(widget, "Save to output failed", message, "error");
   }
 }
 
@@ -427,12 +538,14 @@ function installUniCanvasOutputActions(widget) {
   if (!widget.standalone) return;
   const row = document.createElement("div");
   row.className = "vnccs-uc2-output-actions";
-  row.append(
-    widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"),
-    widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas")
-  );
+  row.append(widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas"));
   widget.left.insertBefore(row, widget.left.firstChild);
   widget._vnccsOutputActions = row;
+  const saveRow = document.createElement("div");
+  saveRow.className = "vnccs-uc2-save-actions";
+  saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"));
+  widget.side.insertBefore(saveRow, widget.side.firstChild);
+  widget._vnccsSaveActions = saveRow;
 }
 
 export function installUniCanvasWidgetModes(widget) {
@@ -534,6 +647,8 @@ export function teardownUniCanvasWidgetModes(widget) {
   // pending standalone persistence timer.
   exitUniCanvasFullscreen(widget);
   flushStandalonePersistence(widget);
+  widget._vnccsPoseKeysAbort?.abort();
+  widget._vnccsPoseKeysAbort = null;
 }
 
 function readStandalonePersistedStateValue() {

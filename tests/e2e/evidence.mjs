@@ -78,7 +78,7 @@ if (topic === "pose-editor") {
   ]);
   await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "backdrop.png"));
   await page.waitForTimeout(2_500);
-  const poseTool = page.locator('.vnccs-uc-tools [data-tool="pose"]');
+  const poseTool = page.locator('.vnccs-uc-layers-section [title="Add pose layer"]');
   if (await poseTool.count()) await poseTool.click();
   else await page.locator('[title="Add pose layer"]').first().click();
   await page.waitForTimeout(25_000);

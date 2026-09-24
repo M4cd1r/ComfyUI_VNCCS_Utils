@@ -20,7 +20,8 @@ import torch
 from PIL import Image
 
 from .constants import _MAX_PIXELS
-from .debug import UNICANVAS_DEBUG, _tensor_debug, _uc_log
+from .crop_stitch import CROP_SETTING, crop_image, plan_crop, stitch_image, stitch_mask
+from .debug import _tensor_debug, _uc_log, debug_enabled
 from .imaging import (
     _decode_data_url,
     _image_tensor_to_pil_list,
@@ -32,8 +33,9 @@ from .latents import _repeat_conditioning_batch, _repeat_latent_batch
 from .loaders import _load_generation_assets
 from .locks import _COMFY_MODEL_OP_LOCK
 from .masking import _combine_mask_with_source_alpha, _make_gradient_denoise_mask, _make_gradient_paste_mask
+from .performance import apply_step_cache, performance_label, step_cache_skip_reason
 from .progress import _set_draw_progress
-from .sampling import _apply_differential_diffusion, _release_generation_sampling_refs
+from .sampling import _apply_differential_diffusion, _ensure_direct_sampling_prompt_context, _release_generation_sampling_refs
 
 
 if TYPE_CHECKING:
@@ -108,6 +110,10 @@ class DrawContext:
     latent: Any = None
     decoded: Any = None
     result_images: list[Image.Image] = field(default_factory=list)
+    # Inpaint crop-and-stitch (crop_stitch.py): the plan, the uncropped source and the cropped mask.
+    crop_plan: Any = None
+    full_source_rgba: Image.Image | None = None
+    cropped_mask_rgba: Image.Image | None = None
 
     @property
     def draw_id(self) -> str:
@@ -141,6 +147,7 @@ class ImageDrawPipeline:
     def run(self) -> dict[str, Any]:
         self.prepare_source()
         self.check_sizes()
+        self.crop_to_mask()
         with contextlib.ExitStack() as model_session:
             model_session.enter_context(_COMFY_MODEL_OP_LOCK)
             model_session.enter_context(torch.inference_mode())
@@ -190,6 +197,26 @@ class ImageDrawPipeline:
             raise ValueError("output_size is too large")
         ctx.output_size = (output_width, output_height)
 
+    def crop_to_mask(self) -> None:
+        """Inpaint: generate only the area around the mask (plus context) at full resolution."""
+        ctx, payload = self.ctx, self.request.payload
+        enabled = ctx.settings.get(CROP_SETTING, True)
+        if ctx.mode != "inpaint" or ctx.pose_images or enabled is False or str(enabled).lower() in {"false", "0", "off"}:
+            return
+        mask = _decode_data_url(str(payload.get("mask") or ""), "RGBA")
+        if mask.size != ctx.source.size:
+            mask = mask.resize(ctx.source.size, Image.Resampling.BILINEAR)
+        plan = plan_crop(mask, ctx.source.size)
+        if plan is None:
+            return
+        ctx.crop_plan = plan
+        ctx.full_source_rgba = ctx.source_rgba
+        ctx.source_rgba = crop_image(ctx.source_rgba, plan)
+        ctx.source = ctx.reference_source = ctx.source_rgba.convert("RGB")
+        ctx.cropped_mask_rgba = crop_image(mask, plan, Image.Resampling.BILINEAR)
+        ctx.width, ctx.height = plan.work_size
+        _uc_log(ctx.draw_id, "inpaint crop-and-stitch", {"box": plan.box, "work_size": plan.work_size, "full_size": plan.full_size})
+
     def load_models(self) -> None:
         ctx, steps = self.ctx, self.request.steps
         _set_draw_progress(ctx.draw_id, "loading", 0.08, 0, steps, "Loading models")
@@ -217,7 +244,7 @@ class ImageDrawPipeline:
         if ctx.mode not in MASKED_MODES:
             _uc_log(ctx.draw_id, "mask skipped", {"reason": f"mode is {ctx.mode}"})
             return
-        mask_image = _decode_data_url(str(request.payload.get("mask") or ""), "RGBA")
+        mask_image = ctx.cropped_mask_rgba if ctx.cropped_mask_rgba is not None else _decode_data_url(str(request.payload.get("mask") or ""), "RGBA")
         if mask_image.size != ctx.source.size:
             _uc_log(ctx.draw_id, "mask resized to source size", {"from": mask_image.size, "to": ctx.source.size})
             mask_image = mask_image.resize(ctx.source.size, Image.Resampling.BILINEAR)
@@ -232,7 +259,7 @@ class ImageDrawPipeline:
         if float(ctx.mask.sum().item()) <= 0.0:
             self.drop_empty_mask()
         self.module.on_mask_prepared(ctx)
-        if ctx.mask_image is not None and UNICANVAS_DEBUG:
+        if ctx.mask_image is not None and debug_enabled():
             self.log_mask_debug()
 
     def drop_empty_mask(self) -> None:
@@ -317,6 +344,16 @@ class ImageDrawPipeline:
     def sample(self) -> None:
         ctx, request = self.ctx, self.request
         ctx.model = self.module.prepare_model_for_sampling(ctx)
+        # Step cache (EasyCache) and the attention/VAE summary shown in the progress bar.
+        note = step_cache_skip_reason(ctx.settings, request.steps) or ("" if self.module.supports_step_cache(ctx.settings) else "not with this family's settings")
+        cached_model = ctx.model if note else apply_step_cache(ctx.model, ctx.settings, request.steps)
+        cached = cached_model is not ctx.model
+        ctx.model = cached_model
+        ctx.settings["_performance"] = performance_label(ctx.settings, cached, note if not cached else "")
+        _uc_log(ctx.draw_id, "performance", {"summary": ctx.settings["_performance"]})
+        # Core samplers report progress for "the current prompt"; a graph-less draw (and a family
+        # with its own sample_latent) has none unless a queued prompt ran since startup.
+        _ensure_direct_sampling_prompt_context()
         ctx.latent = self.module.sample_latent(
             model=ctx.model,
             positive=ctx.positive,
@@ -348,6 +385,15 @@ class ImageDrawPipeline:
 
     def fit_to_output(self) -> None:
         ctx = self.ctx
+        if ctx.crop_plan is not None:
+            # Stitch: the generated crop goes back into its box; the paste mask stays inside it.
+            plan = ctx.crop_plan
+            ctx.result_images = [stitch_image(image, ctx.full_source_rgba, plan) for image in ctx.result_images]
+            if ctx.paste_mask_image is not None:
+                ctx.paste_mask_image = stitch_mask(ctx.paste_mask_image, plan)
+            if ctx.mask_image is not None:
+                ctx.mask_image = stitch_mask(ctx.mask_image.convert("RGBA").getchannel("A"), plan)
+            ctx.width, ctx.height = plan.full_size
         masked = ctx.mode in MASKED_MODES and ctx.mask_image is not None
         resized = []
         for result_image in ctx.result_images:
@@ -403,6 +449,7 @@ class ImageDrawPipeline:
             "generation_mode": ctx.settings.get("generation_mode", self.module.key),
             "task": request.task.key,
             "debug_id": ctx.draw_id,
+            "performance": ctx.settings.get("_performance", ""),
         }
         if request.payload.get("return_tensor"):
             result["tensor"] = ctx.decoded.detach().cpu()

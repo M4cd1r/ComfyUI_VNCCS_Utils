@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .comfy_bridge import _call_loader_node
+from .gguf_compat import gguf_architecture_hint, normalize_gguf_arch
 from .locks import _COMFY_MODEL_OP_LOCK, _MODEL_CACHE_LOCK
-from .paths import _get_full_path_agnostic
+from .paths import _get_full_path_agnostic, _resolve_model_filename
+from .performance import apply_vae_chunking
 
 
 _MODEL_CACHE_MAX_ENTRIES = 1
@@ -36,7 +38,7 @@ class CheckpointUniCanvasLoader(UniCanvasModelLoader):
         import comfy.sd
         import folder_paths
 
-        ckpt_name = str(gen_settings.get("ckpt_name") or "")
+        ckpt_name = _resolve_model_filename(folder_paths, "checkpoints", gen_settings.get("ckpt_name"))
         if not ckpt_name:
             raise ValueError("Checkpoint is required")
         ckpt_path = _get_full_path_agnostic(folder_paths, "checkpoints", ckpt_name, require_exists=True)
@@ -69,9 +71,10 @@ class DiffusionModelUniCanvasLoader(UniCanvasModelLoader):
         import comfy.sd
         import folder_paths
 
-        diffusion_model_name = gen_settings.get("diffusion_model_name")
-        clip_name = gen_settings.get("clip_name")
-        vae_name = gen_settings.get("vae_name")
+        # Default/preset names without a subfolder resolve to the installed file.
+        diffusion_model_name = _resolve_model_filename(folder_paths, "diffusion_models", gen_settings.get("diffusion_model_name"))
+        clip_name = _resolve_model_filename(folder_paths, "text_encoders", gen_settings.get("clip_name"))
+        vae_name = _resolve_model_filename(folder_paths, "vae", gen_settings.get("vae_name"))
         clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
 
         if gen_settings.get("generation_mode") == "krea2_edit" and not hasattr(comfy.sd.CLIPType, "KREA2"):
@@ -146,6 +149,7 @@ class GGUFUniCanvasLoader(DiffusionModelUniCanvasLoader):
         return (
             self.key,
             gen_settings.get("gguf_model_name", ""),
+            normalize_gguf_arch(gen_settings.get("gguf_arch")),
             gen_settings.get("clip_name", ""),
             gen_settings.get("vae_name", ""),
             gen_settings.get("clip_type", ""),
@@ -155,9 +159,9 @@ class GGUFUniCanvasLoader(DiffusionModelUniCanvasLoader):
         import comfy.sd
         import folder_paths
 
-        gguf_model_name = gen_settings.get("gguf_model_name")
-        clip_name = gen_settings.get("clip_name")
-        vae_name = gen_settings.get("vae_name")
+        gguf_model_name = _resolve_model_filename(folder_paths, ("unet_gguf", "unet", "diffusion_models"), gen_settings.get("gguf_model_name"))
+        clip_name = _resolve_model_filename(folder_paths, "text_encoders", gen_settings.get("clip_name"))
+        vae_name = _resolve_model_filename(folder_paths, "vae", gen_settings.get("vae_name"))
         clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
 
         if not gguf_model_name:
@@ -167,14 +171,17 @@ class GGUFUniCanvasLoader(DiffusionModelUniCanvasLoader):
         if not vae_name:
             raise ValueError("No VAE selected for UniCanvas")
 
-        model = _call_loader_node(
-            ["UnetLoaderGGUF", "UNETLoaderGGUF", "GGUF Loader"],
-            ["load_unet", "load_model", "load_diffusion_model"],
-            unet_name=gguf_model_name,
-            model_name=gguf_model_name,
-            diffusion_model_name=gguf_model_name,
-            weight_dtype="default",
-        )
+        # Metadata-less (sd.cpp style) GGUF files: the user's Architecture pick, or auto with
+        # Qwen-Image detection that ComfyUI-GGUF lacks (see gguf_compat).
+        with gguf_architecture_hint(gen_settings.get("gguf_arch")):
+            model = _call_loader_node(
+                ["UnetLoaderGGUF", "UNETLoaderGGUF", "GGUF Loader"],
+                ["load_unet", "load_model", "load_diffusion_model"],
+                unet_name=gguf_model_name,
+                model_name=gguf_model_name,
+                diffusion_model_name=gguf_model_name,
+                weight_dtype="default",
+            )
         if model is None:
             raise ValueError(
                 "Failed to load GGUF model. Install/enable a GGUF loader node such as ComfyUI-GGUF "
@@ -272,6 +279,12 @@ def _get_unicanvas_model_loader(loader_type: str | None) -> UniCanvasModelLoader
 
 
 def _load_generation_assets(gen_settings: dict[str, Any]):
+    """(model, clip, vae) for the settings; the VAE runs chunked when "vae_chunking" is on."""
+    model, clip, vae = _load_generation_assets_cached(gen_settings)
+    return model, clip, apply_vae_chunking(vae, gen_settings)
+
+
+def _load_generation_assets_cached(gen_settings: dict[str, Any]):
     loader = _get_unicanvas_model_loader(str(gen_settings.get("model_loader") or "checkpoint").lower())
     if loader.key == "external":
         # The external pass-through loader returns the caller's own VNCSS_CONFIG block, so its

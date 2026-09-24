@@ -27,8 +27,14 @@ def test_module_registered_with_aliases():
 def test_defaults_follow_qi21_recipe():
     module = _get_unicanvas_model_module("qwen_image21")
     defaults = module.defaults
-    # Flow matching sampling: euler/simple, 40 steps (spec section 9).
-    assert defaults["steps"] == 40
+    # Flow matching sampling: euler/simple; the Viggle v0.2.1 turbo LoRA is on by default,
+    # so 6 steps at CFG 1 (verified subject extraction in ~9 s on a 4090).
+    from nodes.unicanvas.models.qwen_image21 import QWEN21_TURBO_LORA_NAME, QWEN21_TURBO_STEPS
+
+    assert defaults["steps"] == QWEN21_TURBO_STEPS == 6
+    assert defaults["qwen21_turbo_enabled"] is True
+    assert defaults["qwen_lora_name"] == QWEN21_TURBO_LORA_NAME
+    assert "v0.2.1-6step" in QWEN21_TURBO_LORA_NAME
     assert defaults["sampler"] == "euler"
     assert defaults["sampler_name"] == "euler"
     assert defaults["scheduler"] == "simple"
@@ -216,7 +222,7 @@ def test_remove_background_contract(monkeypatch):
     module = _get_unicanvas_model_module("qwen_image21")
     captured = {}
 
-    def fake_extraction(self, pixels):
+    def fake_extraction(self, pixels, settings=None):
         captured["pixels"] = pixels
         alpha = torch.full(pixels.shape[:-1] + (1,), 0.25)
         return torch.cat([pixels, alpha], dim=-1)
@@ -242,6 +248,9 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
     """
     module = _get_unicanvas_model_module("qwen_image21")
     captured = {}
+    # The default turbo LoRA resolves (no download) and applies to the fake model as a no-op.
+    monkeypatch.setattr("nodes.unicanvas.models.qwen_image21.resolve_qwen21_turbo_lora", lambda: "viggle/turbo.safetensors")
+    monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda model, clip, *args, **kwargs: (model, clip))
 
     class FakeVae:
         def encode(self, pixels):
@@ -277,7 +286,8 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
     rgba = module.remove_background(image)
 
     encode = next(kwargs for name, kwargs in captured["calls"] if name == "TextEncodeQwenImage21")
-    assert encode["resolution"] == 48 * 80
+    # The node's resolution is a square side (~sqrt(48 * 80) = 62 -> 64), not a pixel count.
+    assert encode["resolution"] == 64
     assert captured["encode_pixels"].shape == (1, 48, 80, 4)
     assert captured["sample_latent"]["samples"].shape == (1, 64, 3, 5)
     assert tuple(rgba.shape) == (48, 80, 4)
@@ -287,7 +297,7 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
 def test_remove_background_accepts_batched_and_resized_results(monkeypatch):
     module = _get_unicanvas_model_module("qwen_image21")
 
-    def fake_extraction_batched(self, pixels):
+    def fake_extraction_batched(self, pixels, settings=None):
         alpha = torch.full(pixels.shape[:-1] + (1,), 0.75)
         return torch.cat([pixels, alpha], dim=-1).unsqueeze(0)
 
@@ -295,7 +305,7 @@ def test_remove_background_accepts_batched_and_resized_results(monkeypatch):
     rgba = module.remove_background(torch.rand(6, 5, 3))
     assert tuple(rgba.shape) == (6, 5, 4)
 
-    def fake_extraction_resized(self, pixels):
+    def fake_extraction_resized(self, pixels, settings=None):
         alpha = torch.full((3, 4, 1), 0.5)
         return torch.cat([torch.zeros(3, 4, 3), alpha], dim=-1)
 

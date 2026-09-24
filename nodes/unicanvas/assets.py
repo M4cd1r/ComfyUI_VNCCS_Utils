@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .comfy_bridge import _get_node_combo_values, _safe_filename_list
+from .gguf_compat import gguf_architectures
 from .loaders import UNICANVAS_MODEL_LOADERS
 from .models.registry import UNICANVAS_MODEL_MODULES
 
@@ -26,6 +27,13 @@ def _get_gguf_model_names() -> list[str]:
             if str(name).lower().endswith(".gguf") and name not in names:
                 names.append(name)
     return names
+
+
+def _safe_gguf_architectures() -> list[str]:
+    try:
+        return gguf_architectures()
+    except Exception:
+        return ["auto"]
 
 
 def _get_unicanvas_assets() -> dict[str, Any]:
@@ -53,6 +61,7 @@ def _get_unicanvas_assets() -> dict[str, Any]:
         "checkpoints": _safe_filename_list("checkpoints"),
         "diffusion_models": _get_diffusion_model_names(),
         "gguf_models": _get_gguf_model_names(),
+        "gguf_architectures": _safe_gguf_architectures(),
         "text_encoders": _safe_filename_list("text_encoders"),
         "vae_models": _safe_filename_list("vae"),
         "model_patches": _safe_filename_list("model_patches"),

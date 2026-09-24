@@ -12,6 +12,7 @@ from typing import Any
 
 from PIL import Image
 
+from .debug import set_unicanvas_debug
 from .draw_pipeline import ImageDrawPipeline, prepare_pose_edit_images
 from .draw_request import DrawRequest
 from .models.base import UniCanvasModelModule
@@ -40,6 +41,9 @@ def _create_draw_pipeline(request: DrawRequest) -> ImageDrawPipeline:
 
 
 def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+    if "debug_mode" in settings:
+        set_unicanvas_debug(settings.get("debug_mode"))
     request = DrawRequest.from_payload(payload)
     request.module.validate_request(request)
     return _create_draw_pipeline(request).run()

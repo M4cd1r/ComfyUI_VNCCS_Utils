@@ -207,3 +207,21 @@ test("modal keydown stops propagation so Esc cannot exit fullscreen behind a mod
     assert.ok(/e\.key === "Enter"[\s\S]{0,160}?e\.stopPropagation\(\)/.test(modal),
         "Enter in the modal keydown handler must stopPropagation before close");
 });
+
+test("Save to output saves the bbox crop and reports the result in a toast", () => {
+    const crop = region(modesSource, "export function uniCanvasBboxPixelRect", "export function buildUniCanvasCompositeCanvas");
+    assert.ok(crop.includes("bbox?.x || 0) - Number(origin?.x || 0)"), "the crop must convert the world bbox to canvas pixels");
+    assert.ok(crop.includes("out.width = rect.width") && crop.includes("out.height = rect.height"),
+        "the saved image must have the generation bbox size");
+    assert.ok(crop.includes("buildUniCanvasCompositeCanvas(widget)"), "the crop must start from the flattened composite");
+    const save = region(modesSource, "export async function saveUniCanvasOutput", "export async function newUniCanvasDocument");
+    assert.ok(save.includes("buildUniCanvasBboxCompositeCanvas(widget).toDataURL"), "Save to output must send the bbox crop");
+    assert.ok(save.includes('showUniCanvasToast(widget, "Saved to output"'), "success must show a toast with the file name");
+    assert.ok(save.includes('showUniCanvasToast(widget, "Save to output failed", message, "error")'),
+        "failure must show an error toast with the message");
+});
+
+test("the standalone tab has no fullscreen toggle", () => {
+    const install = region(modesSource, "function installUniCanvasFullscreenButton", "export function showUniCanvasToast");
+    assert.ok(install.includes("if (widget.standalone) return;"), "standalone must skip the fullscreen button");
+});

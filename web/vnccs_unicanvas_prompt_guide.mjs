@@ -70,14 +70,33 @@ function textElement(doc, tag, className, text) {
   return element;
 }
 
+// How the prompt of an edit family names its pictures, e.g. for Qwen-Image-2.1:
+// 'Write <image1> for the working area and <image2>, <image3>, ... for the references, e.g. "..."'.
+export function referenceUsageLines(guide) {
+  if (!guide) return [];
+  const slots = guide.referenceSlots || [];
+  if (slots.length) {
+    const tag = /[<>@]/.test(slots[0]);
+    const example = `Put the character from ${slots[1] || slots[0]} into ${slots[0]}, keep the lighting of ${slots[0]}.`;
+    return [
+      `Referring to images: ${slots[0]} is the working area (the canvas inside the bbox); ${slots.slice(1, 4).join(", ")}${slots.length > 4 ? ", ..." : ""} are the reference images in upload / VNCSS Config order.`,
+      tag
+        ? `Write the tags exactly as shown (with the angle brackets), e.g. "${example}"`
+        : `Write the names in plain words, e.g. "${example}"`,
+    ];
+  }
+  if (guide.role === "edit") {
+    return ["Referring to images: this model has no image tags - describe what to change in the working area in plain words (\"the woman\", \"the background\")."];
+  }
+  return [];
+}
+
 // Plain-text form of the guide for the Copy button, ready to paste into an LLM.
 export function promptGuideText(guide) {
   if (!guide) return "No prompt guide for this model.";
   const lines = [guide.task ? `${guide.label} - ${guide.task} - how to prompt` : `${guide.label} - how to prompt`, ""];
   for (const paragraph of guide.paragraphs) lines.push(paragraph, "");
-  if (guide.referenceSlots.length) {
-    lines.push(`Picture slots: ${guide.referenceSlots[0]} is the working area; ${guide.referenceSlots.slice(1).join(", ")} are reference images.`);
-  }
+  for (const line of referenceUsageLines(guide)) lines.push(line);
   if (!guide.negativePrompt) lines.push("This model does not use the negative prompt.");
   if (guide.tasks.length) lines.push(`Tasks: ${guide.tasks.join(", ")}`);
   for (const entry of guide.taskGuides || []) lines.push(`${entry.task} prompts differently: ${entry.hint}`);
@@ -97,10 +116,7 @@ export function renderPromptGuide(container, guide, doc = globalThis.document) {
   const title = guide.task ? `${guide.label} - ${guide.task} - how to prompt` : `${guide.label} - how to prompt`;
   const nodes = [textElement(doc, "div", "vnccs-uc-prompt-guide-title", title)];
   for (const paragraph of guide.paragraphs) nodes.push(textElement(doc, "div", "vnccs-uc-prompt-guide-text", paragraph));
-  if (guide.referenceSlots.length) {
-    nodes.push(textElement(doc, "div", "vnccs-uc-prompt-guide-meta",
-      `Picture slots: ${guide.referenceSlots[0]} is the working area; ${guide.referenceSlots.slice(1).join(", ")} are reference images.`));
-  }
+  for (const line of referenceUsageLines(guide)) nodes.push(textElement(doc, "div", "vnccs-uc-prompt-guide-meta", line));
   if (!guide.negativePrompt) nodes.push(textElement(doc, "div", "vnccs-uc-prompt-guide-meta", "This model does not use the negative prompt."));
   if (guide.tasks.length) nodes.push(textElement(doc, "div", "vnccs-uc-prompt-guide-meta", `Tasks: ${guide.tasks.join(", ")}`));
   if (guide.plannedTasks.length) nodes.push(textElement(doc, "div", "vnccs-uc-prompt-guide-meta", `Coming later: ${guide.plannedTasks.join(", ")}`));

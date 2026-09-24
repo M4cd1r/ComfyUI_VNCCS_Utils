@@ -162,17 +162,37 @@ class EditContractTests(unittest.TestCase):
         helper = types.ModuleType(INFERENCE_MODULE)
         helper.patch_krea2_edit = Mock(return_value="patched")
         settings = self.settings(krea2_likeness=7.1)
-        settings.update(_krea2_edit_image="image", _krea2_edit_vae="vae")
+        settings.update(_krea2_edit_image="image", _krea2_edit_image_b="character", _krea2_edit_vae="vae")
         latent = {"samples": object()}
         with patch.dict(sys.modules, {helper.__name__: helper}), \
              patch.object(BASE, "_sample_generation_latent_default", return_value="result") as sample:
             result = MODULE.sample_latent("original", "pos", "neg", latent, 17, 10, 1, "euler", "simple", .2, settings)
         self.assertEqual(result, "result")
-        helper.patch_krea2_edit.assert_called_once_with("original", "vae", "image", latent, 7.1)
+        helper.patch_krea2_edit.assert_called_once_with("original", "vae", "image", latent, 7.1, image_b="character")
         self.assertEqual(sample.call_args.kwargs["denoise"], 1)
         self.assertEqual(sample.call_args.kwargs["model"], "patched")
         self.assertIs(sample.call_args.kwargs["latent"], latent)
         self.assertNotIn("_krea2_edit_image", settings)
+        self.assertNotIn("_krea2_edit_image_b", settings)
+
+    def test_lora_default_is_found_in_any_subfolder(self):
+        from nodes.unicanvas import loras
+
+        class _FolderPaths:
+            @staticmethod
+            def get_filename_list(category):
+                return [r"krea\krea2_identity_edit_v1_2.safetensors"] if category == "loras" else []
+
+            @staticmethod
+            def get_folder_paths(category):
+                return []
+
+            @staticmethod
+            def get_full_path(category, name):
+                return __file__ if name.replace("/", "\\") == r"krea\krea2_identity_edit_v1_2.safetensors" else None
+
+        with patch.dict(sys.modules, {"folder_paths": _FolderPaths()}):
+            self.assertEqual(loras._get_lora_full_path("Krea2/krea2_identity_edit_v1_2.safetensors"), __file__)
 
     def test_empty_latent_uses_sd3_channels_and_batch_contract(self):
         expected = {"samples": object()}

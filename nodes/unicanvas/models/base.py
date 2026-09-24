@@ -168,6 +168,10 @@ class UniCanvasModelModule:
     def after_latent_prepared(self, ctx: DrawContext) -> None:
         """The batched generation latent is in ``ctx.latent``."""
 
+    def supports_step_cache(self, settings: dict[str, Any]) -> bool:
+        """Whether ComfyUI's EasyCache may skip steps for this run (see performance.py)."""
+        return True
+
     def prepare_model_for_sampling(self, ctx: DrawContext) -> Any:
         """Last model patch before sampling (after every LoRA)."""
         return ctx.model
