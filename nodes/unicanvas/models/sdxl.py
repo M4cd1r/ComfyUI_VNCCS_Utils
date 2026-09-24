@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from ..loras import _apply_lora_cached, _lora_name_matches
+from ..loras import LoraRequirement
 from .base import UniCanvasModelModule
 
 
@@ -24,13 +23,12 @@ ILLUSTRIOUS_DEFAULTS = {
 
 @dataclass(frozen=True)
 class SDXLUniCanvasModule(UniCanvasModelModule):
-    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        lora_name = str(gen_settings.get("dmd_lora_name") or "")
-        if gen_settings.get("turbo_enabled") and _lora_name_matches(lora_name, SDXL_TURBO_LORA_NAME):
-            model, clip = _apply_lora_cached(
-                model,
-                clip,
-                lora_name,
-                float(gen_settings.get("dmd_lora_strength", 1.0)),
-            )
-        return super().apply_loras(model, clip, gen_settings)
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="dmd_lora_name",
+            match=SDXL_TURBO_LORA_NAME,
+            enabled_setting="turbo_enabled",
+            strength_setting="dmd_lora_strength",
+            description="DMD2 4-step turbo",
+        ),
+    )

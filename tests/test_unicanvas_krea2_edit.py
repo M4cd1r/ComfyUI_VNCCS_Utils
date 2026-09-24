@@ -129,16 +129,14 @@ class EditContractTests(unittest.TestCase):
 
     def test_edit_lora_is_mandatory_fixed_strength_and_not_duplicated(self):
         name = KREA2.KREA2_EDIT_DEFAULTS["krea2_edit_lora_name"]
-        # The edit LoRA (Krea2 module) and the optional stack (base module) share one loader.
-        apply = Mock(return_value=("model", "clip"))
-        with patch.object(KREA2, "_apply_lora_cached", apply), patch.object(BASE, "_apply_lora_cached", apply):
+        with patch.object(UC.loras, "_apply_lora_cached", return_value=("model", "clip")) as apply:
             MODULE.apply_loras("model", "clip", self.settings(turbo_enabled=False, lora_stack=[
                 {"name": name, "strength": .2}, {"name": "style.safetensors", "strength": .7}]))
         self.assertEqual(apply.call_count, 2)
         self.assertEqual(apply.call_args_list[0].args[2:], (name, 1.0))
         self.assertEqual(apply.call_args_list[0].kwargs, {"clip_strength": 0.0})
         self.assertEqual(apply.call_args_list[1].args[2:4], ("style.safetensors", .7))
-        with patch.object(KREA2, "_apply_lora_cached", side_effect=ValueError("LoRA not found")), self.assertRaisesRegex(ValueError, "LoRA not found"):
+        with patch.object(UC.loras, "_apply_lora_cached", side_effect=ValueError("LoRA not found")), self.assertRaisesRegex(ValueError, "LoRA not found"):
             MODULE.apply_loras(None, None, self.settings())
 
     def test_prompt_is_image_grounded_on_both_branches_and_releases_clip(self):

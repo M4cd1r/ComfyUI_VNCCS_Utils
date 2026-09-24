@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ..comfy_bridge import _call_node_method
 from ..latents import _unwrap_latent_samples
-from ..loras import _apply_lora_cached, _lora_name_matches
+from ..loras import LoraRequirement
 from .base import UniCanvasModelModule
 
 
@@ -31,15 +31,17 @@ KREA2_EDIT_DEFAULTS = {
 class Krea2EditUniCanvasModule(UniCanvasModelModule):
     """Identity Edit v1.2: mandatory LoRA, grounded Qwen3-VL and clean source tokens."""
 
-    def apply_loras(self, model, clip, gen_settings):
-        name = str(gen_settings.get("krea2_edit_lora_name") or KREA2_EDIT_DEFAULTS["krea2_edit_lora_name"])
-        model, clip = _apply_lora_cached(model, clip, name, 1.0, clip_strength=0.0)
-        # The edit adapter is mandatory and must not be applied twice by the optional stack.
-        settings = dict(gen_settings)
-        settings["lora_stack"] = [item for item in gen_settings.get("lora_stack", []) or []
-                                  if isinstance(item, dict) and not _lora_name_matches(
-                                      item.get("name") or item.get("lora_name"), name)]
-        return super().apply_loras(model, clip, settings)
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="krea2_edit_lora_name",
+            default_name=KREA2_EDIT_DEFAULTS["krea2_edit_lora_name"],
+            fixed_strength=1.0,
+            clip_strength=0.0,
+            required=True,
+            dedupe_from_stack=True,
+            description="Krea2 Identity Edit adapter (mandatory)",
+        ),
+    )
 
     def encode_prompt(self, clip, text, gen_settings):
         # Defer until the exact bbox reference is prepared, including outpaint pixels.

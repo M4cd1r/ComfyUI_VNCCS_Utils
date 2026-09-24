@@ -20,7 +20,7 @@ import torch
 from ..comfy_bridge import _call_comfy_node
 from ..debug import _conditioning_debug, _latent_debug, _uc_log
 from ..loaders import _load_generation_assets
-from ..loras import _apply_lora_cached, _lora_name_matches
+from ..loras import LoraRequirement
 from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
 from .base import UniCanvasModelModule, _reference_image_slots
 
@@ -251,6 +251,19 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     aliases: tuple[str, ...] = ("qwen-image-2.1", "qwen_image_21", "qwenimage21", "qi21", "qwen21")
     defaults: dict[str, Any] = field(default_factory=lambda: dict(QWEN_IMAGE21_DEFAULTS))
     is_edit_model: bool = True
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="qwen_lora_name",
+            strength_setting="qwen_lora_strength",
+            default_strength=0.0,
+            require_positive_strength=True,
+            clip_strength=0.0,
+            # Looked up at call time so the lazy download (and tests) can replace it.
+            resolver=lambda: resolve_qwen21_turbo_lora(),
+            resolve_match=QWEN21_TURBO_LORA_NAME,
+            description="Qwen-Image-2.1 LoRA (Viggle turbo downloads on first use)",
+        ),
+    )
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         # Inpaint and outpaint are img2img runs with mask paste-back (spec 9).
@@ -278,20 +291,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         reference images in socket order.
         """
         return _reference_image_slots(image_tensor, gen_settings)
-
-    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        lora_name = str(gen_settings.get("qwen_lora_name") or "")
-        if lora_name and float(gen_settings.get("qwen_lora_strength", 0.0) or 0.0) > 0:
-            if _lora_name_matches(lora_name, QWEN21_TURBO_LORA_NAME):
-                lora_name = resolve_qwen21_turbo_lora()
-            model, clip = _apply_lora_cached(
-                model,
-                clip,
-                lora_name,
-                float(gen_settings.get("qwen_lora_strength", 1.0)),
-                0.0,
-            )
-        return super().apply_loras(model, clip, gen_settings)
 
     def assemble_instruction(self, prompt: str, slots, opaque_output: bool = False) -> str:
         """Assemble the QI2.1 instruction: <image N> slot framing, the user

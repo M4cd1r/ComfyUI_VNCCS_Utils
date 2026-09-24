@@ -10,7 +10,7 @@ import torch
 
 from ..comfy_bridge import _call_node_method
 from ..debug import _conditioning_debug, _latent_debug, _tensor_debug, _uc_log
-from ..loras import _apply_lora_cached, _lora_name_matches
+from ..loras import LoraRequirement
 from ..sampling import _sample_generation_latent_default
 from .base import UniCanvasModelModule, _reference_image_slots
 
@@ -45,20 +45,20 @@ QWEN_IMAGE_EDIT_DEFAULTS = {
 
 @dataclass(frozen=True)
 class QwenImageEditUniCanvasModule(UniCanvasModelModule):
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="qwen_lora_name",
+            match=QWEN_IMAGE_EDIT_TURBO_LORA_NAME,
+            strength_setting="qwen_lora_strength",
+            default_strength=0.0,
+            require_positive_strength=True,
+            clip_strength=0.0,
+            description="Qwen-Image-Edit-2511 Lightning 4-step",
+        ),
+    )
+
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
         return model, clip
-
-    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        lora_name = str(gen_settings.get("qwen_lora_name") or "")
-        if _lora_name_matches(lora_name, QWEN_IMAGE_EDIT_TURBO_LORA_NAME) and float(gen_settings.get("qwen_lora_strength", 0.0) or 0.0) > 0:
-            model, clip = _apply_lora_cached(
-                model,
-                clip,
-                lora_name,
-                float(gen_settings.get("qwen_lora_strength", 1.0)),
-                0.0,
-            )
-        return super().apply_loras(model, clip, gen_settings)
 
     def encode_prompt(self, clip: Any, text: str, gen_settings: dict[str, Any]):
         image_tensor = gen_settings.get("_qwen_edit_reference_image")

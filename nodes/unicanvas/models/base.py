@@ -11,7 +11,7 @@ from PIL import Image
 from ..constants import OUTPAINT_PROMPT_SUFFIX
 from ..debug import _latent_debug, _uc_log
 from ..latents import _unwrap_latent_samples
-from ..loras import _apply_lora_cached, _clone_model_clip
+from ..loras import LoraRequirement, _apply_lora_requirements, _apply_lora_stack, _clone_model_clip
 from ..masking import _make_edit_outpaint_reference_rgb, _sample_transparent_outpaint_rgb
 from ..sampling import _sample_generation_latent_default
 
@@ -29,6 +29,8 @@ class UniCanvasModelModule:
     aliases: tuple[str, ...]
     defaults: dict[str, Any]
     is_edit_model: bool = False
+    # LoRAs the family applies itself (turbo, mandatory edit adapters ...), before the user stack.
+    lora_requirements: tuple[LoraRequirement, ...] = ()
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return mode in {"inpaint", "outpaint"}
@@ -45,22 +47,10 @@ class UniCanvasModelModule:
         return _sample_transparent_outpaint_rgb(source_rgba, draw_id)
 
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        lora_stack = gen_settings.get("lora_stack") or []
-        if isinstance(lora_stack, list):
-            for item in lora_stack:
-                if not isinstance(item, dict):
-                    continue
-                lora_name = str(item.get("name") or item.get("lora_name") or "")
-                strength = float(item.get("strength", item.get("model_strength", 1.0)))
-                clip_strength = item.get("clip_strength", None)
-                model, clip = _apply_lora_cached(
-                    model,
-                    clip,
-                    lora_name,
-                    strength,
-                    None if clip_strength is None else float(clip_strength),
-                )
-        return model, clip
+        """Declared ``lora_requirements`` first, then the user's LoRA stack. Do not override:
+        declare a :class:`LoraRequirement` instead."""
+        model, clip, skip = _apply_lora_requirements(model, clip, self.lora_requirements, gen_settings)
+        return _apply_lora_stack(model, clip, gen_settings.get("lora_stack") or [], skip)
 
     def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
         tokens = clip.tokenize(text or "")
