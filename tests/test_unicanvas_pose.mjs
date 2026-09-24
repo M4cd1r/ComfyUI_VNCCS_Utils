@@ -51,6 +51,7 @@ function harness(studioClass = class {}) {
         getLayerWorldBounds: () => ({ x: 0, y: 0, width: 100, height: 100 }),
         ensureWorldRectBounds: () => true, requestRender: noop, syncLightStateToWidget: noop, scheduleFullSync: noop, markLayerPixelsChanged: noop,
         recordHistoryBefore: noop, syncToNode: noop, setStatus: noop, hasOpenStagingPanel: () => false, settings: { positive: "Additional instruction" },
+        side: new Element(),
     };
     return { editor: new Editor(host), host, layer, context, Editor };
 }
@@ -80,11 +81,16 @@ function selectionHarness() {
     host.toolNeedsCanvasRender = () => false;
     host.getModelBase = () => "qwen_image_edit"; host.getInferenceSize = () => ({ width:512, height:512 });
     host.drawBtn = { disabled:false };
+    host.createLayerPixelSnapshot = item => ({ id: item.id, pose: JSON.parse(JSON.stringify(item.pose || null)) });
+    host.restoreLayerPixelSnapshot = (item, snapshot) => { item.pose = JSON.parse(JSON.stringify(snapshot.pose)); calls.push(["restore", item.id]); };
+    host.centerBbox = noop; host.refreshLayerRow = noop; host.updateHistoryButtons = noop;
+    host.undoStack = []; host.redoStack = []; host.view = { x: 0, y: 0, scale: 1 };
+    host.pushHistoryEntry = entry => host.undoStack.push(entry);
     const calls = [];
     host.setStatus = message => calls.push(["status", message]);
     host.poseEditor = {
         commit: () => calls.push(["commit"]),
-        setVisible: show => calls.push(["visible", show]),
+        setVisible: show => calls.push(["visible", show]), layout: noop,
         activate: async (selected, options) => calls.push(["activate", selected.id, options.show]),
         setCharacterOpen: open => calls.push(["character", open]),
         generation: async selected => { calls.push(["generation", selected.id]); throw new Error("Capture stopped by test"); },
@@ -92,27 +98,47 @@ function selectionHarness() {
     return { host, layer, raster, calls };
 }
 
-test("selecting a pose from another tool opens its editor and the missing character picker", () => {
+test("selecting a pose layer only selects it; Edit pose enters and Save pose leaves the editor", () => {
     const { host, layer, calls } = selectionHarness();
     host.setActiveLayer(layer.id);
-    assert.equal(host.tool, "pose"); assert.equal(host.activeLayerId, layer.id);
+    assert.equal(host.tool, "brush", "selection alone never opens the pose editor");
+    assert.equal(host.activeLayerId, layer.id);
+    assert.ok(!calls.some(call => call[0] === "activate"));
+    host.editPoseLayer(layer);
+    assert.equal(host.tool, "pose"); assert.equal(host.poseEditSession.layerId, layer.id);
     assert.deepEqual(calls.filter(call => call[0] === "activate"), [["activate", layer.id, true]]);
-    assert.ok(calls.some(call => call[0] === "character" && call[1] === true));
-    host.setTool("move"); calls.length = 0;
-    host.setActiveLayer(layer.id);
-    assert.equal(host.tool, "pose", "clicking the same selected pose must reopen its editor");
-    assert.ok(calls.some(call => call[0] === "activate"));
+    host.finishPoseEdit(true);
+    assert.equal(host.tool, "move"); assert.equal(host.poseEditSession, null);
+    assert.ok(calls.some(call => call[0] === "visible" && call[1] === false));
+    assert.equal(host.undoStack.length, 0, "an unchanged session adds no undo step");
 });
 
 test("selecting a raster layer leaves pose editing and keeps its character selection", () => {
     const { host, layer, raster, calls } = selectionHarness();
     layer.pose.character = { source:"layer", layerId:raster.id };
-    host.setActiveLayer(layer.id);
-    assert.ok(!calls.some(call => call[0] === "character"), "a ready reference must not force the popup open");
+    host.editPoseLayer(layer);
+    assert.ok(!calls.some(call => call[0] === "character"), "entering the editor never forces the character section");
     host.setActiveLayer(raster.id);
     assert.equal(host.tool, "move"); assert.equal(host.activeLayerId, raster.id);
     assert.ok(calls.some(call => call[0] === "visible" && call[1] === false));
     assert.equal(layer.pose.character.layerId, raster.id);
+});
+
+test("a pose edit session is one undo step on Save and fully restored on Cancel", () => {
+    const { host, layer, calls } = selectionHarness();
+    host.editPoseLayer(layer);
+    layer.pose.studio = { changed: 1 };
+    host.finishPoseEdit(true);
+    assert.equal(host.undoStack.length, 1);
+    assert.equal(host.undoStack[0].kind, "layerPixels");
+    assert.deepEqual(host.undoStack[0].before.pose.studio, {});
+    host.editPoseLayer(layer);
+    layer.pose.studio = { changed: 2 };
+    host.finishPoseEdit(false);
+    assert.equal(host.tool, "move");
+    assert.deepEqual(layer.pose.studio, { changed: 1 }, "Cancel restores the pose from before the session");
+    assert.ok(calls.some(call => call[0] === "restore"));
+    assert.equal(host.undoStack.length, 1, "a canceled session adds no undo step");
 });
 
 test("invalid selection and an unfinished transform cannot change the current tool or layer", () => {
@@ -128,7 +154,7 @@ test("Generate redirects a missing character to the pose picker without starting
     await host.draw();
     assert.equal(host.tool, "pose"); assert.equal(host.activeLayerId, layer.id);
     assert.ok(calls.some(call => call[0] === "character" && call[1]));
-    assert.match(calls.find(call => call[0] === "status")[1], /Choose a character image/);
+    assert.match(calls.filter(call => call[0] === "status").at(-1)[1], /Choose a character image/);
     assert.ok(!calls.some(call => call[0] === "generation"));
     assert.equal(host.drawBtn.disabled, false);
 });
@@ -136,7 +162,7 @@ test("Generate redirects a missing character to the pose picker without starting
 test("Generate reaches pose capture while the Pose tool is active and a character is selected", async () => {
     const { host, layer, raster, calls } = selectionHarness();
     layer.pose.character = { source:"layer", layerId:raster.id };
-    host.setActiveLayer(layer.id); await host.draw();
+    host.editPoseLayer(layer); await host.draw();
     assert.equal(host.tool, "pose");
     assert.ok(calls.some(call => call[0] === "generation" && call[1] === layer.id));
     assert.equal(host.drawInProgress, false); assert.equal(host.drawBtn.disabled, false);
@@ -154,16 +180,19 @@ test("deleted and uncached character references reopen selection instead of send
     assert.equal(state.poseCharacterIssue(host, layer), null);
 });
 
-test("the host reuses Body and Scene on the canvas with no Poses or Character tab", () => {
-    const { editor, layer } = harness();
+test("the editor puts Body, Scene and the character reference in the right sidebar while shown", () => {
+    const { editor, host, layer } = harness();
     editor.layer = layer; editor.studio = fakeStudio();
     const original = [editor.studio.leftPanel, editor.studio.rightSidebar];
     editor.buildDock();
     const pages = editor.dock.children.slice(1);
     assert.equal(pages.length, 2);
     assert.equal(editor.studio.centerPanel.hidden, true);
-    assert.equal(editor.characterAnchor.parentElement, editor.controls);
-    assert.equal(editor.dock.parentElement, editor.controls);
+    assert.equal(editor.characterMenu.parentElement, editor.sidePanel);
+    assert.equal(editor.dock.parentElement, editor.sidePanel);
+    assert.equal(editor.editBar.parentElement, editor.controls);
+    editor.setVisible(true); assert.equal(editor.sidePanel.parentElement, host.side);
+    editor.setVisible(false); assert.equal(editor.sidePanel.parentElement, null);
     original.forEach((element, index) => assert.equal(pages[index].children[0], element));
     assert.equal(editor.studio.canvasContainer.parentElement, editor.studio.container);
     assert.equal(pages.filter(page => !page.hidden).length, 1);
@@ -196,7 +225,7 @@ test("bbox editor geometry follows pan and zoom and clips outside the canvas", (
         assert.equal(parseFloat(style.height), 600*scale);
         assert.match(style.clipPath, /^inset\(/);
     }
-    layer.locked = true; editor.layout(); assert.equal(editor.dock.inert, true);
+    layer.locked = true; editor.layout(); assert.equal(editor.sidePanel.inert, true);
 });
 
 test("pose controls stay inside the resized stage and never replace the generation panel", () => {
@@ -229,40 +258,20 @@ test("shared modal overlays lift their stacking context above the toolbox only w
     assert.ok(z(modal) > z(toolbox), "the library must escape the viewport stacking order");
 });
 
-test("collapsing pose settings preserves the active page and scroll when reopened", () => {
-    const { editor, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
-    editor.pages[1].button.fire("click"); editor.pages[1].page.scrollTop = 240;
-    editor.collapseButton.fire("click");
-    assert.ok(editor.pages.every(entry => entry.page.hidden));
-    editor.saveUI(); assert.equal(layer.pose.ui.collapsed, true);
-    editor.collapseButton.fire("click");
-    assert.equal(editor.pages[1].page.hidden, false); assert.equal(editor.pages[1].page.scrollTop, 240);
-    editor.collapseButton.fire("click"); editor.pages[0].button.fire("click");
-    assert.equal(editor.pages[0].page.hidden, false); assert.equal(editor.dockCollapsed, false);
-});
-
-test("the character popup previews layer references, clears them, and dismisses without losing selection", () => {
-    const { editor, host, layer, context } = harness();
+test("the character reference section previews layer references and clears them", () => {
+    const { editor, host, layer } = harness();
     const character = { id: "character", name: "Alice", type: "raster", visible: true };
     host.layers.push(character); host.getLayerThumbnailCanvas = () => Object.assign(new Element("canvas"), { name:"Alice" });
     editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
-    assert.equal(editor.characterMenu.hidden, true);
-    editor.characterTrigger.fire("click");
-    assert.equal(editor.characterMenu.hidden, false); assert.equal(editor.characterClose.focused, true);
+    assert.match(editor.characterIssue.textContent, /Needed to generate/);
     editor.characterSelect.value = character.id; editor.characterSelect.fire("change");
     assert.equal(layer.pose.character.layerId, character.id);
-    assert.equal(editor.characterSummary.textContent, "Alice"); assert.equal(editor.characterPreview.src, "image:Alice");
-    context.document.fire("pointerdown", { target: editor.characterPreview });
-    assert.equal(editor.characterMenu.hidden, false);
-    context.document.fire("pointerdown", { target: host.container });
-    assert.equal(editor.characterMenu.hidden, true); assert.equal(layer.pose.character.layerId, character.id);
-    editor.characterTrigger.fire("click"); editor.characterMenu.fire("keydown", { key: "Escape" });
-    assert.equal(editor.characterMenu.hidden, true); assert.equal(editor.characterTrigger.focused, true);
-    editor.characterTrigger.fire("click"); editor.setVisible(false);
-    assert.equal(editor.characterMenu.hidden, true);
-    editor.setVisible(true); editor.characterTrigger.fire("click"); editor.characterClear.fire("click");
-    assert.equal(layer.pose.character, null); assert.equal(editor.characterThumb.hidden, true);
-    assert.equal(editor.characterSummary.textContent, "Character"); assert.equal(editor.characterClear.disabled, true);
+    assert.equal(editor.characterPreview.src, "image:Alice"); assert.equal(editor.characterIssue.textContent, "");
+    editor.setVisible(false); editor.setVisible(true);
+    assert.equal(layer.pose.character.layerId, character.id);
+    editor.characterClear.fire("click");
+    assert.equal(layer.pose.character, null); assert.equal(editor.characterPreview.hidden, true);
+    assert.equal(editor.characterClear.disabled, true);
 });
 
 test("image2 contains only lower visible image layers plus the selected character exactly once", async () => {

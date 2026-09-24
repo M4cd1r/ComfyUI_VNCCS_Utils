@@ -1,10 +1,22 @@
 # UniCanvas Pose Studio layers
 
-The mannequin icon in the vertical tool rail creates a live Pose Studio layer inside the current generation bbox. Selecting an existing pose layer automatically activates the Pose tool and reopens its scene, including when clicking the already selected layer after using another tool. Switching to an ordinary image layer leaves the Pose tool. Duplicating a pose or restoring its selection through undo or workflow loading also reopens its editor. Select a raster layer before using the tool to create another independent pose layer; Pose Studio's own Characters section can also manage multiple mannequins in one scene.
+The mannequin icon in the vertical tool rail creates a live Pose Studio layer inside the current generation bbox and opens it in the pose editor. With a pose layer selected, the same icon edits that layer instead. Select a raster layer before using the tool to create another independent pose layer; Pose Studio's own Characters section can also manage multiple mannequins in one scene.
+
+## Edit session
+
+A pose layer is edited only in an explicit session, so outside of it the layer behaves like any other image layer: selecting it only selects it, the Move tool drags it (the live scene keeps the moved placement), it reorders, hides, locks and duplicates, and a plain right click on the canvas opens its layer menu. Enter the session with the Pose tool, **Edit pose** in the layer menu, the pose button in the layer row, or a double-click on the pose layer in the canvas.
+
+While editing:
+
+- the right sidebar (denoise, masks, layers) is replaced by the pose settings: the **Character reference** section, then the Pose Studio **Body** and **Scene** pages;
+- the view frames the pose rectangle, and a bar at the bottom of the canvas lists the viewport controls (left: joints, right-drag: orbit, middle: pan, wheel: zoom) with **Pose Library**, **Cancel** and **Save pose**;
+- UniCanvas undo/redo is paused (Pose Studio's own undo works inside the editor).
+
+**Save pose** (also Enter or Esc outside a text field) keeps the pose and records the whole session as one undo step; **Cancel** restores the pose and pixels from before the session. Selecting another tool or layer saves as well.
 
 ## Editor
 
-The host imports `PoseStudioWidget` from `web/vnccs_pose_studio.js`. It mounts the actual Body and Scene controls in a collapsible inspector at the right edge of the canvas. The standard UniCanvas model, prompt, settings and Generate panel stays visible and interactive. There are no Poses or Character tabs. No rig, morph, IK, hand, library, lighting or prompt implementation is copied into UniCanvas. The original Pose Library button is in Scene. The shared central action toolbar stays hidden. Pose Library dialogs rise above the UniCanvas toolbox and other controls.
+The host imports `PoseStudioWidget` from `web/vnccs_pose_studio.js`. It mounts the actual Body and Scene controls in the right sidebar for the duration of the edit session. The standard UniCanvas model, prompt, settings and Generate panel stays visible and interactive. There are no Poses or Character tabs. No rig, morph, IK, hand, library, lighting or prompt implementation is copied into UniCanvas. The original Pose Library button is in Scene. The shared central action toolbar stays hidden. Pose Library dialogs rise above the UniCanvas toolbox and other controls.
 
 Only the active Pose tool shows its controls and viewport handles. The panels stay mounted when hidden, preserving expanded groups, drafts and scrolling. Body and hand changes, camera navigation and lighting update the layer during interaction. The layer can be moved, reordered, hidden, locked, duplicated and deleted. Pixel painting and destructive image transforms require a raster layer; use the shared Pose Studio controls to edit a live scene. Pose Studio output dimensions resize the live layer and, when still aligned, its bbox. Animation scenes retain their tracks; UniCanvas uses the currently selected frame for a still-image generation.
 
@@ -12,7 +24,7 @@ The canvas displays a transparent rendering. A separate transparent WebGL overla
 
 ## Character reference and inference
 
-The Character button at the lower right of the canvas opens a reference card with a preview, layer picker, Upload image and Clear. It closes on Escape, outside press or leaving the Pose tool. It accepts an image file or an existing image layer. Selecting a pose without a valid character reference opens this card automatically. Generate brings the user back to this selection and explains the missing reference before any inference request is sent. Uploaded references are fitted into the reference canvas. A selected visible lower layer is already part of the reference and is included once. Other selected layers are fitted from their full content bounds, even when their canvas position is outside the bbox.
+The **Character reference** section at the top of the editing sidebar has a preview, a layer picker, Upload image and Clear, and says when a reference is still needed. It accepts an image file or an existing image layer. Generate with a missing reference opens the pose editor, highlights this section and explains the missing reference before any inference request is sent. Uploaded references are fitted into the reference canvas. A selected visible lower layer is already part of the reference and is included once. Other selected layers are fitted from their full content bounds, even when their canvas position is outside the bbox.
 
 To generate, adjust the mannequin, choose its character reference, select QiE2511 or Klein9b in the standard model panel and press the normal Generate button without leaving the Pose tool. Both models receive exactly two images:
 

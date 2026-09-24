@@ -44,6 +44,11 @@ Specs and what each one guards:
   backdrop of the layers below (`fixtures/backdrop.png`): no skydome even when Pose Studio's
   own option is on, transparent surroundings in the layer pixels, and no character far edge
   behind the backdrop, including after a Zoom change.
+- `pose-edit-mode.spec.mjs` - pose layers are edited in an explicit session: the Pose tool
+  swaps the right sidebar (denoise, masks, layers) for the Pose Studio settings and the
+  character reference, Save pose / Cancel bring the layers back; outside the session the Move
+  tool drags the pose layer, a canvas right click opens its layer menu (Edit pose, Rasterize)
+  and a double-click re-enters the editor.
 - `standalone-setting.spec.mjs` - the standalone sidebar tab is absent by default and the
   ComfyUI setting adds and removes it live.
 - `config-override.spec.mjs` - linking a `VNCCS_Config` node to a UniCanvas node greys out

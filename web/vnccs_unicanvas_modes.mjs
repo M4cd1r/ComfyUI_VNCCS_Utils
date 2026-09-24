@@ -129,6 +129,14 @@ export function handleUniCanvasShortcut(widget, event) {
   // Escape closes the modal instead of leaving fullscreen or switching tools.
   if (isUniCanvasModalOpen(widget)) return false;
   const key = String(event.key || "");
+  // Pose editing owns Enter/Esc first: both save the pose and leave the editor (a Pose
+  // Studio dialog keeps them). A second Esc then leaves fullscreen.
+  if ((key === "Escape" || key === "Enter") && widget.tool === "pose" && widget.poseEditSession
+    && !widget.container?.querySelector?.(".vnccs-uc-pose-root [class*='modal']:not([hidden])")) {
+    consumeUniCanvasShortcut(event);
+    widget.finishPoseEdit?.(true);
+    return true;
+  }
   // Esc exits fullscreen from anywhere inside the fullscreen (chrome behavior).
   if (key === "Escape" && widget._vnccsFullscreen) {
     consumeUniCanvasShortcut(event);

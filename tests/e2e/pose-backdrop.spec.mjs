@@ -25,7 +25,7 @@ test("pose editor: mannequin only over a flat backdrop it cannot sink behind", a
   // No skydome sphere even when Pose Studio's own option asks for one: the layer pixels keep
   // transparent surroundings, so the image below stays visible around the mannequin.
   await page.locator(".vnccs-uc-pose-tabs button", { hasText: "Scene" }).click();
-  const skydome = page.locator(".vnccs-uc-pose-root label", { hasText: "Directional Skydome" }).locator('input[type="checkbox"]');
+  const skydome = page.locator(".vnccs-uc-pose-side label", { hasText: "Directional Skydome" }).locator('input[type="checkbox"]');
   if (await skydome.count()) await skydome.first().check({ force: true });
   const pose = await poseLayer(page);
   await expect
@@ -38,7 +38,7 @@ test("pose editor: mannequin only over a flat backdrop it cannot sink behind", a
   // Pose Studio Zoom scales the character; the backdrop moves back with it (no forced push).
   await page.locator(".vnccs-uc-pose-tabs button", { hasText: "Body" }).click();
   const zoomed = await page.evaluate(() => {
-    const labels = [...document.querySelectorAll(".vnccs-uc-pose-root *")].filter(
+    const labels = [...document.querySelectorAll(".vnccs-uc-pose-side *")].filter(
       (el) => el.childElementCount === 0 && /^\s*zoom\s*$/i.test(el.textContent || ""),
     );
     for (const label of labels) {

@@ -10,27 +10,33 @@ const styles = `
 .vnccs-unicanvas .vnccs-uc-pose-root { position:absolute; inset:0; display:block; width:auto; height:auto; min-width:0; min-height:0; background:none; border:0; border-radius:0; pointer-events:none; z-index:5; --vnccs-ps-ui-scale:1; --vnccs-ps-relative-ui-scale:1; }
 .vnccs-unicanvas .vnccs-uc-pose-root:has(> .vnccs-ps-modal-overlay) { z-index:1000; }
 .vnccs-uc-pose-controls { position:absolute; pointer-events:none; overflow:hidden; z-index:1; }
-.vnccs-uc-pose-root .vnccs-uc-pose-dock { position:absolute; top:12px; right:12px; width:300px; max-width:calc(100% - 24px); max-height:calc(100% / var(--vnccs-uc-ui-scale) - 88px); zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; box-sizing:border-box; background:var(--uc-panel); pointer-events:auto; border:1px solid var(--uc-border); border-radius:14px; box-shadow:0 12px 32px rgba(0,0,0,.35); }
+.vnccs-uc-pose-side { display:flex; flex-direction:column; gap:8px; flex:1 1 auto; min-height:0; min-width:0; }
+.vnccs-uc-pose-side-head { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid rgba(255,143,163,.45); border-radius:10px; background:rgba(255,143,163,.08); }
+.vnccs-uc-pose-side-head strong { font-size:12px; color:var(--uc-accent, #ff8fa3); text-transform:uppercase; letter-spacing:.05em; }
+.vnccs-uc-pose-side-head span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--uc-muted); font-size:11px; }
+.vnccs-uc-pose-dock { display:flex; flex-direction:column; gap:8px; flex:1 1 auto; min-height:0; }
 .vnccs-uc-pose-tabs { display:flex; gap:4px; flex:none; }
 .vnccs-uc-pose-tabs button { flex:1; min-width:0; }
-.vnccs-uc-pose-tabs .vnccs-uc-pose-collapse { flex:0 0 32px; }
-.vnccs-uc-pose-page { min-height:0; overflow:auto; flex:1; }
+.vnccs-uc-pose-tabs .vnccs-uc-pose-collapse { display:none; }
+.vnccs-uc-pose-page { min-height:0; overflow:auto; flex:1; overscroll-behavior:contain; }
 .vnccs-uc-pose-page > .vnccs-ps-left, .vnccs-uc-pose-page > .vnccs-ps-right-sidebar, .vnccs-uc-pose-page > .vnccs-ps-center { width:100%; flex:none; min-width:0; height:auto; max-height:none; overflow:visible; padding:0; border:0; background:transparent; zoom:1; }
+.vnccs-uc-pose-editbar { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); display:flex; align-items:center; gap:8px; max-width:calc(100% - 24px); padding:6px 8px 6px 12px; box-sizing:border-box; border:1px solid var(--uc-border); border-radius:12px; background:rgba(14,11,20,.94); box-shadow:0 12px 32px rgba(0,0,0,.45); pointer-events:auto; zoom:var(--vnccs-uc-ui-scale); z-index:3; }
+.vnccs-uc-pose-editbar strong { color:var(--uc-accent, #ff8fa3); font-size:12px; white-space:nowrap; }
+.vnccs-uc-pose-editbar .vnccs-uc-pose-hint { color:var(--uc-muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap { position:absolute; flex:none; min-width:0; min-height:0; margin:0; padding:0; background:transparent; border:0; border-radius:0; pointer-events:auto; overflow:hidden; }
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap canvas { background:transparent; }
 .vnccs-uc-pose-root > [class*="modal"], .vnccs-uc-pose-root > .vnccs-ps-manager, .vnccs-uc-pose-root > .vnccs-ps-manager-detail-strip { pointer-events:auto; }
 .vnccs-uc-pose-root > .vnccs-ps-manager { position:absolute; inset:12px 300px 12px 330px; background:var(--uc-bg); }
-.vnccs-uc-pose-character-anchor { position:absolute; bottom:12px; left:64px; width:300px; max-width:calc(100% - 24px); zoom:var(--vnccs-uc-ui-scale); pointer-events:auto; z-index:2; }
-.vnccs-uc-pose-character-trigger { display:flex; align-items:center; gap:10px; width:100%; min-height:44px; text-align:left; }
-.vnccs-uc-pose-character-trigger img { width:28px; height:32px; object-fit:contain; border-radius:4px; }
-.vnccs-uc-pose-character-trigger span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.vnccs-uc-pose-character { position:absolute; bottom:calc(100% + 8px); left:0; width:100%; box-sizing:border-box; display:flex; flex-direction:column; gap:12px; padding:14px; max-height:var(--uc-pose-character-height, 440px); overflow:auto; background:var(--uc-panel); border:1px solid var(--uc-border); border-radius:14px; box-shadow:0 16px 40px rgba(0,0,0,.5); }
-.vnccs-uc-pose-character > img { width:100%; height:160px; object-fit:contain; background:var(--uc-surface); border:1px solid var(--uc-border); box-sizing:border-box; border-radius:8px; }
-.vnccs-uc-pose-character-header, .vnccs-uc-pose-character-actions { display:flex; align-items:center; gap:8px; }
-.vnccs-uc-pose-character-header strong { flex:1; font-size:13px; }
-.vnccs-uc-pose-character-actions > button { flex:1; min-width:0; min-height:34px; }
-.vnccs-uc-pose-character select { width:100%; }
-.vnccs-uc-pose-character label { font-size:12px; color:var(--uc-muted); }
+.vnccs-uc-pose-character { display:flex; flex-direction:column; gap:8px; padding:10px; flex:none; background:var(--uc-panel); border:1px solid var(--uc-border); border-radius:10px; transition:border-color .2s, box-shadow .2s; }
+.vnccs-uc-pose-character.attention { border-color:#ffd45c; box-shadow:0 0 0 2px rgba(255,212,92,.35); }
+.vnccs-uc-pose-character-header { display:flex; align-items:center; gap:8px; }
+.vnccs-uc-pose-character-header strong { flex:1; font-size:12px; }
+.vnccs-uc-pose-character-row { display:flex; align-items:center; gap:8px; min-width:0; }
+.vnccs-uc-pose-character-row img { width:44px; height:52px; flex:none; object-fit:contain; background:var(--uc-surface); border:1px solid var(--uc-border); border-radius:6px; }
+.vnccs-uc-pose-character-row select { flex:1; min-width:0; width:100%; }
+.vnccs-uc-pose-character-actions { display:flex; align-items:center; gap:8px; }
+.vnccs-uc-pose-character-actions > button { flex:1; min-width:0; }
+.vnccs-uc-pose-character-issue { color:#ffd45c; font-size:11px; }
 .vnccs-uc-pose-root .vnccs-ps-loading-overlay { pointer-events:none; background:transparent; backdrop-filter:none; }
 `;
 
@@ -133,6 +139,12 @@ export class UniCanvasPoseEditor {
         const studio = this.studio, root = studio.container;
         const controls = document.createElement("div"); controls.className = "vnccs-uc-pose-controls";
         this.controls = controls;
+        // While editing, the right sidebar (denoise, masks, layers) is replaced by this panel.
+        const side = document.createElement("div"); side.className = "vnccs-uc-pose-side";
+        const head = document.createElement("div"); head.className = "vnccs-uc-pose-side-head";
+        const headTitle = document.createElement("strong"); headTitle.textContent = "Edit pose";
+        this.sideLayerName = document.createElement("span");
+        head.append(headTitle, this.sideLayerName);
         const dock = document.createElement("div"); dock.className = "vnccs-uc-pose-dock";
         const tabs = document.createElement("div"); tabs.className = "vnccs-uc-pose-tabs";
         tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "Pose settings");
@@ -162,7 +174,6 @@ export class UniCanvasPoseEditor {
             return { page, button, scrollTop: 0, scrollLeft: 0 };
         });
         const select = index => {
-            this.setDockCollapsed(false);
             this.activePage = index;
             panels.forEach((entry, i) => {
                 if (!entry.page.hidden) { entry.scrollTop = entry.page.scrollTop; entry.scrollLeft = entry.page.scrollLeft; }
@@ -173,11 +184,10 @@ export class UniCanvasPoseEditor {
                 if (i === index) { entry.page.scrollTop = entry.scrollTop; entry.page.scrollLeft = entry.scrollLeft; }
             });
         };
-        const collapse = this.host._button("−", "vnccs-uc-btn vnccs-uc-pose-collapse", () => this.setDockCollapsed(!this.dockCollapsed));
-        collapse.setAttribute("aria-label", "Collapse pose settings");
-        tabs.appendChild(collapse); this.collapseButton = collapse;
-        controls.append(dock, this.buildCharacterMenu());
+        side.append(head, this.buildCharacterMenu(), dock);
+        controls.append(this.buildEditBar());
         root.appendChild(controls);
+        this.sidePanel = side;
         this.dock = dock;
         this.pages = panels;
         const savedUI = this.layer.pose.ui;
@@ -193,67 +203,69 @@ export class UniCanvasPoseEditor {
             });
         });
         select(Math.max(0, Math.min(panels.length - 1, savedUI?.tab || 0)));
-        this.setDockCollapsed(savedUI?.collapsed === true);
         this.uiAbort?.abort(); this.uiAbort = new AbortController();
-        document.addEventListener("pointerdown", event => {
-            if (!this.characterMenu?.hidden && !this.characterAnchor.contains(event.target)
-                && !event.target.closest?.(".vnccs-custom-select-menu")) this.setCharacterOpen(false);
-        }, { capture: true, signal: this.uiAbort.signal });
         // Keep all shared settings mounted; only visibility changes, so drafts and scroll survive.
-        for (const element of [controls, studio.canvasContainer]) {
-            element.addEventListener("keydown", event => event.stopPropagation());
+        for (const element of [controls, side, studio.canvasContainer]) {
+            element.addEventListener("keydown", event => {
+                // Enter/Escape leave the editor from anywhere but a text field or a Pose Studio dialog.
+                if ((event.key === "Escape" || event.key === "Enter") && !event.target.closest?.("input, textarea, select, [contenteditable], [role=dialog], [class*=modal]")) {
+                    event.preventDefault();
+                    this.host.finishPoseEdit(true);
+                }
+                event.stopPropagation();
+            });
             element.addEventListener("pointerdown", event => event.stopPropagation());
             element.addEventListener("wheel", event => event.stopPropagation(), { passive: true });
         }
     }
 
-    setDockCollapsed(collapsed) {
-        this.dockCollapsed = collapsed;
-        this.pages?.forEach((entry, index) => {
-            if (!entry.page.hidden) { entry.scrollTop = entry.page.scrollTop; entry.scrollLeft = entry.page.scrollLeft; }
-            entry.page.hidden = collapsed || index !== this.activePage;
-            if (!entry.page.hidden) { entry.page.scrollTop = entry.scrollTop; entry.page.scrollLeft = entry.scrollLeft; }
-        });
-        if (this.collapseButton) {
-            this.collapseButton.textContent = collapsed ? "+" : "−";
-            this.collapseButton.setAttribute("aria-label", collapsed ? "Expand pose settings" : "Collapse pose settings");
-            this.collapseButton.setAttribute("aria-expanded", String(!collapsed));
-        }
+    buildEditBar() {
+        const bar = document.createElement("div"); bar.className = "vnccs-uc-pose-editbar";
+        const title = document.createElement("strong"); title.textContent = "Editing pose";
+        const hint = document.createElement("span"); hint.className = "vnccs-uc-pose-hint";
+        hint.textContent = "Left: joints · Right-drag: orbit · Middle: pan · Wheel: zoom";
+        const library = this.host._button("Pose Library", "vnccs-uc-btn", () => this.studio?.showLibraryModal?.(), "Load a pose from the Pose Library");
+        const cancel = this.host._button("Cancel", "vnccs-uc-btn", () => this.host.finishPoseEdit(false), "Discard this edit session and restore the pose");
+        const save = this.host._button("Save pose", "vnccs-uc-btn primary", () => this.host.finishPoseEdit(true), "Keep the pose and leave the editor (Enter / Esc)");
+        bar.append(title, hint, library, cancel, save);
+        this.editBar = bar;
+        return bar;
     }
 
-    setCharacterOpen(open, restoreFocus = false) {
+    // The pose settings take the right sidebar only while the editor is shown.
+    mountSidebar(show) {
+        if (!this.sidePanel) return;
+        const side = this.host.side;
+        if (show && side) {
+            if (this.sidePanel.parentNode !== side) side.appendChild(this.sidePanel);
+            this.sideLayerName.textContent = this.layer?.name || "";
+        } else this.sidePanel.remove();
+        this.host.container.classList.toggle("vnccs-uc-pose-editing", Boolean(show && side));
+    }
+
+    // The character reference is an inline sidebar section: "open" draws attention to it.
+    setCharacterOpen(open) {
         if (!this.characterMenu) return;
-        this.characterMenu.hidden = !open;
-        this.characterTrigger.setAttribute("aria-expanded", String(open));
-        if (open) this.characterClose.focus({ preventScroll: true });
-        else if (restoreFocus) this.characterTrigger.focus({ preventScroll: true });
+        this.characterMenu.classList.toggle("attention", Boolean(open));
+        if (!open) return;
+        this.characterMenu.scrollIntoView?.({ block: "nearest" });
+        this.characterSelect?.focus({ preventScroll: true });
     }
 
     buildCharacterMenu() {
-        const anchor = document.createElement("div"); anchor.className = "vnccs-uc-pose-character-anchor";
-        this.characterAnchor = anchor;
-        const trigger = this.host._button("", "vnccs-uc-btn vnccs-uc-pose-character-trigger", () => this.setCharacterOpen(this.characterMenu.hidden));
-        trigger.setAttribute("aria-haspopup", "dialog"); trigger.setAttribute("aria-expanded", "false");
-        const thumb = document.createElement("img"); thumb.alt = ""; thumb.hidden = true;
-        const summary = document.createElement("span"); summary.textContent = "Character";
-        trigger.append(thumb, summary);
         const menu = document.createElement("div"); menu.className = "vnccs-uc-pose-character";
-        menu.id = `uc-pose-character-${this.layer.id}`; menu.hidden = true;
-        menu.setAttribute("role", "dialog"); menu.setAttribute("aria-label", "Character reference");
-        trigger.setAttribute("aria-controls", menu.id);
+        menu.id = `uc-pose-character-${this.layer.id}`;
+        menu.setAttribute("role", "group"); menu.setAttribute("aria-label", "Character reference");
         const header = document.createElement("div"); header.className = "vnccs-uc-pose-character-header";
         const title = document.createElement("strong"); title.textContent = "Character reference";
-        const close = this.host._button("×", "vnccs-uc-btn", () => this.setCharacterOpen(false, true));
-        close.setAttribute("aria-label", "Close character reference"); header.append(title, close);
-        menu.addEventListener("keydown", event => {
-            if (event.key !== "Escape") return;
-            event.preventDefault(); event.stopPropagation(); this.setCharacterOpen(false, true);
-        });
-        const label = document.createElement("label"); label.textContent = "From layer";
+        header.append(title);
         const select = document.createElement("select"); select.className = "vnccs-uc-select";
-        select.id = `${menu.id}-source`; label.htmlFor = select.id;
+        select.id = `${menu.id}-source`;
         select.setAttribute("aria-label", "Character image source");
         const image = document.createElement("img"); image.alt = "Selected character"; image.hidden = true;
+        const row = document.createElement("div"); row.className = "vnccs-uc-pose-character-row";
+        row.append(image, select);
+        const issue = document.createElement("div"); issue.className = "vnccs-uc-pose-character-issue";
         const file = document.createElement("input"); file.type = "file"; file.accept = "image/*"; file.hidden = true;
         const upload = this.host._button("Upload image", "vnccs-uc-btn", () => file.click());
         const clear = this.host._button("Clear", "vnccs-uc-btn", () => {
@@ -266,6 +278,7 @@ export class UniCanvasPoseEditor {
             if (select.value === "__uploaded__") return;
             this.host.recordHistoryBefore();
             this.layer.pose.character = select.value ? { source: "layer", layerId: select.value } : null;
+            this.setCharacterOpen(false);
             this.refreshCharacterMenu(); this.host.syncToNode();
         });
         file.addEventListener("change", async () => {
@@ -283,16 +296,15 @@ export class UniCanvasPoseEditor {
                 this.host.recordHistoryBefore();
                 layer.pose.character = { source: "upload", name: chosen.name, dataURL: surface.toDataURL("image/png") };
                 this.characterMenuKey = null;
+                this.setCharacterOpen(false);
                 this.refreshCharacterMenu(); this.host.syncToNode();
             } catch (error) { this.host.setStatus(`Character image: ${error.message || error}`, true); }
         });
-        menu.append(header, image, label, select, actions, file);
-        anchor.append(trigger, menu);
-        this.characterMenu = menu; this.characterTrigger = trigger; this.characterClose = close;
-        this.characterSummary = summary; this.characterThumb = thumb; this.characterClear = clear;
+        menu.append(header, row, issue, actions, file);
+        this.characterMenu = menu; this.characterClear = clear; this.characterIssue = issue;
         this.characterSelect = select; this.characterPreview = image;
         this.refreshCharacterMenu();
-        return anchor;
+        return menu;
     }
 
     refreshCharacterMenu() {
@@ -311,15 +323,10 @@ export class UniCanvasPoseEditor {
         const src = character?.source === "upload" ? character.dataURL
             : selected ? this.host.getLayerThumbnailCanvas(selected, 256)?.toDataURL("image/png") : null;
         this.characterPreview.hidden = !src;
-        this.characterThumb.hidden = !src;
-        for (const image of [this.characterPreview, this.characterThumb]) {
-            if (src) image.src = src;
-            else image.removeAttribute("src");
-        }
-        const name = character?.source === "upload" ? character.name : selected?.name;
-        this.characterSummary.textContent = name || "Character";
-        this.characterTrigger.title = name ? `Character: ${name}` : "Choose character reference";
+        if (src) this.characterPreview.src = src;
+        else this.characterPreview.removeAttribute("src");
         this.characterClear.disabled = !character;
+        this.characterIssue.textContent = character ? "" : "Needed to generate: pick a layer or upload an image.";
     }
 
     setVisible(visible) {
@@ -328,6 +335,7 @@ export class UniCanvasPoseEditor {
         this.studio.container.hidden = !visible;
         if (!visible && this.studio.viewer?.orbit) this.studio.viewer.orbit.enableDamping = false;
         this.host.container.classList.toggle("vnccs-uc-pose-active", visible);
+        this.mountSidebar(visible);
         if (!visible) {
             this.setCharacterOpen(false);
             this.studio.animationTimeline?.stopPlayback?.();
@@ -348,9 +356,8 @@ export class UniCanvasPoseEditor {
         // Controls are confined to the stage, leaving model settings, Generate and layers accessible.
         Object.assign(this.controls.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
             width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
-        this.characterMenu.style.setProperty("--uc-pose-character-height", "calc(" + stage.clientHeight + "px / var(--vnccs-uc-ui-scale) - 84px)");
         this.controls.inert = this.layer.locked || !this.layer.visible || this.host.hasOpenStagingPanel();
-        this.dock.inert = this.layer.locked || !this.layer.visible;
+        this.sidePanel.inert = this.layer.locked || !this.layer.visible;
         surface.style.left = `${stage.offsetLeft + view.x + rect.x * view.scale}px`;
         surface.style.top = `${stage.offsetTop + view.y + rect.y * view.scale}px`;
         surface.style.width = `${rect.width * view.scale}px`;
@@ -424,7 +431,7 @@ export class UniCanvasPoseEditor {
 
     saveUI() {
         if (!this.layer || !this.pages) return;
-        this.layer.pose.ui = { tab: this.activePage || 0, collapsed: this.dockCollapsed === true, pages: this.pages.map(entry => ({
+        this.layer.pose.ui = { tab: this.activePage || 0, pages: this.pages.map(entry => ({
             top: entry.page.hidden ? entry.scrollTop : entry.page.scrollTop,
             left: entry.page.hidden ? entry.scrollLeft : entry.page.scrollLeft,
             collapsed: Array.from(entry.page.querySelectorAll?.(".vnccs-ps-section") || [], section => section.classList.contains("collapsed")),
@@ -517,8 +524,9 @@ export class UniCanvasPoseEditor {
         this.studio?.container.remove();
         this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null;
         this.characterSelect = null; this.characterMenuKey = null; this.stateKey = null; this.pages = null;
-        this.controls = null; this.characterMenu = null; this.characterAnchor = null;
-        this.host.container.classList.remove("vnccs-uc-pose-active");
+        this.sidePanel?.remove();
+        this.controls = null; this.characterMenu = null; this.sidePanel = null; this.editBar = null;
+        this.host.container.classList.remove("vnccs-uc-pose-active", "vnccs-uc-pose-editing");
     }
     dispose() { this.release(); this.abort.abort(); }
 }

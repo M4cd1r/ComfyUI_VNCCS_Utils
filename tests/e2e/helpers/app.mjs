@@ -7,7 +7,7 @@ export const STANDALONE_SETTING_ID = "VNCCS.UniCanvas.StandaloneSidebar";
 const UNICANVAS_TAB =
   '[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon';
 const POSE_TOOL = '.vnccs-uc-tools [data-tool="pose"]';
-const POSE_DOCK = ".vnccs-uc-pose-root .vnccs-uc-pose-dock";
+const POSE_DOCK = ".vnccs-uc-pose-side .vnccs-uc-pose-dock";
 
 export async function setStandaloneSidebar(page, enabled) {
   const response = await page.request.post(`/api/settings/${STANDALONE_SETTING_ID}`, { data: enabled });

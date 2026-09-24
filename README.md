@@ -92,7 +92,7 @@ assets through the bundled SparkJS viewport.
 *   **Turbo and LoRA Controls**: Use Turbo LoRA cards and a general LoRA Stack directly from the generation panel.
 *   **Canvas Editing Tools**: Move, transform, resize, snap, undo/redo, and manage generation results without leaving the node.
 *   **Progress and Result Handling**: Track generation progress and apply results back into the canvas as editable layers.
-*   **Live Pose Studio Layers**: Insert an editable mannequin from the vertical toolbar. The shared Pose Studio interface appears only while its tool is active. Choose a character from disk or a layer and generate with QiE2511 or Klein9b using the pose and background/character composite as two references. See the [pose layer guide](docs/UNICANVAS_POSE_LAYERS.md).
+*   **Live Pose Studio Layers**: Insert an editable mannequin from the vertical toolbar. Posing happens in an explicit edit session (Pose tool, *Edit pose*, the layer's pose button or a double-click) whose Pose Studio settings and character reference replace the right sidebar; *Save pose* / *Cancel* leave it. Outside the session the pose layer moves and opens its right-click menu like any other layer. Choose a character from disk or a layer and generate with QiE2511 or Klein9b using the pose and background/character composite as two references. See the [pose layer guide](docs/UNICANVAS_POSE_LAYERS.md).
 *   **360° Panorama Editing**: Import an equirectangular panorama, look around from its center, and paint, mask, transform, or generate within a square perspective view. A compact sphere control rotates all three axes. Edits stay on the sphere; the standard PSD export and node output use the complete panorama. See the [panorama guide](docs/UNICANVAS_PANORAMA.md).
 
 ## UniCanvas tools
@@ -143,8 +143,10 @@ Right-click a layer row to open the layer context menu:
     commit on release. Backed by the `color-matcher` package with a pure
     Reinhard (LAB mean/std) fallback.
 *   **Rasterize** / **Edit pose**: live Pose Studio layers only. *Edit pose*
-    selects the layer and opens its embedded Pose Studio editor; *Rasterize*
-    bakes the current pose render into a plain raster layer (one undo step).
+    opens the pose edit session; *Rasterize* bakes the current pose render
+    into a plain raster layer (one undo step). A plain right click on the
+    canvas opens this menu for the layer under the cursor (a right-button drag
+    still opens the brush radial HUD).
 
 **Import PSD** sits next to **Export Layers as PSD** and loads raster layers
 (name, visibility, opacity, blend mode, stacking order) from a PSD file with

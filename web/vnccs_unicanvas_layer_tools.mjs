@@ -569,6 +569,9 @@ export function installUniCanvasLayerTools(uc) {
     footer.insertBefore(importButton, exportButton || null);
   }
 
+  // The canvas right-click opens the same menu for the layer under the cursor.
+  uc.openLayerContextMenu = (layer, e) => openLayerContextMenu(uc, layer, e);
+
   uc.layerList.addEventListener("contextmenu", (e) => {
     const row = e.target.closest?.("[data-layer-id]");
     if (!row) return;

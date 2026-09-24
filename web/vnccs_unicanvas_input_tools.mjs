@@ -409,11 +409,16 @@ export function installUniCanvasInputTools(uc) {
   });
 
   const endGesture = (e) => {
-    if (!uc._vnccsInputTools.gesture) return;
-    if (e && uc._vnccsInputTools.gesture.pointerId !== e.pointerId) return;
+    const gesture = uc._vnccsInputTools.gesture;
+    if (!gesture) return;
+    if (e && gesture.pointerId !== e.pointerId) return;
     e?.preventDefault?.();
     e?.stopPropagation?.();
+    // A right click that never picked a HUD sector is a context click: open the layer menu.
+    const contextClick = e?.type === "pointerup" && gesture.kind === "hud" && !gesture.sector
+      && Math.hypot(e.clientX - gesture.startClientX, e.clientY - gesture.startClientY) < RADIAL_HUD_SECTOR_THRESHOLD_PX;
     commitGesture(uc);
+    if (contextClick) uc.openCanvasLayerMenu?.(e);
     syncBrushControlInputs(uc);
   };
   uc.canvas.addEventListener("pointerup", endGesture);

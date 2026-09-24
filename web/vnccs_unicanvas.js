@@ -88,6 +88,8 @@ const STYLES = `
 .vnccs-uc-layer-opacity-value { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; }
 .vnccs-uc-layers-top-actions { padding:6px; border-bottom:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
 .vnccs-uc-layers-top-actions .vnccs-uc-btn { width:100%; }
+.vnccs-uc-pose-editing .vnccs-uc-side > :not(.vnccs-uc-pose-side) { display:none !important; }
+.vnccs-uc-layer[data-layer-type="pose"] { grid-template-columns:34px minmax(0,1fr) 28px 28px 28px; }
 .vnccs-uc-layer { display:grid; grid-template-columns:34px minmax(0,1fr) 28px 28px; gap:6px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
 .vnccs-uc-layer.active { border-color:rgba(255,143,163,.55); background:rgba(255,143,163,.12); }
 .vnccs-uc-layer.locked { border-color:rgba(255,193,7,.42); background:rgba(255,193,7,.08); }
@@ -1621,7 +1623,11 @@ class UniCanvasWidget {
   setTool(tool, force = false) {
     if (this.tool === tool && !force) return;
     const previousTool = this.tool;
-    if (previousTool === "pose" && tool !== "pose") { this.poseEditor?.commit(); this.poseEditor?.setVisible(false); }
+    if (previousTool === "pose" && tool !== "pose") {
+      this.poseEditor?.commit();
+      this.poseEditor?.setVisible(false);
+      this.endPoseEditSession();
+    }
     this.tool = tool;
     if (tool === "pose") void this.activatePoseTool(!force);
     this.container.querySelectorAll("[data-tool]").forEach((btn) => {
@@ -1649,7 +1655,13 @@ class UniCanvasWidget {
         panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
       this.renderLayerList();
     }
-    if (layer.locked || !layer.visible) { this.poseEditor?.setVisible(false); return; }
+    if (layer.locked || !layer.visible) {
+      this.poseEditor?.setVisible(false);
+      this.setStatus(`Unlock and show ${layer.name} to edit its pose.`, true);
+      if (this.tool === "pose") this.setTool("move");
+      return;
+    }
+    if (this.tool === "pose" && this.poseEditSession?.layerId !== layer.id) this.beginPoseEditSession(layer);
     this.poseEditor ||= new UniCanvasPoseEditor(this);
     try {
       if (this.panorama && layer.pose.panoramaCamera) {
@@ -1658,22 +1670,127 @@ class UniCanvasWidget {
         this.panorama.setCamera({ yaw, pitch, roll, fov });
         this.panorama.flushCamera();
       }
-      const activation = this.poseEditor.activate(layer, { show: this.tool === "pose" });
-      if (this.tool === "pose" && poseCharacterIssue(this, layer)) this.poseEditor.setCharacterOpen(true);
-      await activation;
+      await this.poseEditor.activate(layer, { show: this.tool === "pose" });
     } catch (_) { /* The shared editor reports initialization errors. */ }
   }
 
+  // Pose layers are edited only in an explicit session (the Pose tool, Edit pose, the row's
+  // pose button or a double-click). Selecting a pose layer just selects it, so it moves,
+  // reorders and opens its context menu like any other layer.
   syncPoseToolToActiveLayer() {
-    if (this.activeLayer?.type === "pose") this.setTool("pose", true);
-    else if (this.tool === "pose") this.setTool("move");
+    if (this.tool !== "pose") return;
+    const layer = this.activeLayer;
+    if (layer?.type !== "pose" || (this.poseEditSession && layer.id !== this.poseEditSession.layerId)) this.setTool("move");
   }
 
-  // Layer context menu: open the live Pose Studio editor on a pose layer.
+  // Layer context menu / row button / double-click: enter the Pose Studio editor on a pose layer.
   editPoseLayer(layer) {
     if (layer?.type !== "pose") return;
-    if (this.activeLayerId === layer.id) this.setTool("pose", true);
-    else this.setActiveLayer(layer.id);
+    if (this.tool === "pose" && this.poseEditSession?.layerId === layer.id) return;
+    if (this.tool === "pose") this.finishPoseEdit(true);
+    this.activeLayerId = layer.id;
+    this.updateLayerListActiveState();
+    this.syncActiveLayerControls();
+    this.setTool("pose", true);
+  }
+
+  poseEditKey(pose) {
+    return JSON.stringify([pose?.studio ?? null, pose?.viewport ?? null, pose?.rect ?? null, pose?.character ?? null]);
+  }
+
+  beginPoseEditSession(layer) {
+    this.poseEditSession = {
+      layerId: layer.id,
+      before: this.createLayerPixelSnapshot(layer),
+      view: { ...this.view },
+      intendedScale: this.intendedScale,
+    };
+    // Frame the pose rect so the mannequin is large enough to work on.
+    this.centerBbox(true, layer.pose.rect, 2);
+    this.requestRender();
+    this.setStatus("Editing pose - Save pose (Enter) or Cancel when done.");
+  }
+
+  // Leaving the Pose tool keeps the edit: one undo step for the whole session.
+  endPoseEditSession() {
+    const session = this.poseEditSession;
+    if (!session) return;
+    this.poseEditSession = null;
+    const layer = this.layers.find((item) => item.id === session.layerId);
+    if (layer?.pose && this.poseEditKey(layer.pose) !== this.poseEditKey(session.before?.pose)) {
+      this.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before: session.before, after: this.createLayerPixelSnapshot(layer) });
+      this.syncToNode();
+    }
+    this.restorePoseEditView(session);
+    this.refreshLayerRow(session.layerId);
+    this.setStatus(layer ? `Pose saved: ${layer.name}` : "");
+  }
+
+  restorePoseEditView(session) {
+    if (!session?.view) return;
+    this.view = { ...session.view };
+    this.intendedScale = session.intendedScale ?? this.view.scale;
+    this.poseEditor?.layout();
+    this.requestRender();
+  }
+
+  // Save pose (keep = true) or Cancel (restore the pose and pixels from before the session).
+  finishPoseEdit(keep = true) {
+    if (this.tool !== "pose") return;
+    if (keep || !this.poseEditSession) {
+      this.setTool("move");
+      return;
+    }
+    const session = this.poseEditSession;
+    this.poseEditSession = null;
+    this.setTool("move");
+    const layer = this.layers.find((item) => item.id === session.layerId);
+    if (layer && session.before) {
+      this.restoreLayerPixelSnapshot(layer, session.before);
+      this.markLayerPixelsChanged(layer);
+      this.syncToNode();
+    }
+    this.restorePoseEditView(session);
+    this.renderLayerList();
+    this.requestRender();
+    this.setStatus("Pose edit canceled");
+  }
+
+  // Topmost visible image layer with content under a world point (pose layers: their rect).
+  layerAtWorldPoint(point) {
+    if (!point) return null;
+    for (const layer of this.layers) {
+      if (!layer.visible || layer.type === "mask") continue;
+      if (layer.type === "pose") {
+        const rect = layer.pose?.rect;
+        if (rect && point.x >= rect.x && point.y >= rect.y && point.x < rect.x + rect.width && point.y < rect.y + rect.height) {
+          const bounds = this.getLayerWorldBounds(layer);
+          if (!bounds || (point.x >= bounds.x && point.y >= bounds.y && point.x < bounds.x + bounds.width && point.y < bounds.y + bounds.height)) return layer;
+        }
+        continue;
+      }
+      const x = Math.floor(point.x - this.origin.x), y = Math.floor(point.y - this.origin.y);
+      if (x < 0 || y < 0 || x >= layer.canvas.width || y >= layer.canvas.height) continue;
+      if (layer.hiresCanvas && layer.hiresRect) {
+        const rect = this.normalizeLayerWorldRect(layer.hiresRect);
+        if (point.x >= rect.x && point.y >= rect.y && point.x < rect.x + rect.width && point.y < rect.y + rect.height) return layer;
+        continue;
+      }
+      try {
+        if (layer.canvas.getContext("2d", { willReadFrequently: true }).getImageData(x, y, 1, 1).data[3] > 8) return layer;
+      } catch (_) { /* tainted or detached canvas: skip */ }
+    }
+    return null;
+  }
+
+  // A plain right-click on the canvas: select the layer under the cursor and open its menu.
+  openCanvasLayerMenu(e) {
+    if (this.tool === "pose" || typeof this.openLayerContextMenu !== "function") return false;
+    const layer = this.layerAtWorldPoint(this.worldFromEvent(e)) || this.activeLayer;
+    if (!layer || layer.type === "mask") return false;
+    if (layer.id !== this.activeLayerId) this.setActiveLayer(layer.id);
+    this.openLayerContextMenu(layer, e);
+    return true;
   }
 
   // Layer context menu: bake a live pose layer into a plain raster layer (one undo step).
@@ -1819,6 +1936,14 @@ class UniCanvasWidget {
     this.canvas.addEventListener("pointerenter", (e) => this.onPointerHover(e));
     this.canvas.addEventListener("pointerleave", (e) => this.onPointerLeave(e));
     this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    // Double-click a pose layer on the canvas to edit its pose.
+    this.canvas.addEventListener("dblclick", (e) => {
+      if (this.tool === "pose" || this.isStagingActive?.()) return;
+      const layer = this.layerAtWorldPoint(this.worldFromEvent(e));
+      if (layer?.type !== "pose") return;
+      e.preventDefault();
+      this.editPoseLayer(layer);
+    });
     this.canvas.addEventListener("auxclick", (e) => e.preventDefault());
     window.addEventListener("pointermove", (e) => this.onPointerMove(e), { signal: eventSignal });
     window.addEventListener("pointerup", (e) => this.onPointerUp(e), { signal: eventSignal });
@@ -3696,7 +3821,7 @@ class UniCanvasWidget {
     }
     this.activeStagingIndex = Math.max(-1, Math.min(snapshot.activeStagingIndex ?? -1, this.stagingItems.length - 1));
     this.historyRestoring = false;
-    this.setTool(this.activeLayer?.type === "pose" ? "pose" : this.tool === "pose" ? "move" : this.tool, true);
+    this.setTool(this.tool === "pose" ? "move" : this.tool, true);
     this.updateSnapButton();
     this.syncPromptControls();
     this.syncActiveLayerControls();
@@ -3723,6 +3848,10 @@ class UniCanvasWidget {
   }
 
   undo() {
+    if (this.tool === "pose" && this.poseEditSession) {
+      this.setStatus("Save or cancel the pose edit first (Pose Studio has its own undo inside the editor)", true);
+      return;
+    }
     this.panorama?.commit();
     if (!this.undoStack.length) return;
     if (this.transformDraft) {
@@ -3746,6 +3875,10 @@ class UniCanvasWidget {
   }
 
   redo() {
+    if (this.tool === "pose" && this.poseEditSession) {
+      this.setStatus("Save or cancel the pose edit first (Pose Studio has its own undo inside the editor)", true);
+      return;
+    }
     this.panorama?.commit();
     if (!this.redoStack.length) return;
     if (this.transformDraft) {
@@ -5373,8 +5506,14 @@ class UniCanvasWidget {
     const label = document.createElement("div");
     label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
     const lock = this._button(layer.locked ? UI_ICONS.lock : UI_ICONS.unlock, "vnccs-uc-icon", null, layer.locked ? "Unlock layer" : "Lock layer");
+    lock.dataset.layerLock = "";
     const del = this._button(UI_ICONS.trash, "vnccs-uc-icon danger", null, "Delete layer");
-    row.append(thumb, label, lock, del);
+    if (layer.type === "pose") {
+      const edit = this._button(POSE_ICON, "vnccs-uc-icon vnccs-uc-layer-edit-pose", null, "Edit pose");
+      edit.addEventListener("click", (e) => { e.stopPropagation(); this.editPoseLayer(layer); });
+      edit.addEventListener("dblclick", (e) => e.stopPropagation());
+      row.append(thumb, label, edit, lock, del);
+    } else row.append(thumb, label, lock, del);
     row.addEventListener("click", () => this.setActiveLayer(layer.id));
     row.addEventListener("dragstart", (e) => {
       this.activeLayerId = layer.id;
@@ -5460,8 +5599,7 @@ class UniCanvasWidget {
     if (name) name.textContent = layer.name;
     const type = row.querySelector(".vnccs-uc-layer-type");
     if (type) type.textContent = `${layer.type}${layer.visible ? "" : " hidden"}`;
-    const buttons = row.querySelectorAll(".vnccs-uc-icon");
-    const lock = buttons[0];
+    const lock = row.querySelector("[data-layer-lock]") || row.querySelectorAll(".vnccs-uc-icon")[0];
     if (lock) {
       lock.innerHTML = layer.locked ? UI_ICONS.lock : UI_ICONS.unlock;
       lock.title = layer.locked ? "Unlock layer" : "Lock layer";
@@ -5878,7 +6016,7 @@ class UniCanvasWidget {
     this.render();
   }
 
-  centerBbox(allowZoomOut = false) {
+  centerBbox(allowZoomOut = false, rect = this.bbox, maxScale = 1) {
     const size = this.getStageViewportSize();
     if (!size.width || !size.height) return;
     let safeLeft = STAGE_FIT_PADDING_PX;
@@ -5896,16 +6034,16 @@ class UniCanvasWidget {
     const safeHeight = Math.max(1, size.height - safeTop - safeBottom);
     if (allowZoomOut) {
       const fitScale = Math.min(
-        safeWidth / this.bbox.width,
-        safeHeight / this.bbox.height,
-        1
+        safeWidth / rect.width,
+        safeHeight / rect.height,
+        maxScale
       );
       this.view.scale = this.constrainStageScale(fitScale);
       this.intendedScale = this.view.scale;
       this.activeSnapPoint = null;
     }
-    this.view.x = safeLeft + safeWidth / 2 - (this.bbox.x + this.bbox.width / 2) * this.view.scale;
-    this.view.y = safeTop + safeHeight / 2 - (this.bbox.y + this.bbox.height / 2) * this.view.scale;
+    this.view.x = safeLeft + safeWidth / 2 - (rect.x + rect.width / 2) * this.view.scale;
+    this.view.y = safeTop + safeHeight / 2 - (rect.y + rect.height / 2) * this.view.scale;
   }
 
   makeExportCanvas(type, inferenceSize = this.getInferenceSize(), options = {}) {
@@ -6180,7 +6318,11 @@ class UniCanvasWidget {
     if (poseLayer) {
       const characterIssue = poseCharacterIssue(this, poseLayer);
       if (characterIssue) {
-        this.setActiveLayer(poseLayer.id);
+        // The character reference lives in the pose editor's sidebar: open it there.
+        if (!poseLayer.locked) {
+          this.editPoseLayer(poseLayer);
+          this.poseEditor?.setCharacterOpen(true);
+        } else this.setActiveLayer(poseLayer.id);
         this.setStatus(poseLayer.locked ? "Unlock the pose layer to choose a character image." : characterIssue, true);
         return;
       }
