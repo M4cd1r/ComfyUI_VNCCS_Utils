@@ -1,0 +1,644 @@
+"""Qwen-Image-2.1 model family, Viggle turbo LoRA and Spectrum acceleration (spec section 9).
+
+Model stack (official Qwen-Image-2.1 architecture, ComfyUI-native weights from
+Comfy-Org/Qwen-Image-2.1): 7B / 32-layer single-stream DiT diffusion model,
+Qwen3-VL 8B text encoder (encodes instructions and condition images), and the
+64-channel RGBA image VAE with 16x spatial compression. Loading follows ComfyUI
+core (>= 0.37) node semantics: UNETLoader, CLIPLoader (type "qwen_image") and
+VAELoader, driven through ``DiffusionModelUniCanvasLoader``.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+from dataclasses import dataclass, field
+from typing import Any, ClassVar
+
+import torch
+
+from ..comfy_bridge import _call_comfy_node
+from ..debug import _conditioning_debug, _latent_debug, _uc_log
+from ..loaders import _load_generation_assets
+from ..loras import LoraRequirement
+from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
+from .base import UniCanvasModelModule, _reference_image_slots
+from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
+
+
+# Native 2K aspect-ratio presets from the official Qwen-Image-2.1 table.
+QWEN_IMAGE21_ASPECT_PRESETS: tuple[tuple[int, int], ...] = (
+    (2048, 2048),
+    (2400, 1792),
+    (1792, 2400),
+    (2528, 1696),
+    (1696, 2528),
+    (2752, 1536),
+    (1536, 2752),
+)
+
+# Transparent-RGBA prompt convention from the official Qwen space (spec 9):
+# wrap the description and the model renders real transparency.
+QWEN_IMAGE21_RGBA_PROMPT_PREFIX = "This is an RGBA image with transparency."
+QWEN_IMAGE21_RGBA_PROMPT_SUFFIX = "The image has alpha channel and the background is transparent."
+
+# Official Qwen-Image-2.1 subject-extraction instruction (Comfy-Org workflow
+# template image_qwen_image_2_1_background_removal.json) used by
+# QwenImage21UniCanvasModule.remove_background().
+QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT = "Remove the background, and output a PNG image"
+
+# Spectrum acceleration parameter presets. "moderate" is the paper default
+# (arXiv 2603.01623: W=5, N=2, alpha=0.75, M=4, lambda=0.1, blend 0.5);
+# "aggressive" and "quality" follow the vendored upstream README tuning guide
+# (for speed raise flex_window to 3.0 and drop tail_actual_steps to 1; for
+# quality lower flex_window to 0.4, raise tail_actual_steps to 4 and set
+# blend_weight to 1.0 for the paper-exact Chebyshev fit).
+QWEN21_SPECTRUM_MODERATE: dict[str, Any] = {
+    "warmup_steps": 5,
+    "tail_actual_steps": 2,
+    "window_size": 2.0,
+    "flex_window": 0.75,
+    "max_consecutive_forecasts": 8,
+    "history_points": 8,
+    "chebyshev_degree": 4,
+    "ridge_lambda": 0.1,
+    "blend_weight": 0.5,
+    "cache_device": "main_device",
+    "force_actual_on_control": True,
+    "debug": False,
+}
+QWEN21_SPECTRUM_PRESETS: dict[str, dict[str, Any]] = {
+    "moderate": dict(QWEN21_SPECTRUM_MODERATE),
+    "aggressive": {**QWEN21_SPECTRUM_MODERATE, "tail_actual_steps": 1, "flex_window": 3.0},
+    "quality": {**QWEN21_SPECTRUM_MODERATE, "tail_actual_steps": 4, "flex_window": 0.4, "blend_weight": 1.0},
+}
+QWEN21_SPECTRUM_DEFAULTS: dict[str, Any] = {"enabled": False, **QWEN21_SPECTRUM_MODERATE}
+
+QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
+    "generation_mode": "qwen_image21",
+    "model_loader": "diffusion_model",
+    "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
+    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
+    "clip_type": "qwen_image",
+    "sampler": "euler",
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "steps": 40,
+    "cfg": 1.0,
+    "denoise": 1.0,
+    "qwen21_opaque_output": False,
+    "qwen21_aspect_preset": "",
+    "lora_stack": [],
+    "spectrum": dict(QWEN21_SPECTRUM_DEFAULTS),
+}
+
+# Viggle QI2.1 turbo (4-step DMD distillation, https://huggingface.co/Viggle/
+# Qwen-Image-2.1-viggle-turbo): the LoRA student variant applied over the base
+# transformer, following the same "turbo switch" pattern as the other families.
+QWEN21_TURBO_LORA_REPO_ID = "Viggle/Qwen-Image-2.1-viggle-turbo"
+QWEN21_TURBO_LORA_FILENAME = "Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors"
+QWEN21_TURBO_LORA_NAME = f"viggle/{QWEN21_TURBO_LORA_FILENAME}"
+
+_QWEN21_TURBO_LORA_LOCK = threading.Lock()
+_QWEN21_TURBO_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
+
+
+def resolve_qwen21_turbo_lora() -> str:
+    """Resolve (downloading when missing) the Viggle QI2.1 turbo LoRA.
+
+    Returns the ComfyUI loras-relative name used by _apply_lora_cached. The
+    download lands in models/loras/viggle/ exactly like the preset turbo assets.
+    """
+    import shutil
+
+    import folder_paths
+
+    def installed_path() -> str | None:
+        path = _get_full_path_agnostic(folder_paths, "loras", QWEN21_TURBO_LORA_NAME)
+        return path if path and os.path.exists(path) else None
+
+    if installed_path():
+        return QWEN21_TURBO_LORA_NAME
+    with _QWEN21_TURBO_LORA_LOCK:
+        if installed_path():
+            return QWEN21_TURBO_LORA_NAME
+        _QWEN21_TURBO_LORA_DOWNLOAD.update(
+            {"status": "downloading", "progress": 0.1, "message": "Downloading Viggle QI2.1 turbo LoRA"}
+        )
+        try:
+            from huggingface_hub import hf_hub_download
+
+            cached = hf_hub_download(repo_id=QWEN21_TURBO_LORA_REPO_ID, filename=QWEN21_TURBO_LORA_FILENAME, token=False)
+            lora_dirs = _safe_get_folder_paths(folder_paths, "loras")
+            if not lora_dirs:
+                raise RuntimeError("no ComfyUI loras folder is configured")
+            target_dir = os.path.join(lora_dirs[0], "viggle")
+            os.makedirs(target_dir, exist_ok=True)
+            target = os.path.join(target_dir, QWEN21_TURBO_LORA_FILENAME)
+            if os.path.abspath(cached) != os.path.abspath(target):
+                shutil.copyfile(cached, target)
+            _QWEN21_TURBO_LORA_DOWNLOAD.update({"status": "success", "progress": 1.0, "message": "Installed"})
+            return QWEN21_TURBO_LORA_NAME
+        except Exception as exc:
+            _QWEN21_TURBO_LORA_DOWNLOAD.update({"status": "error", "progress": 0.0, "message": str(exc)})
+            raise RuntimeError(f"[VNCCS UniCanvas] Viggle QI2.1 turbo LoRA download failed: {exc}") from exc
+
+
+def _qwen21_image_size(image: Any) -> tuple[int, int]:
+    """Return (height, width) of a (B,H,W,C) or (H,W,C) image tensor."""
+    shape = tuple(int(value) for value in (getattr(image, "shape", ()) or ()))
+    if len(shape) >= 4:
+        return shape[1], shape[2]
+    if len(shape) == 3:
+        return shape[0], shape[1]
+    return 0, 0
+
+
+def _qwen21_spectrum_settings(gen_settings: dict[str, Any] | None) -> dict[str, Any]:
+    merged = dict(QWEN21_SPECTRUM_DEFAULTS)
+    raw = (gen_settings or {}).get("spectrum")
+    if isinstance(raw, dict):
+        merged.update({key: value for key, value in raw.items() if key in QWEN21_SPECTRUM_DEFAULTS})
+    return merged
+
+
+def _qwen21_spectrum_config(gen_settings: dict[str, Any] | None):
+    """Build the vendored SpectrumConfig from draw settings.
+
+    Value validation stays with the vendored port (SpectrumConfig.validate).
+    """
+    try:
+        from ...spectrum_qwen21 import SpectrumConfig
+    except ImportError:
+        from spectrum_qwen21 import SpectrumConfig
+
+    settings = _qwen21_spectrum_settings(gen_settings)
+    return SpectrumConfig(
+        warmup_steps=int(settings["warmup_steps"]),
+        tail_actual_steps=int(settings["tail_actual_steps"]),
+        window_size=float(settings["window_size"]),
+        flex_window=float(settings["flex_window"]),
+        max_consecutive_forecasts=int(settings["max_consecutive_forecasts"]),
+        history_points=int(settings["history_points"]),
+        chebyshev_degree=int(settings["chebyshev_degree"]),
+        ridge_lambda=float(settings["ridge_lambda"]),
+        blend_weight=float(settings["blend_weight"]),
+        cache_device=str(settings["cache_device"]),
+        force_actual_on_control=bool(settings["force_actual_on_control"]),
+        debug=bool(settings["debug"]),
+    )
+
+
+def _apply_qwen21_spectrum(model: Any, gen_settings: dict[str, Any], draw_id: str = "unknown") -> Any:
+    """Apply Spectrum acceleration to the Qwen-Image-2.1 model.
+
+    Runs after every model mutation (the VNCSS_CONFIG LoRA stack included) and
+    before sampling. The vendored port is fail-closed exactly like upstream:
+    any forecast that cannot be proven safe, or any exception inside one,
+    degrades that step to a real forward.
+    """
+    if not _qwen21_spectrum_settings(gen_settings).get("enabled"):
+        return model
+    try:
+        from ...spectrum_qwen21 import apply_spectrum
+    except ImportError:
+        from spectrum_qwen21 import apply_spectrum
+
+    config = _qwen21_spectrum_config(gen_settings)
+    try:
+        config.validate()
+    except ValueError as exc:
+        # Spec 11: fail fast with an actionable, prefixed message before the
+        # draw reaches sampling (covers e.g. chebyshev_degree + 1 > history_points).
+        raise ValueError(f"[VNCCS UniCanvas] Invalid Spectrum settings: {exc}") from exc
+    patched = apply_spectrum(model, config)
+    _uc_log(
+        draw_id,
+        "Spectrum acceleration applied",
+        {
+            "warmup_steps": config.warmup_steps,
+            "tail_actual_steps": config.tail_actual_steps,
+            "window_size": config.window_size,
+            "flex_window": config.flex_window,
+            "max_consecutive_forecasts": config.max_consecutive_forecasts,
+            "history_points": config.history_points,
+            "chebyshev_degree": config.chebyshev_degree,
+            "ridge_lambda": config.ridge_lambda,
+            "blend_weight": config.blend_weight,
+            "cache_device": config.cache_device,
+            "force_actual_on_control": config.force_actual_on_control,
+            "debug": config.debug,
+        },
+    )
+    return patched
+
+
+# Editing prompts are short imperatives with a preserve clause (Qwen-Image-2.1 prompt guide,
+# https://github.com/kjranyone/qwen-image-2.1-prompt-guide - image-editing.md).
+QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
+    hint="Change X to Y. Keep everything else unchanged.",
+    guide=(
+        "Editing prompts are short imperative sentences in one paragraph: name only what should "
+        "change and lock the rest with a preserve clause (\"Keep everything else unchanged\"). "
+        "Refer to preserved things by role or position instead of re-describing them, use "
+        "affirmative, decisive wording, and make one logical change per pass - chain a few small "
+        "edits for big changes.\n\n"
+        "With references, give each image a role: <image1> is the working area (the canvas to "
+        "modify) and <image2>, <image3>, ... are donors of a person, product, background or style "
+        "(\"Place <image2>'s character in <image1>. Keep hairstyle, clothing and facial features "
+        "identical.\"). For inpaint describe only the masked region; for outpaint describe what "
+        "extends into the empty area. Text to keep or write goes in quotes, verbatim."
+    ),
+    examples=(
+        "Change the background to a sunset beach. Keep the subject, pose, and lighting unchanged.",
+        "Re-render <image1> in the art style of <image2>. Preserve subject identity, clothing, and layout.",
+    ),
+    sources=("https://github.com/kjranyone/qwen-image-2.1-prompt-guide/blob/main/skills/qwen-image-prompt-en/references/image-editing.md",),
+)
+
+
+@dataclass(frozen=True)
+class QwenImage21UniCanvasModule(UniCanvasModelModule):
+    """UniCanvas adapter for Qwen-Image-2.1 (RGBA by default).
+
+    Sampling defaults are flow matching (cfg 1.0) with euler/simple and 40
+    steps at the native 2K aspect presets. All draw modes work: txt2img,
+    img2img, inpaint and outpaint, where inpaint is img2img with mask
+    paste-back (no InpaintModelConditioning context). Reference editing wires
+    the working area to <image1> and the Edit model references to <image2..5>
+    in socket order, with the module assembling the QI2.1 <image N>
+    instruction. Output is RGBA with real transparency unless the
+    "opaque output" switch disables the RGBA prompting and flattens.
+    """
+
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Qwen Image 2.1",
+        tasks=(
+            STANDARD_TASKS["text_to_image"],
+            *(STANDARD_TASKS[key].with_prompt_guide(QWEN_IMAGE21_EDIT_PROMPT_GUIDE) for key in ("image_to_image", "inpaint", "outpaint")),
+        ),
+        references=ReferenceInputs(max_images=10, slot_label="<image{n}>"),
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="Fluent English sentences, subject first; text to draw goes in \"double quotes\"",
+            guide=(
+                "Qwen-Image-2.1 is prompted with natural sentences, never tag lists or (term:1.5) "
+                "weights. Front-load the subject, then environment, style, composition and lighting. "
+                "Any text that must appear in the image goes in double quotes, verbatim. Do not add "
+                "quality boosters (masterpiece, 8K, highly detailed) and do not write aspect ratios or "
+                "resolution in the prompt - use the size controls. Layouts and posters need a longer, "
+                "observational paragraph.\n\n"
+                "Output is RGBA with real transparency by default: the module wraps your prompt in the "
+                "official RGBA sentences ('opaque output' turns that off). With reference images "
+                "connected, name them <image2>, <image3>, ... (the working area is <image1>); with no "
+                "references do not use tags. At CFG 1 (the default and the Viggle turbo) the negative "
+                "prompt has no effect."
+            ),
+            examples=('A neon shop sign that reads "GRAND OPENING", rainy night, reflections on wet pavement.',),
+            sources=(
+                "https://github.com/kjranyone/qwen-image-2.1-prompt-guide",
+                "README.md#qwen-image-21",
+            ),
+        ),
+    )
+
+    key: str = "qwen_image21"
+    aliases: tuple[str, ...] = ("qwen-image-2.1", "qwen_image_21", "qwenimage21", "qi21", "qwen21")
+    defaults: dict[str, Any] = field(default_factory=lambda: dict(QWEN_IMAGE21_DEFAULTS))
+    is_edit_model: bool = True
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = (
+        "_qwen21_latent",
+        "_qwen21_clip",
+        "_qwen21_prompts",
+        "_qwen21_prompt",
+        "_qwen21_negative_prompt",
+    )
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="qwen_lora_name",
+            strength_setting="qwen_lora_strength",
+            default_strength=0.0,
+            require_positive_strength=True,
+            clip_strength=0.0,
+            # Looked up at call time so the lazy download (and tests) can replace it.
+            resolver=lambda: resolve_qwen21_turbo_lora(),
+            resolve_match=QWEN21_TURBO_LORA_NAME,
+            description="Qwen-Image-2.1 LoRA (Viggle turbo downloads on first use)",
+        ),
+    )
+
+    def uses_edit_masked_latents(self, mode: str) -> bool:
+        # Inpaint and outpaint are img2img runs with mask paste-back (spec 9).
+        return False
+
+    def uses_differential_diffusion(self, mode: str) -> bool:
+        return False
+
+    def output_is_opaque(self, gen_settings: dict[str, Any] | None) -> bool:
+        return bool((gen_settings or {}).get("qwen21_opaque_output", False))
+
+    def resolve_generation_size(self, width: int, height: int, gen_settings: dict[str, Any] | None) -> tuple[int, int]:
+        preset = str((gen_settings or {}).get("qwen21_aspect_preset") or "").strip().lower()
+        if preset in {"", "auto"}:
+            return int(width), int(height)
+        for preset_width, preset_height in QWEN_IMAGE21_ASPECT_PRESETS:
+            if preset == f"{preset_width}x{preset_height}":
+                return preset_width, preset_height
+        return int(width), int(height)
+
+    def reference_image_slots(self, image_tensor: Any, gen_settings: dict[str, Any] | None) -> dict[int, Any]:
+        """QI2.1 <image N> wiring (spec 3 and 9).
+
+        Slot 1 is the canvas working area; slots 2..5 are the Edit model
+        reference images in socket order.
+        """
+        return _reference_image_slots(image_tensor, gen_settings)
+
+    def assemble_instruction(self, prompt: str, slots, opaque_output: bool = False) -> str:
+        """Assemble the QI2.1 instruction: <image N> slot framing, the user
+        prompt, and (unless opaque output) the transparent-RGBA convention."""
+        body = str(prompt or "").strip()
+        parts = []
+        if 1 in slots:
+            parts.append("Working area: <image1>.")
+        references = [f"<image{slot}>" for slot in sorted(slots) if slot != 1]
+        if references:
+            parts.append(f"Reference images: {', '.join(references)}.")
+        if body:
+            parts.append(body)
+        instruction = " ".join(parts)
+        if not opaque_output:
+            instruction = f"{QWEN_IMAGE21_RGBA_PROMPT_PREFIX} {instruction} {QWEN_IMAGE21_RGBA_PROMPT_SUFFIX}".strip()
+        return instruction
+
+    def create_empty_latent(self, width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
+        width, height = self.resolve_generation_size(width, height, gen_settings)
+        batch_size = max(1, int((gen_settings or {}).get("batch_size", 1) or 1))
+        latent = torch.zeros(
+            [batch_size, 64, max(1, int(height) // 16), max(1, int(width) // 16)],
+            dtype=torch.float32,
+        )
+        encoded = {"samples": latent}
+        _uc_log(draw_id, "created empty Qwen-Image-2.1 RGBA latent", _latent_debug(encoded))
+        return encoded
+
+    def encode_prompt(self, clip: Any, text: str, gen_settings: dict[str, Any]):
+        # The Qwen3-VL encoder needs the <image N> condition images, so the real
+        # encode is deferred to prepare_reference_conditioning. The draw flow
+        # calls this for the positive prompt first and the negative prompt
+        # second; collect both for the deferred encode.
+        prompts = gen_settings.setdefault("_qwen21_prompts", [])
+        prompts.append(text or "")
+        gen_settings["_qwen21_prompt"] = prompts[0]
+        gen_settings["_qwen21_negative_prompt"] = prompts[1] if len(prompts) > 1 else ""
+        gen_settings.setdefault("_qwen21_clip", clip)
+        return [[torch.zeros(1, 4), {}]]
+
+    def prepare_reference_conditioning(
+        self,
+        positive: Any,
+        negative: Any,
+        vae: Any,
+        image_tensor: torch.Tensor,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+    ) -> tuple[Any, Any]:
+        if vae is None:
+            raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 requires the 64-channel RGBA image VAE.")
+        clip = gen_settings.get("_qwen21_clip") or (gen_settings.get("_external") or {}).get("clip")
+        if clip is None:
+            raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 requires a Qwen3-VL text encoder (CLIP).")
+        slots = self.reference_image_slots(image_tensor, gen_settings)
+        if str(gen_settings.get("draw_mode") or "") == "txt2img":
+            # Pure text-to-image has no working area; references keep fixed slots.
+            slots.pop(1, None)
+        opaque = self.output_is_opaque(gen_settings)
+        instruction = self.assemble_instruction(gen_settings.get("_qwen21_prompt"), slots, opaque)
+        negative_prompt = str(gen_settings.get("_qwen21_negative_prompt") or "")
+        condition_images = {slot: self._prepare_qi21_condition_image(tensor) for slot, tensor in slots.items()}
+        image_h, image_w = _qwen21_image_size(image_tensor)
+        target_w, target_h = self.resolve_generation_size(image_w, image_h, gen_settings)
+        positive, negative = self._encode_qi21(
+            clip=clip,
+            vae=vae,
+            prompt=instruction,
+            negative_prompt=negative_prompt,
+            images=condition_images,
+            resolution=int(target_w) * int(target_h),
+            draw_id=draw_id,
+        )
+        gen_settings["_qwen21_latent"] = self._qwen21_working_latent(vae, image_tensor, gen_settings, draw_id)
+        _uc_log(
+            draw_id,
+            "Qwen-Image-2.1 conditioning prepared",
+            {
+                "slots": sorted(slots),
+                "opaque_output": opaque,
+                "generation_size": [target_w, target_h],
+                "positive": _conditioning_debug(positive),
+                "negative": _conditioning_debug(negative),
+            },
+        )
+        return positive, negative
+
+    def decode_samples(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
+        decoded = super().decode_samples(vae, samples, gen_settings)
+        if self.output_is_opaque(gen_settings) and torch.is_tensor(decoded) and int(decoded.shape[-1]) == 4:
+            # "opaque output" flattens the RGBA result onto white and drops alpha.
+            rgba = decoded.float()
+            alpha = rgba[..., 3:4].clamp(0.0, 1.0)
+            return (rgba[..., :3] * alpha + (1.0 - alpha)).clamp(0.0, 1.0)
+        return decoded
+
+    def remove_background(self, image: torch.Tensor) -> torch.Tensor:
+        """QI2.1 RGBA subject extraction over the pixels (spec 10.3).
+
+        Contract: (H,W,3) float 0..1 in, (H,W,4) float 0..1 out where the
+        alpha channel carries the extracted subject mask.
+        """
+        pixels = self._require_rgb_pixels(image)
+        rgba = self._subject_extraction(pixels)
+        return self._coerce_rgba_result(rgba, pixels.shape[:2])
+
+    def _require_rgb_pixels(self, image: Any) -> torch.Tensor:
+        if not torch.is_tensor(image):
+            raise ValueError("[VNCCS UniCanvas] Remove bg – QI2.1 expects a torch.Tensor (H,W,3) float 0..1 image.")
+        if image.ndim != 3 or int(image.shape[-1]) != 3:
+            raise ValueError(
+                f"[VNCCS UniCanvas] Remove bg – QI2.1 expects a (H,W,3) image tensor, got {tuple(image.shape)}."
+            )
+        if not torch.is_floating_point(image):
+            raise ValueError("[VNCCS UniCanvas] Remove bg – QI2.1 expects a float 0..1 image tensor.")
+        return image.clamp(0.0, 1.0)
+
+    def _coerce_rgba_result(self, rgba: Any, size) -> torch.Tensor:
+        if not torch.is_tensor(rgba):
+            raise RuntimeError("[VNCCS UniCanvas] Remove bg – QI2.1 subject extraction returned no image.")
+        result = rgba.detach().float()
+        while result.ndim > 3 and int(result.shape[0]) == 1:
+            result = result[0]
+        if result.ndim == 4:
+            result = result[0]
+        if result.ndim != 3 or int(result.shape[-1]) != 4:
+            raise RuntimeError(
+                "[VNCCS UniCanvas] Remove bg – QI2.1 subject extraction must return an RGBA image, "
+                f"got {tuple(result.shape)}."
+            )
+        target_h, target_w = int(size[0]), int(size[1])
+        if (int(result.shape[0]), int(result.shape[1])) != (target_h, target_w):
+            result = torch.nn.functional.interpolate(
+                result.permute(2, 0, 1).unsqueeze(0),
+                size=(target_h, target_w),
+                mode="bilinear",
+                align_corners=False,
+            )[0].permute(1, 2, 0)
+        return result.clamp(0.0, 1.0)
+
+    def _subject_extraction(self, pixels: torch.Tensor) -> torch.Tensor:
+        """Run the QI2.1 RGBA subject-extraction flow over the pixels.
+
+        Uses the by-name QI2.1 stack (UNETLoader/CLIPLoader/VAELoader
+        semantics) with the official extraction instruction wrapped in the
+        transparent-RGBA prompt convention so the flow returns real alpha.
+        """
+        draw_id = "remove_background"
+        # The public contract hands over (H,W,3) pixels; run the flow over the
+        # batched (1,H,W,3) layout that every other call path uses.
+        if pixels.ndim == 3:
+            pixels = pixels.unsqueeze(0)
+        gen_settings = dict(QWEN_IMAGE21_DEFAULTS)
+        gen_settings["draw_mode"] = "img2img"
+        gen_settings["_draw_id"] = draw_id
+        gen_settings["qwen21_opaque_output"] = False
+        try:
+            model, clip, vae = _load_generation_assets(gen_settings)
+        except Exception as exc:
+            raise RuntimeError(
+                "[VNCCS UniCanvas] Remove bg – QI2.1 requires a Qwen-Image-2.1 stack "
+                f"(UNETLoader/CLIPLoader/VAELoader): {exc}"
+            ) from exc
+        gen_settings["_qwen21_clip"] = clip
+        gen_settings["_qwen21_prompt"] = QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
+        gen_settings["_qwen21_negative_prompt"] = ""
+        positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
+        latent = gen_settings.get("_qwen21_latent")
+        if not isinstance(latent, dict):
+            pixels_h, pixels_w = _qwen21_image_size(pixels)
+            latent = self.create_empty_latent(int(pixels_w), int(pixels_h), gen_settings, draw_id)
+        sampled = self.sample_latent(
+            model=model,
+            positive=positive,
+            negative=negative,
+            latent=latent,
+            seed=0,
+            steps=int(self.defaults.get("steps", 40)),
+            cfg=float(self.defaults.get("cfg", 1.0)),
+            sampler_name=str(self.defaults.get("sampler_name", "euler")),
+            scheduler=str(self.defaults.get("scheduler", "simple")),
+            denoise=1.0,
+            gen_settings=gen_settings,
+            draw_id=draw_id,
+        )
+        decoded = self.decode_samples(vae, sampled, gen_settings)
+        if torch.is_tensor(decoded) and decoded.ndim == 4:
+            return decoded[0]
+        return decoded
+
+    def _prepare_qi21_condition_image(self, image: Any) -> torch.Tensor:
+        if not torch.is_tensor(image):
+            raise ValueError("[VNCCS UniCanvas] Qwen-Image-2.1 condition image must be a tensor.")
+        tensor = image
+        if tensor.ndim == 3:
+            tensor = tensor.unsqueeze(0)
+        if not torch.is_floating_point(tensor):
+            tensor = tensor.float()
+        if tensor.numel() and float(tensor.detach().max()) > 1.5:
+            tensor = tensor / 255.0
+        tensor = tensor.clamp(0.0, 1.0)
+        channels = int(tensor.shape[-1])
+        if channels == 1:
+            return tensor.repeat(1, 1, 1, 3)
+        return tensor[..., :3]
+
+    def _qwen21_working_latent(self, vae: Any, image_tensor: torch.Tensor, gen_settings: dict[str, Any], draw_id: str = "unknown"):
+        """VAE-encode the <image1> working area as the img2img start latent."""
+        has_working_area = (
+            torch.is_tensor(image_tensor)
+            and image_tensor.numel() > 0
+            and float(image_tensor.detach().max()) > 0.0
+        )
+        if str(gen_settings.get("draw_mode") or "") == "txt2img" or not has_working_area:
+            return None
+        source_h, source_w = _qwen21_image_size(image_tensor)
+        target_w, target_h = self.resolve_generation_size(source_w, source_h, gen_settings)
+        pixels = self._prepare_qi21_condition_image(image_tensor)
+        if (int(pixels.shape[2]), int(pixels.shape[1])) != (int(target_w), int(target_h)):
+            pixels = torch.nn.functional.interpolate(
+                pixels.movedim(-1, 1),
+                size=(int(target_h), int(target_w)),
+                mode="bilinear",
+                align_corners=False,
+            ).movedim(1, -1)
+        rgba = torch.cat([pixels, torch.ones_like(pixels[..., :1])], dim=-1)
+        encoded = vae.encode(rgba)
+        latent = encoded if isinstance(encoded, dict) else {"samples": encoded}
+        _uc_log(draw_id, "Qwen-Image-2.1 working-area latent encoded", _latent_debug(latent))
+        return latent
+
+    def _encode_qi21(
+        self,
+        clip: Any,
+        vae: Any,
+        prompt: str,
+        negative_prompt: str,
+        images: dict[int, Any],
+        resolution: int,
+        draw_id: str = "unknown",
+    ) -> tuple[Any, Any]:
+        """Encode the instruction and <image N> condition images with the
+        Qwen3-VL 8B text encoder through ComfyUI core's TextEncodeQwenImage21.
+
+        The node receives the condition images both as its dynamic
+        "images.image_N" inputs (how ComfyUI's executor keys them) and as one
+        merged "images" dict for signature-based methods.
+        """
+        slot_images = {f"image_{slot}": tensor for slot, tensor in sorted(images.items())}
+        image_kwargs = {f"images.image_{slot}": tensor for slot, tensor in sorted(images.items())}
+        encoded = _call_comfy_node(
+            "TextEncodeQwenImage21",
+            clip=clip,
+            vae=vae,
+            prompt=prompt,
+            negative_prompt=negative_prompt or "",
+            resolution=int(resolution),
+            images=slot_images,
+            **image_kwargs,
+        )
+        if encoded is None:
+            raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 text encoding returned no conditioning.")
+        if isinstance(encoded, (list, tuple)):
+            positive = encoded[0]
+            negative = encoded[1] if len(encoded) > 1 else None
+        else:
+            positive = encoded
+            negative = None
+        if negative is None:
+            negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in positive]
+        return positive, negative
+
+    # -- draw hooks -----------------------------------------------------------------------
+
+    def prepare_generation_latent(self, ctx) -> Any:
+        # Qwen-Image-2.1 owns its 64-channel RGBA latents: the <image1> working-area latent
+        # is prepared during reference conditioning and inpaint/outpaint are img2img runs
+        # with mask paste-back (spec 9), so no InpaintModelConditioning context is built.
+        latent = ctx.settings.get("_qwen21_latent")
+        if not isinstance(latent, dict):
+            latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
+        _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
+        return latent
+
+    def prepare_model_for_sampling(self, ctx) -> Any:
+        # Spectrum acceleration runs after every model mutation (the LoRA stack included).
+        return _apply_qwen21_spectrum(ctx.model, ctx.settings, ctx.draw_id)

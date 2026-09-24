@@ -88,9 +88,261 @@ assets through the bundled SparkJS viewport.
 *   **Generation Anywhere**: Use a selected region as the generation target for new images, image edits, inpaint, outpaint, and full-area transformations.
 *   **Mask and Object Tools**: Paint masks, refine selections, and use SAM-powered object selection to isolate or remove parts of an image.
 *   **Preset and Custom Models**: Switch between built-in presets or use manual model selection for supported generation backends.
+*   **Krea2 Identity Edit**: Download Turbo or Raw FP8 and all required weights from the model card. Edit the bbox image with grounded Qwen3-VL and adjust **Likeness** in the upper-right control. See the [Krea2 Edit guide](docs/UNICANVAS_KREA2_EDIT.md).
 *   **Turbo and LoRA Controls**: Use Turbo LoRA cards and a general LoRA Stack directly from the generation panel.
 *   **Canvas Editing Tools**: Move, transform, resize, snap, undo/redo, and manage generation results without leaving the node.
 *   **Progress and Result Handling**: Track generation progress and apply results back into the canvas as editable layers.
+*   **Live Pose Studio Layers**: Insert an editable mannequin from the vertical toolbar. Posing happens in an explicit edit session (Pose tool, *Edit pose*, the layer's pose button or a double-click) whose Pose Studio settings and character reference replace the right sidebar; *Save pose* / *Cancel* leave it. Outside the session the pose layer moves and opens its right-click menu like any other layer. Choose a character from disk or a layer and generate with QiE2511 or Klein9b using the pose and background/character composite as two references. See the [pose layer guide](docs/UNICANVAS_POSE_LAYERS.md).
+*   **360° Panorama Editing**: Import an equirectangular panorama, look around from its center, and paint, mask, transform, or generate within a square perspective view. A compact sphere control rotates all three axes. Edits stay on the sphere; the standard PSD export and node output use the complete panorama. See the [panorama guide](docs/UNICANVAS_PANORAMA.md).
+
+## UniCanvas tools
+
+### Input tools
+
+*   **Radial HUD**: a **right mouse button hold** opens a four-sector radial HUD
+    at the cursor (for every tool except SAM). Drag up for **size**, right for
+    **opacity**, down for **hardness**, or left for the **foreground color**;
+    once a sector is selected, keep dragging to adjust its value live and
+    release to commit. The HUD is the only right-button gesture (the former
+    Alt + right-button brush-size drag was removed by request); the SAM tool
+    keeps its right-click subtract-point meaning.
+*   **Brush hardness**: a new brush-engine setting (0-1) with a slider in the
+    brush tool settings and a radial HUD sector. Values below 1 render strokes
+    with radial-gradient stamps for soft edges; the effect is immediate while
+    painting.
+
+### Settings (gear icon)
+
+The gear icon sits in the canvas corner bar, next to *Snap to grid*, and opens the UniCanvas settings: the background-removal backend - **edit model / BiRefNet / rembg / SAM 3** (default **BiRefNet**; the edit-model backend offers Qwen Image 2.1 and MiniMax H3, the RGBA-VAE edit models).
+
+### Edit model reference images
+
+Next to the full-width *Steps* field of every edit-model family sits a stacked-cards icon with a count badge. It opens the reference-image popover: up to 4 uploaded images condition the edit model, each thumbnail labelled `Picture 2`, `Picture 3`, ... so the positive prompt can refer to them by name (the working area is always `Picture 1` / `<image1>`). The uploads are an alternative to wiring `reference_image_N` inputs through the `VNCSS Config` node and travel in the same numbered slots.
+
+### Layer utilities
+
+Right-click a layer row to open the layer context menu:
+
+*   **Copy layer as image to clipboard**: copies the layer as a PNG with alpha
+    through `navigator.clipboard.write`.
+*   **Save layer as image**: writes the layer PNG to ComfyUI's `output/`
+    through `POST /vnccs/unicanvas/save_output`. Both export entries crop the
+    layer to its alpha bounds, so the PNG contains the visible artwork rather
+    than the full canvas backing store.
+*   **Remove background**: runs the backend chosen in the settings (gear icon)
+    and applies the result as alpha - **edit model** (Qwen Image 2.1 or
+    MiniMax H3 RGBA subject extraction), **BiRefNet** (vendored BiRefNet-lite
+    path, auto-downloaded on first use), **rembg** or **SAM 3** (automatic
+    subject mask from the SAM stack). One-shot operation with status-line
+    progress and a single undo entry.
+*   **Color match to below**: matches the active layer's colors to the
+    composite of the visible layers below it (or, failing that, the composite
+    without the active layer). The popover offers the methods `mkl`, `hm`,
+    `reinhard`, `mvgd`, `hm-mvgd-hm`, `hm-mkl-hm`, and `reinhard_lab_gpu`
+    plus a strength slider (0-10) with a live preview while dragging and a
+    commit on release. Backed by the `color-matcher` package with a pure
+    Reinhard (LAB mean/std) fallback.
+*   **Rasterize** / **Edit pose**: live Pose Studio layers only. *Edit pose*
+    opens the pose edit session; *Rasterize* bakes the current pose render
+    into a plain raster layer (one undo step). A plain right click on the
+    canvas opens this menu for the layer under the cursor (a right-button drag
+    still opens the brush radial HUD).
+
+**Import PSD** sits next to **Export Layers as PSD** and loads raster layers
+(name, visibility, opacity, blend mode, stacking order) from a PSD file with
+the bundled `ag-psd` reader. Everything UniCanvas cannot represent (clipping
+masks, adjustment layers, layer effects, text/vector/smart-object layers
+without raster data) is skipped and reported in the status line.
+
+## VNCSS Config and MiniMax H3 region editing
+
+`VNCSS Config` feeds UniCanvas with `MODEL`/`CLIP`/`VAE` tensors that already
+exist in the graph, so the canvas can be driven by any loader chain instead of
+the built-in model picker. Connect its `config` output to the `config` input of
+the `VNCCS UniCanvas` node.
+
+The config is an override: while it is linked, UniCanvas takes the model, CLIP,
+VAE, LoRAs and reference images from it and ignores its own values for them.
+Those UniCanvas controls (Presets/Custom model pickers, loader fields, Turbo
+LoRA, LoRA Stack and the reference-image upload) are greyed out and inert, and
+a banner says where the values come from. **Mode** (the model family) and the
+sampling settings (steps, CFG, sampler, scheduler, seed, denoise, prompts) stay
+editable, because the config does not carry them. Unlinking restores the
+UniCanvas controls unchanged.
+
+### Node inputs
+
+| Socket | Type | Notes |
+|---|---|---|
+| `model` | MODEL | Required — execution fails with `[VNCCS Config] Model input is not connected.` otherwise. |
+| `clip` | CLIP | Required. |
+| `vae` | VAE | Required. |
+| `audio_vae` | VAE | Optional socket, mandatory when the `MiniMax H3` family is selected; every other family ignores it. |
+| `reference_image_1..4` | IMAGE | Added and removed dynamically by the `Edit model` switch. |
+
+### LoRA stack
+
+The node panel holds an ordered LoRA stack: `+ Add LoRA` appends a row card with
+an on/off checkbox, a LoRA picker (populated from `models/loras` through
+`GET /vnccs/unicanvas/loras`), `✕` to remove the row, and Model / CLIP strength
+sliders with exact number fields. Strength and
+enable changes apply immediately while editing; rows that are switched off or
+left at strength 0 are skipped. The stack is applied to `model`/`clip` during
+graph execution, before sampling.
+
+### Edit model switch
+
+*   **Off (default)** — classic img2img / inpaint / outpaint behavior.
+*   **On** — reveals the four `reference_image_1..4` (IMAGE) sockets and enables
+    reference-conditioned editing in the connected node. `reference_image_1` must
+    be connected. Switching it off disconnects and removes the sockets cleanly.
+
+The switch and the LoRA stack live in the node's hidden `node_state` widget, so
+they are saved with the workflow and restored — together with the dynamic
+reference sockets — when the workflow is reloaded.
+
+### MiniMax H3 region editing
+
+Select the **MiniMax H3** family in the UniCanvas engine panel. H3 region editing is
+driven by a connected `VNCSS Config` node (`clip`, `vae`, `audio_vae` and the reference
+dataset); selecting the family without a connected config fails fast with
+`[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS Config node (clip, vae, audio_vae).`
+Generation is a REF2VA-style region edit: the selected working area is `<Picture 1>`,
+the `Edit model` reference sockets become `<Picture 2..5>` in socket order, and the
+prompt is the edit instruction:
+
+```text
+Keep the identity from <Picture 2>. Use the pose from <Picture 3>.
+```
+
+Defaults: sampler `res_multistep`, scheduler `simple`, 20 steps (adjustable
+1–60 in the panel), cfg 1. No mask is required — the bounding box of the
+selection is the working area. For this family the connected `audio_vae` is
+mandatory, because the MiniMax H3 conditioning builds its aligned audio-video
+latent from it; a connected config without it stops generation with `[VNCCS
+UniCanvas] MiniMax H3 requires the audio VAE.` Results arrive in the usual staging
+popover (accept / discard).
+
+### Queued generation with a connected config
+
+External `MODEL`/`CLIP`/`VAE` tensors only exist while a graph executes, so when
+the `config` input is connected, **GENERATE queues a normal ComfyUI prompt**
+instead of calling the direct draw endpoint:
+
+1. The widget stamps a `draw_id`, bundles the current composition (bbox,
+   composite, mask, mode) into the node settings and calls `app.queuePrompt`.
+2. `VNCSS Config` executes first, applying the LoRA stack to `model`/`clip` and
+   packaging the references; `VNCCS_UniCanvas` then samples the queued draw and
+   stores the result under that `draw_id`.
+3. The widget polls `GET /vnccs/unicanvas/progress/{draw_id}` for progress and
+   `GET /vnccs/unicanvas/result/{draw_id}` until the result is present, then
+   hands it to the normal staging flow. A prompt execution error fails the draw
+   immediately instead of waiting for the result timeout.
+
+Without a connected `config` (and in standalone sidebar mode) UniCanvas keeps
+using the existing direct `POST /vnccs/unicanvas/draw` path with its own model
+loading, unchanged.
+
+## Fullscreen mode
+
+UniCanvas opens a distraction-free fullscreen workspace from the **Fullscreen** icon
+button at the top-right of the stage:
+
+- The widget is re-parented — same instance, no reload — into a `position:fixed`
+  `inset:0` portal; the stage re-lays out and the view fits automatically.
+- While fullscreen is active, keyboard input is isolated: `keydown` / `keyup` /
+  `keypress` events that are not targeted at `input` / `textarea` / `select` /
+  `[contenteditable]` are swallowed in the capture phase before LiteGraph or ComfyUI
+  sees them, and graph navigation forwarding (wheel / middle-click panning) is
+  suspended. Text fields keep working normally.
+- Fullscreen chrome shows the title, a **✕** exit button, and an optional "true
+  fullscreen" toggle that uses `requestFullscreen()`.
+- The vertical tools column renders **50% smaller** while fullscreen.
+- The UniCanvas shortcut map works whenever the canvas has focus (fullscreen or not):
+
+| Shortcut | Action |
+|---|---|
+| `B` / `V` / `E` / `M` / `L` / `S` | Brush / Move / Eraser / Mask brush / Lasso / Rectangle tools |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
+| `[` / `]` | Shrink / grow the brush size |
+| `Tab` | Toggle panel visibility |
+| `Esc` | Exit fullscreen |
+
+## Standalone Unicanvas mode
+
+The **Unicanvas** sidebar tab (with its own icon in the sidebar tab strip) runs UniCanvas
+as a standalone image app — no node, no workflow:
+
+- Entering the tab hides all ComfyUI chrome (top bar and sidebar panels) and keeps only
+  the icon sidebar visible; leaving the tab restores the standard chrome. This is the
+  default behavior, not a toggle.
+- The engine picker offers the built-in presets plus custom models from disk across all
+  model families. An external `VNCSS Config` is node-mode only — the engine panel says
+  so, and standalone mode ignores any config connected elsewhere.
+- Output actions replace the node's `image` socket: **Save to output** writes the
+  flattened composite into ComfyUI's `output/` directory through
+  `POST /vnccs/unicanvas/save_output` (the button is also present in node mode; the
+  same route saves a single layer's PNG with its alpha channel when `layer_id` is
+  given), and **New** asks "Are you sure?" before clearing all layers and images and
+  creating a fresh base layer.
+- Work persists to `localStorage` under the `vnccs-unicanvas-standalone` key, so it
+  survives a page reload.
+
+## Qwen-Image-2.1
+
+UniCanvas can generate with **Qwen-Image-2.1** through the `QwenImage21` family tab in the engine
+picker (node widget and standalone host):
+
+- **Model stack** (official Qwen-Image-2.1 architecture, ComfyUI-native weights from
+  `Comfy-Org/Qwen-Image-2.1`): 7B / 32-layer single-stream DiT diffusion model, Qwen3-VL 8B text
+  encoder (encodes instructions and condition images), and the 64-channel RGBA image VAE with 16x
+  spatial compression. Loading follows ComfyUI core (>= 0.37) node semantics: `UNETLoader`,
+  `CLIPLoader` (type `qwen_image`) and `VAELoader`.
+- **Sampling defaults**: flow matching, `euler` / `simple`, 40 steps, cfg 1.0.
+- **Native 2K aspect presets** from the official table: 2048x2048, 2400x1792, 1792x2400, 2528x1696,
+  1696x2528, 2752x1536, 1536x2752.
+- **All draw modes**: `txt2img`, `img2img`, `inpaint` and `outpaint` (inpaint is img2img with
+  mask paste-back).
+- **Reference editing** with `VNCSS Config` and the `Edit model` switch: the working area is
+  `<image1>`, connected reference images become `<image2..5>` in socket order, and the module
+  assembles the instruction in the Qwen-Image-2.1 `<image N>` convention, e.g.
+  ```
+  Keep the identity from <image2>. Use the pose from <image3>.
+  ```
+- **RGBA output is the default.** Every generation uses the transparent-RGBA prompt convention from
+  the official Qwen space (`This is an RGBA image with transparency. ... The image has alpha channel
+  and the background is transparent.`) and staging keeps the alpha channel, so accepted results are
+  layers with real transparency. The **`opaque output`** switch is available for the rare case where
+  alpha is unwanted: it disables the RGBA prompting and flattens the result.
+- `Remove background` with the **edit model** backend set to Qwen Image 2.1 runs the
+  Qwen-Image-2.1 RGBA subject-extraction flow over the layer pixels and applies the extracted alpha.
+- **Viggle turbo (4-step)** switch (the same pattern as the other turbo switches): enables the
+  [Viggle Qwen-Image-2.1-viggle-turbo](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo)
+  4-step DMD LoRA over the base transformer and switches Steps to 4 / CFG to 1 (the distillation
+  runs without classifier-free guidance). The LoRA downloads into `models/loras/viggle/` on first
+  use; switching it off restores the previous steps/CFG/sampler/scheduler.
+
+### Spectrum acceleration
+
+The **Spectrum acceleration** panel (exposed only for the `QwenImage21` family) speeds up
+Qwen-Image-2.1 sampling with a vendored port of **Spectrum** (arXiv 2603.01623) from
+[`awdqwdasdg/Comfyui-Spectrum-Qwen2.1`](https://github.com/awdqwdasdg/Comfyui-Spectrum-Qwen2.1) —
+MIT License, Copyright (c) 2026 ComfyUI-Spectrum-QwenImage21 contributors. The vendored package
+lives in `nodes/spectrum_qwen21/` and carries the MIT attribution in every file header. The
+package also contains `node_def.py`, the pinned upstream parameter contract (defaults and
+min/max/step of every parameter); it is kept for the test-suite only and is **not** registered
+as a ComfyUI node.
+
+On selected steps the 32-block Qwen-Image-2.1 transformer is skipped entirely and its final hidden
+state is forecast with an online ridge-regularized Chebyshev fit over the real steps, after which
+only the cheap output head runs. The port is fail-closed exactly like upstream: any forecast that
+cannot be proven safe (or raises) degrades that step to a real forward. `apply_spectrum()` runs
+after all model mutations (the `VNCSS Config` LoRA stack included) and before sampling.
+
+The panel offers an enable toggle and the parameters `warmup_steps`, `tail_actual_steps`,
+`window_size`, `flex_window`, `max_consecutive_forecasts`, `history_points`, `chebyshev_degree`,
+`ridge_lambda`, `blend_weight`, `cache_device`, `force_actual_on_control` and `debug`, with the
+presets **`moderate`** (paper default), **`aggressive`** and **`quality`**.
 
 ## VNCCS Pose Studio
 

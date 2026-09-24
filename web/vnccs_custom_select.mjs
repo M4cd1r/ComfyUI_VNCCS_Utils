@@ -38,7 +38,7 @@ function installStyles(doc) {
     style.textContent = `
 .vnccs-custom-select-menu {
     position: fixed;
-    z-index: 1000000;
+    z-index: 2147483600;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -354,10 +354,14 @@ function chooseOption(state, optionIndex) {
 
 
 function openCustomSelect(state) {
+    // Self-heal: a menu detached from the document (panel re-render or a failed
+    // open) must never block future opens.
+    if (state.menu && !state.menu.isConnected) state.menu = null;
     if (state.destroyed || state.menu || state.select.disabled || !state.select.isConnected) return;
     const doc = state.select.ownerDocument;
     const current = ACTIVE_SELECT_BY_DOCUMENT.get(doc);
     if (current && current !== state) closeCustomSelect(current);
+    try {
 
     const menu = doc.createElement("div");
     menu.className = `vnccs-custom-select-menu vnccs-custom-select-menu--${state.config.theme}`;
@@ -422,6 +426,11 @@ function openCustomSelect(state) {
     doc.addEventListener("pointerdown", state.onOutsidePointerDown, true);
     doc.defaultView?.addEventListener("resize", state.onViewportChange, true);
     doc.defaultView?.addEventListener("scroll", state.onViewportChange, true);
+    } catch (err) {
+        closeCustomSelect(state);
+        state.menu = null;
+        console.error("[VNCCS Custom Select] open failed", err);
+    }
 }
 
 

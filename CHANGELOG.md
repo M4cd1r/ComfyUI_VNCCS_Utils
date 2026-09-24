@@ -37,6 +37,10 @@
 * **Pose Manager output consistency**: Changes invalidate affected preview cards, and execution waits for the current preview generation instead of returning outdated images.
 * **Lighting and reference images**: Keep Original Lighting survives scene restoration. Lighting colors and timeline numeric settings update during input. Reference-image changes update the existing scene, ignore superseded loads, and release replaced textures.
 
+### UniCanvas
+
+* **Settings panel anchored under the gear**: The settings popover now opens as one larger panel anchored below the corner-bar gear instead of covering the widget's top-left corner. It never overlaps the left sidebar, including on narrow hosts, and closes on an outside click, on Close, or on a second click on the gear.
+
 ### Downloads, Compatibility, and Packaging
 
 * Model Manager, library downloads, and UniCanvas preset assets use public Hugging Face repository files. Direct model/preset URLs, stored download credentials, and remote library publishing are disabled; manifests must identify repository assets with `hf_repo` and `hf_path`.
