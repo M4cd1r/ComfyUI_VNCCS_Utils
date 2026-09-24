@@ -159,6 +159,15 @@ exist in the graph, so the canvas can be driven by any loader chain instead of
 the built-in model picker. Connect its `config` output to the `config` input of
 the `VNCCS UniCanvas` node.
 
+The config is an override: while it is linked, UniCanvas takes the model, CLIP,
+VAE, LoRAs and reference images from it and ignores its own values for them.
+Those UniCanvas controls (Presets/Custom model pickers, loader fields, Turbo
+LoRA, LoRA Stack and the reference-image upload) are greyed out and inert, and
+a banner says where the values come from. **Mode** (the model family) and the
+sampling settings (steps, CFG, sampler, scheduler, seed, denoise, prompts) stay
+editable, because the config does not carry them. Unlinking restores the
+UniCanvas controls unchanged.
+
 ### Node inputs
 
 | Socket | Type | Notes |
@@ -171,9 +180,10 @@ the `VNCCS UniCanvas` node.
 
 ### LoRA stack
 
-The node panel holds an ordered LoRA stack: `+ add LoRA` appends a row with a
-LoRA picker (populated from `models/loras` through `GET /vnccs/unicanvas/loras`),
-a strength field, an on/off checkbox and `✕` to remove the row. Strength and
+The node panel holds an ordered LoRA stack: `+ Add LoRA` appends a row card with
+an on/off checkbox, a LoRA picker (populated from `models/loras` through
+`GET /vnccs/unicanvas/loras`), `✕` to remove the row, and Model / CLIP strength
+sliders with exact number fields. Strength and
 enable changes apply immediately while editing; rows that are switched off or
 left at strength 0 are skipped. The stack is applied to `model`/`clip` during
 graph execution, before sampling.

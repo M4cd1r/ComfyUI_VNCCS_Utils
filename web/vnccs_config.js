@@ -32,6 +32,26 @@ class UniCanvasConfigWidget {
     this.container = document.createElement("div");
     this.container.className = "vnccs-config-ui";
 
+    // --- What the config does + which model sockets are wired ------------
+    const intro = document.createElement("div");
+    intro.className = "vnccs-cfg-intro";
+    const introTitle = document.createElement("div");
+    introTitle.className = "vnccs-cfg-intro-title";
+    introTitle.textContent = "Overrides UniCanvas";
+    const introText = document.createElement("div");
+    introText.className = "vnccs-cfg-intro-text";
+    introText.textContent = "When linked to a UniCanvas node, its model, CLIP, VAE, LoRAs and reference images come from here; those UniCanvas controls are greyed out.";
+    this.statusRow = document.createElement("div");
+    this.statusRow.className = "vnccs-cfg-status";
+    this.statusDots = {};
+    for (const name of CONNECTION_INPUTS) {
+      const dot = createStatusDot(name);
+      this.statusDots[name] = dot;
+      this.statusRow.appendChild(dot.root);
+    }
+    intro.append(introTitle, introText, this.statusRow);
+    this.container.appendChild(intro);
+
     // --- LoRA stack section ---------------------------------------------
     this.loraSection = createCollapsibleSection({
       title: "LoRA stack",
@@ -52,7 +72,8 @@ class UniCanvasConfigWidget {
       this.filter = this.filterInput.value.trim().toLowerCase();
       this.renderLoras();
     });
-    const addBtn = this._toolbarButton("+ add", "add-lora");
+    const addBtn = this._toolbarButton("+ Add LoRA", "add-lora");
+    addBtn.classList.add("primary");
     toolbar.append(this.filterInput, addBtn);
     const bulk = document.createElement("div");
     bulk.className = "vnccs-cfg-row";
@@ -63,7 +84,10 @@ class UniCanvasConfigWidget {
       this._toolbarButton("Clear", "clear-all"),
     );
     this.loraList = document.createElement("div");
-    this.loraSection.body.append(toolbar, bulk, this.loraList);
+    this.loraList.style.display = "flex";
+    this.loraList.style.flexDirection = "column";
+    this.loraList.style.gap = "6px";
+    this.loraSection.body.append(toolbar, this.loraList, bulk);
 
     // --- Edit model & references section --------------------------------
     this.editSection = createCollapsibleSection({
@@ -85,18 +109,11 @@ class UniCanvasConfigWidget {
     this.editSection.root.querySelector(".vnccs-cfg-section-head").appendChild(this.editSwitch.root);
     this.container.appendChild(this.editSection.root);
 
-    this.statusRow = document.createElement("div");
-    this.statusRow.className = "vnccs-cfg-row";
-    this.statusDots = {};
-    for (const name of CONNECTION_INPUTS) {
-      const dot = createStatusDot(name);
-      this.statusDots[name] = dot;
-      this.statusRow.appendChild(dot.root);
-    }
     this.refList = document.createElement("div");
+    this.refList.className = "vnccs-cfg-refs";
     this.refHint = document.createElement("div");
-    this.refHint.style.color = "#999";
-    this.editSection.body.append(this.statusRow, this.refList, this.refHint);
+    this.refHint.className = "vnccs-cfg-hint";
+    this.editSection.body.append(this.refHint, this.refList);
 
     // Native selects (LoRA names) use the shared custom selector; the mutation
     // observer inside covers rows re-rendered later.
@@ -135,7 +152,10 @@ class UniCanvasConfigWidget {
       const index = Number(target.dataset.index);
       const entry = this.state.loras[index];
       if (!entry) return;
-      if (target.dataset.field === "enabled") entry.enabled = target.checked;
+      if (target.dataset.field === "enabled") {
+        entry.enabled = target.checked;
+        target.closest(".vnccs-cfg-lora")?.classList.toggle("off", !entry.enabled);
+      }
       this._writeState();
     });
     this.container.addEventListener("change", (e) => {
@@ -177,6 +197,26 @@ class UniCanvasConfigWidget {
     const widget = this.node.widgets?.find((w) => w.name === "node_state");
     if (widget) widget.value = JSON.stringify(this.state);
     this._updateStackBadge();
+    this.fitNode();
+  }
+
+  // The DOM widget reports its content height (getMinHeight), so the node grows with the
+  // LoRA rows, sections and reference chips instead of clipping them.
+  contentHeight() {
+    return Math.ceil(this.container.scrollHeight || 0) + 4;
+  }
+
+  fitNode() {
+    if (this._fitFrame) return;
+    const schedule = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
+    this._fitFrame = schedule(() => {
+      this._fitFrame = null;
+      const size = this.node.computeSize?.();
+      if (!size || !this.node.size) return;
+      if (Math.abs((this.node.size[1] || 0) - size[1]) < 2) return;
+      this.node.setSize?.([Math.max(this.node.size[0], size[0]), size[1]]);
+      this.node.setDirtyCanvas?.(true, true);
+    });
   }
 
   async _loadLoraNames() {
@@ -287,14 +327,16 @@ class UniCanvasConfigWidget {
 
   renderReferenceSlots() {
     this.refList.textContent = "";
+    this.fitNode();
     if (!this.state.edit_model) {
-      this.refHint.textContent = "Enable Edit model to attach reference images.";
+      this.refHint.textContent = "Turn on Edit model to attach reference images.";
       return;
     }
     this.refHint.textContent =
       "References become <Picture 2..11> (MiniMax H3) / <image2..11> (Qwen-Image-2.1); connecting one reveals the next slot, up to " +
       REFERENCE_LIMIT + ".";
-    const visible = this._connectedReferenceCount();
+    // Always show the next free slot, so the first reference socket is discoverable too.
+    const visible = Math.max(1, this._connectedReferenceCount());
     for (let n = 1; n <= visible; n++) {
       const name = referenceName(n);
       const input = (this.node.inputs || []).find((item) => item?.name === name);
@@ -349,6 +391,12 @@ class UniCanvasConfigWidget {
 
   renderLoras() {
     this.loraList.textContent = "";
+    if (!this.state.loras.length) {
+      const empty = document.createElement("div");
+      empty.className = "vnccs-cfg-empty";
+      empty.textContent = "No LoRAs: the connected model is used as is.";
+      this.loraList.appendChild(empty);
+    }
     this.state.loras.forEach((entry, index) => {
       // LoRA names come from the server listing and from persisted node_state
       // JSON, so every row is built with DOM APIs: no value is ever parsed as
@@ -357,7 +405,7 @@ class UniCanvasConfigWidget {
         entry.enabled = entry.enabled === undefined ? true : Boolean(entry.enabled);
       }
       const row = document.createElement("div");
-      row.className = "vnccs-cfg-row";
+      row.className = "vnccs-cfg-lora" + (entry.enabled ? "" : " off");
       row.draggable = true;
       row.dataset.index = String(index);
       row.title = "Drag to reorder";
@@ -366,7 +414,7 @@ class UniCanvasConfigWidget {
       }
 
       const select = document.createElement("select");
-      select.className = "vnccs-cfg-input vnccs-cfg-grow";
+      select.className = "vnccs-cfg-input vnccs-cfg-lora-name";
       select.dataset.field = "name";
       select.dataset.index = String(index);
       const groups = new Map();
@@ -389,7 +437,7 @@ class UniCanvasConfigWidget {
       }
 
       const strength = createSliderNumber({
-        min: 0, max: 2, step: 0.05, value: entry.strength,
+        min: 0, max: 2, step: 0.05, value: entry.strength, label: "Model",
         onInput: (value) => { entry.strength = value; this._writeState(); },
         onChange: (value) => { entry.strength = value; this._writeState(); },
         onReset: (value) => { entry.strength = value; this._writeState(); },
@@ -397,18 +445,15 @@ class UniCanvasConfigWidget {
       strength.root.title = "Strength (double-click resets to 1.0)";
 
       const clip = createSliderNumber({
-        min: 0, max: 2, step: 0.05, value: entry.clip_strength == null ? 1 : entry.clip_strength,
+        min: 0, max: 2, step: 0.05, value: entry.clip_strength == null ? 1 : entry.clip_strength, label: "CLIP",
         onInput: (value) => { entry.clip_strength = value; this._writeState(); },
         onChange: (value) => { entry.clip_strength = value; this._writeState(); },
         onReset: (value) => { entry.clip_strength = value; this._writeState(); },
       });
       clip.root.title = "Clip strength (double-click resets to 1.0)";
-      const clipLabel = document.createElement("span");
-      clipLabel.textContent = "clip";
-      clipLabel.style.color = "#999";
-      const clipWrap = document.createElement("div");
-      clipWrap.className = "vnccs-cfg-pair";
-      clipWrap.append(clipLabel, clip.root);
+      const strengths = document.createElement("div");
+      strengths.className = "vnccs-cfg-lora-strengths";
+      strengths.append(strength.root, clip.root);
 
       const enabled = document.createElement("input");
       enabled.type = "checkbox";
@@ -424,7 +469,7 @@ class UniCanvasConfigWidget {
       remove.title = "Remove LoRA";
       remove.textContent = "\u2715";
 
-      row.append(select, strength.root, clipWrap, enabled, remove);
+      row.append(enabled, select, remove, strengths);
 
       row.addEventListener("dragstart", (e) => {
         if (e.target?.closest?.("input, select, button")) {
@@ -464,8 +509,9 @@ class UniCanvasConfigWidget {
     });
     // Long stacks scroll instead of stretching the node indefinitely.
     this.loraList.style.overflowY = "auto";
-    this.loraList.style.maxHeight = this.state.loras.length > LORA_LIST_MAX_ROWS ? "168px" : "";
+    this.loraList.style.maxHeight = this.state.loras.length > LORA_LIST_MAX_ROWS ? "320px" : "";
     this._updateStackBadge();
+    this.fitNode();
   }
 
   _dragLoraIndex(e) {
@@ -513,7 +559,12 @@ app.registerExtension({
         if (stateWidget.element) stateWidget.element.style.display = "none";
       }
       this.configWidget = new UniCanvasConfigWidget(this);
-      this.addDOMWidget("vnccs_config_ui", "ui", this.configWidget.container, { serialize: false, hideOnZoom: false });
+      const configWidget = this.configWidget;
+      this.addDOMWidget("vnccs_config_ui", "ui", configWidget.container, {
+        serialize: false,
+        hideOnZoom: false,
+        getMinHeight: () => configWidget.contentHeight(),
+      });
       // The widget needs room to render its rows correctly (user request): the
       // node never goes below 300 px wide.
       const MIN_NODE_WIDTH = 300;

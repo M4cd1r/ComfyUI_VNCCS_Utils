@@ -151,6 +151,10 @@ const STYLES = `
 .vnccs-uc-generation-grid .wide { grid-column:1 / -1; }
 .vnccs-uc-stack { display:flex; flex-direction:column; gap:6px; padding:8px; }
 .vnccs-uc-model-tabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.vnccs-uc-config-banner { display:flex; flex-direction:column; gap:3px; padding:8px 10px; border:1px solid rgba(255,212,92,.45); border-left:3px solid #ffd45c; border-radius:8px; background:rgba(255,212,92,.08); color:#f4e7c0; font-size:11px; line-height:1.35; }
+.vnccs-uc-config-banner[hidden] { display:none; }
+.vnccs-uc-config-banner strong { color:#ffd45c; font-size:11px; letter-spacing:.02em; }
+.vnccs-unicanvas.vnccs-uc-config-linked [data-config-override] { opacity:.38; filter:grayscale(1); pointer-events:none; user-select:none; }
 .vnccs-uc-model-tab { height:30px; border:1px solid var(--uc-border); border-radius:8px; background:var(--uc-surface); color:var(--uc-muted); font:inherit; font-weight:800; text-transform:uppercase; cursor:pointer; }
 .vnccs-uc-model-tab.active { border-color:rgba(255,143,163,.72); background:rgba(255,143,163,.18); color:#ffdce5; box-shadow:0 0 0 1px rgba(255,143,163,.12) inset; }
 .vnccs-uc-model-panel { display:flex; flex-direction:column; gap:6px; }
@@ -1006,36 +1010,37 @@ class UniCanvasWidget {
       .join("");
     const loaderFields = Object.values(UNICANVAS_MODEL_LOADERS).flatMap((loader) =>
       (loader.fields || []).map((field) => `
-        <label class="vnccs-uc-field" data-loader-field="${this._escape(loader.key)}">
+        <label class="vnccs-uc-field" data-loader-field="${this._escape(loader.key)}" data-config-override>
           ${this._escape(field.label)}<select class="vnccs-uc-select" data-setting="${this._escape(field.setting)}"></select>
         </label>`)
     ).join("");
     this.promptBox.innerHTML = `
       <label class="vnccs-uc-field">Prompt<textarea class="vnccs-uc-textarea" data-setting="positive" placeholder="positive prompt"></textarea></label>
       <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
-      <div class="vnccs-uc-model-tabs">
+      <div class="vnccs-uc-config-banner" data-config-banner hidden></div>
+      <div class="vnccs-uc-model-tabs" data-config-override>
         <button class="vnccs-uc-model-tab" type="button" data-model-selection-mode="presets">Presets</button>
         <button class="vnccs-uc-model-tab" type="button" data-model-selection-mode="custom">Custom</button>
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="presets">
-        <div data-preset-card-list></div>
+        <div data-preset-card-list data-config-override></div>
         <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="custom">
         <div class="vnccs-uc-mode-loader-row">
           <label class="vnccs-uc-field" data-mode-control>Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
-          <label class="vnccs-uc-field">Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
+          <label class="vnccs-uc-field" data-config-override>Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
         </div>
         <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
         ${loaderFields}
       </div>
-      <div class="vnccs-uc-turbo-section" data-turbo-panel></div>
+      <div class="vnccs-uc-turbo-section" data-turbo-panel data-config-override></div>
       <div class="vnccs-uc-h3-panel" data-h3-panel style="display:none">
-        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
         <div class="vnccs-uc-h3-hint">REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.</div>
       </div>
       <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
-        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
         <div class="vnccs-uc-h3-hint" data-edit-steps-hint></div>
       </div>
       <div class="vnccs-uc-generation-grid">
@@ -1050,7 +1055,7 @@ class UniCanvasWidget {
           </span>
         </label>
       </div>
-      <div class="vnccs-uc-lora-stack" data-lora-stack></div>`;
+      <div class="vnccs-uc-lora-stack" data-lora-stack data-config-override></div>`;
     this.drawBtn = this._button("GENERATE", "vnccs-uc-btn primary", () => this.draw(), "Generate");
     this.batchInput = document.createElement("input");
     this.batchInput.className = "vnccs-uc-input vnccs-uc-batch-input";
@@ -2302,6 +2307,7 @@ class UniCanvasWidget {
         turboPanel.style.display = "none";
       }
     }
+    this.syncConfigOverride();
     const h3Panel = this.container.querySelector("[data-h3-panel]");
     const moduleKey = getUniCanvasModelModule(this.settings.generation_mode).key;
     if (h3Panel) {
@@ -2534,6 +2540,29 @@ class UniCanvasWidget {
         this.presetDownloadTimer = null;
       }
       this.setStatus(`Preset status failed: ${err.message || err}`, true);
+    }
+  }
+
+  // A linked VNCSS Config overrides the node's model, CLIP, VAE, LoRAs and reference images
+  // (nodes/unicanvas.py ignores the node's own values on external draws), so those controls are
+  // greyed out and inert while the link exists. Mode (model family) and sampling stay editable.
+  syncConfigOverride() {
+    const linked = this._isConfigLinked();
+    this.container.classList.toggle("vnccs-uc-config-linked", linked);
+    this.container.querySelectorAll("[data-config-override]").forEach((el) => {
+      el.inert = linked;
+      if (linked) el.setAttribute("aria-disabled", "true");
+      else el.removeAttribute("aria-disabled");
+    });
+    const banner = this.container.querySelector("[data-config-banner]");
+    if (!banner) return;
+    banner.hidden = !linked;
+    if (linked && !banner.childElementCount) {
+      const title = document.createElement("strong");
+      title.textContent = "VNCSS Config linked";
+      const body = document.createElement("span");
+      body.textContent = "Model, CLIP, VAE, LoRAs and reference images come from the config node. Mode and sampling settings below still apply.";
+      banner.append(title, body);
     }
   }
 
@@ -7640,6 +7669,8 @@ app.registerExtension({
         this.uniCanvasWidget.resize();
         this.uniCanvasWidget.fitInitialView();
         this.uniCanvasWidget.syncPoseToolToActiveLayer();
+        // A loaded workflow restores the config link without a connection event.
+        this.uniCanvasWidget.syncPromptControls();
         this.uniCanvasWidget.render();
       }, 100);
     };

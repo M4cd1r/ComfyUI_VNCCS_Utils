@@ -68,3 +68,22 @@ test("settings popover carries the anchored class and size contract", () => {
     assert.match(source, /anchorPopoverTo\(panel,\s*this\.gearBtn,\s*this\.container\)/,
         "the settings popover must be anchored under the gear inside the widget");
 });
+
+test("a linked VNCSS Config greys out every UniCanvas control it overrides", () => {
+    for (const marker of [
+        'data-preset-card-list data-config-override',
+        'data-turbo-panel data-config-override',
+        'data-lora-stack data-config-override',
+        'class="vnccs-uc-model-tabs" data-config-override',
+        'data-action="edit-refs" data-config-override',
+        'data-config-override>Loader<select',
+    ]) {
+        assert.ok(source.includes(marker), "missing override marker: " + marker);
+    }
+    const sync = source.slice(source.indexOf("  syncConfigOverride() {"), source.indexOf("  _isConfigLinked() {"));
+    assert.ok(sync.includes('classList.toggle("vnccs-uc-config-linked", linked)'));
+    assert.ok(sync.includes("el.inert = linked"), "overridden controls must be inert, not just dimmed");
+    assert.ok(sync.includes("VNCSS Config linked"), "a banner explains where the values come from");
+    assert.ok(!/data-mode-control[^>]*data-config-override/.test(source), "Mode (model family) stays editable");
+    assert.ok(source.includes("[data-config-override] { opacity:.38; filter:grayscale(1)"), "overridden controls read as greyed out");
+});

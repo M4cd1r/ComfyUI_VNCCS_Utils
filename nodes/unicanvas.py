@@ -4150,6 +4150,12 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         # selection keys so the external block always wins; non-external draws are untouched.
         gen_settings.pop("model_selection_mode", None)
         gen_settings.pop("selected_preset_id", None)
+        # The config overrides the node's model-side settings: its model already carries the config
+        # LoRA stack and its reference inputs fill the numbered slots, so the node's own LoRA stack,
+        # Turbo LoRA and uploaded references (greyed out in the widget) must not stack on top.
+        gen_settings["lora_stack"] = []
+        gen_settings["turbo_enabled"] = False
+        gen_settings.pop("edit_reference_images", None)
     # Widget-uploaded Edit model reference images (spec 9): the upload popover is
     # an alternative to the VNCSS Config reference inputs and occupies the same
     # numbered slots (reference_image_N -> <Picture N+1>).

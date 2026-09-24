@@ -342,6 +342,68 @@ def test_external_block_wins_over_preset_merge(monkeypatch):
     assert captured.get("ckpt_name") != "Illustrious/ILFlatMix.safetensors"
 
 
+def test_external_config_overrides_node_loras_turbo_and_uploads(monkeypatch):
+    """A linked config owns LoRAs and references: the node's greyed-out values never stack on top."""
+    from nodes import unicanvas as uc
+
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(image_buffer, format="PNG")
+    image_data_url = "data:image/png;base64," + base64.b64encode(image_buffer.getvalue()).decode("ascii")
+    captured = {}
+
+    def fake_load_assets(gen_settings):
+        captured.update(gen_settings)
+        raise RuntimeError("stop after asset selection")
+
+    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    config_reference = object()
+    with pytest.raises(RuntimeError, match="stop after asset selection"):
+        uc._run_unicanvas_draw({
+            "debug_id": "graph-draw",
+            "mode": "txt2img",
+            "image": image_data_url,
+            "settings": {
+                "generation_mode": "minimax_h3",
+                "lora_stack": [{"name": "node_style.safetensors", "strength": 1.0, "enabled": True}],
+                "turbo_enabled": True,
+                "edit_reference_images": [image_data_url, image_data_url],
+            },
+            "external": {"model": "M", "clip": "C", "vae": "V", "audio_vae": "A",
+                         "references": {"reference_image_1": config_reference}},
+        })
+    assert captured["lora_stack"] == []
+    assert captured["turbo_enabled"] is False
+    assert "edit_reference_images" not in captured
+    assert captured["_external"]["references"] == {"reference_image_1": config_reference}
+
+
+def test_node_draw_keeps_its_own_loras_and_uploads(monkeypatch):
+    """Without a config the node's LoRA stack and uploaded references still apply."""
+    from nodes import unicanvas as uc
+
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(image_buffer, format="PNG")
+    image_data_url = "data:image/png;base64," + base64.b64encode(image_buffer.getvalue()).decode("ascii")
+    captured = {}
+
+    def fake_load_assets(gen_settings):
+        captured.update(gen_settings)
+        raise RuntimeError("stop after asset selection")
+
+    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    stack = [{"name": "node_style.safetensors", "strength": 1.0, "enabled": True}]
+    with pytest.raises(RuntimeError, match="stop after asset selection"):
+        uc._run_unicanvas_draw({
+            "debug_id": "node-draw",
+            "mode": "txt2img",
+            "image": image_data_url,
+            "settings": {"generation_mode": "minimax_h3", "lora_stack": stack,
+                         "edit_reference_images": [image_data_url]},
+        })
+    assert [item.get("name") for item in captured["lora_stack"]] == ["node_style.safetensors"]
+    assert "reference_image_1" in captured["_external"]["references"]
+
+
 def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
     """The queued path replays the frontend draw() composition keys verbatim."""
     from nodes import unicanvas as uc
@@ -356,6 +418,7 @@ def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
         "bbox": {"x": 10, "y": 20, "width": 640, "height": 480},
         "inference_size": {"width": 1280, "height": 960},
         "output_size": {"width": 640, "height": 480},
+        "pose_edit": {"image1": "data:image/png;base64,AAAA", "image2": "data:image/png;base64,BBBB"},
         # Not composition keys: the node state owns the draw id and the generation settings,
         # so these must not cross the bridge from queued_draw.
         "debug_id": "frontend-debug-id",
