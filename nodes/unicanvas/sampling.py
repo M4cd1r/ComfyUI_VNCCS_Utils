@@ -125,9 +125,12 @@ def _sample_generation_latent_default(
         },
     )
 
+    perf = str((gen_settings or {}).get("_performance") or "")
+    suffix = f" - {perf}" if perf else ""
+
     def on_step(step: int, *_args: Any) -> None:
         current = min(max(int(step) + 1, 1), max(steps, 1))
-        _set_draw_progress(draw_id, "sampling", 0.35 + 0.5 * (current / max(steps, 1)), current, steps, f"Sampling step {current}/{steps}")
+        _set_draw_progress(draw_id, "sampling", 0.35 + 0.5 * (current / max(steps, 1)), current, steps, f"Sampling step {current}/{steps}{suffix}")
 
     kwargs = dict(
         model=model,

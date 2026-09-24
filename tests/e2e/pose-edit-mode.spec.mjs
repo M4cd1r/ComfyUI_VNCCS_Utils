@@ -17,8 +17,9 @@ async function sidebarState(page) {
 
 // Pose layers are edited in an explicit session: entering it swaps the right sidebar for the
 // Pose Studio settings, leaving it brings the layers back; outside the session the pose layer
-// moves with the Move tool and a right click on the canvas opens its layer menu.
-test("pose layers: explicit edit session, move outside it, canvas right-click menu", async ({ page }) => {
+// moves with the Move tool, a right click on its layer row opens its layer menu and a right
+// click on the canvas does not.
+test("pose layers: explicit edit session, move outside it, layer-row right-click menu", async ({ page }) => {
   await openUnicanvas(page);
   await openPoseTool(page);
   expect(await sidebarState(page)).toEqual({ editing: true, layersVisible: false, poseSideVisible: true, characterInSidebar: true });
@@ -31,11 +32,15 @@ test("pose layers: explicit edit session, move outside it, canvas right-click me
   const stage = await page.locator(`${SHELL} .vnccs-uc-stage-wrap canvas`).first().boundingBox();
   const cx = stage.x + stage.width / 2, cy = stage.y + stage.height / 2;
 
-  // Right click (no drag) over the mannequin: the layer menu, with Edit pose.
+  // Right click (no drag) over the mannequin on the canvas: no layer menu.
   await page.mouse.move(cx, cy);
   await page.mouse.down({ button: "right" });
   await page.mouse.up({ button: "right" });
   const menu = page.locator(".vnccs-uc-layer-menu");
+  await expect(menu).toBeHidden();
+
+  // Right click on the pose layer's row: the layer menu, with Edit pose.
+  await page.locator(`${SHELL} .vnccs-uc-layer[data-layer-id="${pose.id}"]`).click({ button: "right" });
   await expect(menu).toBeVisible();
   await expect(menu).toContainText("Edit pose");
   await expect(menu).toContainText("Rasterize");

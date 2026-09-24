@@ -127,7 +127,8 @@ def test_edit_families_declare_their_reference_slots():
 
 def test_minimax_h3_is_a_reference_to_video_model_used_for_stills():
     capabilities = _get_unicanvas_model_module("minimax_h3").capabilities
-    assert capabilities.requires_external_config
+    # The VNCSS Config node is optional: the node's own loader supplies clip/vae.
+    assert not capabilities.requires_external_config
     video = capabilities.task("reference_to_video")
     assert video.output is MediaKind.VIDEO
     assert video.available is False  # declared, not wired into the canvas yet

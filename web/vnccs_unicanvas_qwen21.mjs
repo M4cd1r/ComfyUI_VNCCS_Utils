@@ -91,8 +91,8 @@ export const QWEN21_SPECTRUM_PARAMS = [
   { name: "blend_weight", label: "Blend weight", kind: "float", min: 0.0, max: 1.0, step: 0.01 },
   { name: "cache_device", label: "Cache device", kind: "choice", options: ["main_device", "offload_device", "cpu"] },
   { name: "force_actual_on_control", label: "Force actual on control", kind: "bool" },
-  { name: "debug", label: "Debug", kind: "bool" },
 ];
+// Spectrum's own debug logging follows the global UniCanvas debug mode (settings popover).
 
 export const UNICANVAS_QWEN21_MODULE = {
   [QWEN21_MODULE_KEY]: {
@@ -107,14 +107,18 @@ export const UNICANVAS_QWEN21_MODULE = {
       generation_mode: QWEN21_MODULE_KEY,
       model_loader: "diffusion_model",
       diffusion_model_name: "qwen_image_2.1_int8_convrot.safetensors",
-      clip_name: "qwen3vl_8b_int8_convrot.safetensors",
+      clip_name: "qwen3vl_8b_int8_convrot_bf16vision.safetensors",
       vae_name: "qwen_image_2.1_vae_bf16.safetensors",
       clip_type: "qwen_image",
       sampler_name: "euler",
       scheduler: "simple",
-      steps: 40,
+      // Viggle v0.2.1 turbo on by default: 6 steps at CFG 1.
+      steps: 6,
       cfg: 1,
       denoise: 1,
+      qwen21_turbo_enabled: true,
+      qwen_lora_name: "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors",
+      qwen_lora_strength: 1,
       qwen21_opaque_output: false,
       qwen21_aspect_preset: "",
       spectrum: { enabled: false, ...QWEN21_SPECTRUM_PRESETS.moderate },
@@ -165,12 +169,12 @@ const QWEN21_HELP_TEXTS = {
   aspect: "Forces one of the official 2K aspect presets; auto (match canvas) keeps the current canvas aspect ratio.",
   spectrum: "Training-free sampling acceleration (Spectrum, arXiv 2603.01623): selected steps are forecast with a Chebyshev fit instead of running the 32-block transformer. Fail-closed: any unsafe forecast degrades to a real forward.",
   preset: "Tunes the acceleration parameters: moderate (paper default), aggressive (more speedup), quality (safer forecasts).",
-  turbo: "Runs the Viggle 4-step DMD turbo LoRA (huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) over the base transformer and switches Steps to 4 / CFG to 1 (the distillation runs without classifier-free guidance). The LoRA downloads into models/loras/viggle/ on first use.",
+  turbo: "Runs the Viggle v0.2.1 6-step DMD turbo LoRA (huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) over the base transformer and switches Steps to 6 / CFG to 1 (the distillation runs without classifier-free guidance). An installed copy anywhere under models/loras is used; otherwise it downloads into models/loras/viggle/ on first use.",
 };
 
-// Viggle turbo (4-step) constants + profile swap, mirroring the other turbo switches.
-export const QWEN21_TURBO_LORA_NAME = "viggle/Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors";
-export const QWEN21_TURBO_SETTINGS = { steps: 4, cfg: 1 };
+// Viggle turbo (v0.2.1, 6-step) constants + profile swap, mirroring the other turbo switches.
+export const QWEN21_TURBO_LORA_NAME = "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors";
+export const QWEN21_TURBO_SETTINGS = { steps: 6, cfg: 1 };
 export const QWEN21_TURBO_STATUS_ROUTE = "/vnccs/unicanvas/qwen21_turbo";
 
 export function applyQwen21TurboProfile(widget, enabled) {
@@ -218,6 +222,8 @@ async function refreshQwen21TurboStatus(panel) {
     const res = await fetch(QWEN21_TURBO_STATUS_ROUTE + "?t=" + Date.now());
     if (!res.ok) return;
     const data = await res.json();
+    const download = panel.querySelector("[data-qwen21-turbo-download]");
+    if (download) download.hidden = data.status === "success";
     if (data.status === "success") statusEl.textContent = "LoRA installed";
     else statusEl.textContent = data.message || data.status || "";
   } catch {
@@ -235,10 +241,26 @@ function ensureQwen21PanelStyles(doc = document) {
   style.textContent = `
 .vnccs-uc-qwen21-panel { display:grid; gap:6px; padding:8px; background:var(--uc-panel, rgba(20,16,30,.82)); border:1px solid rgba(255,143,163,.2); border-radius:8px; color:var(--uc-text, #e8e8f0); font:11px var(--uc-font, sans-serif); }
 .vnccs-uc-qwen21-title { display:flex; align-items:center; gap:6px; color:var(--uc-accent, #ff8fa3); font-weight:800; font-size:12px; letter-spacing:.02em; }
-.vnccs-uc-qwen21-panel .vnccs-uc-field { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+/* Never shrunk by the scrolling sidebar (it is a flex column): the panel keeps its full height. */
+.vnccs-uc-qwen21-panel { flex:0 0 auto; min-width:0; box-sizing:border-box; }
+.vnccs-uc-qwen21-panel .vnccs-uc-field { display:flex !important; flex-direction:row !important; flex-wrap:nowrap; align-items:center; justify-content:flex-start; gap:6px; text-align:left; min-width:0; }
+.vnccs-uc-qwen21-panel .vnccs-uc-field .vnccs-uc-select, .vnccs-uc-qwen21-panel .vnccs-uc-field .vnccs-custom-select { flex:1 1 auto; min-width:0; width:auto; }
+.vnccs-uc-qwen21-panel .vnccs-uc-field input[type="checkbox"] { margin-left:auto; }
+.vnccs-uc-qwen21-panel [data-qwen21-turbo-row] { flex-wrap:wrap; }
+.vnccs-uc-qwen21-panel [data-qwen21-turbo-row] .vnccs-uc-btn { flex:0 1 auto; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vnccs-uc-qwen21-panel [data-qwen21-turbo-download][hidden] { display:none; }
 .vnccs-uc-qwen21-panel input[type="checkbox"] { accent-color:var(--uc-accent, #ff8fa3); }
 .vnccs-uc-spectrum-panel { display:grid; gap:6px; border-top:1px solid var(--uc-border, rgba(255,255,255,.08)); padding-top:6px; }
 .vnccs-uc-spectrum-title { display:flex; align-items:center; gap:6px; color:var(--uc-accent-2, #b8a9e8); font-weight:700; font-size:11px; }
+.vnccs-uc-spectrum-title { min-width:0; }
+.vnccs-uc-spectrum-title .vnccs-uc-select, .vnccs-uc-spectrum-title .vnccs-custom-select { flex:1 1 60px; min-width:0; max-width:100%; }
+.vnccs-uc-spectrum-name { white-space:nowrap; }
+.vnccs-uc-spectrum-expand { width:18px; height:18px; padding:0; border:0; background:transparent; color:inherit; cursor:pointer; font-size:11px; transition:transform .12s; }
+.vnccs-uc-spectrum-expand[aria-expanded="true"] { transform:rotate(90deg); }
+.vnccs-uc-spectrum-name { cursor:pointer; }
+.vnccs-uc-spectrum-enable { display:inline-flex; align-items:center; gap:4px; color:var(--uc-text, #e8e8f0); font-weight:500; margin-left:auto; }
+.vnccs-uc-spectrum-body { display:grid; gap:6px; }
+.vnccs-uc-spectrum-body[hidden] { display:none; }
 .vnccs-uc-spectrum-param { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
 .vnccs-uc-spectrum-label { flex:1 1 96px; min-width:0; color:var(--uc-muted, #9898a8); font-size:10px; line-height:1.1; }
 .vnccs-uc-spectrum-param .vnccs-uc-range { flex:1 1 80px; accent-color:var(--uc-accent, #ff8fa3); }
@@ -307,12 +329,12 @@ function buildPanelShell() {
   turboRow.dataset.qwen21TurboRow = "";
   const turboLabel = document.createElement("span");
   turboLabel.className = "vnccs-uc-spectrum-label";
-  turboLabel.textContent = "Viggle turbo (4-step) ";
+  turboLabel.textContent = "Viggle turbo (6-step) ";
   turboLabel.appendChild(buildQwen21Help("turbo"));
   const turboToggle = document.createElement("input");
   turboToggle.type = "checkbox";
   turboToggle.dataset.qwen21TurboToggle = "";
-  turboToggle.title = "Enable the Viggle 4-step turbo LoRA";
+  turboToggle.title = "Enable the Viggle 6-step turbo LoRA";
   const turboDownload = document.createElement("button");
   turboDownload.type = "button";
   turboDownload.className = "vnccs-uc-btn";
@@ -329,36 +351,46 @@ function buildPanelShell() {
   spectrum.className = "vnccs-uc-spectrum-panel";
   spectrum.dataset.spectrumPanel = "";
 
+  // One header line: expand arrow, title, Enable and Preset. The parameters stay folded
+  // until the arrow (or the title) is clicked.
   const spectrumTitle = document.createElement("div");
   spectrumTitle.className = "vnccs-uc-spectrum-title";
-  spectrumTitle.textContent = "Spectrum acceleration ";
-  spectrumTitle.appendChild(buildQwen21Help("spectrum"));
-  spectrum.appendChild(spectrumTitle);
-
+  const expand = document.createElement("button");
+  expand.type = "button";
+  expand.className = "vnccs-uc-spectrum-expand";
+  expand.dataset.spectrumExpand = "";
+  expand.textContent = "▸";
+  expand.title = "Show the Spectrum parameters";
+  expand.setAttribute("aria-expanded", "false");
+  const titleText = document.createElement("span");
+  titleText.className = "vnccs-uc-spectrum-name";
+  titleText.dataset.spectrumExpand = "";
+  titleText.textContent = "Spectrum";
+  titleText.title = "Spectrum acceleration";
   const enableLabel = document.createElement("label");
-  enableLabel.className = "vnccs-uc-field";
-  enableLabel.textContent = "Enable Spectrum ";
+  enableLabel.className = "vnccs-uc-spectrum-enable";
   const enableInput = document.createElement("input");
   enableInput.type = "checkbox";
   enableInput.dataset.spectrumToggle = "";
-  enableLabel.appendChild(enableInput);
-  spectrum.appendChild(enableLabel);
-
-  const presetLabel = document.createElement("label");
-  presetLabel.className = "vnccs-uc-field";
-  presetLabel.textContent = "Preset ";
-  presetLabel.appendChild(buildQwen21Help("preset"));
+  enableLabel.append(enableInput, document.createTextNode("Enable"));
   const presetSelect = document.createElement("select");
   presetSelect.className = "vnccs-uc-select";
   presetSelect.dataset.spectrumPreset = "";
+  presetSelect.title = QWEN21_HELP_TEXTS.preset;
   for (const name of QWEN21_SPECTRUM_PRESET_NAMES) {
     const option = document.createElement("option");
     option.value = name;
-    option.textContent = name === "moderate" ? "moderate (paper default)" : name;
+    option.textContent = name;
     presetSelect.appendChild(option);
   }
-  presetLabel.appendChild(presetSelect);
-  spectrum.appendChild(presetLabel);
+  spectrumTitle.append(expand, titleText, buildQwen21Help("spectrum"), enableLabel, presetSelect);
+  spectrum.appendChild(spectrumTitle);
+
+  const body = document.createElement("div");
+  body.className = "vnccs-uc-spectrum-body";
+  body.dataset.spectrumBody = "";
+  body.hidden = true;
+  spectrum.appendChild(body);
 
   for (const param of QWEN21_SPECTRUM_PARAMS) {
     const row = document.createElement("div");
@@ -404,7 +436,7 @@ function buildPanelShell() {
       number.dataset.spectrumNumber = param.name;
       row.append(range, number);
     }
-    spectrum.appendChild(row);
+    body.appendChild(row);
   }
 
   const hint = document.createElement("div");
@@ -413,7 +445,7 @@ function buildPanelShell() {
     "Training-free sampling acceleration (Spectrum, arXiv 2603.01623): selected steps are forecast " +
     "with a Chebyshev fit instead of running the 32-block transformer. Fail-closed: any unsafe " +
     "forecast degrades to a real forward.";
-  spectrum.appendChild(hint);
+  body.appendChild(hint);
 
   panel.appendChild(spectrum);
   return panel;
@@ -468,6 +500,12 @@ function refreshPanel(widget, panel) {
   const enabled = Boolean(spectrum.enabled);
   const toggle = panel.querySelector("[data-spectrum-toggle]");
   if (toggle) toggle.checked = enabled;
+  const preset = panel.querySelector("[data-spectrum-preset]");
+  if (preset) {
+    const match = QWEN21_SPECTRUM_PRESET_NAMES.find((name) => QWEN21_SPECTRUM_PARAMS
+      .every((param) => QWEN21_SPECTRUM_PRESETS[name][param.name] === spectrum[param.name]));
+    preset.value = match || "moderate";
+  }
   for (const param of QWEN21_SPECTRUM_PARAMS) {
     const row = panel.querySelector(`[data-spectrum-param="${param.name}"]`);
     if (!row) continue;
@@ -519,6 +557,13 @@ function bindPanelEvents(widget, panel) {
     if (!(target instanceof HTMLElement)) return;
     if (target.dataset.qwen21TurboDownload !== undefined) {
       void requestQwen21TurboDownload().then(() => refreshQwen21TurboStatus(panel));
+    }
+    if (target.dataset.spectrumExpand !== undefined) {
+      const body = panel.querySelector("[data-spectrum-body]");
+      const arrow = panel.querySelector("button[data-spectrum-expand]");
+      if (!body) return;
+      body.hidden = !body.hidden;
+      arrow?.setAttribute("aria-expanded", String(!body.hidden));
     }
   });
   panel.addEventListener("change", (event) => {

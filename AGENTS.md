@@ -47,7 +47,7 @@ Specs and what each one guards:
 - `pose-edit-mode.spec.mjs` - pose layers are edited in an explicit session: the Pose tool
   swaps the right sidebar (denoise, masks, layers) for the Pose Studio settings and the
   character reference, Save pose / Cancel bring the layers back; outside the session the Move
-  tool drags the pose layer, a canvas right click opens its layer menu (Edit pose, Rasterize)
+  tool drags the pose layer, a right click on its layer row (not on the canvas) opens its layer menu (Edit pose, Rasterize)
   and a double-click re-enters the editor.
 - `standalone-setting.spec.mjs` - the standalone sidebar tab is absent by default and the
   ComfyUI setting adds and removes it live.

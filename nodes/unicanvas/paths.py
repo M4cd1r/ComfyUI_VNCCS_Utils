@@ -91,3 +91,27 @@ def _get_full_path_agnostic(folder_paths: Any, category: str, name: str, require
                 first_match = normalized_candidate
 
     return None if require_exists else first_match
+
+
+def _resolve_model_filename(folder_paths: Any, categories: str | tuple[str, ...], name: Any) -> str:
+    """The installed file ``name`` refers to, as ComfyUI lists it (subfolder included).
+
+    Family defaults and presets name files without a subfolder ("qwen_image_vae.safetensors")
+    while users keep them in one ("qwen/qwen_image_vae.safetensors"). An exact entry wins;
+    otherwise the first listed entry with the same file name (case-insensitive). Unknown names come back unchanged so the loader reports them.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return raw
+    wanted = raw.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for category in (categories,) if isinstance(categories, str) else categories:
+        try:
+            listed = list(folder_paths.get_filename_list(category) or [])
+        except Exception:
+            listed = []
+        if raw in listed:
+            return raw
+        for entry in listed:
+            if str(entry).replace("\\", "/").rsplit("/", 1)[-1].lower() == wanted:
+                return str(entry)
+    return raw

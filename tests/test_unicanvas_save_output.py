@@ -49,7 +49,8 @@ def test_composite_save_returns_ok_json_and_unique_names(output_dir):
     second = _run_unicanvas_save_output({"image": _data_url(image)})
 
     assert first["ok"] is True
-    assert set(first) == {"ok", "path"}
+    assert set(first) == {"ok", "path", "width", "height"}
+    assert (first["width"], first["height"]) == (4, 4)
     first_name = os.path.basename(first["path"])
     second_name = os.path.basename(second["path"])
     assert first_name != second_name

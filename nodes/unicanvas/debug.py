@@ -8,7 +8,24 @@ from typing import Any
 import torch
 
 
+# Switched at runtime by the "Debug mode" UniCanvas setting (POST /vnccs/unicanvas/debug and
+# every draw payload); read it through debug_enabled(), never import the value.
 UNICANVAS_DEBUG = 0
+
+
+def set_unicanvas_debug(enabled: Any) -> bool:
+    global UNICANVAS_DEBUG
+    UNICANVAS_DEBUG = 1 if enabled else 0
+    return bool(UNICANVAS_DEBUG)
+
+
+def debug_enabled() -> bool:
+    return bool(UNICANVAS_DEBUG)
+
+
+def debug_event(topic: str, message: str, data: dict[str, Any] | None = None) -> None:
+    """One structured debug line for a non-draw operation (remove bg, SAM, naming, ...)."""
+    _uc_log(topic, message, data)
 
 
 def _uc_log(draw_id: str, message: str, data: dict[str, Any] | None = None) -> None:

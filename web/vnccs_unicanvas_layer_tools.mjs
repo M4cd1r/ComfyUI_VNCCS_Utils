@@ -24,12 +24,16 @@
 
 import { clamp } from "./vnccs_unicanvas_input_tools.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs";
+import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
   { id: "save-image", label: "Save layer as image" },
   { id: "remove-bg", label: "Remove background" },
+  { id: "remove-bg-prompt", label: "Remove background with prompt...", editOnly: true },
   { id: "color-match", label: "Color match to below" },
+  { id: "auto-name", label: "Auto-name" },
   { id: "rasterize", label: "Rasterize", poseOnly: true },
   { id: "edit-pose", label: "Edit pose", poseOnly: true },
 ]);
@@ -62,6 +66,7 @@ export const PSD_BLEND_MODE_MAP = Object.freeze({
 });
 
 export const COLOR_MATCH_METHODS = Object.freeze([
+  "local_lab",
   "mkl",
   "hm",
   "reinhard",
@@ -213,19 +218,84 @@ async function saveLayerAsImage(uc, layer) {
   }
 }
 
-// Backend selection mirrors the UniCanvas settings popover: edit model /
-// birefnet / rembg / sam 3 (legacy "qi21" maps to the edit-model backend).
-export function resolveRemoveBgSelection(settings) {
-  const source = settings || {};
-  const raw = String(source.remove_bg_model || "birefnet");
-  const method = raw === "qi21" ? "edit" : raw;
-  const editModel = source.remove_bg_edit_model === "minimax_h3" ? "minimax_h3" : "qwen_image21";
-  return { method, editModel };
+// Backend selection mirrors the UniCanvas settings popover (vnccs_unicanvas_remove_bg.mjs).
+export { resolveRemoveBgSelection };
+
+// SAM 3: the user picks what to keep. The SAM tool opens on this layer with SAM 3 selected:
+// clicks mark the subject (Alt/right click marks background), Segment builds the mask and
+// Apply removes everything else from the layer.
+function startSamRemoveBackground(uc, layer) {
+  if (uc.activeLayerId !== layer.id) uc.setActiveLayer(layer.id);
+  uc.sam.model = "sam3";
+  uc.clearSamPrompt?.();
+  uc.setTool("sam");
+  uc.sam.status = "Click what to keep, then Segment and Apply";
+  uc.renderSamPanel?.();
+  uc.setStatus("[VNCCS UniCanvas] Remove bg – SAM 3: click what to keep (Alt/right click: remove), then Segment and Apply.");
 }
 
-async function removeLayerBackground(uc, layer) {
+/**
+ * The Edit model prompt for one run: the universal prompt from the settings, then the
+ * user's extra instruction on its own line.
+ */
+export function removeBgRunSettings(settings, editModel, extraPrompt = "") {
+  const edit = removeBgEditSettings(settings, editModel);
+  const extra = String(extraPrompt || "").trim();
+  if (!extra) return edit;
+  const base = String(edit.prompt ?? REMOVE_BG_DEFAULT_PROMPT).trim();
+  return { ...edit, prompt: base ? `${base}
+${extra}` : extra };
+}
+
+function openRemoveBgPromptPopover(uc, layer, point) {
+  uc._vnccsRemoveBgPrompt?.remove();
+  const element = document.createElement("div");
+  element.className = "vnccs-uc-remove-bg-prompt";
+  element.style.cssText = "position:absolute; z-index:40; width:300px; padding:10px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.14); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px; box-shadow:0 8px 24px rgba(0,0,0,.45);";
+  const title = document.createElement("div");
+  title.style.fontWeight = "600";
+  title.textContent = "Remove background with prompt";
+  const hint = document.createElement("div");
+  hint.style.cssText = "opacity:.75; line-height:1.35;";
+  hint.textContent = "Added on a new line after the Remove bg prompt from UniCanvas settings, e.g. \"Keep the sword and the shadow under her feet.\" Ctrl+Enter runs.";
+  const text = document.createElement("textarea");
+  text.className = "vnccs-uc-textarea";
+  text.rows = 4;
+  text.value = uc._vnccsLastRemoveBgPrompt || "";
+  const buttons = document.createElement("div");
+  buttons.style.cssText = "display:grid; grid-template-columns:1fr 1fr; gap:6px;";
+  const close = () => { element.remove(); if (uc._vnccsRemoveBgPrompt === element) uc._vnccsRemoveBgPrompt = null; };
+  const run = () => {
+    uc._vnccsLastRemoveBgPrompt = text.value;
+    close();
+    removeLayerBackground(uc, layer, text.value);
+  };
+  const cancelBtn = uc._button("Cancel", "vnccs-uc-btn", close, "Close without running");
+  const runBtn = uc._button("Remove background", "vnccs-uc-btn primary", run, "Run the Edit model with this prompt");
+  buttons.append(cancelBtn, runBtn);
+  text.addEventListener("keydown", (e) => {
+    e.stopPropagation(); // typing must not trigger canvas shortcuts
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); }
+    if (e.key === "Escape") close();
+  });
+  element.append(title, hint, text, buttons);
+  uc.container.appendChild(element);
+  uc._vnccsRemoveBgPrompt = element;
+  if (point) placeInHost(uc.container, element, point.x - 150, point.y - 40);
+  text.focus();
+}
+
+async function removeLayerBackground(uc, layer, extraPrompt = "") {
   const { method, editModel } = resolveRemoveBgSelection(uc.settings);
-  const editModelLabel = editModel === "minimax_h3" ? "MiniMax H3" : "Qwen Image 2.1";
+  if (method === "sam3") {
+    if (layer.locked) {
+      uc.setStatus("[VNCCS UniCanvas] Remove bg: layer is locked.", true);
+      return;
+    }
+    startSamRemoveBackground(uc, layer);
+    return;
+  }
+  const editModelLabel = "Qwen Image 2.1";
   const label = method === "edit"
     ? `Remove bg – Edit model (${editModelLabel})`
     : `Remove bg – ${{ birefnet: "BiRefNet", rembg: "rembg", sam3: "SAM 3" }[method] || "Edit model"}`;
@@ -245,7 +315,12 @@ async function removeLayerBackground(uc, layer) {
     const res = await fetch(REMOVE_BG_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ method, edit_model: editModel, image: source.toDataURL("image/png") }),
+      body: JSON.stringify({
+        method,
+        edit_model: editModel,
+        edit_settings: method === "edit" ? removeBgRunSettings(uc.settings, editModel, extraPrompt) : undefined,
+        image: source.toDataURL("image/png"),
+      }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
@@ -295,7 +370,8 @@ function buildColorMatchReference(uc, layer, crop) {
   return canvas;
 }
 
-async function requestColorMatch(targetCanvas, referenceCanvas, method, strength) {
+async function requestColorMatch(targetCanvas, referenceCanvas, method) {
+  // Always the full-strength result: the strength slider blends it in the browser.
   const res = await fetch(COLOR_MATCH_ROUTE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -303,7 +379,7 @@ async function requestColorMatch(targetCanvas, referenceCanvas, method, strength
       image: targetCanvas.toDataURL("image/png"),
       reference: referenceCanvas.toDataURL("image/png"),
       method,
-      strength,
+      strength: COLOR_MATCH_STRENGTH_MAX,
     }),
   });
   const data = await res.json();
@@ -311,19 +387,54 @@ async function requestColorMatch(targetCanvas, referenceCanvas, method, strength
   return data.image;
 }
 
-function applyColorMatchPreview(uc, preview, resultImage) {
+/** Places an absolutely positioned popover at a client point, inside the (possibly zoomed) host. */
+export function placeInHost(host, element, clientX, clientY) {
+  const hostRect = host.getBoundingClientRect();
+  const scale = hostRect.width / (host.offsetWidth || hostRect.width || 1) || 1;
+  const hostWidth = host.clientWidth || hostRect.width / scale;
+  const hostHeight = host.clientHeight || hostRect.height / scale;
+  const width = element.offsetWidth || 240;
+  const height = element.offsetHeight || 200;
+  element.style.left = `${clamp((clientX - hostRect.left) / scale, 4, Math.max(4, hostWidth - width - 4))}px`;
+  element.style.top = `${clamp((clientY - hostRect.top) / scale, 4, Math.max(4, hostHeight - height - 4))}px`;
+}
+
+// Layer pixels = the original crop with the matched result laid over it at strength/10.
+function composeColorMatch(uc, preview) {
+  const matched = preview.matched.get(preview.method);
+  if (!matched || preview.closed) return;
   const { layer, crop } = preview;
   uc.materializeRasterLayerForEditing(layer);
-  const ctx = layer.canvas.getContext("2d");
+  const ctx = uc.configureImageContext(layer.canvas.getContext("2d"));
+  ctx.save();
   ctx.clearRect(crop.x, crop.y, crop.width, crop.height);
-  uc.configureImageContext(ctx).drawImage(resultImage, crop.x, crop.y, crop.width, crop.height);
+  ctx.drawImage(preview.targetBase, crop.x, crop.y, crop.width, crop.height);
+  ctx.globalAlpha = clamp(preview.strength / COLOR_MATCH_STRENGTH_MAX, 0, 1);
+  ctx.globalCompositeOperation = "source-atop"; // keeps the layer's own alpha
+  ctx.drawImage(matched, crop.x, crop.y, crop.width, crop.height);
+  ctx.restore();
   uc.markLayerPixelsChanged(layer, crop, false);
   uc.refreshLayerRow(layer.id);
   uc.requestRender();
 }
 
+function scheduleColorMatchPreview(uc, preview) {
+  if (!preview.gestureBefore) preview.gestureBefore = uc.createLayerPixelSnapshot(preview.layer);
+  if (preview.rafId) return;
+  // Coalesce per-frame work; the newest slider value always wins.
+  preview.rafId = requestAnimationFrame(() => {
+    preview.rafId = 0;
+    composeColorMatch(uc, preview);
+  });
+}
+
 function commitColorMatchPreview(uc, preview) {
   if (!preview.gestureBefore) return;
+  if (preview.rafId) {
+    cancelAnimationFrame(preview.rafId);
+    preview.rafId = 0;
+    composeColorMatch(uc, preview);
+  }
   uc.pushHistoryEntry({
     kind: "layerPixels",
     layerId: preview.layer.id,
@@ -331,69 +442,47 @@ function commitColorMatchPreview(uc, preview) {
     after: uc.createLayerPixelSnapshot(preview.layer),
   });
   preview.gestureBefore = null;
-  preview.commitRequested = false;
+  preview.commits += 1;
   uc.syncLightStateToWidget();
   uc.scheduleFullSync();
-  uc.setStatus("[VNCCS UniCanvas] Color match committed.");
 }
 
 function finishColorMatchGesture(uc, preview) {
-  // End of one gesture: record exactly one layerPixels entry, waiting for the
-  // newest preview first so no pixel change is ever left unrecorded.
-  if (!preview.gestureBefore) return;
-  if (preview.rafId || preview.inFlight) {
+  // End of one gesture: exactly one layerPixels history entry.
+  if (preview.loading) {
     preview.commitRequested = true;
     return;
   }
   commitColorMatchPreview(uc, preview);
 }
 
-function scheduleColorMatchPreview(uc, preview, strength, commit) {
-  preview.pendingStrength = strength;
-  if (commit) preview.commitRequested = true;
-  if (preview.rafId) return;
-  // Coalesce per-frame work; the newest slider value always wins.
-  preview.rafId = requestAnimationFrame(() => {
-    preview.rafId = 0;
-    runColorMatchPreview(uc, preview);
-  });
-}
-
-async function runColorMatchPreview(uc, preview) {
-  if (preview.closed) return;
-  if (preview.inFlight) {
-    // One round trip at a time; the newest value reruns on completion.
-    preview.rerunNeeded = true;
+async function loadColorMatchMethod(uc, preview, method) {
+  preview.method = method;
+  if (preview.matched.has(method)) {
+    scheduleColorMatchPreview(uc, preview);
+    finishColorMatchGesture(uc, preview);
     return;
   }
-  const strength = preview.pendingStrength;
   preview.seq += 1;
   const seq = preview.seq;
-  preview.inFlight = true;
-  if (!preview.gestureBefore) preview.gestureBefore = uc.createLayerPixelSnapshot(preview.layer);
+  preview.loading = true;
+  preview.setNote("Computing the match…");
   try {
-    const resultURL = await requestColorMatch(preview.targetBase, preview.referenceBase, preview.method, strength);
-    const resultImage = await uc.loadImage(resultURL);
+    const resultImage = await uc.loadImage(await requestColorMatch(preview.targetBase, preview.referenceBase, method));
     if (preview.closed || seq !== preview.seq) return; // stale preview dropped; newest value wins
-    applyColorMatchPreview(uc, preview, resultImage);
-  } catch (err) {
-    if (!preview.closed && seq === preview.seq) {
-      uc.setStatus(`[VNCCS UniCanvas] Color match failed: ${err.message || err}`, true);
-    }
-  } finally {
-    preview.inFlight = false;
-    if (preview.closed) return;
-    if (preview.rerunNeeded) {
-      preview.rerunNeeded = false;
-      runColorMatchPreview(uc, preview);
-      return;
-    }
-    // Commit whatever the gesture produced - even after a failed preview - so
-    // changed pixels never end up without a history entry.
-    if (preview.commitRequested) {
+    preview.matched.set(method, resultImage);
+    preview.loading = false;
+    preview.setNote("");
+    scheduleColorMatchPreview(uc, preview);
+    if (preview.commitRequested || !preview.dragging) {
       preview.commitRequested = false;
       commitColorMatchPreview(uc, preview);
     }
+  } catch (err) {
+    if (preview.closed || seq !== preview.seq) return;
+    preview.loading = false;
+    preview.setNote(`Failed: ${err.message || err}`, true);
+    uc.setStatus(`[VNCCS UniCanvas] Color match failed: ${err.message || err}`, true);
   }
 }
 
@@ -401,26 +490,38 @@ function closeColorMatchPreview(uc, commit) {
   const preview = uc._vnccsColorMatch;
   if (!preview) return;
   uc._vnccsColorMatch = null;
+  if (commit) commitColorMatchPreview(uc, preview);
   preview.closed = true;
-  preview.seq += 1; // drop any in-flight preview (stale preview dropped)
+  preview.seq += 1; // drop any in-flight result
   if (preview.rafId) cancelAnimationFrame(preview.rafId);
-  if (preview.gestureBefore) {
-    if (commit) {
-      // Closing with commit=true still records the pending gesture.
-      commitColorMatchPreview(uc, preview);
-    } else {
-      // Closing mid-gesture discards the uncommitted scratch preview.
-      uc.restoreLayerPixelSnapshot(preview.layer, preview.gestureBefore);
-      preview.gestureBefore = null;
-      uc.refreshLayerRow(preview.layer.id);
-      uc.requestRender();
+  if (!commit) {
+    // Cancel: back to the pixels from before the popover opened (undoable when a step was recorded).
+    const current = uc.createLayerPixelSnapshot(preview.layer);
+    uc.restoreLayerPixelSnapshot(preview.layer, preview.openedBefore);
+    if (preview.commits) {
+      uc.pushHistoryEntry({ kind: "layerPixels", layerId: preview.layer.id, before: current, after: preview.openedBefore });
     }
+    uc.refreshLayerRow(preview.layer.id);
+    uc.requestRender();
+    uc.syncLightStateToWidget();
+    uc.scheduleFullSync();
+  } else {
+    uc.setStatus("[VNCCS UniCanvas] Color match applied.");
   }
   preview.element?.remove();
 }
 
-function openColorMatchPopover(uc, layer) {
-  closeColorMatchPreview(uc, false);
+const COLOR_MATCH_LABELS = {
+  local_lab: "Local – follows the colors under each part",
+  reinhard_lab_gpu: "Global – LAB mean/contrast (GPU)",
+};
+
+function escapeText(value) {
+  return String(value ?? "").replace(/[<>&"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[ch]);
+}
+
+function openColorMatchPopover(uc, layer, point = null) {
+  closeColorMatchPreview(uc, true);
   const crop = uc.getLayerAlphaBounds(layer);
   if (!crop) {
     uc.setStatus("[VNCCS UniCanvas] Color match to below: layer is empty.", true);
@@ -434,24 +535,35 @@ function openColorMatchPopover(uc, layer) {
   const targetBase = uc.cloneCanvasCrop(layer.canvas, crop);
   const element = document.createElement("div");
   element.className = "vnccs-uc-color-match-popover";
-  element.style.cssText = "position:absolute; z-index:30; min-width:220px; padding:10px; border-radius:10px; background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.12); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px;";
+  element.style.cssText = "position:absolute; z-index:30; width:270px; padding:10px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.14); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px; box-shadow:0 8px 24px rgba(0,0,0,.45);";
   const methodOptions = COLOR_MATCH_METHODS
-    .map((method) => `<option value="${method}">${method}</option>`)
+    .map((method) => `<option value="${method}">${COLOR_MATCH_LABELS[method] || method}</option>`)
     .join("");
   element.innerHTML = `
-    <div style="font-weight:600;">Color match to below</div>
+    <div style="font-weight:600;">Color match to below – ${escapeText(layer.name || "layer")}</div>
+    <div style="opacity:.75; line-height:1.35;">Recolors this layer to fit the layers under it. The canvas updates right away – just drag the Strength slider. Apply keeps the result, Cancel restores the layer.</div>
     <label style="display:grid; gap:4px;">Method
       <select class="vnccs-uc-select" data-control="colorMatchMethod">${methodOptions}</select>
     </label>
-    <label style="display:grid; gap:4px;">Strength <span data-color-match-readout>10.0</span>
+    <label style="display:grid; gap:4px;"><span>Strength <span data-color-match-readout>10.0</span></span>
       <input class="vnccs-uc-range" type="range" min="0" max="${COLOR_MATCH_STRENGTH_MAX}" step="0.1" value="${COLOR_MATCH_STRENGTH_MAX}" data-control="colorMatchStrength">
     </label>
-    <button class="vnccs-uc-btn" type="button" data-control="colorMatchClose">Close</button>`;
+    <div data-color-match-note style="min-height:14px; opacity:.8;"></div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+      <button class="vnccs-uc-btn" type="button" data-control="colorMatchCancel">Cancel</button>
+      <button class="vnccs-uc-btn primary" type="button" data-control="colorMatchClose">Apply</button>
+    </div>`;
   uc.container.appendChild(element);
   installCustomSelects(element);
-  element.style.left = "24px";
-  element.style.top = "48px";
+  // Next to where the menu was opened (the layer row), never over the generate panel.
+  if (point) placeInHost(uc.container, element, point.x - (element.offsetWidth || 270) - 12, point.y - 20);
+  else {
+    const rowRect = uc.layerList?.querySelector?.(`[data-layer-id="${layer.id}"]`)?.getBoundingClientRect();
+    if (rowRect) placeInHost(uc.container, element, rowRect.left - (element.offsetWidth || 270) - 12, rowRect.top);
+    else { element.style.left = "24px"; element.style.top = "48px"; }
+  }
 
+  const note = element.querySelector("[data-color-match-note]");
   const preview = {
     element,
     layer,
@@ -459,43 +571,50 @@ function openColorMatchPopover(uc, layer) {
     targetBase,
     referenceBase,
     method: COLOR_MATCH_METHODS[0],
+    matched: new Map(),
+    strength: COLOR_MATCH_STRENGTH_MAX,
     seq: 0,
     rafId: 0,
-    inFlight: false,
-    rerunNeeded: false,
+    loading: false,
+    dragging: false,
     closed: false,
-    pendingStrength: COLOR_MATCH_STRENGTH_MAX,
     commitRequested: false,
+    commits: 0,
     gestureBefore: null,
+    openedBefore: uc.createLayerPixelSnapshot(layer),
+    setNote(text, isError = false) {
+      note.textContent = text;
+      note.style.color = isError ? "#ff8a8a" : "";
+    },
   };
   uc._vnccsColorMatch = preview;
 
   const methodSelect = element.querySelector('[data-control="colorMatchMethod"]');
   const strengthInput = element.querySelector('[data-control="colorMatchStrength"]');
   const readout = element.querySelector("[data-color-match-readout]");
-  const closeBtn = element.querySelector('[data-control="colorMatchClose"]');
+  methodSelect.value = preview.method;
 
-  methodSelect.addEventListener("change", () => {
-    preview.method = methodSelect.value;
-    if (!preview.gestureBefore) preview.gestureBefore = uc.createLayerPixelSnapshot(layer);
-    scheduleColorMatchPreview(uc, preview, Number(strengthInput.value), true);
-  });
+  methodSelect.addEventListener("change", () => loadColorMatchMethod(uc, preview, methodSelect.value));
+  strengthInput.addEventListener("pointerdown", () => { preview.dragging = true; });
   strengthInput.addEventListener("input", () => {
-    const strength = clamp(Number(strengthInput.value), 0, COLOR_MATCH_STRENGTH_MAX);
-    readout.textContent = strength.toFixed(1);
-    if (!preview.gestureBefore) preview.gestureBefore = uc.createLayerPixelSnapshot(layer);
-    // Live preview on the scratch copy while dragging (realtime rule).
-    scheduleColorMatchPreview(uc, preview, strength, false);
+    preview.strength = clamp(Number(strengthInput.value), 0, COLOR_MATCH_STRENGTH_MAX);
+    readout.textContent = preview.strength.toFixed(1);
+    // Realtime: blended in the browser on every input event, no server round trip.
+    scheduleColorMatchPreview(uc, preview);
   });
   strengthInput.addEventListener("pointerup", () => {
-    // Release commits the current gesture as one history entry.
+    preview.dragging = false;
     finishColorMatchGesture(uc, preview);
   });
   strengthInput.addEventListener("change", () => {
     // Keyboard-only adjustments fire no pointerup; change also ends a gesture.
+    preview.dragging = false;
     finishColorMatchGesture(uc, preview);
   });
-  closeBtn.addEventListener("click", () => closeColorMatchPreview(uc, true));
+  element.querySelector('[data-control="colorMatchClose"]').addEventListener("click", () => closeColorMatchPreview(uc, true));
+  element.querySelector('[data-control="colorMatchCancel"]').addEventListener("click", () => closeColorMatchPreview(uc, false));
+  // Show the default method at full strength straight away.
+  loadColorMatchMethod(uc, preview, preview.method);
 }
 
 function closeLayerContextMenu(uc) {
@@ -505,12 +624,14 @@ function closeLayerContextMenu(uc) {
 
 function openLayerContextMenu(uc, layer, e) {
   closeLayerContextMenu(uc);
-  closeColorMatchPreview(uc, false);
+  closeColorMatchPreview(uc, true);
   const menu = document.createElement("div");
   menu.className = "vnccs-uc-layer-menu";
   menu.style.cssText = `position:absolute; z-index:40; min-width:230px; padding:6px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.12); display:grid; gap:2px; font:11px sans-serif;`;
   for (const item of LAYER_MENU_ITEMS) {
     if (item.poseOnly && layer.type !== "pose") continue;
+    // Only the Edit model backend reads a prompt.
+    if (item.editOnly && resolveRemoveBgSelection(uc.settings).method !== "edit") continue;
     const entry = document.createElement("button");
     entry.type = "button";
     entry.textContent = item.label;
@@ -519,22 +640,22 @@ function openLayerContextMenu(uc, layer, e) {
     entry.addEventListener("pointerleave", () => { entry.style.background = "transparent"; });
     entry.addEventListener("click", () => {
       closeLayerContextMenu(uc);
-      runLayerMenuAction(uc, layer, item);
+      runLayerMenuAction(uc, layer, item, { x: e.clientX, y: e.clientY });
     });
     menu.appendChild(entry);
   }
-  const rect = uc.container.getBoundingClientRect();
-  menu.style.left = `${clamp(e.clientX - rect.left, 4, Math.max(4, rect.width - 240))}px`;
-  menu.style.top = `${clamp(e.clientY - rect.top, 4, Math.max(4, rect.height - 40))}px`;
   uc.container.appendChild(menu);
+  placeInHost(uc.container, menu, e.clientX, e.clientY);
   uc._vnccsLayerMenu = menu;
 }
 
-function runLayerMenuAction(uc, layer, item) {
+function runLayerMenuAction(uc, layer, item, point = null) {
   if (item.id === "copy-clipboard") return copyLayerToClipboard(uc, layer);
   if (item.id === "save-image") return saveLayerAsImage(uc, layer);
   if (item.id === "remove-bg") return removeLayerBackground(uc, layer);
-  if (item.id === "color-match") return openColorMatchPopover(uc, layer);
+  if (item.id === "remove-bg-prompt") return openRemoveBgPromptPopover(uc, layer, point);
+  if (item.id === "color-match") return openColorMatchPopover(uc, layer, point);
+  if (item.id === "auto-name") return autoNameLayers(uc, [layer]);
   if (item.id === "rasterize") {
     if (typeof uc.rasterizePoseLayer === "function") return uc.rasterizePoseLayer(layer);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE);

@@ -2,14 +2,34 @@
 import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { composePoseReference, isImageLayer, poseAtPanoramaCamera } from "./vnccs_unicanvas_pose_state.mjs";
+import { composePoseReference, poseAtPanoramaCamera } from "./vnccs_unicanvas_pose_state.mjs";
 import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 const styles = `
 .vnccs-unicanvas .vnccs-uc-pose-root { position:absolute; inset:0; display:block; width:auto; height:auto; min-width:0; min-height:0; background:none; border:0; border-radius:0; pointer-events:none; z-index:5; --vnccs-ps-ui-scale:1; --vnccs-ps-relative-ui-scale:1; }
 .vnccs-unicanvas .vnccs-uc-pose-root:has(> .vnccs-ps-modal-overlay) { z-index:1000; }
+/* Pose Library inside UniCanvas: the modal is as large as the canvas, but its header, toolbar and
+   settings keep a compact size (Pose Studio scales them with the modal width, up to 1.4x). */
+.vnccs-unicanvas .vnccs-uc-pose-root .vnccs-ps-library-modal { --vnccs-ps-library-ui-scale: 0.62 !important; }
 .vnccs-uc-pose-controls { position:absolute; pointer-events:none; overflow:hidden; z-index:1; }
+/* Pose Studio's settings are re-parented into the UniCanvas sidebar and controls, outside the
+   .vnccs-pose-studio root that defines its --ps-* theme variables. Without them the active toggle
+   (e.g. Female) had no background and the slider thumbs no color. Map them onto the UniCanvas
+   palette so the panel matches the rest of the UI. */
+.vnccs-unicanvas .vnccs-uc-pose-side, .vnccs-unicanvas .vnccs-uc-pose-controls {
+  --ps-bg: var(--uc-bg, #0a0a0f); --ps-panel: var(--uc-panel, rgba(20,16,30,.82)); --ps-elevated: #1a1a26;
+  --ps-surface: var(--uc-surface, rgba(30,28,44,.9)); --ps-hover: var(--uc-hover, rgba(44,40,62,.95));
+  --ps-border: var(--uc-border, rgba(255,255,255,.08)); --ps-border-hover: rgba(255,255,255,.14);
+  --ps-accent: var(--uc-accent, #ff8fa3); --ps-accent-hover: #ffb6c8; --ps-accent-glow: rgba(255,143,163,.3);
+  --ps-accent-subtle: rgba(255,143,163,.1); --ps-accent-border: rgba(255,143,163,.22); --ps-accent-lavender: var(--uc-accent-2, #b8a9e8);
+  --ps-success: var(--uc-good, #00d68f); --ps-danger: var(--uc-danger, #ff4757); --ps-warning: #ffaa00;
+  --ps-text: var(--uc-text, #e8e8f0); --ps-text-muted: var(--uc-muted, #9898a8); --ps-text-dim: #5e5e70;
+  --ps-input-bg: rgba(255,255,255,.04); --ps-font: var(--uc-font, 'Sora', -apple-system, BlinkMacSystemFont, sans-serif);
+  --ps-font-mono: 'JetBrains Mono', 'Fira Code', monospace; --ps-radius-sm: 8px; --ps-radius-md: 12px; --ps-radius-lg: 16px;
+  --ps-transition: .2s ease; --vnccs-ps-ui-scale: 1; --vnccs-ps-relative-ui-scale: 1;
+  color: var(--ps-text); font-family: var(--ps-font);
+}
 .vnccs-uc-pose-side { display:flex; flex-direction:column; gap:8px; flex:1 1 auto; min-height:0; min-width:0; }
 .vnccs-uc-pose-side-head { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid rgba(255,143,163,.45); border-radius:10px; background:rgba(255,143,163,.08); }
 .vnccs-uc-pose-side-head strong { font-size:12px; color:var(--uc-accent, #ff8fa3); text-transform:uppercase; letter-spacing:.05em; }
@@ -274,8 +294,12 @@ export class UniCanvasPoseEditor {
         });
         const actions = document.createElement("div"); actions.className = "vnccs-uc-pose-character-actions";
         actions.append(upload, clear);
-        select.addEventListener("change", () => {
+        select.addEventListener("change", async () => {
             if (select.value === "__uploaded__") return;
+            if (select.value.startsWith("vnccs:")) {
+                await this.pickVnccsCharacter(select.value.slice(6));
+                return;
+            }
             this.host.recordHistoryBefore();
             this.layer.pose.character = select.value ? { source: "layer", layerId: select.value } : null;
             this.setCharacterOpen(false);
@@ -307,17 +331,68 @@ export class UniCanvasPoseEditor {
         return menu;
     }
 
+    // Characters made with ComfyUI_VNCCS (Character Creator / Cloner), listed by its own
+    // /vnccs/context_lists route; empty when that extension is not installed.
+    async loadVnccsCharacters() {
+        const host = this.host;
+        if (host._vnccsCharacters) return host._vnccsCharacters;
+        host._vnccsCharacters = fetch("/vnccs/context_lists")
+            .then(res => (res.ok ? res.json() : {}))
+            .then(data => (Array.isArray(data?.characters) ? data.characters.map(String).filter(Boolean) : []))
+            .catch(() => []);
+        const list = await host._vnccsCharacters;
+        host._vnccsCharacters = Promise.resolve(list);
+        return list;
+    }
+
+    async pickVnccsCharacter(name) {
+        const token = this.token, layer = this.layer;
+        try {
+            const query = `character=${encodeURIComponent(name)}`;
+            let res = await fetch(`/vnccs/get_cached_preview?${query}`);
+            if (!res.ok) res = await fetch(`/vnccs/get_character_pose_preview?${query}&index=0`);
+            if (!res.ok) throw new Error(`no preview image for ${name} (HTTP ${res.status})`);
+            const blob = await res.blob();
+            const dataURL = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(blob);
+            });
+            if (token !== this.token || !this.host.layers.includes(layer)) return;
+            this.host.recordHistoryBefore();
+            layer.pose.character = { source: "upload", name, vnccsCharacter: name, dataURL };
+            this.characterMenuKey = null;
+            this.setCharacterOpen(false);
+            this.refreshCharacterMenu(); this.host.syncToNode();
+        } catch (error) {
+            this.host.setStatus(`Character reference: ${error.message || error}`, true);
+            this.characterMenuKey = null;
+            this.refreshCharacterMenu();
+        }
+    }
+
     refreshCharacterMenu() {
         if (!this.characterSelect) return;
         const select = this.characterSelect, character = this.layer.pose.character;
-        const key = JSON.stringify([character?.source, character?.layerId, character?.name, this.host.layers.map(l => [l.id, l.name, l.type])]);
+        const characters = this.host._vnccsCharacterList || [];
+        const key = JSON.stringify([character?.source, character?.layerId, character?.name, characters]);
         if (key === this.characterMenuKey) return;
         this.characterMenuKey = key;
-        select.replaceChildren(new Option("Choose a layer", ""));
-        if (character?.source === "upload") select.add(new Option(character.name, "__uploaded__"));
-        for (const layer of this.host.layers) {
-            if (layer !== this.layer && isImageLayer(layer)) select.add(new Option(layer.name, layer.id));
+        if (!this.host._vnccsCharacterList) {
+            void this.loadVnccsCharacters().then(list => {
+                this.host._vnccsCharacterList = list;
+                this.characterMenuKey = null;
+                this.refreshCharacterMenu();
+            });
         }
+        select.replaceChildren(new Option(characters.length ? "Choose a character" : "No VNCCS characters - upload an image", ""));
+        for (const name of characters) {
+            if (character?.vnccsCharacter !== name) select.add(new Option(name, `vnccs:${name}`));
+        }
+        if (character?.source === "upload") select.add(new Option(character.name, "__uploaded__"));
+        // Older poses referenced a canvas layer: keep showing that choice, but offer no new ones.
+        const legacy = character?.source === "layer" ? this.host.layers.find(item => item.id === character.layerId) : null;
+        if (legacy) select.add(new Option(`Layer: ${legacy.name}`, legacy.id));
         select.value = character?.source === "layer" ? character.layerId : character?.source === "upload" ? "__uploaded__" : "";
         const selected = character?.source === "layer" ? this.host.layers.find(item => item.id === character.layerId) : null;
         const src = character?.source === "upload" ? character.dataURL
@@ -326,7 +401,30 @@ export class UniCanvasPoseEditor {
         if (src) this.characterPreview.src = src;
         else this.characterPreview.removeAttribute("src");
         this.characterClear.disabled = !character;
-        this.characterIssue.textContent = character ? "" : "Needed to generate: pick a layer or upload an image.";
+        this.characterIssue.textContent = character ? "" : "Needed to generate: pick a VNCCS character or upload an image.";
+    }
+
+    // Pose Studio's own history (mannequin edits; the animation timeline in animation mode),
+    // driven by UniCanvas's Undo/Redo buttons and Ctrl+Z / Ctrl+Y while a pose is edited.
+    historyDepth() {
+        const viewer = this.studio?.viewer;
+        return { undo: viewer?.history?.length || 0, redo: viewer?.future?.length || 0 };
+    }
+
+    undo() {
+        const studio = this.studio;
+        if (!studio) return false;
+        if (studio.isAnimationMode?.()) studio.undoAnimation?.();
+        else studio.viewer?.undo?.();
+        return true;
+    }
+
+    redo() {
+        const studio = this.studio;
+        if (!studio) return false;
+        if (studio.isAnimationMode?.()) studio.redoAnimation?.();
+        else studio.viewer?.redo?.();
+        return true;
     }
 
     setVisible(visible) {
@@ -394,7 +492,12 @@ export class UniCanvasPoseEditor {
         this.capturing = true;
         try {
             const rect = this.layer.pose.rect;
-            const scale = Math.min(1, (final ? 2048 : 768) / Math.max(rect.width, rect.height));
+            // The mannequin on screen IS this capture (the WebGL viewport only draws the gizmos),
+            // so the live preview must have at least the pixels the screen shows: a fixed low
+            // preview size looked rasterized and jumped to smooth on the final capture.
+            const cap = 2048 / Math.max(rect.width, rect.height);
+            const screen = (this.host.view?.scale || 1) * (window.devicePixelRatio || 1);
+            const scale = Math.min(1, cap, final ? Math.max(screen, cap) : screen);
             const surface = this.captureSurface({ width: Math.max(1, Math.round(rect.width * scale)), height: Math.max(1, Math.round(rect.height * scale)) });
             if (!surface) return;
             const ctx = this.layer.canvas.getContext("2d");

@@ -30,13 +30,13 @@ test("Spectrum panel declares every parameter", () => {
         "blend_weight",
         "cache_device",
         "force_actual_on_control",
-        "debug",
     ];
+    assert.doesNotMatch(panelSource, /name:\s*"debug"/, "Spectrum debug follows the global UniCanvas debug mode");
     for (const name of params) {
         assert.match(panelSource, new RegExp('name:\\s*"' + name + '"'), "missing Spectrum parameter: " + name);
     }
     assert.match(panelSource, /data-spectrum-toggle/, "Spectrum enable toggle missing");
-    assert.match(panelSource, /"Spectrum acceleration"/, "Spectrum panel title missing");
+    assert.match(panelSource, /"Spectrum acceleration"/, "Spectrum panel title (tooltip) missing");
 });
 
 
@@ -128,7 +128,7 @@ test("QI2.1 Viggle turbo switch mirrors the other turbo switches", () => {
   assert.match(panelSource, /applyQwen21TurboProfile/, "the turbo profile swap helper must exist");
   assert.match(panelSource, /dataset\.qwen21TurboToggle/, "the turbo enable switch must exist");
   assert.match(panelSource, /dataset\.qwen21TurboDownload/, "the LoRA download button must exist");
-  assert.match(panelSource, /QWEN21_TURBO_SETTINGS = \{ steps: 4, cfg: 1 \}/, "turbo must switch to the 4-step / no-CFG profile");
+  assert.match(panelSource, /QWEN21_TURBO_SETTINGS = \{ steps: 6, cfg: 1 \}/, "turbo must switch to the 6-step / no-CFG profile");
   assert.match(panelSource, /qwen21_turbo_previous_settings/, "the pre-turbo steps/cfg must be saved and restored");
   assert.match(panelSource, /qwen21_turbo_enabled/, "the switch state must persist in settings");
 });

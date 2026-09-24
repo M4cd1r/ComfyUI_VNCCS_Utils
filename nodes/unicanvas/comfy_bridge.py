@@ -2,8 +2,39 @@
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
-from typing import Any
+import sys
+from typing import Any, Callable
+
+
+def find_loaded_module(predicate: Callable[[str, Any], bool]) -> Any:
+    """First already-imported module (e.g. another custom node's) that matches ``predicate``."""
+    for name, module in list(sys.modules.items()):
+        try:
+            if module is not None and predicate(name, module):
+                return module
+        except Exception:
+            continue
+    return None
+
+
+def import_loaded_submodule(name: str) -> Any:
+    """Import ``name`` (a submodule of an already loaded package) the way ``import`` would."""
+    module = sys.modules.get(name)
+    if module is not None:
+        return module
+    spec = importlib.util.find_spec(name)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
+    return module
 
 
 def _call_comfy_node(class_name: str, **kwargs):
@@ -29,7 +60,12 @@ def _call_comfy_node(class_name: str, **kwargs):
     signature = inspect.signature(method)
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
     accepted = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
-    return method(**accepted)
+    result = method(**accepted)
+    # V3 (io.ComfyNode) nodes return a NodeOutput; callers expect the V1 result tuple.
+    args = getattr(result, "args", None)
+    if not isinstance(result, (tuple, list)) and isinstance(args, tuple) and hasattr(result, "block_execution"):
+        return args
+    return result
 
 
 def _safe_filename_list(category: str) -> list[str]:

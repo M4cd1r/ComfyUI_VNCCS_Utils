@@ -1,4 +1,4 @@
-"""Layer background removal: a registry of backends (edit model, BiRefNet, rembg, SAM3).
+"""Layer background removal: a registry of backends (edit model, BiRefNet, rembg ONNX, SAM 3).
 
 Backs ``POST /vnccs/unicanvas/remove_bg``
 ``{ method: "edit" | "birefnet" | "rembg" | "sam3", edit_model?, image }``.
@@ -6,6 +6,7 @@ Backs ``POST /vnccs/unicanvas/remove_bg``
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +15,8 @@ from PIL import Image
 
 from .imaging import _decode_data_url, _encode_png_data_url, _uc_image_to_rgb_tensor, _uc_rgba_tensor_to_image
 from .models.registry import UNICANVAS_MODEL_MODULES, _get_unicanvas_model_module
+from .rembg_onnx import remove_background_rembg
+from .sampling import _ensure_direct_sampling_prompt_context
 from .segment import _run_unicanvas_segment
 
 
@@ -37,13 +40,11 @@ def _uc_load_birefnet_masker():
 
 # Edit families offered even when their module is unavailable (the request then fails with
 # the family's "unavailable" message instead of "unknown model"). Any other registered family
-# that implements remove_background() joins the list automatically.
-UC_REMOVE_BG_EDIT_MODELS = ("qwen_image21", "minimax_h3")
+# that implements remove_background() joins the list automatically. Only families with an
+# RGBA VAE qualify: MiniMax H3 decodes RGB only (video model), so it is not one of them.
+UC_REMOVE_BG_EDIT_MODELS = ("qwen_image21",)
 UC_EDIT_REMOVE_BG_UNAVAILABLE = (
     "[VNCCS UniCanvas] Remove bg – Edit model requires an RGBA-VAE edit model module ({model})."
-)
-UC_REMBG_REMOVE_BG_UNAVAILABLE = (
-    "[VNCCS UniCanvas] Remove bg – rembg requires the 'rembg' package (pip install rembg)."
 )
 UC_SAM3_REMOVE_BG_UNAVAILABLE = (
     "[VNCCS UniCanvas] Remove bg – SAM 3 needs the SAM stack: {error}"
@@ -63,12 +64,8 @@ def _uc_resolve_edit_remove_bg_module(edit_model: str):
 
 
 def _uc_remove_bg_rembg(image: Image.Image) -> Image.Image:
-    try:
-        from rembg import remove as rembg_remove
-    except ImportError as exc:
-        raise RuntimeError(UC_REMBG_REMOVE_BG_UNAVAILABLE) from exc
-    result = rembg_remove(image)
-    return result if getattr(result, "mode", "") == "RGBA" else result.convert("RGBA")
+    # rembg's u2net over onnxruntime; the model downloads itself on first use (rembg_onnx).
+    return remove_background_rembg(image)
 
 
 def _uc_remove_bg_sam3(image: Image.Image) -> Image.Image:
@@ -88,7 +85,7 @@ def _uc_remove_bg_sam3(image: Image.Image) -> Image.Image:
     ]
     try:
         result = _run_unicanvas_segment({
-            "model": "sam2_large",
+            "model": "sam3",
             "image": _encode_png_data_url(image.convert("RGB")),
             "points": points,
         })
@@ -103,6 +100,7 @@ class RemoveBgRequest:
     raw_method: str
     edit_model: str
     payload: dict[str, Any]
+    edit_settings: dict[str, Any] | None = None
 
 
 class BackgroundRemover:
@@ -134,7 +132,12 @@ class EditModelRemover(BackgroundRemover):
 
     def remove(self, image: Image.Image, request: RemoveBgRequest) -> Image.Image:
         module = _uc_resolve_edit_remove_bg_module(request.edit_model)
-        return _uc_rgba_tensor_to_image(module.remove_background(_uc_image_to_rgb_tensor(image)))
+        _ensure_direct_sampling_prompt_context()  # graph-less sampling needs a prompt context
+        # The layer's own size, scaled into the edit model's working range (at most 2 MP),
+        # and the result scaled back to the layer size.
+        work = image.resize(edit_working_size(image.size), Image.Resampling.LANCZOS)
+        result = _uc_rgba_tensor_to_image(module.remove_background(_uc_image_to_rgb_tensor(work), request.edit_settings))
+        return result if result.size == image.size else result.resize(image.size, Image.Resampling.LANCZOS)
 
 
 class BiRefNetRemover(BackgroundRemover):
@@ -152,9 +155,6 @@ class BiRefNetRemover(BackgroundRemover):
 
 class RembgRemover(BackgroundRemover):
     key = "rembg"
-
-    def prepare(self, request: RemoveBgRequest) -> None:
-        _uc_require_rembg_available()
 
     def remove(self, image: Image.Image, request: RemoveBgRequest) -> Image.Image:
         return _uc_remove_bg_rembg(image)
@@ -198,6 +198,70 @@ def _uc_remove_bg_edit_models() -> tuple[str, ...]:
     return tuple(keys)
 
 
+# What the settings popover may override for an edit-model run; everything else stays the
+# family's default. The seed is not user-facing: every run draws a fresh one. An optional
+# single (turbo) LoRA becomes the run's LoRA stack.
+_EDIT_SETTING_TEXT_KEYS = (
+    "model_loader", "diffusion_model_name", "gguf_model_name", "gguf_arch",
+    "clip_name", "vae_name", "scheduler", "sampler_name",
+)
+# Longest side and area limits for the image an edit model sees (the result is scaled back).
+EDIT_MAX_PIXELS = 2_000_000
+EDIT_MIN_PIXELS = 1_000_000
+EDIT_SIZE_MULTIPLE = 32
+
+
+def edit_working_size(size: tuple[int, int]) -> tuple[int, int]:
+    """Size the edit model works at: the layer's aspect, 1-2 MP, sides in multiples of 32."""
+    width, height = max(1, int(size[0])), max(1, int(size[1]))
+    area = width * height
+    scale = 1.0
+    if area > EDIT_MAX_PIXELS:
+        scale = (EDIT_MAX_PIXELS / area) ** 0.5
+    elif area < EDIT_MIN_PIXELS:
+        scale = (EDIT_MIN_PIXELS / area) ** 0.5
+    step = EDIT_SIZE_MULTIPLE
+    out_w = max(step, int(width * scale) // step * step)
+    out_h = max(step, int(height * scale) // step * step)
+    return out_w, out_h
+
+
+def _uc_edit_remove_bg_settings(raw: Any) -> dict[str, Any]:
+    settings: dict[str, Any] = {}
+    source = raw if isinstance(raw, dict) else {}
+    for key in _EDIT_SETTING_TEXT_KEYS:
+        value = str(source.get(key) or "").strip()
+        if value:
+            settings[key] = value
+    try:
+        steps = int(source.get("steps"))
+        if 1 <= steps <= 200:
+            settings["steps"] = steps
+    except (TypeError, ValueError):
+        pass
+    try:
+        cfg = float(source.get("cfg"))
+        if 0.0 <= cfg <= 30.0:
+            settings["cfg"] = cfg
+    except (TypeError, ValueError):
+        pass
+    lora_name = str(source.get("lora_name") or "").strip()
+    if "lora_name" in source:
+        settings["lora_stack"] = []  # an explicit pick, "None" included, replaces the family default
+    prompt = str(source.get("prompt") or "").strip()
+    if prompt:
+        settings["prompt"] = prompt[:2000]
+    if lora_name and lora_name.lower() != "none":
+        try:
+            strength = float(source.get("lora_strength", 1.0))
+        except (TypeError, ValueError):
+            strength = 1.0
+        if -10.0 <= strength <= 10.0 and strength != 0.0:
+            settings["lora_stack"] = [{"name": lora_name, "strength": strength}]
+    settings["seed"] = secrets.randbelow(2**32)
+    return settings
+
+
 def _run_unicanvas_remove_bg(payload: dict[str, Any]) -> dict[str, Any]:
     payload = payload or {}
     raw_method = str(payload.get("method") or "").strip().lower()
@@ -207,6 +271,7 @@ def _run_unicanvas_remove_bg(payload: dict[str, Any]) -> dict[str, Any]:
         raw_method=raw_method,
         edit_model=str(payload.get("edit_model") or "qwen_image21").strip().lower(),
         payload=payload,
+        edit_settings=_uc_edit_remove_bg_settings(payload.get("edit_settings")) if remover.uses_edit_model else None,
     )
     remover.prepare(request)
     image = _decode_data_url(str(payload.get("image") or ""), "RGB")
@@ -219,9 +284,3 @@ def _run_unicanvas_remove_bg(payload: dict[str, Any]) -> dict[str, Any]:
         "edit_model": request.edit_model if remover.uses_edit_model else None,
     }
 
-
-def _uc_require_rembg_available() -> None:
-    try:
-        import rembg  # noqa: F401
-    except ImportError as exc:
-        raise RuntimeError(UC_REMBG_REMOVE_BG_UNAVAILABLE) from exc

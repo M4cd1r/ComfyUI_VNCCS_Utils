@@ -101,4 +101,4 @@ def _run_unicanvas_save_output(payload: dict[str, Any]) -> dict[str, Any]:
     if layer_id:
         image = image.convert("RGBA")
     path = _unicanvas_save_output_image(image)
-    return {"ok": True, "path": path}
+    return {"ok": True, "path": path, "width": image.width, "height": image.height}

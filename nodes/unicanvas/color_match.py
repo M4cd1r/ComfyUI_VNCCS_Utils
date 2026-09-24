@@ -92,10 +92,60 @@ class ColorTransfer:
     """One color-match method. Subclass, then :func:`register_color_transfer`."""
 
     key: str = ""
+    uses_mask = False  # True: transfer() also takes the layer's opacity mask (H,W) 0..1
 
     def transfer(self, src: torch.Tensor, ref: torch.Tensor) -> tuple[torch.Tensor, str]:
         """Return (src recolored to ref's statistics as (H,W,3) float 0..1, engine name)."""
         raise NotImplementedError
+
+
+def _local_mean(values: torch.Tensor, weight: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Weighted Gaussian-window mean of (H,W,C) ``values`` (weights (H,W)), computed on a
+    reduced grid and upsampled, so a 4K layer costs about as much as a thumbnail."""
+    import torch.nn.functional as F
+
+    height, width = values.shape[:2]
+    factor = max(1, int(max(height, width) // 96))
+    stack = torch.cat([values * weight[..., None], weight[..., None]], dim=-1).permute(2, 0, 1)[None]
+    small = F.avg_pool2d(stack, factor, ceil_mode=True) if factor > 1 else stack
+    radius_sigma = max(0.5, sigma / factor)
+    radius = max(1, int(radius_sigma * 3))
+    offsets = torch.arange(-radius, radius + 1, device=values.device, dtype=values.dtype)
+    kernel = torch.exp(-(offsets ** 2) / (2 * radius_sigma ** 2))
+    kernel = kernel / kernel.sum()
+    channels = small.shape[1]
+    small = F.pad(small, (radius, radius, radius, radius), mode="replicate")
+    small = F.conv2d(small, kernel.view(1, 1, 1, -1).repeat(channels, 1, 1, 1), groups=channels)
+    small = F.conv2d(small, kernel.view(1, 1, -1, 1).repeat(channels, 1, 1, 1), groups=channels)
+    full = F.interpolate(small, size=(height, width), mode="bilinear", align_corners=False)[0].permute(1, 2, 0)
+    return full[..., :-1] / full[..., -1:].clamp(min=1e-4)
+
+
+def _local_lab_transfer(src: torch.Tensor, ref: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    """Per-pixel LAB transfer: every pixel takes the local mean/contrast of the reference
+    around it (a Gaussian window about 1/8 of the layer), so the layer blends into the
+    colors actually below each part of it instead of one global average."""
+    src_lab = _torch_srgb_to_lab(src)
+    ref_lab = _torch_srgb_to_lab(ref)
+    height, width = src.shape[:2]
+    weight = mask.to(src_lab) if mask is not None else torch.ones(height, width, dtype=src_lab.dtype, device=src_lab.device)
+    ones = torch.ones_like(weight)
+    sigma = max(height, width) / 8.0
+    src_mean = _local_mean(src_lab, weight, sigma)
+    src_std = (_local_mean(src_lab ** 2, weight, sigma) - src_mean ** 2).clamp(min=0).sqrt()
+    ref_mean = _local_mean(ref_lab, ones, sigma)
+    ref_std = (_local_mean(ref_lab ** 2, ones, sigma) - ref_mean ** 2).clamp(min=0).sqrt()
+    # Keep the layer's own detail: contrast follows the reference only within 0.5x-1.5x.
+    ratio = ((ref_std + 1.0) / (src_std + 1.0)).clamp(0.5, 1.5)
+    return _torch_lab_to_srgb((src_lab - src_mean) * ratio + ref_mean)
+
+
+class LocalLabTransfer(ColorTransfer):
+    key = "local_lab"
+    uses_mask = True
+
+    def transfer(self, src: torch.Tensor, ref: torch.Tensor, mask: torch.Tensor | None = None) -> tuple[torch.Tensor, str]:
+        return _local_lab_transfer(src, ref, mask), "local_lab"
 
 
 class ReinhardLabGpuTransfer(ColorTransfer):
@@ -131,6 +181,7 @@ def register_color_transfer(transfer: ColorTransfer) -> None:
 
 
 for _transfer in (
+    LocalLabTransfer(),
     *(ColorMatcherTransfer(key) for key in ("mkl", "hm", "reinhard", "mvgd", "hm-mvgd-hm", "hm-mkl-hm")),
     ReinhardLabGpuTransfer(),
 ):
@@ -140,12 +191,14 @@ for _transfer in (
 UC_COLOR_MATCH_METHODS = tuple(COLOR_TRANSFERS)
 
 
-def _color_match_transfer(src: torch.Tensor, ref: torch.Tensor, method: str) -> tuple[torch.Tensor, str]:
+def _color_match_transfer(src: torch.Tensor, ref: torch.Tensor, method: str, mask: torch.Tensor | None = None) -> tuple[torch.Tensor, str]:
     """Transfer ref's color statistics onto src; returns (matched RGB, engine name)."""
-    method = str(method or "mkl").strip().lower()
+    method = str(method or "local_lab").strip().lower()
     transfer = COLOR_TRANSFERS.get(method)
     if transfer is None:
         raise ValueError(f"[VNCCS UniCanvas] Unknown color match method '{method}'.")
+    if getattr(transfer, "uses_mask", False):
+        return transfer.transfer(src, ref, mask)
     return transfer.transfer(src, ref)
 
 
@@ -167,10 +220,13 @@ def _run_unicanvas_color_match(payload: dict[str, Any]) -> dict[str, Any]:
     payload = payload or {}
     image = _decode_data_url(str(payload.get("image") or ""), "RGBA")
     reference = _decode_data_url(str(payload.get("reference") or ""), "RGB")
-    method = str(payload.get("method") or "mkl").strip().lower()
+    method = str(payload.get("method") or "local_lab").strip().lower()
     src = _uc_image_to_rgb_tensor(image)
     ref = _uc_image_to_rgb_tensor(reference)
-    matched, engine = _color_match_transfer(src, ref, method)
+    if ref.shape != src.shape:
+        ref = _uc_image_to_rgb_tensor(reference.resize(image.size, Image.Resampling.BILINEAR))
+    mask = torch.from_numpy(np.asarray(image)[:, :, 3].astype(np.float32) / 255.0)
+    matched, engine = _color_match_transfer(src, ref, method, mask)
     result = _apply_color_match_strength(src, matched, payload.get("strength", 10.0))
     rgb = (result.detach().to(device="cpu", dtype=torch.float32).clamp(0.0, 1.0).numpy() * 255.0).round().astype(np.uint8)
     alpha = np.asarray(image.convert("RGBA"))[:, :, 3]

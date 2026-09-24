@@ -34,20 +34,28 @@ test("settings gear drives remove bg; the mannequin character recipe is gone", (
 });
 
 test("the settings gear sits next to the snap-to-grid icon", () => {
-    assert.match(source, /this\.gearBtn = this\._button\("⚙", "vnccs-uc-icon", \(\) => this\.openUniCanvasSettings\(\), "Settings"\);/,
+    assert.match(source, /this\.gearBtn = this\._button\(UI_ICONS\.gear, "vnccs-uc-icon vnccs-uc-gear", \(\) => this\.openUniCanvasSettings\(\), "UniCanvas settings"\);/,
         "a gear button must be created for the corner bar");
-    assert.match(source, /this\.settingsBar\.append\(this\.undoBtn, this\.redoBtn, this\.fitBtn, settingsSpacer, this\.snapBtn, this\.gearBtn\);/,
+    assert.match(source, /this\.settingsBar\.append\(this\.undoBtn, this\.redoBtn, this\.fitBtn, this\.zoomResetBtn, settingsSpacer, this\.snapBtn, this\.gearBtn\);/,
         "the gear must sit in the corner bar right after Snap to grid");
     assert.ok(!/\["\\u2699", "Settings"/.test(source), "the old Layers-section gear entry must be gone");
 });
 
-test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet default", () => {
+test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet default", async () => {
     assert.ok(source.includes('remove_bg_model: "birefnet"'), "BiRefNet must be the default backend");
-    for (const marker of ['["edit", "Edit model"]', '["birefnet", "BiRefNet"]', '["rembg", "rembg"]', '["sam3", "SAM 3"]']) {
-        assert.ok(source.includes(marker), "missing remove bg backend option: " + marker);
+    const removeBg = await readFile(new URL("../web/vnccs_unicanvas_remove_bg.mjs", import.meta.url), "utf8");
+    assert.ok(source.includes("buildRemoveBgSettings(s, {"), "the settings popover builds the remove bg rows from the module");
+    for (const marker of ['["edit", "Edit model"]', '["birefnet", "BiRefNet"]', '["rembg", "rembg"]', '["sam3", "SAM 3']) {
+        assert.ok(removeBg.includes(marker), "missing remove bg backend option: " + marker);
     }
-    assert.ok(source.includes('["qwen_image21", "Qwen Image 2.1"]'), "the edit-model backend needs the QI2.1 choice");
-    assert.ok(source.includes('["minimax_h3", "MiniMax H3"]'), "the edit-model backend needs the MiniMax H3 choice");
+    assert.ok(removeBg.includes('["qwen_image21", "Qwen Image 2.1"]'), "the edit-model backend needs the QI2.1 choice");
+    assert.ok(!removeBg.includes('"minimax_h3"'), "MiniMax H3 decodes RGB only: it is not a remove bg edit model");
+    assert.ok(removeBg.includes("REMOVE_BG_DEFAULT_PROMPT"), "the universal remove bg prompt is editable");
+    for (const key of ["model_loader", "gguf_arch", "clip_name", "vae_name", "steps", "cfg", "sampler_name", "scheduler", "lora_name", "prompt"]) {
+        assert.ok(removeBg.includes(`"${key}"`), "the edit-model backend exposes " + key);
+    }
+    assert.ok(!removeBg.includes('"seed"'), "the seed is not user-facing (random per run)");
+    assert.ok(!removeBg.includes('"lora_strength"'), "the remove bg LoRA always runs at strength 1");
 });
 
 test("edit model reference images upload next to Steps with per-family slot markers", () => {

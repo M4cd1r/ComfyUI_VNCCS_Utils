@@ -3,7 +3,7 @@
 Upstream: https://github.com/lbouaraba/comfyui-krea2edit
 Revision: 86f886dac23013d88996e3a2e99093ba44d322fb (Apache-2.0).
 See ../../../licenses/comfyui-krea2edit-LICENSE and ../../../licenses/comfyui-krea2edit-NOTICE.
-Changes: private single-source wrapper, mandatory image grounding, pre-sampling
+Changes: private wrapper (one source plus an optional second one), mandatory image grounding, pre-sampling
 encoding, target-size validation; removed node registration and diagnostic prints.
 """
 import math
@@ -246,8 +246,11 @@ def krea2_edit_forward(m, x, timesteps, context, src_latent, transformer_options
 
 
 
-def patch_krea2_edit(model, vae, image, target_latent, ref_boost):
-    """Encode once before sampling, then inject clean reference tokens on every step."""
+def patch_krea2_edit(model, vae, image, target_latent, ref_boost, image_b=None):
+    """Encode once before sampling, then inject clean reference tokens on every step.
+
+    ``image_b`` is the optional second picture (upstream source_image_b): both sources go in
+    as a list, frames 1..2, as the LoRA was trained ([scene, subject])."""
     dm = model.model.diffusion_model
     required = ("patch", "channels", "_unpack_context", "first", "txtfusion", "txtmlp",
                 "tmlp", "tproj", "tdim", "pe_embedder", "blocks", "last")
@@ -256,6 +259,9 @@ def patch_krea2_edit(model, vae, image, target_latent, ref_boost):
     h, w = target_latent["samples"].shape[-2:]
     source = _fit_encode_image(image, vae, h, w, {}, ("source", h, w), "fit")
     source = model.model.process_latent_in(source)
+    if image_b is not None:
+        source_b = _fit_encode_image(image_b, vae, h, w, {}, ("b", h, w), "fit")
+        source = [source, model.model.process_latent_in(source_b)]
     patched = model.clone()
 
     def wrapper(executor, x, timesteps, context, *args, **kwargs):

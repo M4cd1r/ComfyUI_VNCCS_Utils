@@ -114,7 +114,7 @@ class _MattingFamily(UniCanvasModelModule):
     defaults: dict[str, Any] = None
     is_edit_model: bool = True
 
-    def remove_background(self, image):
+    def remove_background(self, image, settings=None):
         rgba = torch.zeros((image.shape[0], image.shape[1], 4))
         rgba[..., :3] = image
         rgba[..., 3] = 1.0
@@ -122,7 +122,8 @@ class _MattingFamily(UniCanvasModelModule):
 
 
 def test_edit_families_that_can_remove_backgrounds_are_offered(monkeypatch):
-    assert set(remove_bg._uc_remove_bg_edit_models()) >= {"qwen_image21", "minimax_h3"}
+    assert "qwen_image21" in remove_bg._uc_remove_bg_edit_models()
+    assert "minimax_h3" not in remove_bg._uc_remove_bg_edit_models()  # RGB-only video VAE
     monkeypatch.setitem(UNICANVAS_MODEL_MODULES, "test_matting", _MattingFamily())
     assert "test_matting" in remove_bg._uc_remove_bg_edit_models()
     result = remove_bg._run_unicanvas_remove_bg({"method": "edit", "edit_model": "test_matting", "image": png_data_url(Image.new("RGB", (2, 2)))})

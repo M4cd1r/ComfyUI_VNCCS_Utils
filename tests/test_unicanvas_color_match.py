@@ -23,6 +23,7 @@ _REF = torch.tensor((0.2 + 0.5 * np.random.RandomState(1).rand(6, 5, 3)).astype(
 
 def test_method_list_matches_design_spec():
     assert UC_COLOR_MATCH_METHODS == (
+        "local_lab",
         "mkl",
         "hm",
         "reinhard",
@@ -49,8 +50,8 @@ def test_every_method_runs_on_small_tensors(monkeypatch, method):
     assert tuple(matched.shape) == tuple(_SRC.shape)
     assert float(matched.min()) >= 0.0
     assert float(matched.max()) <= 1.0
-    if method == "reinhard_lab_gpu":
-        assert engine == "reinhard_lab_gpu"
+    if method in ("reinhard_lab_gpu", "local_lab"):
+        assert engine == method
         assert calls == []
     else:
         assert engine == "color-matcher"
@@ -114,3 +115,16 @@ def test_run_color_match_preserves_alpha_and_reports_engine(monkeypatch):
 def test_unknown_color_match_method_is_rejected():
     with pytest.raises(ValueError, match=r"\[VNCCS UniCanvas\] Unknown color match method"):
         _color_match_transfer(_SRC, _REF, "nope")
+
+
+def test_local_lab_follows_the_reference_under_each_pixel():
+    # A flat gray layer over a background that is red on the left and blue on the right:
+    # a global transfer paints it one purple, the local one follows each side.
+    src = torch.full((32, 64, 3), 0.5)
+    ref = torch.zeros(32, 64, 3)
+    ref[:, :32, 0] = 0.8
+    ref[:, 32:, 2] = 0.8
+    matched, engine = _color_match_transfer(src, ref, "local_lab", torch.ones(32, 64))
+    assert engine == "local_lab"
+    left, right = matched[16, 2], matched[16, 61]
+    assert left[0] > left[2] + 0.2 and right[2] > right[0] + 0.2
