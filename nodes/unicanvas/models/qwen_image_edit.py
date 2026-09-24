@@ -53,22 +53,28 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         supports_pose_edit=True,
         default_loader="gguf",
         prompt_guide=PromptGuide(
-            hint="Change the jacket to navy. Keep the fabric texture, face and lighting unchanged.",
+            hint="Subject: ... | Environment: ... | Lighting: ... - or one short instruction: change X, keep Y",
             guide=(
-                "Qwen-Image-Edit-2511 follows plain-language edit instructions. Say exactly what "
-                "changes and what stays (\"change the jacket to navy, keep the fabric texture and "
-                "lighting\") rather than vague requests like \"make it better\".\n\n"
-                "The working area is Picture 1 and uploaded or VNCSS Config references are "
-                "Picture 2, Picture 3, ... in slot order - the encoder labels them that way, so name "
-                "them in the prompt and say which element comes from which picture (\"put the person "
-                "from Picture 2 on the left\"). It works best with one to three pictures. For inpaint "
-                "and outpaint describe what belongs in the masked or empty area. The negative prompt "
-                "only has an effect with CFG above 1 (the Lightning LoRA runs at CFG 1)."
+                "Structure beats narrative: Qwen responds most precisely to short, categorized "
+                "labels (Subject, Pose, Clothing, Camera, Environment, Lighting, Mood) separated by "
+                "|, or to one to three plain sentences - long prose adds nothing. Any text that must "
+                "appear in the image goes in double quotes, verbatim.\n\n"
+                "For edits say exactly what changes and what stays (change the jacket to navy, keep "
+                "the face and lighting). The working area is Picture 1 and uploaded or VNCSS Config "
+                "references are Picture 2, Picture 3, ... in slot order (the encoder labels them "
+                "that way), so name the picture each element comes from. For inpaint and outpaint "
+                "describe only what belongs in the masked or empty area.\n\n"
+                "The negative prompt helps at CFG around 4.5 with ~50 steps (the base model); with "
+                "the Lightning LoRA (4 steps, CFG 1) it has no effect."
             ),
-            examples=("Replace the background with a rainy neon street. Keep the character, pose and lighting unchanged.",),
+            examples=(
+                "Subject: young woman, professional model | Pose: walking forward | Clothing: flowing white dress | "
+                "Camera: medium shot, eye level | Environment: dense autumn forest | Lighting: golden hour, backlit",
+                "Put the outfit from Picture 2 on the person in Picture 1. Keep her face, pose and the background unchanged.",
+            ),
             sources=(
-                "https://github.com/QwenLM/Qwen-Image",
-                "https://huggingface.co/Qwen/Qwen-Image-Edit-2511/discussions/7",
+                "https://help.apiyi.com/en/qwen-image-2512-prompt-guide-test-cases-en.html",
+                "README.md#edit-model-reference-images",
             ),
         ),
     )
