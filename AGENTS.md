@@ -49,6 +49,9 @@ Specs and what each one guards:
 - `config-override.spec.mjs` - linking a `VNCCS_Config` node to a UniCanvas node greys out
   and makes inert every control the config overrides (model pickers, loader fields, Turbo,
   LoRA Stack, reference uploads) while Mode stays editable; unlinking restores them.
+- `prompt-guide.spec.mjs` - the prompt `?` shows the active model family's prompt guide
+  (from the backend `/vnccs/unicanvas/assets` descriptors, with its sources), the prompt
+  placeholder is the family hint, and switching the family re-renders the open guide live.
 
 The suite never calls GPU generation and never downloads models; CPU is enough because the
 mannequin pipeline is client-side WebGL. Geometric assertions read layer pixels and pose state

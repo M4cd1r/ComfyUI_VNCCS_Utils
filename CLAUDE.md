@@ -50,25 +50,37 @@ Layered; lower layers never import higher ones (keep it that way - no import cyc
 
 1. Infrastructure: `constants`, `locks`, `debug`, `paths`, `progress`
 2. Images/state: `imaging`, `masking`, `state`, `render`
-3. ComfyUI integration: `comfy_bridge`, `pipeline`, `loras`, `loaders`, `latents`, `sampling`
-4. Model families: `models/` - `base.UniCanvasModelModule`, `registry`, one module per family
+3. ComfyUI integration: `comfy_bridge`, `pipeline`, `loras` (`LoraRequirement`), `loaders`,
+   `latents`, `sampling`, `draw_pipeline` (`ImageDrawPipeline`, `DrawContext`)
+4. Model families: `models/` - `capabilities` (tasks, media kinds, reference slots, prompt
+   guides), `base.UniCanvasModelModule` (data + hooks), `registry`, one module per family
    (`sdxl`, `anima`, `flux_klein`, `qwen_image_edit`, `qwen_image21`, `z_image`,
    `minimax_h3`, `krea2_edit` + vendored `krea2_edit_inference`). Registration happens only in
    `models/__init__.py`.
-5. Features: `presets`, `assets`, `generation`, `draw`, `segment`, `save_output`,
-   `remove_bg`, `color_match`
+5. Features: `presets`, `assets`, `generation`, `draw_request`, `draw`, `segment`,
+   `save_output`, `remove_bg`, `color_match`
 6. Entry points: `node` (`VNCCS_UniCanvas`), `routes` (all `/vnccs/unicanvas/*` endpoints)
 
 The package `__init__` re-exports only `VNCCS_UniCanvas`, `register_unicanvas_routes`, the
 node mappings and `_COMFY_MODEL_OP_LOCK` (shared with `api/factory3d.py` through
 `sys.modules`). Import everything else from the owning submodule.
 
+Draw flow: `draw._run_unicanvas_draw` -> `DrawRequest.from_payload` -> `family.validate_request`
+-> `family.draw_pipeline_class or ImageDrawPipeline` -> staged `run()` calling family hooks.
+
 Conventions:
-- **New model family**: new `models/<family>.py` (defaults + `UniCanvasModelModule`
-  subclass), register it in `models/__init__.py`, mirror it in the frontend registry
-  (`web/vnccs_unicanvas.js` / `vnccs_unicanvas_modes.mjs`). Put family-specific behaviour in
-  a module method/hook - do not add new `if model_module.key == "..."` branches to
-  `draw.py`, `latents.py` or `generation.py` (existing ones are known debt).
+- **New model family / LoRA / task**: follow `docs/agents/ADDING_A_MODEL.md` (it lists the
+  questions to ask the user first) and `docs/UNICANVAS_MODEL_MODULES.md`. In short: new
+  `models/<family>.py` with defaults, `capabilities` (tasks, references, requirements,
+  `PromptGuide` with `sources`) and `lora_requirements`; override only the hooks that differ;
+  register in `models/__init__.py`; mirror it in the frontend registry (`web/vnccs_unicanvas.js`).
+- **Never** branch on family keys in the shared draw code (`draw*.py`, `generation.py`,
+  `latents.py`, `sampling.py`, `loras.py`) - a guard test fails. Add a hook with a generic
+  default to `UniCanvasModelModule` instead. Never override `apply_loras`; declare a
+  `LoraRequirement`.
+- Blend modes, panorama projections, background removers and color transfers are registries
+  (`register_blend_mode`, `register_panorama_projection`, `register_background_remover`,
+  `register_color_transfer`) - extend them, do not add `if` chains.
 - **New route/feature**: logic in its own module, registration in `routes.py`; heavy work via
   `asyncio.to_thread`, errors as `{"error": ...}` with a non-2xx status, request size checked
   with `_content_length_ok`.
@@ -82,8 +94,11 @@ Conventions:
 
 - **Monkeypatch where the name is used, not on the package**: e.g.
   `monkeypatch.setattr("nodes.unicanvas.models.minimax_h3._call_comfy_node", ...)`,
-  `patch.object(nodes.unicanvas.draw, "_load_generation_assets", ...)`. A function used by two
-  modules (e.g. `_apply_lora_cached` in a family and in `models/base.py`) needs both patched.
+  `monkeypatch.setattr("nodes.unicanvas.draw_pipeline._load_generation_assets", ...)`,
+  `patch.object(nodes.unicanvas.loras, "_apply_lora_cached", ...)` (all LoRA loading goes
+  through `loras`). Family behaviour is easiest to test by registering a small test family
+  (`monkeypatch.setitem(UNICANVAS_MODEL_MODULES, key, family)`) - see
+  `tests/test_unicanvas_draw_pipeline.py`.
 - Suites that must run without torch load the package via
   `tests/helpers/unicanvas_package.py::load_unicanvas_package(<private name>, torch_module=stub)`
   and reach submodules as attributes (`pkg.render`, `pkg.models.registry`). Keep module-level
