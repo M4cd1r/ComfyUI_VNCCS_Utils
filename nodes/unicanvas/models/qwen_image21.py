@@ -23,7 +23,7 @@ from ..loaders import _load_generation_assets
 from ..loras import LoraRequirement
 from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
 from .base import UniCanvasModelModule, _reference_image_slots
-from .capabilities import ModelCapabilities, PromptGuide, ReferenceInputs
+from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 
 
 # Native 2K aspect-ratio presets from the official Qwen-Image-2.1 table.
@@ -234,6 +234,30 @@ def _apply_qwen21_spectrum(model: Any, gen_settings: dict[str, Any], draw_id: st
     return patched
 
 
+# Editing prompts are short imperatives with a preserve clause (Qwen-Image-2.1 prompt guide,
+# https://github.com/kjranyone/qwen-image-2.1-prompt-guide - image-editing.md).
+QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
+    hint="Change X to Y. Keep everything else unchanged.",
+    guide=(
+        "Editing prompts are short imperative sentences in one paragraph: name only what should "
+        "change and lock the rest with a preserve clause (\"Keep everything else unchanged\"). "
+        "Refer to preserved things by role or position instead of re-describing them, use "
+        "affirmative, decisive wording, and make one logical change per pass - chain a few small "
+        "edits for big changes.\n\n"
+        "With references, give each image a role: <image1> is the working area (the canvas to "
+        "modify) and <image2>, <image3>, ... are donors of a person, product, background or style "
+        "(\"Place <image2>'s character in <image1>. Keep hairstyle, clothing and facial features "
+        "identical.\"). For inpaint describe only the masked region; for outpaint describe what "
+        "extends into the empty area. Text to keep or write goes in quotes, verbatim."
+    ),
+    examples=(
+        "Change the background to a sunset beach. Keep the subject, pose, and lighting unchanged.",
+        "Re-render <image1> in the art style of <image2>. Preserve subject identity, clothing, and layout.",
+    ),
+    sources=("https://github.com/kjranyone/qwen-image-2.1-prompt-guide/blob/main/skills/qwen-image-prompt-en/references/image-editing.md",),
+)
+
+
 @dataclass(frozen=True)
 class QwenImage21UniCanvasModule(UniCanvasModelModule):
     """UniCanvas adapter for Qwen-Image-2.1 (RGBA by default).
@@ -250,18 +274,32 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
 
     capabilities: ModelCapabilities = ModelCapabilities(
         label="Qwen Image 2.1",
+        tasks=(
+            STANDARD_TASKS["text_to_image"],
+            *(STANDARD_TASKS[key].with_prompt_guide(QWEN_IMAGE21_EDIT_PROMPT_GUIDE) for key in ("image_to_image", "inpaint", "outpaint")),
+        ),
         references=ReferenceInputs(max_images=10, slot_label="<image{n}>"),
         default_loader="diffusion_model",
         prompt_guide=PromptGuide(
-            hint="Describe the result; name references as <image2>, <image3>, ...",
+            hint="Fluent English sentences, subject first; text to draw goes in \"double quotes\"",
             guide=(
-                "Qwen-Image-2.1 generates RGBA with real transparency by default (switch "
-                "'opaque output' off for a flat image). The working area is <image1> and Edit "
-                "model reference images are <image2>, <image3>, ... in socket order; the module "
-                "wraps your prompt in the official RGBA and <image N> instruction format. "
-                "Describe the subject for text-to-image, or give an instruction when editing."
+                "Qwen-Image-2.1 is prompted with natural sentences, never tag lists or (term:1.5) "
+                "weights. Front-load the subject, then environment, style, composition and lighting. "
+                "Any text that must appear in the image goes in double quotes, verbatim. Do not add "
+                "quality boosters (masterpiece, 8K, highly detailed) and do not write aspect ratios or "
+                "resolution in the prompt - use the size controls. Layouts and posters need a longer, "
+                "observational paragraph.\n\n"
+                "Output is RGBA with real transparency by default: the module wraps your prompt in the "
+                "official RGBA sentences ('opaque output' turns that off). With reference images "
+                "connected, name them <image2>, <image3>, ... (the working area is <image1>); with no "
+                "references do not use tags. At CFG 1 (the default and the Viggle turbo) the negative "
+                "prompt has no effect."
             ),
-            examples=("Keep the identity from <image2>. Use the pose from <image3>.",),
+            examples=('A neon shop sign that reads "GRAND OPENING", rainy night, reflections on wet pavement.',),
+            sources=(
+                "https://github.com/kjranyone/qwen-image-2.1-prompt-guide",
+                "README.md#qwen-image-21",
+            ),
         ),
     )
 

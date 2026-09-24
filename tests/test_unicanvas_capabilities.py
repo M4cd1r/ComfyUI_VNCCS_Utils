@@ -55,6 +55,7 @@ def test_task_inputs_and_json_description():
         "canvas_mode": None,
         "available": True,
         "description": "",
+        "prompt_guide": None,
     }
 
 
@@ -153,3 +154,54 @@ def test_assets_route_exposes_family_descriptions():
     assert krea2["role"] == "edit"
     assert any(rule["required"] for rule in krea2["lora_requirements"])
     json.dumps(modules)
+
+
+# --- task-specific prompt guides ------------------------------------------------------
+
+
+def test_a_task_can_carry_its_own_prompt_guide():
+    video_guide = PromptGuide(hint="Describe the motion", guide="Describe what moves and how the camera travels.")
+    default_guide = PromptGuide(hint="Describe it", guide="The family-wide guide.")
+    capabilities = ModelCapabilities(
+        label="Demo",
+        prompt_guide=default_guide,
+        tasks=(STANDARD_TASKS["image_to_image"], STANDARD_TASKS["image_to_video"].with_prompt_guide(video_guide)),
+    )
+    assert capabilities.prompt_guide_for("image_to_video") is video_guide
+    assert capabilities.prompt_guide_for("image_to_image") is default_guide
+    assert capabilities.prompt_guide_for(None) is default_guide
+    assert capabilities.prompt_guide_for("unknown") is default_guide
+    described = {task["key"]: task for task in capabilities.describe()["tasks"]}
+    assert described["image_to_video"]["prompt_guide"]["hint"] == "Describe the motion"
+    assert described["image_to_image"]["prompt_guide"] is None
+
+
+def test_minimax_h3_video_prompts_differ_from_image_edits():
+    capabilities = _get_unicanvas_model_module("minimax_h3").capabilities
+    edit = capabilities.prompt_guide_for("image_to_image")
+    video = capabilities.prompt_guide_for("reference_to_video")
+    assert video is not edit
+    assert "<Picture" in video.hint or "<Picture" in video.guide
+    assert "motion" in video.guide.lower()
+
+
+def test_qwen_image21_generation_and_edit_prompts_differ():
+    capabilities = _get_unicanvas_model_module("qwen_image21").capabilities
+    generate = capabilities.prompt_guide_for("text_to_image")
+    edit = capabilities.prompt_guide_for("image_to_image")
+    assert generate is not edit
+    assert "tag" in generate.guide.lower()  # natural sentences, never tag lists
+    assert "Keep everything else unchanged" in edit.guide
+    for task in ("inpaint", "outpaint"):
+        assert capabilities.prompt_guide_for(task) is edit
+
+
+@pytest.mark.parametrize("module", _families(), ids=lambda module: module.key)
+def test_every_prompt_guide_cites_its_sources(module):
+    capabilities = module.capabilities
+    guides = [capabilities.prompt_guide] + [task.prompt_guide for task in capabilities.tasks if task.prompt_guide]
+    for guide in guides:
+        assert guide.sources, f"{module.key}: prompt help must say where its advice comes from"
+        for source in guide.sources:
+            assert source.startswith(("https://", "docs/", "README.md")), source
+        assert guide.describe()["sources"] == list(guide.sources)

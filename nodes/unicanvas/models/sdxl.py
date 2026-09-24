@@ -27,15 +27,23 @@ class SDXLUniCanvasModule(UniCanvasModelModule):
     capabilities: ModelCapabilities = ModelCapabilities(
         label="SDXL",
         prompt_guide=PromptGuide(
-            hint="Comma-separated tags, subject first: 1girl, solo, school uniform, cherry blossoms, masterpiece",
+            hint="masterpiece, best quality, 1girl, solo, silver hair, school uniform, classroom, window light",
             guide=(
-                "SDXL checkpoints, especially Illustrious and Pony merges, follow comma-separated "
-                "Danbooru-style tags best; short phrases also work. Start with the subject and "
-                "count (1girl, solo), then appearance, clothing, pose, background, lighting and "
-                "quality or style tags. Use the negative prompt for what to avoid (lowres, bad "
-                "hands, watermark, text). For inpaint describe only what belongs in the mask."
+                "SDXL checkpoints, above all Illustrious / NoobAI / Pony merges, are trained on "
+                "comma-separated Danbooru tags; a short English sentence plus tags also works. Order "
+                "matters - earlier tags weigh more: quality tags (masterpiece, best quality), subject "
+                "count (1girl, solo), character and series, then appearance, clothing, pose, "
+                "background, lighting and style.\n\n"
+                "CLIP reads about 75 tokens per chunk, so keep prompts tight and put what matters "
+                "first. The negative prompt is used: worst quality, low quality, bad hands, "
+                "watermark, text. For inpaint describe only what belongs in the mask. With the DMD2 "
+                "turbo LoRA keep prompts short and simple."
             ),
-            examples=("1girl, solo, silver hair, red eyes, school uniform, classroom, window light, masterpiece",),
+            examples=("masterpiece, best quality, 1girl, solo, silver hair, red eyes, school uniform, classroom, window light",),
+            sources=(
+                "https://note.com/kazumu/n/n6390a899bdce?hl=en",
+                "https://wiki.monai.art/en/models/illustrious_xl",
+            ),
         ),
     )
     lora_requirements: tuple[LoraRequirement, ...] = (

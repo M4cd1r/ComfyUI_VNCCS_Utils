@@ -37,13 +37,35 @@ class ModelRole(str, Enum):
 
 
 @dataclass(frozen=True)
+class PromptGuide:
+    """Prompt help for the "?" next to the prompt: a one-line hint and a short guide (Markdown)."""
+
+    hint: str
+    guide: str
+    examples: tuple[str, ...] = ()
+    negative_prompt: bool = True
+    # Where the advice comes from (model card, author guide, project doc), shown with the help.
+    sources: tuple[str, ...] = ()
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "hint": self.hint,
+            "guide": self.guide,
+            "examples": list(self.examples),
+            "negative_prompt": self.negative_prompt,
+            "sources": list(self.sources),
+        }
+
+
+@dataclass(frozen=True)
 class GenerationTask:
     """One thing a family can generate, e.g. ``image_to_video``.
 
     ``canvas_mode`` links the task to the canvas draw mode that runs it today
     (``txt2img``, ``img2img``, ``inpaint``, ``outpaint``). ``available=False`` declares a
     capability of the model that has no canvas pipeline yet, so the UI can show it as
-    upcoming and the draw path rejects it cleanly.
+    upcoming and the draw path rejects it cleanly. ``prompt_guide`` overrides the family's
+    prompt guide for this task (e.g. video prompts differ from image-edit prompts).
     """
 
     key: str
@@ -53,9 +75,13 @@ class GenerationTask:
     canvas_mode: str | None = None
     available: bool = True
     description: str = ""
+    prompt_guide: PromptGuide | None = None
 
     def planned(self) -> GenerationTask:
         return replace(self, available=False)
+
+    def with_prompt_guide(self, guide: PromptGuide) -> GenerationTask:
+        return replace(self, prompt_guide=guide)
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -66,6 +92,7 @@ class GenerationTask:
             "canvas_mode": self.canvas_mode,
             "available": self.available,
             "description": self.description,
+            "prompt_guide": self.prompt_guide.describe() if self.prompt_guide is not None else None,
         }
 
 
@@ -128,24 +155,6 @@ class ReferenceInputs:
         }
 
 
-@dataclass(frozen=True)
-class PromptGuide:
-    """Prompt help for the "?" next to the prompt: a one-line hint and a short guide (Markdown)."""
-
-    hint: str
-    guide: str
-    examples: tuple[str, ...] = ()
-    negative_prompt: bool = True
-
-    def describe(self) -> dict[str, Any]:
-        return {
-            "hint": self.hint,
-            "guide": self.guide,
-            "examples": list(self.examples),
-            "negative_prompt": self.negative_prompt,
-        }
-
-
 DEFAULT_PROMPT_GUIDE = PromptGuide(
     hint="Describe what should appear inside the bbox.",
     guide=(
@@ -153,6 +162,7 @@ DEFAULT_PROMPT_GUIDE = PromptGuide(
         "For inpaint and outpaint describe what belongs in the masked or empty area, "
         "not the whole picture."
     ),
+    sources=("docs/UNICANVAS_MODEL_MODULES.md",),
 )
 
 
@@ -195,6 +205,11 @@ class ModelCapabilities:
     def supports_task(self, key: str) -> bool:
         task = self.declared_task(key)
         return task is not None and task.available
+
+    def prompt_guide_for(self, task_key: str | None) -> PromptGuide:
+        """The task's own prompt guide when it declares one, else the family guide."""
+        task = self.declared_task(task_key) if task_key else None
+        return task.prompt_guide if task is not None and task.prompt_guide is not None else self.prompt_guide
 
     def task(self, key: str) -> GenerationTask:
         task = self.declared_task(key)

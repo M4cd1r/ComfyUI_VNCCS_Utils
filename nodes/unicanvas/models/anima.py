@@ -51,14 +51,25 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         label="Anima",
         default_loader="diffusion_model",
         prompt_guide=PromptGuide(
-            hint="Danbooru tags, a natural-language sentence, or both",
+            hint="masterpiece, best quality, score_7, safe, 1girl, ... - tags, sentences or both",
             guide=(
-                "Anima reads prompts through a Qwen3 text encoder, so it accepts Danbooru-style "
-                "tags, plain sentences, or a mix (tags for the character, a sentence for the "
-                "scene). The negative prompt is used. Inpaint and outpaint use the Anima LLLite "
-                "inpaint patch: describe what belongs in the masked or empty area."
+                "Anima was trained on Danbooru tags, natural-language captions and mixes of the two; "
+                "all three work, in any order. Write tags in lowercase with spaces (brown hair, not "
+                "brown_hair) - only score tags keep underscores (score_7) - and prefix artist tags "
+                "with @. Tag order: quality / meta / year / safety, subject count (1girl), character, "
+                "series, @artist, then general tags; add a sentence for composition, lighting or "
+                "story.\n\n"
+                "A good start: \"masterpiece, best quality, score_7, safe,\" with the negative \"worst "
+                "quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg "
+                "artifacts, chromatic aberration\". With the turbo LoRA (CFG 1) the negative has no "
+                "effect. Inpaint and outpaint use the Anima LLLite patch: describe what belongs in "
+                "the masked or empty area."
             ),
-            examples=("1girl, fox ears, kimono. She stands on a shrine bridge at dusk, lanterns glowing.",),
+            examples=("masterpiece, best quality, score_7, safe, 1girl, fox ears, kimono. She stands on a shrine bridge at dusk, lanterns glowing.",),
+            sources=(
+                "https://huggingface.co/circlestone-labs/Anima",
+                "https://github.com/CalamitousFelicitousness/ai-prompting-guides/blob/main/docs/anima.md",
+            ),
         ),
     )
     lora_requirements: tuple[LoraRequirement, ...] = (

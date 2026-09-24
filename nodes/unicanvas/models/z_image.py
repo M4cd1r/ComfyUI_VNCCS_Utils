@@ -55,15 +55,24 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         label="Z-image",
         default_loader="diffusion_model",
         prompt_guide=PromptGuide(
-            hint="A detailed natural-language description of the scene",
+            hint="80-250 words of plain description: shot and subject, look, clothes, place, light, mood, style",
             guide=(
-                "Z-image reads full sentences through a Qwen3 text encoder: describe subject, "
-                "clothing, pose, setting, lighting, camera and style in plain language; longer, "
-                "concrete prompts work better than tag lists. Turbo models (a 'turbo' file name "
-                "or CFG 1) ignore the negative prompt; non-turbo models use it. Inpaint and "
-                "outpaint run through the Fun ControlNet inpaint patch."
+                "Z-image reads sentences, not tag soup, and follows written instructions closely. "
+                "Build the prompt as: shot and subject, age and appearance, clothing, environment, "
+                "lighting, mood, style or medium, then technical notes. Around 80-250 words of "
+                "precise description works best (attention caps near 512 tokens); precision beats "
+                "flowery wording.\n\n"
+                "Turbo runs without guidance, so the negative prompt is ignored: phrase every "
+                "constraint positively in the prompt (\"no watermark\" belongs there). Text to render "
+                "goes in quotes with its placement (\"large white title at the top\"); English and "
+                "Chinese both work. Non-turbo checkpoints at CFG above 1 do use the negative prompt. "
+                "Inpaint and outpaint run through the Fun ControlNet inpaint patch."
             ),
-            examples=("A young knight in dented steel armor rests against a mossy wall, soft morning fog, cinematic lighting.",),
+            examples=("Close-up portrait of a young knight in dented steel armor resting against a mossy stone wall, auburn hair tied back, soft morning fog, cool diffuse light, calm tired mood, cinematic photograph, shallow depth of field.",),
+            sources=(
+                "https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/discussions/8",
+                "https://gist.github.com/illuminatianon/c42f8e57f1e3ebf037dd58043da9de32",
+            ),
         ),
     )
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:

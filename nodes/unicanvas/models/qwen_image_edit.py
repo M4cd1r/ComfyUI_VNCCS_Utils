@@ -53,15 +53,23 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         supports_pose_edit=True,
         default_loader="gguf",
         prompt_guide=PromptGuide(
-            hint="An edit instruction: Change the jacket to red leather. Keep the face unchanged.",
+            hint="Change the jacket to navy. Keep the fabric texture, face and lighting unchanged.",
             guide=(
-                "Qwen-Image-Edit-2511 follows instructions. The working area is Picture 1; "
-                "uploaded or VNCSS Config reference images are Picture 2, Picture 3, ... in slot "
-                "order, so the prompt can say 'use the outfit from Picture 2'. For inpaint and "
-                "outpaint describe what belongs in the masked or empty area. The negative prompt "
+                "Qwen-Image-Edit-2511 follows plain-language edit instructions. Say exactly what "
+                "changes and what stays (\"change the jacket to navy, keep the fabric texture and "
+                "lighting\") rather than vague requests like \"make it better\".\n\n"
+                "The working area is Picture 1 and uploaded or VNCSS Config references are "
+                "Picture 2, Picture 3, ... in slot order - the encoder labels them that way, so name "
+                "them in the prompt and say which element comes from which picture (\"put the person "
+                "from Picture 2 on the left\"). It works best with one to three pictures. For inpaint "
+                "and outpaint describe what belongs in the masked or empty area. The negative prompt "
                 "only has an effect with CFG above 1 (the Lightning LoRA runs at CFG 1)."
             ),
-            examples=("Replace the background with a rainy neon street. Keep the character and pose unchanged.",),
+            examples=("Replace the background with a rainy neon street. Keep the character, pose and lighting unchanged.",),
+            sources=(
+                "https://github.com/QwenLM/Qwen-Image",
+                "https://huggingface.co/Qwen/Qwen-Image-Edit-2511/discussions/7",
+            ),
         ),
     )
     lora_requirements: tuple[LoraRequirement, ...] = (

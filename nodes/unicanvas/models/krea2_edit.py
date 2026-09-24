@@ -43,16 +43,25 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
         source_image_message="Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.",
         default_loader="diffusion_model",
         prompt_guide=PromptGuide(
-            hint="Describe the change: make the jacket red, add a hat, turn it into a watercolor",
+            hint="A clear, direct edit: recolor the car to matte black / add a hat to the man on the left",
             guide=(
-                "Krea2 Identity Edit changes an existing image: import an image, put the bbox "
-                "over the area to edit and describe the change (recoloring, adding objects, "
-                "changing attributes or style). Likeness controls how closely the result follows "
-                "the source. Use the Krea2 Edit Raw card (stronger guidance) to remove objects. "
-                "Stay at or below about 2 megapixels. The negative prompt is not used."
+                "Krea2 Identity Edit changes an existing image: import an image, put the bbox over "
+                "the area to edit and write one clear, direct instruction - recolor, add or insert, "
+                "change an attribute, restyle, translate the scene. Refer to subjects by position "
+                "(\"the man on the left\").\n\n"
+                "The Turbo card (CFG 1, ~8-10 steps) handles most edits. Removing salient content "
+                "needs real guidance: use the Krea2 Edit Raw card (CFG 3, ~20 steps) - Turbo tends "
+                "to re-render the subject instead of removing it. Likeness pulls the result toward "
+                "the source (>1 stronger, <1 looser). Stay at or below about 2 megapixels, or source "
+                "content can bleed and subjects duplicate. Your negative prompt is not used: the "
+                "unconditional branch is the same image with an empty instruction."
             ),
-            examples=("Make the car matte black and add rain on the windshield.",),
+            examples=("Recolor the car to matte black and add rain on the windshield.",),
             negative_prompt=False,
+            sources=(
+                "https://github.com/lbouaraba/comfyui-krea2edit",
+                "docs/UNICANVAS_KREA2_EDIT.md",
+            ),
         ),
     )
 
