@@ -14,6 +14,7 @@ from ..latents import _unwrap_latent_samples
 from ..loras import LoraRequirement, _apply_lora_requirements, _apply_lora_stack, _clone_model_clip
 from ..masking import _make_edit_outpaint_reference_rgb, _sample_transparent_outpaint_rgb
 from ..sampling import _sample_generation_latent_default
+from .capabilities import ModelCapabilities, ModelRole
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,24 @@ class UniCanvasModelModule:
     is_edit_model: bool = False
     # LoRAs the family applies itself (turbo, mandatory edit adapters ...), before the user stack.
     lora_requirements: tuple[LoraRequirement, ...] = ()
+    # What the family offers (tasks, inputs, references, prompt guide), as data.
+    capabilities: ModelCapabilities = ModelCapabilities()
+
+    @property
+    def role(self) -> ModelRole:
+        return ModelRole.EDIT if self.is_edit_model else ModelRole.GENERATOR
+
+    def describe(self) -> dict[str, Any]:
+        """JSON-safe self-description served to the widget by ``/vnccs/unicanvas/assets``."""
+        return {
+            "key": self.key,
+            "aliases": list(self.aliases),
+            "defaults": self.defaults,
+            "is_edit_model": self.is_edit_model,
+            "role": self.role.value,
+            "capabilities": self.capabilities.describe(),
+            "lora_requirements": [rule.describe() for rule in self.lora_requirements],
+        }
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return mode in {"inpaint", "outpaint"}

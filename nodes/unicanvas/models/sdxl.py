@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..loras import LoraRequirement
 from .base import UniCanvasModelModule
+from .capabilities import ModelCapabilities, PromptGuide
 
 
 SDXL_TURBO_LORA_NAME = "DMD2/dmd2_sdxl_4step_lora_fp16.safetensors"
@@ -23,6 +24,20 @@ ILLUSTRIOUS_DEFAULTS = {
 
 @dataclass(frozen=True)
 class SDXLUniCanvasModule(UniCanvasModelModule):
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="SDXL",
+        prompt_guide=PromptGuide(
+            hint="Comma-separated tags, subject first: 1girl, solo, school uniform, cherry blossoms, masterpiece",
+            guide=(
+                "SDXL checkpoints, especially Illustrious and Pony merges, follow comma-separated "
+                "Danbooru-style tags best; short phrases also work. Start with the subject and "
+                "count (1girl, solo), then appearance, clothing, pose, background, lighting and "
+                "quality or style tags. Use the negative prompt for what to avoid (lowres, bad "
+                "hands, watermark, text). For inpaint describe only what belongs in the mask."
+            ),
+            examples=("1girl, solo, silver hair, red eyes, school uniform, classroom, window light, masterpiece",),
+        ),
+    )
     lora_requirements: tuple[LoraRequirement, ...] = (
         LoraRequirement(
             name_setting="dmd_lora_name",

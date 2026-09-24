@@ -13,6 +13,7 @@ from ..pipeline import UniCanvasNodeStep, UniCanvasPipeline, _run_pipeline_steps
 from ..progress import _set_draw_progress
 from ..sampling import _ensure_direct_sampling_prompt_context, _suppress_direct_sampling_comfy_progress
 from .base import UniCanvasModelModule
+from .capabilities import ModelCapabilities, PromptGuide
 
 
 FLUX_KLEIN_DEFAULTS = {
@@ -108,6 +109,24 @@ FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
 
 @dataclass(frozen=True)
 class FluxKleinUniCanvasModule(UniCanvasModelModule):
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Flux Klein",
+        supports_pose_edit=True,
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="Describe the result or the change in plain sentences",
+            guide=(
+                "FLUX.2 Klein is an edit model: the working area is attached as a reference "
+                "latent, so write natural-language sentences that describe the finished picture "
+                "or the change (\"make the sky stormy\", \"add a red scarf\"). With an empty "
+                "bbox it generates from the prompt alone. The negative prompt is not used "
+                "(the negative conditioning is zeroed). Pose layers send the pose render and the "
+                "background as two references."
+            ),
+            examples=("Change her jacket to worn brown leather and keep everything else the same.",),
+            negative_prompt=False,
+        ),
+    )
     pipeline: UniCanvasPipeline = FLUX_KLEIN_PIPELINE
 
     def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):

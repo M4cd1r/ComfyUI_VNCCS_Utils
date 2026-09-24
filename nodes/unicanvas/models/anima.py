@@ -15,6 +15,7 @@ from ..latents import _unwrap_latent_samples
 from ..loras import LoraRequirement
 from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
 from .base import UniCanvasModelModule
+from .capabilities import ModelCapabilities, PromptGuide
 
 
 ANIMA_LLLITE_REPO_ID = "kohya-ss/Anima-LLLite"
@@ -45,6 +46,20 @@ ANIMA_DEFAULTS = {
 
 @dataclass(frozen=True)
 class AnimaUniCanvasModule(UniCanvasModelModule):
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Anima",
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="Danbooru tags, a natural-language sentence, or both",
+            guide=(
+                "Anima reads prompts through a Qwen3 text encoder, so it accepts Danbooru-style "
+                "tags, plain sentences, or a mix (tags for the character, a sentence for the "
+                "scene). The negative prompt is used. Inpaint and outpaint use the Anima LLLite "
+                "inpaint patch: describe what belongs in the masked or empty area."
+            ),
+            examples=("1girl, fox ears, kimono. She stands on a shrine bridge at dusk, lanterns glowing.",),
+        ),
+    )
     lora_requirements: tuple[LoraRequirement, ...] = (
         LoraRequirement(
             name_setting="dmd_lora_name",

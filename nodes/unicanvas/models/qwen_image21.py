@@ -23,6 +23,7 @@ from ..loaders import _load_generation_assets
 from ..loras import LoraRequirement
 from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
 from .base import UniCanvasModelModule, _reference_image_slots
+from .capabilities import ModelCapabilities, PromptGuide, ReferenceInputs
 
 
 # Native 2K aspect-ratio presets from the official Qwen-Image-2.1 table.
@@ -246,6 +247,23 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     instruction. Output is RGBA with real transparency unless the
     "opaque output" switch disables the RGBA prompting and flattens.
     """
+
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Qwen Image 2.1",
+        references=ReferenceInputs(max_images=10, slot_label="<image{n}>"),
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="Describe the result; name references as <image2>, <image3>, ...",
+            guide=(
+                "Qwen-Image-2.1 generates RGBA with real transparency by default (switch "
+                "'opaque output' off for a flat image). The working area is <image1> and Edit "
+                "model reference images are <image2>, <image3>, ... in socket order; the module "
+                "wraps your prompt in the official RGBA and <image N> instruction format. "
+                "Describe the subject for text-to-image, or give an instruction when editing."
+            ),
+            examples=("Keep the identity from <image2>. Use the pose from <image3>.",),
+        ),
+    )
 
     key: str = "qwen_image21"
     aliases: tuple[str, ...] = ("qwen-image-2.1", "qwen_image_21", "qwenimage21", "qi21", "qwen21")

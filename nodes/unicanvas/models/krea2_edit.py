@@ -8,6 +8,7 @@ from ..comfy_bridge import _call_node_method
 from ..latents import _unwrap_latent_samples
 from ..loras import LoraRequirement
 from .base import UniCanvasModelModule
+from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide
 
 
 KREA2_EDIT_DEFAULTS = {
@@ -30,6 +31,26 @@ KREA2_EDIT_DEFAULTS = {
 @dataclass(frozen=True)
 class Krea2EditUniCanvasModule(UniCanvasModelModule):
     """Identity Edit v1.2: mandatory LoRA, grounded Qwen3-VL and clean source tokens."""
+
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Krea2 Edit",
+        tasks=tuple(STANDARD_TASKS[key] for key in ("image_to_image", "inpaint", "outpaint")),
+        requires_source_image=True,
+        source_image_message="Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.",
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="Describe the change: make the jacket red, add a hat, turn it into a watercolor",
+            guide=(
+                "Krea2 Identity Edit changes an existing image: import an image, put the bbox "
+                "over the area to edit and describe the change (recoloring, adding objects, "
+                "changing attributes or style). Likeness controls how closely the result follows "
+                "the source. Use the Krea2 Edit Raw card (stronger guidance) to remove objects. "
+                "Stay at or below about 2 megapixels. The negative prompt is not used."
+            ),
+            examples=("Make the car matte black and add rain on the windshield.",),
+            negative_prompt=False,
+        ),
+    )
 
     lora_requirements: tuple[LoraRequirement, ...] = (
         LoraRequirement(

@@ -13,6 +13,7 @@ from ..debug import _conditioning_debug, _latent_debug, _tensor_debug, _uc_log
 from ..loras import LoraRequirement
 from ..sampling import _sample_generation_latent_default
 from .base import UniCanvasModelModule, _reference_image_slots
+from .capabilities import ModelCapabilities, PromptGuide, ReferenceInputs
 
 
 QWEN_IMAGE_EDIT_TURBO_LORA_NAME = "qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
@@ -45,6 +46,23 @@ QWEN_IMAGE_EDIT_DEFAULTS = {
 
 @dataclass(frozen=True)
 class QwenImageEditUniCanvasModule(UniCanvasModelModule):
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Qwen Edit",
+        references=ReferenceInputs(max_images=10, slot_label="Picture {n}"),
+        supports_pose_edit=True,
+        default_loader="gguf",
+        prompt_guide=PromptGuide(
+            hint="An edit instruction: Change the jacket to red leather. Keep the face unchanged.",
+            guide=(
+                "Qwen-Image-Edit-2511 follows instructions. The working area is Picture 1; "
+                "uploaded or VNCSS Config reference images are Picture 2, Picture 3, ... in slot "
+                "order, so the prompt can say 'use the outfit from Picture 2'. For inpaint and "
+                "outpaint describe what belongs in the masked or empty area. The negative prompt "
+                "only has an effect with CFG above 1 (the Lightning LoRA runs at CFG 1)."
+            ),
+            examples=("Replace the background with a rainy neon street. Keep the character and pose unchanged.",),
+        ),
+    )
     lora_requirements: tuple[LoraRequirement, ...] = (
         LoraRequirement(
             name_setting="qwen_lora_name",

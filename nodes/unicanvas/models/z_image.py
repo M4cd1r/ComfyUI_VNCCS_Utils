@@ -14,6 +14,7 @@ from ..debug import _conditioning_debug, _latent_debug, _tensor_debug, _uc_log
 from ..loras import _clone_model_clip, _load_model_patch
 from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
 from .base import UniCanvasModelModule
+from .capabilities import ModelCapabilities, PromptGuide
 
 
 Z_IMAGE_FUN_CONTROLNET_REPO_ID = "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1"
@@ -40,6 +41,21 @@ Z_IMAGE_DEFAULTS = {
 
 @dataclass(frozen=True)
 class ZImageUniCanvasModule(UniCanvasModelModule):
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Z-image",
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="A detailed natural-language description of the scene",
+            guide=(
+                "Z-image reads full sentences through a Qwen3 text encoder: describe subject, "
+                "clothing, pose, setting, lighting, camera and style in plain language; longer, "
+                "concrete prompts work better than tag lists. Turbo models (a 'turbo' file name "
+                "or CFG 1) ignore the negative prompt; non-turbo models use it. Inpaint and "
+                "outpaint run through the Fun ControlNet inpaint patch."
+            ),
+            examples=("A young knight in dented steel armor rests against a mossy wall, soft morning fog, cinematic lighting.",),
+        ),
+    )
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
         return _clone_model_clip(model, clip)
 

@@ -39,12 +39,7 @@ def _get_unicanvas_assets() -> dict[str, Any]:
         schedulers = []
     return {
         "model_modules": [
-            {
-                "key": module.key,
-                "aliases": list(module.aliases),
-                "defaults": module.defaults,
-                "is_edit_model": module.is_edit_model,
-            }
+            module.describe()
             for module in {module.key: module for module in UNICANVAS_MODEL_MODULES.values()}.values()
         ],
         "model_loaders": [
