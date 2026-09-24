@@ -39,12 +39,7 @@
 
 ### UniCanvas
 
-* **Mannequin options in the left sidebar**: Body morph controls moved out of the modal overlay into a dedicated options section inside the left sidebar while Edit pose is active. Sliders keep updating the visible mannequin during the gesture, their paired numeric fields stay synchronized, every control stays reachable, and the section unmounts with the edit session.
 * **Settings panel anchored under the gear**: The settings popover now opens as one larger panel anchored below the corner-bar gear instead of covering the widget's top-left corner. It never overlaps the left sidebar, including on narrow hosts, and closes on an outside click, on Close, or on a second click on the gear.
-* **Idempotent pose round trip**: Fixed each Edit pose to Save pose cycle squeezing the fresh capture into the layer's previous alpha bounds, which progressively shrank the mannequin down to a stick figure. Saved pose layers now draw 1:1 at their natural render size, so repeated edit to save cycles with unchanged input reproduce identical layer pixels and an identical stored `layer.poseData` - the round trip is now idempotent across any number of saves.
-* **Placement preservation across pose saves**: A pose layer that was moved on the canvas keeps its canvas placement when it is re-opened in the pose editor and saved unchanged, instead of jumping back to the canvas center. The editor save shifts the 1:1 natural rectangle by the previously drawn content center without scaling, and an empty layer still saves centered.
-* **Torso-anchored pose framing**: Entering Edit pose frames the mannequin on its torso (a pelvis/spine/chest anchor, with head and neck excluded) instead of the head-inclusive mesh center. The edit view and the capture share that framing, so the saved pose layer matches what the editor showed.
-* **Existing pose layers re-frame on their first save**: Pose layers saved by an earlier release keep their stored framing until they are re-opened and saved once; that first save intentionally applies the torso anchor and zero capture offsets, so the framing of an older layer can change on that single save.
 
 ### Downloads, Compatibility, and Packaging
 

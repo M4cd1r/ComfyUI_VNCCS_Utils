@@ -1464,14 +1464,9 @@ export class PoseViewerCore {
         this.renderer = new THREE.WebGLRenderer({
             canvas: this.canvas,
             antialias: true,
-            preserveDrawingBuffer: true,
-            // Opt-in RGBA drawing buffer so embedders (UniCanvas pose layers)
-            // can capture PNGs with alpha, and so embedded hosts can render on
-            // a transparent background. The default keeps the legacy opaque
-            // buffer, so existing Pose Studio behavior is unchanged.
-            alpha: this.options.rendererAlpha === true || this.options.transparentBackground === true,
+            alpha: this.options.transparentBackground === true,
+            preserveDrawingBuffer: true
         });
-        if (this.options.rendererAlpha === true) this.renderer.setClearAlpha(0);
         if (this.options.transparentBackground) {
             this.scene.background = null;
             this.renderer.setClearColor(0x000000, 0);

@@ -605,6 +605,9 @@ function watchUniCanvasStandaloneTab(onChange) {
   state.scanObserver.observe(document.body, { subtree: true, childList: true });
   scan();
   return {
+    isSelected() {
+      return Boolean(state.button?.isConnected && state.button.classList.contains("side-bar-button-selected"));
+    },
     dispose() {
       state.disposed = true;
       state.buttonObserver?.disconnect();
@@ -613,9 +616,38 @@ function watchUniCanvasStandaloneTab(onChange) {
   };
 }
 
+// ComfyUI setting (Settings > VNCCS) that opts into the standalone sidebar tab. Off by default:
+// the tab is an optional workspace, the node-based UniCanvas always works without it.
+export const UNICANVAS_STANDALONE_SETTING_ID = "VNCCS.UniCanvas.StandaloneSidebar";
+
+let standaloneTabHandle = null;
+
+export function readUniCanvasStandaloneSetting() {
+  try {
+    const store = app?.extensionManager?.setting;
+    if (typeof store?.get === "function") return store.get(UNICANVAS_STANDALONE_SETTING_ID) === true;
+    return app?.ui?.settings?.getSettingValue?.(UNICANVAS_STANDALONE_SETTING_ID, false) === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+// Registers or removes the standalone tab to match the setting; safe to call repeatedly.
+export function syncUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass, enabled) {
+  if (enabled) {
+    if (!standaloneTabHandle) standaloneTabHandle = registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass);
+    return;
+  }
+  if (!standaloneTabHandle) return;
+  const handle = standaloneTabHandle;
+  standaloneTabHandle = null;
+  handle.dispose();
+}
+
 export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
-  const registerSidebarTab = app?.extensionManager?.registerSidebarTab;
-  if (typeof registerSidebarTab !== "function") return;
+  const extensionManager = app?.extensionManager;
+  const registerSidebarTab = extensionManager?.registerSidebarTab;
+  if (typeof registerSidebarTab !== "function") return null;
   ensureUniCanvasModeStyles();
   let widget = null;
   let shell = null;
@@ -668,7 +700,20 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
     syncStandaloneChrome();
   };
 
-  registerSidebarTab({
+  const teardown = () => {
+    setActive(false);
+    tabWatcher?.dispose();
+    tabWatcher = null;
+    containerObserver?.disconnect();
+    containerObserver = null;
+    mountContainer = null;
+    // Flush and clear the pending persistence timer before disposal.
+    teardownUniCanvasWidgetModes(widget);
+    widget?.dispose?.();
+    widget = null;
+  };
+
+  registerSidebarTab.call(extensionManager, {
     id: UNICANVAS_STANDALONE_TAB_ID,
     title: "Unicanvas",
     tooltip: "Unicanvas",
@@ -677,9 +722,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
     render(container) {
       mountContainer = container;
       if (!widget) widget = createStandaloneWidget(UniCanvasWidgetClass);
-      // Read-only E2E hook (tests/e2e): exposes full-resolution pose layer
-      // pixels and a deep clone of the layer poseData for stability
-      // assertions (spec 5.1). No behavior change.
+      // Read-only E2E hook (tests/e2e): exposes full-resolution layer pixels
+      // and a deep clone of a live pose layer's layer.pose for assertions.
+      // No behavior change.
       globalThis.__VNCCS_UC_E2E__ = {
         listLayers: () => (widget.layers || []).map((l) => ({ id: l.id, type: l.type })),
         getLayerPixels: (layerId) => {
@@ -691,10 +736,11 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: layer.canvas.toDataURL("image/png"),
           };
         },
-        getLayerPoseData: (layerId) => {
+        getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
+        getLayerPose: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           // Deep clone: the caller must not be able to mutate layer state.
-          return layer?.poseData ? JSON.parse(JSON.stringify(layer.poseData)) : null;
+          return layer?.pose ? JSON.parse(JSON.stringify(layer.pose)) : null;
         },
       };
       if (!tabWatcher) tabWatcher = watchUniCanvasStandaloneTab(setActive);
@@ -702,7 +748,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         // Belt and braces: hiding/unmounting the tab panel also restores chrome.
         containerObserver = new IntersectionObserver((entries) => {
           for (const entry of entries) {
-            if (!entry.isIntersecting) setActive(false);
+            // The panel empties (and stops intersecting) once the widget moves into the
+            // full-screen shell, so only an unselected tab button may end standalone mode.
+            if (!entry.isIntersecting && !tabWatcher?.isSelected()) setActive(false);
           }
         });
       }
@@ -710,16 +758,17 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       setActive(true);
     },
     destroy() {
-      setActive(false);
-      tabWatcher?.dispose();
-      tabWatcher = null;
-      containerObserver?.disconnect();
-      containerObserver = null;
-      mountContainer = null;
-      // Flush and clear the pending persistence timer before disposal.
-      teardownUniCanvasWidgetModes(widget);
-      widget?.dispose?.();
-      widget = null;
+      teardown();
     },
   });
+  return {
+    dispose() {
+      teardown();
+      try {
+        extensionManager.unregisterSidebarTab?.(UNICANVAS_STANDALONE_TAB_ID);
+      } catch (err) {
+        console.warn("[VNCCS UniCanvas] Could not remove the standalone sidebar tab", err);
+      }
+    },
+  };
 }

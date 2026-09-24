@@ -31,34 +31,28 @@ next section):
 
 Specs and what each one guards:
 
-- `smoke.spec.mjs` - harness sanity: the standalone Unicanvas tab opens, a pose layer can be
-  added, edited and saved, and the saved layer really rendered (non-zero alpha bounding box).
+- `smoke.spec.mjs` - harness sanity: the standalone Unicanvas tab opens (the spec turns the
+  opt-in `VNCCS.UniCanvas.StandaloneSidebar` setting on), the Pose Studio tool creates a live
+  pose layer, and that layer really rendered (non-zero alpha bounding box).
 - `measure.spec.mjs` - fixture-level check of `helpers/measure.mjs`
   (`measureAlphaBBoxInPage`) against a synthetic PNG with a known bounding box and centroid,
   because every geometric assertion depends on that measurement.
-- `mannequin-options.spec.mjs` - body morph options live in a left-sidebar section during
-  Edit pose (no modal, every control reachable, section gone on Save and on Cancel) and the
-  realtime rule holds: the mannequin repaints from an `input` event while the gesture is still
-  open, before any `pointerup`.
 - `settings-panel.spec.mjs` - the settings popover opens under the gear, is at least 400px
   wide, never overlaps the left sidebar (including on 900/700/660px hosts) and closes on an
   outside click, on Close, or on a second gear click.
-- `pose-roundtrip.spec.mjs` - edit -> save idempotence: repeated cycles with unchanged input
-  keep the saved pose layer pixels and `layer.poseData` identical (spec 5.1 storage clause),
-  and a moved pose layer keeps its canvas placement across an edit -> save cycle (spec 5.1b).
-- `pose-framing.spec.mjs` - Edit pose frames the mannequin on the torso center (horizontal
-  midline within 2%, torso third within 3% of frame center), so the saved capture matches the
-  edit view (spec 6.1/6.2).
-- `pose-studio-bridge.spec.mjs` - Pose Studio bridge pushes never scale the mannequin (spec
-  5.1b on the bridge path): with a live `VNCCS_PoseStudio` node loaded from
-  `fixtures/unicanvas-pose-studio-wf.json`, three `capture now` pushes keep the layer bbox
-  width, height and area within 5% of the baseline, and a push after moving the layer keeps
-  the moved placement instead of jumping back to the canvas center.
+- `pose-backdrop.spec.mjs` - the embedded pose editor shows only the mannequin over a flat
+  backdrop of the layers below (`fixtures/backdrop.png`): no skydome even when Pose Studio's
+  own option is on, transparent surroundings in the layer pixels, and no character far edge
+  behind the backdrop, including after a Zoom change.
+- `standalone-setting.spec.mjs` - the standalone sidebar tab is absent by default and the
+  ComfyUI setting adds and removes it live.
 
 The suite never calls GPU generation and never downloads models; CPU is enough because the
-mannequin pipeline is client-side WebGL. Geometric assertions read the saved pose layer pixels
+mannequin pipeline is client-side WebGL. Geometric assertions read layer pixels and pose state
 through the read-only `window.__VNCCS_UC_E2E__` hook (`listLayers`, `getLayerPixels`,
-`getLayerPoseData`) exposed by `web/vnccs_unicanvas_modes.mjs`, plus `helpers/measure.mjs`.
+`getLayerPose`, `getPoseBackdrop`) exposed by `web/vnccs_unicanvas_modes.mjs`, plus
+`helpers/measure.mjs`. `PW_CHROMIUM_PATH=<chrome>` reuses a preinstalled Chromium instead of
+the one pinned by `@playwright/test`.
 
 Evidence for UI changes (Before/After, labels exactly `Before`/`After`, plus measured
 geometry) is produced by `node evidence.mjs --topic <topic> --phase before|after|compose`

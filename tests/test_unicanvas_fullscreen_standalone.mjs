@@ -78,8 +78,8 @@ test("open widget modals keep their Enter/Escape keyboard contract in fullscreen
 });
 
 test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
-    assert.ok(modesSource.includes("registerSidebarTab({"), "app.extensionManager.registerSidebarTab must be used");
-    assert.ok(modesSource.includes("app?.extensionManager?.registerSidebarTab"), "extensionManager must be probed safely");
+    assert.ok(modesSource.includes("registerSidebarTab.call(extensionManager, {"), "app.extensionManager.registerSidebarTab must be used");
+    assert.ok(modesSource.includes("const extensionManager = app?.extensionManager;"), "extensionManager must be probed safely");
     assert.ok(/title:\s*"Unicanvas"/.test(modesSource), 'the tab must be labeled exactly "Unicanvas"');
     assert.ok(/tooltip:\s*"Unicanvas"/.test(modesSource), 'the tab tooltip must be "Unicanvas"');
     assert.ok(/icon:\s*UNICANVAS_SIDEBAR_ICON_CLASS/.test(modesSource), "the tab must register an icon");
@@ -90,8 +90,20 @@ test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
         "the icon must render from CSS on the sidebar tab <i>");
     assert.ok(modesSource.includes('type: "custom"'), "the tab renders a custom DOM container");
     assert.ok(/widget\.standalone = true/.test(modesSource), "the tab opens UniCanvasWidget with standalone: true");
-    assert.ok(widgetSource.includes("registerUniCanvasStandaloneSidebarTab(UniCanvasWidget)"),
-        "vnccs_unicanvas.js must register the sidebar tab");
+    assert.ok(widgetSource.includes("syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, readUniCanvasStandaloneSetting())"),
+        "vnccs_unicanvas.js must register the sidebar tab from the stored setting");
+});
+
+test("standalone sidebar tab is an opt-in ComfyUI setting, off by default", () => {
+    assert.ok(modesSource.includes('export const UNICANVAS_STANDALONE_SETTING_ID = "VNCCS.UniCanvas.StandaloneSidebar";'));
+    const settings = region(widgetSource, "  settings: [", "  setup() {");
+    assert.ok(settings.includes("id: UNICANVAS_STANDALONE_SETTING_ID"), "the setting is registered by the extension");
+    assert.ok(/type:\s*"boolean"/.test(settings) && /defaultValue:\s*false/.test(settings), "boolean, default off");
+    assert.ok(settings.includes("syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, value === true)"),
+        "toggling the setting adds or removes the tab without a reload");
+    const sync = region(modesSource, "export function syncUniCanvasStandaloneSidebarTab", "export function registerUniCanvasStandaloneSidebarTab");
+    assert.ok(sync.includes("handle.dispose()"), "disabling removes the registered tab");
+    assert.ok(modesSource.includes("unregisterSidebarTab?.(UNICANVAS_STANDALONE_TAB_ID)"));
 });
 
 test("standalone state persists to the vnccs-unicanvas-standalone key", () => {
@@ -152,7 +164,9 @@ test("fullscreen and standalone teardown run on disposal and tab destroy", () =>
         "fullscreen restore must guard a stale sibling anchor");
 
     const destroy = region(modesSource, "    destroy() {", "  });");
-    assert.ok(destroy.includes("teardownUniCanvasWidgetModes(widget)"),
+    assert.ok(destroy.includes("teardown()"), "the tab destroy() must run the shared teardown");
+    const teardown = region(modesSource, "  const teardown = () => {", "  registerSidebarTab.call(");
+    assert.ok(teardown.includes("teardownUniCanvasWidgetModes(widget)"),
         "the tab destroy() must flush/clear the pending persistence timer");
     assert.ok(modesSource.includes("localStateBackupDisabled") && modesSource.includes("4_000_000"),
         "standalone persistence must mirror the local backup degradation");

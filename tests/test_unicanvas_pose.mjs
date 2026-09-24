@@ -37,7 +37,9 @@ function harness(studioClass = class {}) {
     const document = Object.assign(new Element("document"), { createElement: tag => new Element(tag), head: new Element(), getElementById: () => true });
     const context = { ...state, document, AbortController, console, JSON, Option: class extends Element {
         constructor(name, value) { super("option"); this.textContent = name; this.value = value; }
-    }, PoseStudioWidget: studioClass, installCustomSelects: () => ({ disconnect: noop }) };
+    }, PoseStudioWidget: studioClass, installCustomSelects: () => ({ disconnect: noop }),
+    // The backdrop needs a real three.js viewer; tests/test_unicanvas_pose_backdrop.mjs covers it.
+    UniCanvasPoseBackdrop: class { invalidate() {} dispose() {} } };
     const Editor = vm.runInNewContext(source.replace(/^import .*;\n/gm, "").replace("export class", "class") + "\nUniCanvasPoseEditor", context);
     const layer = { id: "pose", type: "pose", visible: true, opacity: 1, blendMode: "source-over",
         canvas: new Element("canvas"), pose: { rect: { x: 10, y: 20, width: 400, height: 600 }, studio: {}, character: null } };

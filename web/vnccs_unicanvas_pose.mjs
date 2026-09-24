@@ -3,6 +3,7 @@ import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { composePoseReference, isImageLayer, poseAtPanoramaCamera } from "./vnccs_unicanvas_pose_state.mjs";
+import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 const styles = `
@@ -19,11 +20,11 @@ const styles = `
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap canvas { background:transparent; }
 .vnccs-uc-pose-root > [class*="modal"], .vnccs-uc-pose-root > .vnccs-ps-manager, .vnccs-uc-pose-root > .vnccs-ps-manager-detail-strip { pointer-events:auto; }
 .vnccs-uc-pose-root > .vnccs-ps-manager { position:absolute; inset:12px 300px 12px 330px; background:var(--uc-bg); }
-.vnccs-uc-pose-character-anchor { position:absolute; bottom:12px; right:12px; width:300px; max-width:calc(100% - 24px); zoom:var(--vnccs-uc-ui-scale); pointer-events:auto; z-index:2; }
+.vnccs-uc-pose-character-anchor { position:absolute; bottom:12px; left:64px; width:300px; max-width:calc(100% - 24px); zoom:var(--vnccs-uc-ui-scale); pointer-events:auto; z-index:2; }
 .vnccs-uc-pose-character-trigger { display:flex; align-items:center; gap:10px; width:100%; min-height:44px; text-align:left; }
 .vnccs-uc-pose-character-trigger img { width:28px; height:32px; object-fit:contain; border-radius:4px; }
 .vnccs-uc-pose-character-trigger span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.vnccs-uc-pose-character { position:absolute; bottom:calc(100% + 8px); right:0; width:100%; box-sizing:border-box; display:flex; flex-direction:column; gap:12px; padding:14px; max-height:var(--uc-pose-character-height, 440px); overflow:auto; background:var(--uc-panel); border:1px solid var(--uc-border); border-radius:14px; box-shadow:0 16px 40px rgba(0,0,0,.5); }
+.vnccs-uc-pose-character { position:absolute; bottom:calc(100% + 8px); left:0; width:100%; box-sizing:border-box; display:flex; flex-direction:column; gap:12px; padding:14px; max-height:var(--uc-pose-character-height, 440px); overflow:auto; background:var(--uc-panel); border:1px solid var(--uc-border); border-radius:14px; box-shadow:0 16px 40px rgba(0,0,0,.5); }
 .vnccs-uc-pose-character > img { width:100%; height:160px; object-fit:contain; background:var(--uc-surface); border:1px solid var(--uc-border); box-sizing:border-box; border-radius:8px; }
 .vnccs-uc-pose-character-header, .vnccs-uc-pose-character-actions { display:flex; align-items:center; gap:8px; }
 .vnccs-uc-pose-character-header strong { flex:1; font-size:13px; }
@@ -64,6 +65,8 @@ export class UniCanvasPoseEditor {
             onStateChange: data => {
                 if (this.token !== token || !this.host.layers.includes(layer)) return;
                 if (this.initialized) { this.applyDimensions(data.export); this.saveViewport(); }
+                const meshKey = JSON.stringify(data?.characters?.map?.(item => item?.mesh) ?? data?.mesh ?? null);
+                if (meshKey !== this.meshKey) { this.meshKey = meshKey; this.backdrop?.invalidate(); }
                 const key = JSON.stringify([data, layer.pose.viewport]);
                 layer.pose.studio = clone(data);
                 if (key === this.stateKey) return;
@@ -95,6 +98,8 @@ export class UniCanvasPoseEditor {
             studio.viewer.scene.background = null;
             if (studio.viewer.gridHelper) studio.viewer.gridHelper.visible = false;
             if (studio.viewer.captureFrame) studio.viewer.captureFrame.visible = false;
+            // Mannequin only, over a flat backdrop of the layers below that it cannot sink behind.
+            this.backdrop = new UniCanvasPoseBackdrop(this);
             if (layer.pose.viewport) {
                 const camera = layer.pose.viewport;
                 studio.viewer.camera.position.fromArray(camera.position);
@@ -440,6 +445,17 @@ export class UniCanvasPoseEditor {
         this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
     }
 
+    // A depth clamp moved a character: persist it once per frame, like any other studio edit.
+    scheduleBackdropSync() {
+        if (this.backdropSyncFrame) return;
+        const token = this.token;
+        this.backdropSyncFrame = requestAnimationFrame(() => {
+            this.backdropSyncFrame = null;
+            if (token !== this.token || !this.studio) return;
+            this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
+        });
+    }
+
     async flush() {
         const token = this.token, studio = this.studio;
         await this.ready;
@@ -491,6 +507,9 @@ export class UniCanvasPoseEditor {
         this.commit();
         ++this.token;
         this.initialized = false;
+        if (this.backdropSyncFrame) cancelAnimationFrame(this.backdropSyncFrame);
+        this.backdropSyncFrame = null;
+        this.backdrop?.dispose(); this.backdrop = null; this.meshKey = null;
         this.selectController?.disconnect();
         this.uiAbort?.abort(); this.uiAbort = null;
         this.selectController = null;

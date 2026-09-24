@@ -16,7 +16,6 @@ const MENU_LABELS = [
   "Color match to below",
   "Rasterize",
   "Edit pose",
-  "Generate character",
 ];
 
 test("widget source installs both tool packs", () => {
@@ -48,11 +47,11 @@ test("brushHardness is a brush-engine setting with radial-gradient stamps", () =
   assert.match(inputTools, /addEventListener\("input"/, "the hardness slider must update continuously from input events");
 });
 
-test("layer context menu defines all seven entries", () => {
+test("layer context menu defines all six entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 7, "the shipped menu must define exactly seven entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 6, "the shipped menu must define exactly six entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
 });
 

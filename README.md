@@ -95,23 +95,7 @@ assets through the bundled SparkJS viewport.
 *   **Live Pose Studio Layers**: Insert an editable mannequin from the vertical toolbar. The shared Pose Studio interface appears only while its tool is active. Choose a character from disk or a layer and generate with QiE2511 or Klein9b using the pose and background/character composite as two references. See the [pose layer guide](docs/UNICANVAS_POSE_LAYERS.md).
 *   **360° Panorama Editing**: Import an equirectangular panorama, look around from its center, and paint, mask, transform, or generate within a square perspective view. A compact sphere control rotates all three axes. Edits stay on the sphere; the standard PSD export and node output use the complete panorama. See the [panorama guide](docs/UNICANVAS_PANORAMA.md).
 
-## Pose layers
-
-Pose layers are smart-object layers for live posed mannequins on the UniCanvas
-stack (design spec section 7). They behave like raster layers in the stack —
-transforms (move / resize / rotate), opacity, blend mode and arbitrary stacking
-order all work — but brush, eraser and rectangle painting are blocked on them;
-use **Rasterize** from the layer context menu when the pixels should become a
-normal raster layer.
-
-*   **Add pose layer** (Layers section, next to *Add raster* / *Add mask*) creates the layer, opens the mannequin editor right away so posing works without any Pose Studio node (the live link stays optional), and subscribes on the `vnccs:unicanvas:pose-layer` window CustomEvent bus. A linked Pose Studio answers with PNG renders (with alpha) plus metadata, and the layer pixels follow the posing interactively: previews are coalesced through `requestAnimationFrame` at ~15–20 fps while you interact, with a full-quality capture committed on release as a single undo step. Stale renders are dropped — the newest one always wins.
-*   **Status chip** on the layer row shows `linked to Pose Studio` / `waiting…` / `disconnected`, with a manual **capture now** action for a full-quality grab at any time.
-*   **Character dropdown** (Pose Studio Characters panel) offers `Mannequin` plus saved VNCCS characters from `/vnccs/list_characters`; picking one applies its morphs through the existing `applyExternalCharacterCreatorValues()` path. Without the VNCCS character pack the list degrades to `Mannequin` and the status chip says so. The dropdown is the single source of truth for the layer character; the UniCanvas pose panel mirrors the selection read-only.
-*   **Mannequin tool** (tools column): with a pose layer active it enters in-place pose editing — the layer pixels are temporarily replaced by an interactive mannequin loaded from `layer.poseData` (pose, character morphs, camera), reusing the Pose Studio viewer and morph runtime embedded over the stage. **Save pose** re-renders the mannequin with the stored settings and the new pose and rebuilds the layer pixels and `poseData`; **Cancel** restores the previous render untouched. The editor overlay is transparent, so the whole canvas (and the layers below) stays visible behind the mannequin; a **Pose Library** button loads predefined poses and **Options** offers live mannequin morphs (age, gender, weight, muscle, height). Save/pose round-trips are drift-free (bone positions are stored relative to the shaped rest).
-
-Everything needed to rebuild the render lives in `layer.poseData`
-(`{ schemaVersion, pose, character: { id, name, source, morphs }, camera,
-render: { transparent: true, size } }`) and is persisted with the canvas state.
+## UniCanvas tools
 
 ### Input tools
 
@@ -129,7 +113,7 @@ render: { transparent: true, size } }`) and is persisted with the canvas state.
 
 ### Settings (gear icon)
 
-The gear icon sits in the canvas corner bar, next to *Snap to grid*, and opens the UniCanvas settings: the background-removal backend - **edit model / BiRefNet / rembg / SAM 3** (default **BiRefNet**; the edit-model backend offers Qwen Image 2.1 and MiniMax H3, the RGBA-VAE edit models) and the character-generation recipe - generation family, model checkpoint, pose studio LoRA + strength, steps, CFG, sampler, scheduler and the character prompt template (`{character}` is replaced with the selected character's name).
+The gear icon sits in the canvas corner bar, next to *Snap to grid*, and opens the UniCanvas settings: the background-removal backend - **edit model / BiRefNet / rembg / SAM 3** (default **BiRefNet**; the edit-model backend offers Qwen Image 2.1 and MiniMax H3, the RGBA-VAE edit models).
 
 ### Edit model reference images
 
@@ -158,13 +142,9 @@ Right-click a layer row to open the layer context menu:
     plus a strength slider (0-10) with a live preview while dragging and a
     commit on release. Backed by the `color-matcher` package with a pure
     Reinhard (LAB mean/std) fallback.
-*   **Rasterize** / **Edit pose**: pose layers only. *Edit pose* opens the
-    mannequin editor with the full Pose Studio mannequin options - gender
-    toggle, age, weight, muscle, height, breast size/firmness, male options and
-    the full proportions set (head/arm/hand/foot scale, per-bone lengths) -
-    plus the pose library. Option morphs persist with the layer, so repeated
-    edit/save cycles never drift.
-*   **Generate character** (pose layers with a selected VNCCS character): renders the character into the layer with the VNCCS character-creator recipe - edit model plus the pose studio LoRA, steps/CFG/sampler and the `{character}` prompt template all come from the settings.
+*   **Rasterize** / **Edit pose**: live Pose Studio layers only. *Edit pose*
+    selects the layer and opens its embedded Pose Studio editor; *Rasterize*
+    bakes the current pose render into a plain raster layer (one undo step).
 
 **Import PSD** sits next to **Export Layers as PSD** and loads raster layers
 (name, visibility, opacity, blend mode, stacking order) from a PSD file with

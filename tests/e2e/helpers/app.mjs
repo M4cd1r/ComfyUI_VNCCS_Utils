@@ -2,83 +2,67 @@ import { expect } from "@playwright/test";
 
 export const LAYER_TYPES = { pose: "pose" };
 
-const POSE_EDIT_BAR = ".vnccs-uc-pose-edit-bar";
-// The widget status line lives in the generation-progress element, which is
-// visibility-hidden unless it is showing generation progress, so readiness is
-// polled through textContent rather than a visibility assertion.
-const PROGRESS_LABEL = ".vnccs-uc-generation-progress .vnccs-uc-progress-label";
+// The standalone sidebar tab is opt-in (ComfyUI setting, off by default).
+export const STANDALONE_SETTING_ID = "VNCCS.UniCanvas.StandaloneSidebar";
 const UNICANVAS_TAB =
-  '[data-testid="vnccs-unicanvas-standalone-tab-button"], [data-label="Unicanvas"], button[title="Unicanvas"]';
+  '[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon';
+const POSE_TOOL = '.vnccs-uc-tools [data-tool="pose"]';
+const POSE_DOCK = ".vnccs-uc-pose-root .vnccs-uc-pose-dock";
+
+export async function setStandaloneSidebar(page, enabled) {
+  const response = await page.request.post(`/api/settings/${STANDALONE_SETTING_ID}`, { data: enabled });
+  expect(response.ok()).toBeTruthy();
+}
+
+// ComfyUI may greet a fresh profile with a modal (templates, release notes) that swallows clicks.
+async function dismissComfyDialogs(page) {
+  for (let i = 0; i < 3; i += 1) {
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+  }
+}
 
 /**
  * Open the standalone Unicanvas sidebar tab and wait for the widget chrome.
- * `navigate: false` skips the page load so a spec can keep the document (and
- * everything registered in it, e.g. a live Pose Studio) across the call.
+ * `navigate: false` skips the page load so a spec can keep the document.
  */
 export async function openUnicanvas(page, { navigate = true } = {}) {
-  if (navigate) await page.goto("/", { waitUntil: "domcontentloaded" });
+  if (navigate) {
+    await setStandaloneSidebar(page, true);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+  }
   const tab = page.locator(UNICANVAS_TAB).first();
-  await expect(tab).toBeVisible({ timeout: 30_000 });
+  await expect(tab).toBeVisible({ timeout: 60_000 });
+  await dismissComfyDialogs(page);
   await tab.click();
-  await expect(page.locator(".vnccs-uc-left")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".vnccs-uc2-standalone-shell .vnccs-uc-left")).toBeVisible({ timeout: 30_000 });
 }
 
-/**
- * The pose editor loads its viewer and morph pack asynchronously and reports
- * readiness in the widget status line; Save pose only captures once that has
- * happened, so every edit-entry helper waits for the ready status.
- */
-async function waitForPoseEditorReady(page) {
-  await expect(page.locator(POSE_EDIT_BAR)).toBeVisible({ timeout: 30_000 });
+/** Import an image file as a raster layer through the Layers "Import Image" button. */
+export async function importImageLayer(page, filePath) {
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator('button[title="Import image"]').first().click(),
+  ]);
+  await chooser.setFiles(filePath);
   await expect
-    .poll(() => page.locator(PROGRESS_LABEL).textContent(), { timeout: 60_000 })
-    .toContain("drag the mannequin");
-}
-
-/** Add a pose layer; this opens the mannequin editor right away. */
-export async function addPoseLayer(page) {
-  await page.locator('[title="Add pose layer"]').first().click();
-  await waitForPoseEditorReady(page);
+    .poll(async () => (await page.evaluate(() => globalThis.__VNCCS_UC_E2E__.listLayers())).length, { timeout: 15_000 })
+    .toBeGreaterThan(2);
 }
 
 /**
- * Make sure the pose layer is being edited. Adding the layer already opens the
- * editor, so this is a re-entry helper.
+ * Select the Pose Studio tool: it creates a live pose layer over the bbox (or reopens the
+ * active one) and waits until the embedded editor has rendered the mannequin once.
  */
-export async function enterPoseEdit(page) {
-  if (await page.locator(POSE_EDIT_BAR).isVisible()) {
-    await waitForPoseEditorReady(page);
-    return;
-  }
-  // Layer rows expose "Edit pose" either through the row's overflow ("More")
-  // control or through the row context menu (vnccs_unicanvas_layer_tools.mjs).
-  const more = page.locator('[title="More"]').first();
-  if (await more.isVisible().catch(() => false)) {
-    await more.click({ timeout: 5_000 }).catch(() => {});
-  }
-  const entry = page.locator('[title="Edit pose"], button:has-text("Edit pose")').first();
-  if (!(await entry.isVisible().catch(() => false))) {
-    // Right-click a POSE-typed row: the widget seeds mask/raster layers whose
-    // context menu has no "Edit pose" entry, so the first row would dead-end.
-    // createLayerRow() stamps data-layer-type on every row
-    // (web/vnccs_unicanvas.js:4978), so this survives a user rename.
-    await page.locator('[data-layer-type="pose"]').first().click({ button: "right" });
-  }
-  await entry.click();
-  await waitForPoseEditorReady(page);
+export async function openPoseTool(page) {
+  await page.locator(POSE_TOOL).click();
+  await expect(page.locator(POSE_DOCK)).toBeVisible({ timeout: 60_000 });
+  await expect
+    .poll(() => page.evaluate(() => globalThis.__VNCCS_UC_E2E__.getPoseBackdrop()?.distance ?? null), { timeout: 90_000 })
+    .not.toBeNull();
 }
 
-export async function savePose(page) {
-  await page.locator(`${POSE_EDIT_BAR} button:has-text("Save pose")`).click();
-  await expect(page.locator(POSE_EDIT_BAR)).toBeHidden({ timeout: 30_000 });
-}
-
-export async function cancelPose(page) {
-  await page.locator(`${POSE_EDIT_BAR} button:has-text("Cancel")`).click();
-  await expect(page.locator(POSE_EDIT_BAR)).toBeHidden({ timeout: 30_000 });
-}
-
-export async function runEditSaveCycle(page) {
-  await enterPoseEdit(page);
-  await savePose(page);
+export async function poseLayer(page) {
+  const layers = await page.evaluate(() => globalThis.__VNCCS_UC_E2E__.listLayers());
+  return layers.find((layer) => layer.type === LAYER_TYPES.pose) || null;
 }
