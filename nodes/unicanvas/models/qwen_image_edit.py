@@ -53,27 +53,33 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         supports_pose_edit=True,
         default_loader="gguf",
         prompt_guide=PromptGuide(
-            hint="Subject: ... | Environment: ... | Lighting: ... - or one short instruction: change X, keep Y",
+            hint="Replace the man's hat with a dark brown beret; keep his smile, short hair and gray jacket unchanged",
             guide=(
-                "Structure beats narrative: Qwen responds most precisely to short, categorized "
-                "labels (Subject, Pose, Clothing, Camera, Environment, Lighting, Mood) separated by "
-                "|, or to one to three plain sentences - long prose adds nothing. Any text that must "
-                "appear in the image goes in double quotes, verbatim.\n\n"
-                "For edits say exactly what changes and what stays (change the jacket to navy, keep "
-                "the face and lighting). The working area is Picture 1 and uploaded or VNCSS Config "
-                "references are Picture 2, Picture 3, ... in slot order (the encoder labels them "
-                "that way), so name the picture each element comes from. For inpaint and outpaint "
-                "describe only what belongs in the masked or empty area.\n\n"
-                "The negative prompt helps at CFG around 4.5 with ~50 steps (the base model); with "
-                "the Lightning LoRA (4 steps, CFG 1) it has no effect."
+                "Write one direct, specific edit instruction (the rules of Qwen's official edit prompt "
+                "enhancer). Add / delete / replace: name the target and give the minimal details that "
+                "pin it down - category, color, size, orientation, position (\"Add a light-gray cat in "
+                "the bottom-right corner, sitting and facing the camera\"); for replacements write "
+                "\"Replace Y with X\" and describe X briefly.\n\n"
+                "Text edits: put every text in English double quotes, keep its language and "
+                "capitalization (Replace \"xx\" to \"yy\"). People: keep their identity - age, hairstyle, "
+                "expression, outfit - and list what stays unchanged; expression or make-up changes must "
+                "be natural and subtle. Style: describe the style by its key visual features and put it "
+                "at the end when there are other changes. Old photo colorization uses \"Restore and "
+                "colorize the photo.\"\n\n"
+                "Content filling: inpaint starts with \"Perform inpainting on this image. The original "
+                "caption is: \" and outpaint with \"Extend the image beyond its boundaries using "
+                "outpainting. The original caption is: \", followed by a caption. Several pictures: the "
+                "working area is Picture 1 and references are Picture 2, Picture 3, ... - say which "
+                "picture's element changes and what stays (\"Replace the girl of Picture 1 with the boy of "
+                "Picture 2, keeping Picture 1's background unchanged\"). With the Lightning LoRA (CFG 1) "
+                "the negative prompt has no effect."
             ),
             examples=(
-                "Subject: young woman, professional model | Pose: walking forward | Clothing: flowing white dress | "
-                "Camera: medium shot, eye level | Environment: dense autumn forest | Lighting: golden hour, backlit",
-                "Put the outfit from Picture 2 on the person in Picture 1. Keep her face, pose and the background unchanged.",
+                "Replace the man's hat with a dark brown beret; keep smile, short hair, and gray jacket unchanged",
+                "Change the girl in Picture 1 to the ink-wash style of Picture 2 - rendered in black-and-white watercolor with soft color transitions.",
             ),
             sources=(
-                "https://help.apiyi.com/en/qwen-image-2512-prompt-guide-test-cases-en.html",
+                "https://github.com/QwenLM/Qwen-Image/blob/a76c8a3873c369a097aafd7ea229b7404659043c/src/examples/tools/prompt_utils.py#L181",
                 "README.md#edit-model-reference-images",
             ),
         ),

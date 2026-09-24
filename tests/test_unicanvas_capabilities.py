@@ -207,10 +207,12 @@ def test_every_prompt_guide_cites_its_sources(module):
         assert guide.describe()["sources"] == list(guide.sources)
 
 
-def test_qwen_edit_guide_follows_the_apiyi_structured_prompt_rules():
+def test_qwen_edit_guide_follows_the_official_edit_prompt_enhancer_rules():
     guide = _get_unicanvas_model_module("qwen_image_edit").capabilities.prompt_guide
-    assert "https://help.apiyi.com/en/qwen-image-2512-prompt-guide-test-cases-en.html" in guide.sources
-    assert not any("QwenLM" in source for source in guide.sources)
-    assert "Subject:" in guide.hint or "Subject:" in guide.guide  # structured labels
-    assert "quotes" in guide.guide  # text to render goes in quotes
-    assert "Picture 2" in guide.guide  # how references are named in UniCanvas
+    assert any("QwenLM/Qwen-Image" in source and "prompt_utils.py" in source for source in guide.sources)
+    assert not any("apiyi" in source for source in guide.sources)  # a text-to-image guide, not an edit guide
+    assert "Replace Y with X" in guide.guide
+    assert "English double quotes" in guide.guide
+    assert "Perform inpainting on this image. The original caption is:" in guide.guide
+    assert "Extend the image beyond its boundaries using outpainting" in guide.guide
+    assert "Picture 2" in guide.guide
