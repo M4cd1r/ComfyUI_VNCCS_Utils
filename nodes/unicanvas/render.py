@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -42,27 +43,6 @@ def _apply_layer_opacity(image: Image.Image, opacity: float) -> Image.Image:
     alpha = rgba.getchannel("A").point(lambda value: int(round(value * opacity)))
     rgba.putalpha(alpha)
     return rgba
-
-
-_UNICANVAS_BLEND_MODES = {
-    "source-over",
-    "normal",
-    "multiply",
-    "screen",
-    "overlay",
-    "darken",
-    "lighten",
-    "color-dodge",
-    "color-burn",
-    "hard-light",
-    "soft-light",
-    "difference",
-    "exclusion",
-    "hue",
-    "saturation",
-    "color",
-    "luminosity",
-}
 
 
 def _blend_luminosity(color: np.ndarray) -> np.ndarray:
@@ -126,72 +106,103 @@ def _blend_set_saturation(color: np.ndarray, saturation: np.ndarray) -> np.ndarr
     return result
 
 
-def _blend_rgb(backdrop: np.ndarray, source: np.ndarray, mode: str) -> np.ndarray:
-    if mode in {"source-over", "normal"}:
-        return source
-    if mode == "multiply":
-        return backdrop * source
-    if mode == "screen":
-        return backdrop + source - backdrop * source
-    if mode == "overlay":
-        return np.where(
-            backdrop <= 0.5,
-            2.0 * backdrop * source,
-            1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source),
-        )
-    if mode == "darken":
-        return np.minimum(backdrop, source)
-    if mode == "lighten":
-        return np.maximum(backdrop, source)
-    if mode == "color-dodge":
-        return np.where(
-            source >= 1.0 - 1e-7,
-            1.0,
-            np.minimum(1.0, backdrop / np.maximum(1.0 - source, 1e-7)),
-        )
-    if mode == "color-burn":
-        return np.where(
-            source <= 1e-7,
-            0.0,
-            1.0 - np.minimum(1.0, (1.0 - backdrop) / np.maximum(source, 1e-7)),
-        )
-    if mode == "hard-light":
-        return np.where(
-            source <= 0.5,
-            2.0 * backdrop * source,
-            1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source),
-        )
-    if mode == "soft-light":
-        soft_curve = np.where(
-            backdrop <= 0.25,
-            ((16.0 * backdrop - 12.0) * backdrop + 4.0) * backdrop,
-            np.sqrt(np.maximum(backdrop, 0.0)),
-        )
-        return np.where(
-            source <= 0.5,
-            backdrop - (1.0 - 2.0 * source) * backdrop * (1.0 - backdrop),
-            backdrop + (2.0 * source - 1.0) * (soft_curve - backdrop),
-        )
-    if mode == "difference":
-        return np.abs(backdrop - source)
-    if mode == "exclusion":
-        return backdrop + source - 2.0 * backdrop * source
-    if mode == "hue":
-        adjusted = _blend_set_saturation(source, _blend_saturation(backdrop))
-        return _blend_set_luminosity(adjusted, _blend_luminosity(backdrop))
-    if mode == "saturation":
-        adjusted = _blend_set_saturation(backdrop, _blend_saturation(source))
-        return _blend_set_luminosity(adjusted, _blend_luminosity(backdrop))
-    if mode == "color":
-        return _blend_set_luminosity(source, _blend_luminosity(backdrop))
-    if mode == "luminosity":
-        return _blend_set_luminosity(backdrop, _blend_luminosity(source))
+def _blend_normal(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
     return source
+
+
+def _blend_overlay(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
+    return np.where(
+        backdrop <= 0.5,
+        2.0 * backdrop * source,
+        1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source),
+    )
+
+
+def _blend_color_dodge(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
+    return np.where(
+        source >= 1.0 - 1e-7,
+        1.0,
+        np.minimum(1.0, backdrop / np.maximum(1.0 - source, 1e-7)),
+    )
+
+
+def _blend_color_burn(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
+    return np.where(
+        source <= 1e-7,
+        0.0,
+        1.0 - np.minimum(1.0, (1.0 - backdrop) / np.maximum(source, 1e-7)),
+    )
+
+
+def _blend_hard_light(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
+    return np.where(
+        source <= 0.5,
+        2.0 * backdrop * source,
+        1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source),
+    )
+
+
+def _blend_soft_light(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
+    soft_curve = np.where(
+        backdrop <= 0.25,
+        ((16.0 * backdrop - 12.0) * backdrop + 4.0) * backdrop,
+        np.sqrt(np.maximum(backdrop, 0.0)),
+    )
+    return np.where(
+        source <= 0.5,
+        backdrop - (1.0 - 2.0 * source) * backdrop * (1.0 - backdrop),
+        backdrop + (2.0 * source - 1.0) * (soft_curve - backdrop),
+    )
+
+
+def _blend_hue(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
+    adjusted = _blend_set_saturation(source, _blend_saturation(backdrop))
+    return _blend_set_luminosity(adjusted, _blend_luminosity(backdrop))
+
+
+def _blend_saturation_mode(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
+    adjusted = _blend_set_saturation(backdrop, _blend_saturation(source))
+    return _blend_set_luminosity(adjusted, _blend_luminosity(backdrop))
+
+
+# Canvas 2D globalCompositeOperation name -> separable/non-separable blend function
+# (backdrop, source) -> blended RGB, all float arrays in 0..1.
+BlendFunction = Callable[[np.ndarray, np.ndarray], np.ndarray]
+BLEND_MODES: dict[str, BlendFunction] = {
+    "source-over": _blend_normal,
+    "normal": _blend_normal,
+    "multiply": lambda backdrop, source: backdrop * source,
+    "screen": lambda backdrop, source: backdrop + source - backdrop * source,
+    "overlay": _blend_overlay,
+    "darken": np.minimum,
+    "lighten": np.maximum,
+    "color-dodge": _blend_color_dodge,
+    "color-burn": _blend_color_burn,
+    "hard-light": _blend_hard_light,
+    "soft-light": _blend_soft_light,
+    "difference": lambda backdrop, source: np.abs(backdrop - source),
+    "exclusion": lambda backdrop, source: backdrop + source - 2.0 * backdrop * source,
+    "hue": _blend_hue,
+    "saturation": _blend_saturation_mode,
+    "color": lambda backdrop, source: _blend_set_luminosity(source, _blend_luminosity(backdrop)),
+    "luminosity": lambda backdrop, source: _blend_set_luminosity(backdrop, _blend_luminosity(source)),
+}
+# Kept for callers that only test membership; the registry is the source of truth.
+_UNICANVAS_BLEND_MODES = BLEND_MODES
+
+
+def register_blend_mode(name: str, blend: BlendFunction) -> None:
+    """Add a layer blend mode (the name the widget stores in ``layer.blendMode``)."""
+    BLEND_MODES[str(name).lower()] = blend
+
+
+def _blend_rgb(backdrop: np.ndarray, source: np.ndarray, mode: str) -> np.ndarray:
+    return BLEND_MODES.get(mode, _blend_normal)(backdrop, source)
 
 
 def _alpha_composite_with_blend(backdrop: Image.Image, source: Image.Image, mode: str) -> Image.Image:
     mode = str(mode or "source-over").lower()
-    if mode not in _UNICANVAS_BLEND_MODES or mode in {"source-over", "normal"}:
+    if mode not in BLEND_MODES or mode in {"source-over", "normal"}:
         return Image.alpha_composite(backdrop.convert("RGBA"), source.convert("RGBA"))
 
     backdrop = backdrop.convert("RGBA")
@@ -226,39 +237,116 @@ def _alpha_composite_with_blend(backdrop: Image.Image, source: Image.Image, mode
     return result
 
 
-def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
-    state = _load_unicanvas_state(unicanvas_state)
-    panorama = state.get("panorama")
-    if panorama is not None:
-        if not isinstance(panorama, dict) or panorama.get("projection") != "equirectangular":
-            raise ValueError("Unsupported UniCanvas panorama projection")
+class FlatDocument:
+    """A normal canvas document: the bbox crops the layers, which may sit anywhere."""
+
+    pixel_limit = _MAX_PIXELS
+
+    def __init__(self, state: dict[str, Any]):
+        self.state = state
+
+    def origin(self) -> dict[str, float]:
+        return _rect_from_state(self.state.get("origin"), {"x": 0, "y": 0, "width": 1, "height": 1})
+
+    def frame(self) -> dict[str, float]:
+        """The output rectangle in document coordinates."""
+        return _rect_from_state(self.state.get("bbox"), {"x": 0, "y": 0, "width": 1024, "height": 1024})
+
+    def layers(self) -> list[Any]:
+        """Layers bottom-most last, the order the compositor walks in reverse."""
+        return self.state.get("layers") or []
+
+    def missing_pixels(self, layer: dict[str, Any]) -> None:
+        """A visible layer has no stored pixels; flat documents skip it."""
+
+    def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
+        """Validate a layer's crop rectangle against the output size."""
+
+    def check_image(self, image: Image.Image, size: tuple[int, int]) -> None:
+        """Validate a decoded layer image against the output size."""
+
+
+class EquirectangularPanorama(FlatDocument):
+    """A 360 panorama: layers hold spherical edits in full equirectangular coordinates.
+
+    The perspective bbox and camera never crop the node output, every layer covers
+    the whole document, and the base layer always stays at the bottom.
+    """
+
+    pixel_limit = _MAX_PANORAMA_PIXELS
+    max_side = 8192
+
+    def __init__(self, state: dict[str, Any]):
+        super().__init__(state)
+        self.panorama = state["panorama"]
         try:
-            pano_width, pano_height = int(panorama["width"]), int(panorama["height"])
+            self.width, self.height = int(self.panorama["width"]), int(self.panorama["height"])
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Invalid panorama dimensions") from exc
-        if not (0 < pano_width <= 8192 and 0 < pano_height <= 8192 and pano_width * pano_height <= _MAX_PANORAMA_PIXELS):
+        if not (
+            0 < self.width <= self.max_side
+            and 0 < self.height <= self.max_side
+            and self.width * self.height <= self.pixel_limit
+        ):
             raise ValueError("UniCanvas panorama dimensions are too large or invalid")
-        # Panorama layers already contain spherical edits in full equirectangular
-        # coordinates. The perspective bbox and camera never crop node output.
-        state = {**state, "origin": {"x": 0, "y": 0}, "bbox": {"x": 0, "y": 0, "width": pano_width, "height": pano_height}}
-    origin = _rect_from_state(state.get("origin"), {"x": 0, "y": 0, "width": 1, "height": 1})
-    bbox = _rect_from_state(state.get("bbox"), {"x": 0, "y": 0, "width": 1024, "height": 1024})
+
+    def origin(self) -> dict[str, float]:
+        return {"x": 0, "y": 0, "width": 1, "height": 1}
+
+    def frame(self) -> dict[str, float]:
+        return {"x": 0, "y": 0, "width": self.width, "height": self.height}
+
+    def layers(self) -> list[Any]:
+        layers = super().layers()
+        base_id = self.panorama.get("baseLayerId")
+        if not any(isinstance(layer, dict) and layer.get("id") == base_id and layer.get("type") == "raster" for layer in layers):
+            raise ValueError("The panorama base layer is missing")
+        return sorted(layers, key=lambda layer: isinstance(layer, dict) and layer.get("id") == base_id)
+
+    def missing_pixels(self, layer: dict[str, Any]) -> None:
+        raise ValueError("Panorama layer pixels are missing")
+
+    def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
+        if crop != (0, 0, *size):
+            raise ValueError("Panorama layer dimensions do not match the document")
+
+    def check_image(self, image: Image.Image, size: tuple[int, int]) -> None:
+        if image.size != size:
+            raise ValueError("Panorama layer dimensions do not match the document")
+
+
+# state["panorama"]["projection"] -> document class. New projections (cubemap, ...) register here.
+PANORAMA_PROJECTIONS: dict[str, type[FlatDocument]] = {"equirectangular": EquirectangularPanorama}
+
+
+def register_panorama_projection(name: str, document_class: type[FlatDocument]) -> None:
+    PANORAMA_PROJECTIONS[str(name)] = document_class
+
+
+def _document_projection(state: dict[str, Any]) -> FlatDocument:
+    panorama = state.get("panorama")
+    if panorama is None:
+        return FlatDocument(state)
+    document_class = PANORAMA_PROJECTIONS.get(panorama.get("projection")) if isinstance(panorama, dict) else None
+    if document_class is None:
+        raise ValueError("Unsupported UniCanvas panorama projection")
+    return document_class(state)
+
+
+def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
+    document = _document_projection(_load_unicanvas_state(unicanvas_state))
+    origin = document.origin()
+    bbox = document.frame()
     width = max(1, int(round(bbox["width"])))
     height = max(1, int(round(bbox["height"])))
-    pixel_limit = _MAX_PANORAMA_PIXELS if panorama else _MAX_PIXELS
+    pixel_limit = document.pixel_limit
     if width * height > pixel_limit:
         raise ValueError("UniCanvas output dimensions are too large")
     bbox_local_x = bbox["x"] - origin["x"]
     bbox_local_y = bbox["y"] - origin["y"]
     out = Image.new("RGBA", (width, height), (0, 0, 0, 0))
 
-    layers = state.get("layers") or []
-    if panorama:
-        base_id = panorama.get("baseLayerId")
-        if not any(isinstance(layer, dict) and layer.get("id") == base_id and layer.get("type") == "raster" for layer in layers):
-            raise ValueError("The panorama base layer is missing")
-        layers = sorted(layers, key=lambda layer: isinstance(layer, dict) and layer.get("id") == base_id)
-    for layer in reversed(layers):
+    for layer in reversed(document.layers()):
         if not isinstance(layer, dict):
             continue
         if layer.get("type") not in {"raster", "pose"} or layer.get("visible") is False:
@@ -266,16 +354,14 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         crop = layer.get("crop")
         data_url = layer.get("dataURL")
         if not isinstance(crop, dict) or not data_url:
-            if panorama:
-                raise ValueError("Panorama layer pixels are missing")
+            document.missing_pixels(layer)
             continue
 
         layer_x = int(round(_number(crop.get("x"), 0)))
         layer_y = int(round(_number(crop.get("y"), 0)))
         layer_w = max(1, int(round(_number(crop.get("width"), 1))))
         layer_h = max(1, int(round(_number(crop.get("height"), 1))))
-        if panorama and (layer_x, layer_y, layer_w, layer_h) != (0, 0, width, height):
-            raise ValueError("Panorama layer dimensions do not match the document")
+        document.check_layer((layer_x, layer_y, layer_w, layer_h), (width, height))
         dst_x = int(round(layer_x - bbox_local_x))
         dst_y = int(round(layer_y - bbox_local_y))
         inter_left = max(0, dst_x)
@@ -286,8 +372,7 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
             continue
 
         image = _decode_data_url(str(data_url), "RGBA", max_pixels=pixel_limit)
-        if panorama and image.size != (width, height):
-            raise ValueError("Panorama layer dimensions do not match the document")
+        document.check_image(image, (width, height))
         src_left = inter_left - dst_x
         src_top = inter_top - dst_y
         src_right = src_left + (inter_right - inter_left)
@@ -295,7 +380,7 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         image = image.crop((src_left, src_top, src_right, src_bottom))
         image = _apply_layer_opacity(image, _number(layer.get("opacity"), 1.0))
         blend_mode = str(layer.get("blendMode") or "source-over").lower()
-        if blend_mode in {"source-over", "normal"} or blend_mode not in _UNICANVAS_BLEND_MODES:
+        if blend_mode in {"source-over", "normal"} or blend_mode not in BLEND_MODES:
             out.alpha_composite(image, (inter_left, inter_top))
         else:
             region = out.crop((inter_left, inter_top, inter_right, inter_bottom))

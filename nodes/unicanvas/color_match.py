@@ -14,9 +14,6 @@ from PIL import Image
 from .imaging import _decode_data_url, _encode_png_data_url, _uc_image_to_rgb_tensor
 
 
-UC_COLOR_MATCH_METHODS = ("mkl", "hm", "reinhard", "mvgd", "hm-mvgd-hm", "hm-mkl-hm", "reinhard_lab_gpu")
-
-
 def _reinhard_lab_transfer_np(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
     """Pure Reinhard (LAB mean/std) transfer - fallback when color-matcher is unavailable.
 
@@ -91,22 +88,65 @@ def _uc_tensor_to_u8(tensor: torch.Tensor) -> np.ndarray:
     return (array * 255.0).round().astype(np.uint8)
 
 
+class ColorTransfer:
+    """One color-match method. Subclass, then :func:`register_color_transfer`."""
+
+    key: str = ""
+
+    def transfer(self, src: torch.Tensor, ref: torch.Tensor) -> tuple[torch.Tensor, str]:
+        """Return (src recolored to ref's statistics as (H,W,3) float 0..1, engine name)."""
+        raise NotImplementedError
+
+
+class ReinhardLabGpuTransfer(ColorTransfer):
+    key = "reinhard_lab_gpu"
+
+    def transfer(self, src: torch.Tensor, ref: torch.Tensor) -> tuple[torch.Tensor, str]:
+        return _reinhard_lab_gpu_transfer(src, ref), "reinhard_lab_gpu"
+
+
+class ColorMatcherTransfer(ColorTransfer):
+    """A method of the color-matcher package, with the NumPy Reinhard LAB fallback."""
+
+    def __init__(self, key: str):
+        self.key = key
+
+    def transfer(self, src: torch.Tensor, ref: torch.Tensor) -> tuple[torch.Tensor, str]:
+        matcher_cls = _load_color_matcher_class()
+        if matcher_cls is not None:
+            try:
+                matched = matcher_cls().transfer(src=_uc_tensor_to_u8(src), ref=_uc_tensor_to_u8(ref), method=self.key)
+                return torch.from_numpy(np.asarray(matched, dtype=np.float32) / 255.0), "color-matcher"
+            except Exception:
+                pass
+        fallback = _reinhard_lab_transfer_np(src.detach().cpu().numpy(), ref.detach().cpu().numpy())
+        return torch.from_numpy(fallback), "reinhard-fallback"
+
+
+COLOR_TRANSFERS: dict[str, ColorTransfer] = {}
+
+
+def register_color_transfer(transfer: ColorTransfer) -> None:
+    COLOR_TRANSFERS[transfer.key] = transfer
+
+
+for _transfer in (
+    *(ColorMatcherTransfer(key) for key in ("mkl", "hm", "reinhard", "mvgd", "hm-mvgd-hm", "hm-mkl-hm")),
+    ReinhardLabGpuTransfer(),
+):
+    register_color_transfer(_transfer)
+
+# Built-in methods in the order the widget lists them.
+UC_COLOR_MATCH_METHODS = tuple(COLOR_TRANSFERS)
+
+
 def _color_match_transfer(src: torch.Tensor, ref: torch.Tensor, method: str) -> tuple[torch.Tensor, str]:
     """Transfer ref's color statistics onto src; returns (matched RGB, engine name)."""
     method = str(method or "mkl").strip().lower()
-    if method not in UC_COLOR_MATCH_METHODS:
+    transfer = COLOR_TRANSFERS.get(method)
+    if transfer is None:
         raise ValueError(f"[VNCCS UniCanvas] Unknown color match method '{method}'.")
-    if method == "reinhard_lab_gpu":
-        return _reinhard_lab_gpu_transfer(src, ref), "reinhard_lab_gpu"
-    matcher_cls = _load_color_matcher_class()
-    if matcher_cls is not None:
-        try:
-            matched = matcher_cls().transfer(src=_uc_tensor_to_u8(src), ref=_uc_tensor_to_u8(ref), method=method)
-            return torch.from_numpy(np.asarray(matched, dtype=np.float32) / 255.0), "color-matcher"
-        except Exception:
-            pass
-    fallback = _reinhard_lab_transfer_np(src.detach().cpu().numpy(), ref.detach().cpu().numpy())
-    return torch.from_numpy(fallback), "reinhard-fallback"
+    return transfer.transfer(src, ref)
 
 
 def _uc_clamp_strength(strength: Any) -> float:
