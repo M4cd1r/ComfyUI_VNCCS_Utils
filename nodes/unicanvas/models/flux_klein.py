@@ -13,6 +13,7 @@ from ..pipeline import UniCanvasNodeStep, UniCanvasPipeline, _run_pipeline_steps
 from ..progress import _set_draw_progress
 from ..sampling import _ensure_direct_sampling_prompt_context, _suppress_direct_sampling_comfy_progress
 from .base import UniCanvasModelModule
+from .capabilities import ModelCapabilities, PromptGuide
 
 
 FLUX_KLEIN_DEFAULTS = {
@@ -108,6 +109,39 @@ FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
 
 @dataclass(frozen=True)
 class FluxKleinUniCanvasModule(UniCanvasModelModule):
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Flux Klein",
+        supports_pose_edit=True,
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="One paragraph: style and tight framing, each subject's place, look, hands and gaze, then light",
+            guide=(
+                "Write one cohesive paragraph in this order: art style and camera framing; each "
+                "subject in its own spatial zone (\"in the background on the left\", \"in the "
+                "foreground on the right\") with hair, age and clothing, a simple hand action and an "
+                "explicit gaze target; the environment with the light source and shadow direction; "
+                "then quality keywords (perfectly aligned eyes, highly detailed faces, correct hands).\n\n"
+                "Reference images give the look; the text decides where each trait goes, so spell "
+                "out every character's traits in their zone to stop features bleeding between them. "
+                "Keep the camera close (medium close-up, waist-up) so faces get enough pixels, and "
+                "give hands a surface to rest on instead of vague gestures.\n\n"
+                "Klein is an edit model: the working area is attached as a reference, so you can also "
+                "describe a change (\"add a red scarf\"). The negative prompt is not used (the negative "
+                "conditioning is zeroed). Pose layers send the pose render and the background as two "
+                "references."
+            ),
+            examples=(
+                "Cinematic anime style. A tight medium close-up across a wooden tavern counter. Behind the "
+                "bar on the left stands an older man with a short graying beard and a white apron, one hand "
+                "flat on the counter, staring into the stranger's eyes. In the foreground on the right, "
+                "filling much of the frame, a young man with messy maroon hair leans forward, looking back "
+                "at him. Warm firelight from the right casts deep shadows to the left. Masterpiece, "
+                "perfectly aligned eyes, highly detailed faces, correct hands.",
+            ),
+            negative_prompt=False,
+            sources=("https://github.com/i-am-neon/infinit/blob/main/design/prompt_guides/flux_2_klein.md",),
+        ),
+    )
     pipeline: UniCanvasPipeline = FLUX_KLEIN_PIPELINE
 
     def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):

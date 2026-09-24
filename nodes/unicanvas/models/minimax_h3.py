@@ -11,11 +11,58 @@ from ..comfy_bridge import _call_comfy_node
 from ..debug import _uc_log
 from ..loaders import _load_generation_assets
 from .base import UniCanvasModelModule, _reference_image_slots
+from .capabilities import CANVAS_TASKS, STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 from .qwen_image21 import QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
 
 
 @dataclass(frozen=True)
 class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="MiniMax H3",
+        # A reference-to-video model: UniCanvas keeps the first frame as the still.
+        tasks=CANVAS_TASKS + (
+            STANDARD_TASKS["reference_to_video"].planned().with_prompt_guide(
+                PromptGuide(
+                    hint="Describe the action and camera over the clip; say which <Picture N> each subject comes from",
+                    guide=(
+                        "Reference-to-video (planned, not wired into the canvas yet): write what happens "
+                        "over the clip - the motion of each subject, the camera movement and the pacing - "
+                        "and name the <Picture N> every subject, outfit or setting is taken from. "
+                        "<Picture 1> is the working area; <Picture 2>, <Picture 3>, ... are the references."
+                    ),
+                    examples=("The woman from <Picture 2> walks toward the camera and waves; slow dolly-in, evening light.",),
+                    negative_prompt=False,
+                    sources=("https://docs.comfy.org/tutorials/video/minimax/minimax-h3",),
+                )
+            ),
+        ),
+        references=ReferenceInputs(max_images=10, slot_label="<Picture {n}>"),
+        requires_external_config=True,
+        external_config_message="[VNCCS UniCanvas] MiniMax H3 requires a connected VNCSS Config node (clip, vae, audio_vae).",
+        prompt_guide=PromptGuide(
+            hint="Keep the identity from <Picture 2>. Use the pose from <Picture 3>.",
+            guide=(
+                "MiniMax H3 edits images REF2VA-style: it rebuilds the working area from ordered "
+                "pictures. <Picture 1> is the working area; the Edit model reference images are "
+                "<Picture 2>, <Picture 3>, ... in socket order. State the role of every connected "
+                "picture explicitly (identity, face, hair, clothing, pose, camera, environment) - "
+                "explicit assignments win over what the prompt does not mention. Keep it "
+                "preservation-first: say what must stay, then the one change you want, and that the "
+                "result must visibly show it.\n\n"
+                "It needs a connected VNCSS Config node (clip, vae, audio_vae). No mask is required: "
+                "the bbox is the working area. There is no negative prompt."
+            ),
+            examples=(
+                "Keep the identity, face, hair, clothing, camera and environment from <Picture 1>. "
+                "Use the body pose and limb positions from <Picture 2>. The final pose must visibly match <Picture 2>.",
+            ),
+            negative_prompt=False,
+            sources=(
+                "https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio",
+                "README.md#minimax-h3-region-editing",
+            ),
+        ),
+    )
     key: str = "minimax_h3"
     aliases: tuple[str, ...] = ("minimaxh3", "minimax-h3", "h3")
     defaults: dict[str, Any] = field(default_factory=lambda: {

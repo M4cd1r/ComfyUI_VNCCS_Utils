@@ -13,16 +13,17 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
 from ..comfy_bridge import _call_comfy_node
 from ..debug import _conditioning_debug, _latent_debug, _uc_log
 from ..loaders import _load_generation_assets
-from ..loras import _apply_lora_cached, _lora_name_matches
+from ..loras import LoraRequirement
 from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
 from .base import UniCanvasModelModule, _reference_image_slots
+from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 
 
 # Native 2K aspect-ratio presets from the official Qwen-Image-2.1 table.
@@ -233,6 +234,30 @@ def _apply_qwen21_spectrum(model: Any, gen_settings: dict[str, Any], draw_id: st
     return patched
 
 
+# Editing prompts are short imperatives with a preserve clause (Qwen-Image-2.1 prompt guide,
+# https://github.com/kjranyone/qwen-image-2.1-prompt-guide - image-editing.md).
+QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
+    hint="Change X to Y. Keep everything else unchanged.",
+    guide=(
+        "Editing prompts are short imperative sentences in one paragraph: name only what should "
+        "change and lock the rest with a preserve clause (\"Keep everything else unchanged\"). "
+        "Refer to preserved things by role or position instead of re-describing them, use "
+        "affirmative, decisive wording, and make one logical change per pass - chain a few small "
+        "edits for big changes.\n\n"
+        "With references, give each image a role: <image1> is the working area (the canvas to "
+        "modify) and <image2>, <image3>, ... are donors of a person, product, background or style "
+        "(\"Place <image2>'s character in <image1>. Keep hairstyle, clothing and facial features "
+        "identical.\"). For inpaint describe only the masked region; for outpaint describe what "
+        "extends into the empty area. Text to keep or write goes in quotes, verbatim."
+    ),
+    examples=(
+        "Change the background to a sunset beach. Keep the subject, pose, and lighting unchanged.",
+        "Re-render <image1> in the art style of <image2>. Preserve subject identity, clothing, and layout.",
+    ),
+    sources=("https://github.com/kjranyone/qwen-image-2.1-prompt-guide/blob/main/skills/qwen-image-prompt-en/references/image-editing.md",),
+)
+
+
 @dataclass(frozen=True)
 class QwenImage21UniCanvasModule(UniCanvasModelModule):
     """UniCanvas adapter for Qwen-Image-2.1 (RGBA by default).
@@ -247,10 +272,61 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     "opaque output" switch disables the RGBA prompting and flattens.
     """
 
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Qwen Image 2.1",
+        tasks=(
+            STANDARD_TASKS["text_to_image"],
+            *(STANDARD_TASKS[key].with_prompt_guide(QWEN_IMAGE21_EDIT_PROMPT_GUIDE) for key in ("image_to_image", "inpaint", "outpaint")),
+        ),
+        references=ReferenceInputs(max_images=10, slot_label="<image{n}>"),
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="Fluent English sentences, subject first; text to draw goes in \"double quotes\"",
+            guide=(
+                "Qwen-Image-2.1 is prompted with natural sentences, never tag lists or (term:1.5) "
+                "weights. Front-load the subject, then environment, style, composition and lighting. "
+                "Any text that must appear in the image goes in double quotes, verbatim. Do not add "
+                "quality boosters (masterpiece, 8K, highly detailed) and do not write aspect ratios or "
+                "resolution in the prompt - use the size controls. Layouts and posters need a longer, "
+                "observational paragraph.\n\n"
+                "Output is RGBA with real transparency by default: the module wraps your prompt in the "
+                "official RGBA sentences ('opaque output' turns that off). With reference images "
+                "connected, name them <image2>, <image3>, ... (the working area is <image1>); with no "
+                "references do not use tags. At CFG 1 (the default and the Viggle turbo) the negative "
+                "prompt has no effect."
+            ),
+            examples=('A neon shop sign that reads "GRAND OPENING", rainy night, reflections on wet pavement.',),
+            sources=(
+                "https://github.com/kjranyone/qwen-image-2.1-prompt-guide",
+                "README.md#qwen-image-21",
+            ),
+        ),
+    )
+
     key: str = "qwen_image21"
     aliases: tuple[str, ...] = ("qwen-image-2.1", "qwen_image_21", "qwenimage21", "qi21", "qwen21")
     defaults: dict[str, Any] = field(default_factory=lambda: dict(QWEN_IMAGE21_DEFAULTS))
     is_edit_model: bool = True
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = (
+        "_qwen21_latent",
+        "_qwen21_clip",
+        "_qwen21_prompts",
+        "_qwen21_prompt",
+        "_qwen21_negative_prompt",
+    )
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="qwen_lora_name",
+            strength_setting="qwen_lora_strength",
+            default_strength=0.0,
+            require_positive_strength=True,
+            clip_strength=0.0,
+            # Looked up at call time so the lazy download (and tests) can replace it.
+            resolver=lambda: resolve_qwen21_turbo_lora(),
+            resolve_match=QWEN21_TURBO_LORA_NAME,
+            description="Qwen-Image-2.1 LoRA (Viggle turbo downloads on first use)",
+        ),
+    )
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         # Inpaint and outpaint are img2img runs with mask paste-back (spec 9).
@@ -278,20 +354,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         reference images in socket order.
         """
         return _reference_image_slots(image_tensor, gen_settings)
-
-    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        lora_name = str(gen_settings.get("qwen_lora_name") or "")
-        if lora_name and float(gen_settings.get("qwen_lora_strength", 0.0) or 0.0) > 0:
-            if _lora_name_matches(lora_name, QWEN21_TURBO_LORA_NAME):
-                lora_name = resolve_qwen21_turbo_lora()
-            model, clip = _apply_lora_cached(
-                model,
-                clip,
-                lora_name,
-                float(gen_settings.get("qwen_lora_strength", 1.0)),
-                0.0,
-            )
-        return super().apply_loras(model, clip, gen_settings)
 
     def assemble_instruction(self, prompt: str, slots, opaque_output: bool = False) -> str:
         """Assemble the QI2.1 instruction: <image N> slot framing, the user
@@ -564,3 +626,19 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         if negative is None:
             negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in positive]
         return positive, negative
+
+    # -- draw hooks -----------------------------------------------------------------------
+
+    def prepare_generation_latent(self, ctx) -> Any:
+        # Qwen-Image-2.1 owns its 64-channel RGBA latents: the <image1> working-area latent
+        # is prepared during reference conditioning and inpaint/outpaint are img2img runs
+        # with mask paste-back (spec 9), so no InpaintModelConditioning context is built.
+        latent = ctx.settings.get("_qwen21_latent")
+        if not isinstance(latent, dict):
+            latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
+        _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
+        return latent
+
+    def prepare_model_for_sampling(self, ctx) -> Any:
+        # Spectrum acceleration runs after every model mutation (the LoRA stack included).
+        return _apply_qwen21_spectrum(ctx.model, ctx.settings, ctx.draw_id)

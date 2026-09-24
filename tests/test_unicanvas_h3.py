@@ -286,7 +286,7 @@ def test_external_payload_selects_external_loader(monkeypatch):
         captured.update(gen_settings)
         raise RuntimeError("stop after asset selection")
 
-    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    monkeypatch.setattr("nodes.unicanvas.draw_pipeline._load_generation_assets", fake_load_assets)
     with pytest.raises(RuntimeError, match="stop after asset selection"):
         uc._run_unicanvas_draw({
             "debug_id": "graph-draw",
@@ -313,7 +313,7 @@ def test_external_block_wins_over_preset_merge(monkeypatch):
         captured.update(gen_settings)
         raise RuntimeError("stop after asset selection")
 
-    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    monkeypatch.setattr("nodes.unicanvas.draw_pipeline._load_generation_assets", fake_load_assets)
     # makeDefaultUniCanvasSettings() (web/vnccs_unicanvas.js): SDXL module defaults plus the
     # "presets" selection, the "sdxl" preset id and the checkpoint loader.
     widget_default_settings = {
@@ -351,7 +351,7 @@ def test_external_config_overrides_node_loras_turbo_and_uploads(monkeypatch):
         captured.update(gen_settings)
         raise RuntimeError("stop after asset selection")
 
-    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    monkeypatch.setattr("nodes.unicanvas.draw_pipeline._load_generation_assets", fake_load_assets)
     config_reference = object()
     with pytest.raises(RuntimeError, match="stop after asset selection"):
         uc._run_unicanvas_draw({
@@ -386,7 +386,7 @@ def test_node_draw_keeps_its_own_loras_and_uploads(monkeypatch):
         captured.update(gen_settings)
         raise RuntimeError("stop after asset selection")
 
-    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    monkeypatch.setattr("nodes.unicanvas.draw_pipeline._load_generation_assets", fake_load_assets)
     stack = [{"name": "node_style.safetensors", "strength": 1.0, "enabled": True}]
     with pytest.raises(RuntimeError, match="stop after asset selection"):
         uc._run_unicanvas_draw({
@@ -513,7 +513,7 @@ def test_h3_with_connected_config_reaches_the_external_loader(monkeypatch):
         captured.update(gen_settings)
         raise RuntimeError("stop after asset selection")
 
-    monkeypatch.setattr(uc, "_load_generation_assets", fake_load_assets)
+    monkeypatch.setattr("nodes.unicanvas.draw_pipeline._load_generation_assets", fake_load_assets)
     buffer = io.BytesIO()
     Image.new("RGB", (64, 64), (0, 0, 0)).save(buffer, format="PNG")
     image_data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -531,7 +531,6 @@ def test_h3_with_connected_config_reaches_the_external_loader(monkeypatch):
 
 def test_queued_draw_payload_reaches_the_real_draw_pipeline(monkeypatch):
     """The forwarded composition gets past source decoding instead of dying on 'Missing image data'."""
-    from nodes.unicanvas import draw as uc_draw
     from nodes.unicanvas import node as uc
     from nodes.vncss_config import VNCCS_Config
 
@@ -544,7 +543,7 @@ def test_queued_draw_payload_reaches_the_real_draw_pipeline(monkeypatch):
         captured.update(gen_settings)
         raise RuntimeError("stop after asset selection")
 
-    monkeypatch.setattr(uc_draw, "_load_generation_assets", fake_load_assets)
+    monkeypatch.setattr("nodes.unicanvas.draw_pipeline._load_generation_assets", fake_load_assets)
     config = VNCCS_Config().execute(
         '{"loras": [], "edit_model": False}', model="M", clip="C", vae="V",
     )[0]

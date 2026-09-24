@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import ClassVar
 
 from ..comfy_bridge import _call_node_method
 from ..latents import _unwrap_latent_samples
-from ..loras import _apply_lora_cached, _lora_name_matches
+from ..loras import LoraRequirement
 from .base import UniCanvasModelModule
+from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide
 
 
 KREA2_EDIT_DEFAULTS = {
@@ -31,15 +34,48 @@ KREA2_EDIT_DEFAULTS = {
 class Krea2EditUniCanvasModule(UniCanvasModelModule):
     """Identity Edit v1.2: mandatory LoRA, grounded Qwen3-VL and clean source tokens."""
 
-    def apply_loras(self, model, clip, gen_settings):
-        name = str(gen_settings.get("krea2_edit_lora_name") or KREA2_EDIT_DEFAULTS["krea2_edit_lora_name"])
-        model, clip = _apply_lora_cached(model, clip, name, 1.0, clip_strength=0.0)
-        # The edit adapter is mandatory and must not be applied twice by the optional stack.
-        settings = dict(gen_settings)
-        settings["lora_stack"] = [item for item in gen_settings.get("lora_stack", []) or []
-                                  if isinstance(item, dict) and not _lora_name_matches(
-                                      item.get("name") or item.get("lora_name"), name)]
-        return super().apply_loras(model, clip, settings)
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_krea2_edit_clip", "_krea2_edit_image", "_krea2_edit_vae")
+
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Krea2 Edit",
+        tasks=tuple(STANDARD_TASKS[key] for key in ("image_to_image", "inpaint", "outpaint")),
+        requires_source_image=True,
+        source_image_message="Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.",
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="A clear, direct edit: recolor the car to matte black / add a hat to the man on the left",
+            guide=(
+                "Krea2 Identity Edit changes an existing image: import an image, put the bbox over "
+                "the area to edit and write one clear, direct instruction - recolor, add or insert, "
+                "change an attribute, restyle, translate the scene. Refer to subjects by position "
+                "(\"the man on the left\").\n\n"
+                "The Turbo card (CFG 1, ~8-10 steps) handles most edits. Removing salient content "
+                "needs real guidance: use the Krea2 Edit Raw card (CFG 3, ~20 steps) - Turbo tends "
+                "to re-render the subject instead of removing it. Likeness pulls the result toward "
+                "the source (>1 stronger, <1 looser). Stay at or below about 2 megapixels, or source "
+                "content can bleed and subjects duplicate. Your negative prompt is not used: the "
+                "unconditional branch is the same image with an empty instruction."
+            ),
+            examples=("Recolor the car to matte black and add rain on the windshield.",),
+            negative_prompt=False,
+            sources=(
+                "https://github.com/lbouaraba/comfyui-krea2edit",
+                "docs/UNICANVAS_KREA2_EDIT.md",
+            ),
+        ),
+    )
+
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="krea2_edit_lora_name",
+            default_name=KREA2_EDIT_DEFAULTS["krea2_edit_lora_name"],
+            fixed_strength=1.0,
+            clip_strength=0.0,
+            required=True,
+            dedupe_from_stack=True,
+            description="Krea2 Identity Edit adapter (mandatory)",
+        ),
+    )
 
     def encode_prompt(self, clip, text, gen_settings):
         # Defer until the exact bbox reference is prepared, including outpaint pixels.
@@ -77,3 +113,18 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
 
     def decode_samples(self, vae, samples, gen_settings):
         return vae.decode(_unwrap_latent_samples(samples))
+
+    # -- settings and draw hooks ------------------------------------------------------------
+
+    def normalize_settings(self, settings):
+        likeness = float(settings.get("krea2_likeness", 4.0))
+        if not math.isfinite(likeness) or not 0 <= likeness <= 10:
+            raise ValueError("Krea2 Edit likeness must be between 0 and 10")
+        settings["krea2_likeness"] = likeness
+        settings["denoise"] = 1.0
+        return settings
+
+    def prepare_generation_latent(self, ctx):
+        # Every edit mode samples a fresh noise target; the source only enters through
+        # the grounded conditioning and the patched model, never as the initial latent.
+        return self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)

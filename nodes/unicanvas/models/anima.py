@@ -5,16 +5,17 @@ from __future__ import annotations
 import contextlib
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
 from ..comfy_bridge import _call_node_method
 from ..debug import _latent_debug, _tensor_debug, _uc_log
 from ..latents import _unwrap_latent_samples
-from ..loras import _apply_lora_cached, _lora_name_matches
+from ..loras import LoraRequirement
 from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
 from .base import UniCanvasModelModule
+from .capabilities import ModelCapabilities, PromptGuide
 
 
 ANIMA_LLLITE_REPO_ID = "kohya-ss/Anima-LLLite"
@@ -45,20 +46,45 @@ ANIMA_DEFAULTS = {
 
 @dataclass(frozen=True)
 class AnimaUniCanvasModule(UniCanvasModelModule):
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_anima_lllite_image", "_anima_lllite_mask")
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Anima",
+        default_loader="diffusion_model",
+        prompt_guide=PromptGuide(
+            hint="masterpiece, best quality, score_7, safe, 1girl, ... - tags, sentences or both",
+            guide=(
+                "Anima was trained on Danbooru tags, natural-language captions and mixes of the two; "
+                "all three work, in any order. Write tags in lowercase with spaces (brown hair, not "
+                "brown_hair) - only score tags keep underscores (score_7) - and prefix artist tags "
+                "with @. Tag order: quality / meta / year / safety, subject count (1girl), character, "
+                "series, @artist, then general tags; add a sentence for composition, lighting or "
+                "story.\n\n"
+                "A good start: \"masterpiece, best quality, score_7, safe,\" with the negative \"worst "
+                "quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg "
+                "artifacts, chromatic aberration\". With the turbo LoRA (CFG 1) the negative has no "
+                "effect. Inpaint and outpaint use the Anima LLLite patch: describe what belongs in "
+                "the masked or empty area."
+            ),
+            examples=("masterpiece, best quality, score_7, safe, 1girl, fox ears, kimono. She stands on a shrine bridge at dusk, lanterns glowing.",),
+            sources=(
+                "https://huggingface.co/circlestone-labs/Anima",
+                "https://github.com/CalamitousFelicitousness/ai-prompting-guides/blob/main/docs/anima.md",
+            ),
+        ),
+    )
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="dmd_lora_name",
+            match=ANIMA_TURBO_LORA_NAME,
+            enabled_setting="turbo_enabled",
+            strength_setting="dmd_lora_strength",
+            clip_strength=0.0,
+            description="Anima turbo",
+        ),
+    )
+
     def uses_differential_diffusion(self, mode: str) -> bool:
         return False
-
-    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        lora_name = str(gen_settings.get("dmd_lora_name") or "")
-        if gen_settings.get("turbo_enabled") and _lora_name_matches(lora_name, ANIMA_TURBO_LORA_NAME):
-            model, clip = _apply_lora_cached(
-                model,
-                clip,
-                lora_name,
-                float(gen_settings.get("dmd_lora_strength", 1.0)),
-                0.0,
-            )
-        return super().apply_loras(model, clip, gen_settings)
 
     def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
         encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
@@ -191,6 +217,43 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         if decoded is not None:
             return decoded
         return vae.decode_tiled(latent_tensor, tile_x=512, tile_y=512, overlap=64)
+
+    # -- draw hooks -----------------------------------------------------------------------
+
+    def prepare_masked_inputs(self, ctx) -> None:
+        if not ctx.is_masked or not bool(ctx.settings.get("anima_lllite_inpaint", True)):
+            return
+        ctx.settings["_anima_lllite_image"] = ctx.image_tensor
+        ctx.settings["_anima_lllite_mask"] = ctx.mask
+        _uc_log(
+            ctx.draw_id,
+            "Anima LLLite inputs prepared",
+            {
+                "mode": ctx.mode,
+                "image": _tensor_debug(ctx.image_tensor),
+                "mask": _tensor_debug(ctx.mask),
+                "weights": ctx.settings.get("anima_lllite_name"),
+            },
+        )
+
+    def prepare_masked_latent(self, ctx) -> tuple[Any, Any, Any]:
+        if not bool((ctx.settings or {}).get("anima_lllite_inpaint", True)):
+            return super().prepare_masked_latent(ctx)
+        latent = self.create_empty_latent(
+            int(ctx.image_tensor.shape[2]),
+            int(ctx.image_tensor.shape[1]),
+            ctx.settings or {},
+            draw_id=ctx.draw_id,
+        )
+        _uc_log(
+            ctx.draw_id,
+            "Anima LLLite empty latent returned",
+            {
+                "reason": "Anima LLLite inpaint workflow uses an empty latent; structure comes through the bundled LLLite model wrapper",
+                "latent": _latent_debug(latent),
+            },
+        )
+        return ctx.positive, ctx.negative, latent
 
 
 def _ensure_anima_lllite_model(lllite_name: str, draw_id: str = "unknown") -> str:

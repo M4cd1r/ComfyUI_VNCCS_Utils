@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
 from ..comfy_bridge import _call_node_method
 from ..debug import _conditioning_debug, _latent_debug, _tensor_debug, _uc_log
-from ..loras import _apply_lora_cached, _lora_name_matches
+from ..loras import LoraRequirement
 from ..sampling import _sample_generation_latent_default
 from .base import UniCanvasModelModule, _reference_image_slots
+from .capabilities import ModelCapabilities, PromptGuide, ReferenceInputs
 
 
 QWEN_IMAGE_EDIT_TURBO_LORA_NAME = "qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
@@ -45,20 +46,58 @@ QWEN_IMAGE_EDIT_DEFAULTS = {
 
 @dataclass(frozen=True)
 class QwenImageEditUniCanvasModule(UniCanvasModelModule):
+    sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_qwen_edit_reference_image", "_qwen_edit_mask", "_qwen_edit_latent")
+    capabilities: ModelCapabilities = ModelCapabilities(
+        label="Qwen Edit",
+        references=ReferenceInputs(max_images=10, slot_label="Picture {n}"),
+        supports_pose_edit=True,
+        default_loader="gguf",
+        prompt_guide=PromptGuide(
+            hint="Replace the man's hat with a dark brown beret; keep his smile, short hair and gray jacket unchanged",
+            guide=(
+                "Write one direct, specific edit instruction (the rules of Qwen's official edit prompt "
+                "enhancer). Add / delete / replace: name the target and give the minimal details that "
+                "pin it down - category, color, size, orientation, position (\"Add a light-gray cat in "
+                "the bottom-right corner, sitting and facing the camera\"); for replacements write "
+                "\"Replace Y with X\" and describe X briefly.\n\n"
+                "Text edits: put every text in English double quotes, keep its language and "
+                "capitalization (Replace \"xx\" to \"yy\"). People: keep their identity - age, hairstyle, "
+                "expression, outfit - and list what stays unchanged; expression or make-up changes must "
+                "be natural and subtle. Style: describe the style by its key visual features and put it "
+                "at the end when there are other changes. Old photo colorization uses \"Restore and "
+                "colorize the photo.\"\n\n"
+                "Content filling: inpaint starts with \"Perform inpainting on this image. The original "
+                "caption is: \" and outpaint with \"Extend the image beyond its boundaries using "
+                "outpainting. The original caption is: \", followed by a caption. Several pictures: the "
+                "working area is Picture 1 and references are Picture 2, Picture 3, ... - say which "
+                "picture's element changes and what stays (\"Replace the girl of Picture 1 with the boy of "
+                "Picture 2, keeping Picture 1's background unchanged\"). With the Lightning LoRA (CFG 1) "
+                "the negative prompt has no effect."
+            ),
+            examples=(
+                "Replace the man's hat with a dark brown beret; keep smile, short hair, and gray jacket unchanged",
+                "Change the girl in Picture 1 to the ink-wash style of Picture 2 - rendered in black-and-white watercolor with soft color transitions.",
+            ),
+            sources=(
+                "https://github.com/QwenLM/Qwen-Image/blob/a76c8a3873c369a097aafd7ea229b7404659043c/src/examples/tools/prompt_utils.py#L181",
+                "README.md#edit-model-reference-images",
+            ),
+        ),
+    )
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="qwen_lora_name",
+            match=QWEN_IMAGE_EDIT_TURBO_LORA_NAME,
+            strength_setting="qwen_lora_strength",
+            default_strength=0.0,
+            require_positive_strength=True,
+            clip_strength=0.0,
+            description="Qwen-Image-Edit-2511 Lightning 4-step",
+        ),
+    )
+
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
         return model, clip
-
-    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        lora_name = str(gen_settings.get("qwen_lora_name") or "")
-        if _lora_name_matches(lora_name, QWEN_IMAGE_EDIT_TURBO_LORA_NAME) and float(gen_settings.get("qwen_lora_strength", 0.0) or 0.0) > 0:
-            model, clip = _apply_lora_cached(
-                model,
-                clip,
-                lora_name,
-                float(gen_settings.get("qwen_lora_strength", 1.0)),
-                0.0,
-            )
-        return super().apply_loras(model, clip, gen_settings)
 
     def encode_prompt(self, clip: Any, text: str, gen_settings: dict[str, Any]):
         image_tensor = gen_settings.get("_qwen_edit_reference_image")
@@ -335,3 +374,54 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
         return super().decode_samples(vae, samples, _gen_settings)
+
+    # -- draw hooks -----------------------------------------------------------------------
+
+    def prepare_pose_edit(self, ctx) -> None:
+        super().prepare_pose_edit(ctx)
+        ctx.settings["qwen_latent_image_index"] = 1
+
+    def bind_draw_assets(self, ctx) -> None:
+        ctx.settings["_qwen_edit_clip"] = ctx.clip
+        ctx.settings["_qwen_edit_vae"] = ctx.vae
+
+    def encode_draw_prompts(self, ctx) -> tuple[Any, Any]:
+        _uc_log(
+            ctx.draw_id,
+            "Qwen Image Edit prompt encoding deferred",
+            {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
+        )
+        return [], []
+
+    def on_mask_prepared(self, ctx) -> None:
+        if ctx.mask is not None:
+            ctx.settings["_qwen_edit_mask"] = ctx.mask
+
+    def prepare_generation_latent(self, ctx) -> Any:
+        reference_latent = ctx.settings.get("_qwen_edit_latent")
+        if ctx.latent_source == "source" and isinstance(reference_latent, dict):
+            _uc_log(
+                ctx.draw_id,
+                "Qwen Image Edit uses encoder reference latent",
+                {"reason": "matches VNCCS_QWEN_Encoder output latent", "latent": _latent_debug(reference_latent)},
+            )
+            return reference_latent
+        return super().prepare_generation_latent(ctx)
+
+    def prepare_masked_latent(self, ctx) -> tuple[Any, Any, Any]:
+        _uc_log(
+            ctx.draw_id,
+            "Qwen Image Edit masked latent uses prepared reference latent",
+            {"reason": "Qwen Image Edit 2511 edits from reference_latents instead of SDXL inpaint conditioning"},
+        )
+        image_tensor = ctx.image_tensor
+        batch_size = max(1, int((ctx.settings or {}).get("batch_size", 1) or 1))
+        return ctx.positive, ctx.negative, {
+            "samples": torch.zeros(
+                [batch_size, 16, max(1, image_tensor.shape[1] // 8), max(1, image_tensor.shape[2] // 8)],
+                dtype=image_tensor.dtype,
+            )
+        }
+
+    def after_latent_prepared(self, ctx) -> None:
+        ctx.settings["_qwen_edit_latent"] = ctx.latent

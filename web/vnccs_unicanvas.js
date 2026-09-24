@@ -23,6 +23,7 @@ import {
   UNICANVAS_STANDALONE_SETTING_ID,
 } from "./vnccs_unicanvas_modes.mjs";
 import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -258,7 +259,7 @@ const STYLES = `
 if (!document.getElementById("vnccs-unicanvas-styles")) {
   const style = document.createElement("style");
   style.id = "vnccs-unicanvas-styles";
-  style.textContent = STYLES;
+  style.textContent = STYLES + PROMPT_GUIDE_CSS;
   document.head.appendChild(style);
 }
 
@@ -822,6 +823,8 @@ class UniCanvasWidget {
     this.historyRestoring = false;
     this.snapToGrid = false;
     this.assets = { checkpoints: [], diffusion_models: [], gguf_models: [], text_encoders: [], vae_models: [], model_patches: [], loras: [], samplers: [], schedulers: [] };
+    // Backend model-family descriptors (/vnccs/unicanvas/assets "model_modules"), by key and alias.
+    this.modelDescriptors = new Map();
     this.checkpoints = [];
     this.presets = [];
     this.presetDownloads = {};
@@ -1016,7 +1019,11 @@ class UniCanvasWidget {
         </label>`)
     ).join("");
     this.promptBox.innerHTML = `
-      <label class="vnccs-uc-field">Prompt<textarea class="vnccs-uc-textarea" data-setting="positive" placeholder="positive prompt"></textarea></label>
+      <div class="vnccs-uc-field">
+        <div class="vnccs-uc-prompt-head"><span>Prompt</span><button class="vnccs-uc-prompt-help" type="button" data-action="prompt-help" data-prompt-help aria-expanded="false" aria-label="How to prompt this model" title="How to prompt this model">?</button></div>
+        <textarea class="vnccs-uc-textarea" data-setting="positive" aria-label="Prompt" placeholder="positive prompt"></textarea>
+        <div class="vnccs-uc-prompt-guide" data-prompt-guide hidden></div>
+      </div>
       <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
       <div class="vnccs-uc-config-banner" data-config-banner hidden></div>
       <div class="vnccs-uc-model-tabs" data-config-override>
@@ -1849,6 +1856,9 @@ class UniCanvasWidget {
       } else if (btn.dataset.action === "edit-refs") {
         e.preventDefault();
         this.openEditReferenceImages();
+      } else if (btn.dataset.action === "prompt-help") {
+        e.preventDefault();
+        this.togglePromptGuide();
       } else if (btn.dataset.modelSelectionMode) {
         e.preventDefault();
         this.settings.model_selection_mode = btn.dataset.modelSelectionMode === "custom" ? "custom" : "presets";
@@ -2000,6 +2010,7 @@ class UniCanvasWidget {
         samplers: data.samplers || [],
         schedulers: data.schedulers || [],
       };
+      this.modelDescriptors = indexModelDescriptors(data.model_modules);
       this.checkpoints = this.assets.checkpoints;
       for (const loader of Object.values(UNICANVAS_MODEL_LOADERS)) {
         for (const field of loader.fields || []) {
@@ -6710,7 +6721,29 @@ class UniCanvasWidget {
     this.syncSeedModeControl();
     this.renderModelSelectionControls();
     this.renderLoraStackControls();
+    this.syncPromptGuide();
     this.autoResizePromptTextareas();
+  }
+
+  togglePromptGuide(open) {
+    const panel = this.container.querySelector("[data-prompt-guide]");
+    const button = this.container.querySelector("[data-prompt-help]");
+    if (!panel) return;
+    const show = typeof open === "boolean" ? open : panel.hidden;
+    panel.hidden = !show;
+    button?.setAttribute("aria-expanded", String(show));
+    if (show) this.syncPromptGuide();
+  }
+
+  // Prompt help comes from the active family's backend descriptor (capabilities.prompt_guide).
+  syncPromptGuide() {
+    const guide = resolvePromptGuide(this.modelDescriptors, this.settings.generation_mode);
+    const positive = this.container.querySelector('[data-setting="positive"]');
+    if (positive) positive.placeholder = guide?.hint || "positive prompt";
+    const button = this.container.querySelector("[data-prompt-help]");
+    if (button) button.title = guide ? `How to prompt ${guide.label}` : "How to prompt this model";
+    const panel = this.container.querySelector("[data-prompt-guide]");
+    if (panel && !panel.hidden) renderPromptGuide(panel, guide);
   }
 
   resizeTextareaToContent(textarea) {

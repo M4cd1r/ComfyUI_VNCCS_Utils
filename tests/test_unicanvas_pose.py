@@ -32,7 +32,7 @@ class PoseEditContracts(unittest.TestCase):
                 UC.draw._prepare_pose_edit_images(item, "qwen_image_edit", (64, 64))
         with self.assertRaisesRegex(ValueError, "dimensions"):
             UC.draw._prepare_pose_edit_images(payload(), "flux_klein", (128, 64))
-        with self.assertRaisesRegex(ValueError, "QiE2511"):
+        with self.assertRaisesRegex(ValueError, "Pose layers require Flux Klein or Qwen Edit"):
             UC.draw._prepare_pose_edit_images(payload(), "krea2_edit", (64, 64))
 
     def test_inference_always_has_solid_background_even_for_alpha_input(self):

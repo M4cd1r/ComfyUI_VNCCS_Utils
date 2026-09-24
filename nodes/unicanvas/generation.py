@@ -1,12 +1,11 @@
-"""Generation settings normalisation and dispatch to the active model family."""
+"""Generation settings normalisation: presets, loader choice and model-family defaults."""
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from .loaders import _get_unicanvas_model_loader
-from .models.registry import _get_unicanvas_model_module
+from .models.registry import DEFAULT_GENERATION_MODE, _get_unicanvas_model_module
 from .presets import _PRESET_MODEL_SETTING_KEYS, _unicanvas_load_preset_registry
 
 
@@ -16,10 +15,13 @@ def _infer_unicanvas_loader_type(settings: dict[str, Any]) -> str:
         return explicit
     if settings.get("gguf_model_name"):
         return "gguf"
-    generation_mode = str(settings.get("generation_mode", "illustrious")).lower()
-    if generation_mode in {"qwen_image_edit", "qwen-edit", "qwen_edit", "qwen-image-edit", "qwen_image_edit_2511"}:
-        return "gguf"
-    if generation_mode in {"anima", "flux_klein", "flux-klein", "klein", "z_image", "z-image", "zimage", "z_image_turbo"} or settings.get("diffusion_model_name"):
+    try:
+        module = _get_unicanvas_model_module(settings.get("generation_mode"))
+    except ValueError:
+        module = None
+    if module is not None and module.capabilities.default_loader:
+        return module.capabilities.default_loader
+    if settings.get("diffusion_model_name"):
         return "diffusion_model"
     return "checkpoint"
 
@@ -46,7 +48,7 @@ def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
     preset_model_settings = _get_selected_preset_model_settings(normalized)
     normalized.update(preset_model_settings)
     loader = _get_unicanvas_model_loader(_infer_unicanvas_loader_type(normalized))
-    generation_mode = loader.forced_mode or str(normalized.get("generation_mode", "illustrious")).lower()
+    generation_mode = loader.forced_mode or str(normalized.get("generation_mode") or DEFAULT_GENERATION_MODE).lower()
     mode_settings = normalized.get("mode_settings", {})
     module = _get_unicanvas_model_module(generation_mode)
     mode_profile = {}
@@ -67,65 +69,5 @@ def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
         merged["sampler_name"] = merged["sampler"]
     if "sampler_name" in merged:
         merged["sampler"] = merged["sampler_name"]
-    if module.key == "krea2_edit":
-        likeness = float(merged.get("krea2_likeness", 4.0))
-        if not math.isfinite(likeness) or not 0 <= likeness <= 10:
-            raise ValueError("Krea2 Edit likeness must be between 0 and 10")
-        merged["krea2_likeness"] = likeness
-        merged["denoise"] = 1.0
-    return merged
+    return module.normalize_settings(merged)
 
-
-def _apply_generation_loras(model: Any, clip: Any, gen_settings: dict[str, Any]):
-    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
-    return module.apply_loras(model, clip, gen_settings)
-
-
-def _encode_generation_prompt(clip: Any, text: str, gen_settings: dict[str, Any]):
-    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
-    return module.encode_prompt(clip, text, gen_settings)
-
-
-def _create_empty_generation_latent(width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
-    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
-    return module.create_empty_latent(width, height, gen_settings, draw_id=draw_id)
-
-
-def _sample_generation_latent(
-    model: Any,
-    positive: Any,
-    negative: Any,
-    latent: Any,
-    seed: int,
-    steps: int,
-    cfg: float,
-    sampler_name: str,
-    scheduler: str,
-    denoise: float,
-    gen_settings: dict[str, Any],
-    draw_id: str = "unknown",
-    width: int | None = None,
-    height: int | None = None,
-):
-    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
-    return module.sample_latent(
-        model=model,
-        positive=positive,
-        negative=negative,
-        latent=latent,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        sampler_name=sampler_name,
-        scheduler=scheduler,
-        denoise=denoise,
-        gen_settings=gen_settings,
-        draw_id=draw_id,
-        width=width,
-        height=height,
-    )
-
-
-def _decode_generation_samples(vae: Any, samples: Any, gen_settings: dict[str, Any]):
-    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
-    return module.decode_samples(vae, samples, gen_settings)

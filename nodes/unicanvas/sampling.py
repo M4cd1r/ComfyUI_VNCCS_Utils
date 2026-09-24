@@ -181,11 +181,6 @@ def _sample_generation_latent_default(
 
 
 def _preload_vae_for_direct_decode(vae: Any, gen_settings: dict[str, Any], draw_id: str = "unknown") -> None:
-    generation_mode = str((gen_settings or {}).get("generation_mode") or "").lower()
-    draw_mode = str((gen_settings or {}).get("draw_mode") or "").lower()
-    if generation_mode not in {"z_image", "z-image", "zimage", "z_image_turbo"} or draw_mode not in {"inpaint", "outpaint"}:
-        return
-
     patcher = getattr(vae, "patcher", None)
     if patcher is None:
         _uc_log(draw_id, "VAE preload skipped", {"reason": "VAE has no patcher"})
@@ -211,11 +206,6 @@ def _preload_vae_for_direct_decode(vae: Any, gen_settings: dict[str, Any], draw_
 
 
 def _unload_vae_after_direct_decode(vae: Any, gen_settings: dict[str, Any], draw_id: str = "unknown") -> None:
-    generation_mode = str((gen_settings or {}).get("generation_mode") or "").lower()
-    draw_mode = str((gen_settings or {}).get("draw_mode") or "").lower()
-    if generation_mode not in {"z_image", "z-image", "zimage", "z_image_turbo"} or draw_mode not in {"inpaint", "outpaint"}:
-        return
-
     patcher = getattr(vae, "patcher", None)
     if patcher is None:
         return
@@ -248,28 +238,10 @@ def _unload_vae_after_direct_decode(vae: Any, gen_settings: dict[str, Any], draw
         _uc_log(draw_id, "VAE post-decode unload failed", {"error": str(exc)})
 
 
-def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str = "unknown") -> None:
+def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str = "unknown", keys: tuple[str, ...] = ()) -> None:
+    """Drop the draw's sampling-only settings entries (family scratch keys) before the VAE decode."""
     released_keys = []
-    for key in (
-        "_z_image_fun_controlnet_image",
-        "_z_image_fun_controlnet_mask",
-        "_z_image_fun_controlnet_vae",
-        "_z_image_fun_controlnet_patch_model",
-        "_anima_lllite_image",
-        "_anima_lllite_mask",
-        "_pose_edit_images",
-        "_qwen_edit_reference_image",
-        "_qwen_edit_mask",
-        "_qwen_edit_latent",
-        "_qwen21_latent",
-        "_qwen21_clip",
-        "_qwen21_prompts",
-        "_qwen21_prompt",
-        "_qwen21_negative_prompt",
-        "_krea2_edit_clip",
-        "_krea2_edit_image",
-        "_krea2_edit_vae",
-    ):
+    for key in keys:
         if key in gen_settings:
             gen_settings.pop(key, None)
             released_keys.append(key)
