@@ -8,6 +8,7 @@ import {
   createSliderNumber,
   createSwitch,
 } from "./vnccs_config_ui.mjs";
+import { referenceConventionHint, referenceSlotName } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 // MiniMax H3 (<Picture N>) and Qwen-Image-2.1 (<image N>) accept up to 10
 // reference images beyond the working area. Inputs appear one at a time:
@@ -16,6 +17,8 @@ const REFERENCE_LIMIT = 10;
 const CONNECTION_INPUTS = ["model", "clip", "vae", "audio_vae"];
 const LORA_RECENTS_KEY = "vnccs-config-recent-loras";
 const LORA_LIST_MAX_ROWS = 5;
+// The node may be shorter than its content (user-resized): the panel then scrolls.
+const MIN_UI_HEIGHT = 160;
 const referenceName = (index) => "reference_image_" + index;
 
 class UniCanvasConfigWidget {
@@ -31,6 +34,11 @@ class UniCanvasConfigWidget {
     ensureConfigStyles();
     this.container = document.createElement("div");
     this.container.className = "vnccs-config-ui";
+    this.container.addEventListener("wheel", (event) => {
+      if (this._canScroll(this.container, event.deltaY) || this._canScroll(event.target.closest?.(".vnccs-cfg-lora-list"), event.deltaY)) {
+        event.stopPropagation();
+      }
+    }, { passive: true });
 
     // --- What the config does + which model sockets are wired ------------
     const intro = document.createElement("div");
@@ -84,6 +92,7 @@ class UniCanvasConfigWidget {
       this._toolbarButton("Clear", "clear-all"),
     );
     this.loraList = document.createElement("div");
+    this.loraList.className = "vnccs-cfg-lora-list";
     this.loraList.style.display = "flex";
     this.loraList.style.flexDirection = "column";
     this.loraList.style.gap = "6px";
@@ -200,23 +209,44 @@ class UniCanvasConfigWidget {
     this.fitNode();
   }
 
-  // The DOM widget reports its content height (getMinHeight), so the node grows with the
-  // LoRA rows, sections and reference chips instead of clipping them.
+  _canScroll(element, deltaY) {
+    if (!element || element.scrollHeight <= element.clientHeight + 1) return false;
+    if (deltaY < 0) return element.scrollTop > 0;
+    return element.scrollTop + element.clientHeight < element.scrollHeight - 1;
+  }
+
+  // Full height of the panel content, including what is scrolled out of view.
   contentHeight() {
     return Math.ceil(this.container.scrollHeight || 0) + 4;
   }
 
+  // The node grows (or shrinks) with its content when rows, sections or reference chips
+  // change. A node the user made shorter keeps its size and the panel scrolls instead
+  // (getMinHeight stays small), so every row stays reachable at any height.
   fitNode() {
     if (this._fitFrame) return;
     const schedule = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
     this._fitFrame = schedule(() => {
       this._fitFrame = null;
-      const size = this.node.computeSize?.();
-      if (!size || !this.node.size) return;
-      if (Math.abs((this.node.size[1] || 0) - size[1]) < 2) return;
-      this.node.setSize?.([Math.max(this.node.size[0], size[0]), size[1]]);
+      const content = this.contentHeight();
+      if (this._lastContentHeight === content || !this.node.size) return;
+      // The first measurement counts as growth, so a fresh node opens fully expanded.
+      const grew = this._lastContentHeight === undefined ? content : content - this._lastContentHeight;
+      this._lastContentHeight = content;
+      const visible = this.container.clientHeight || 0;
+      if (!visible) return;
+      const overflow = content - 4 - visible;
+      // Grow to show newly added content; shrink only when the panel has empty space left.
+      const delta = grew > 0 ? Math.min(grew, Math.max(0, overflow)) : overflow < 0 ? overflow : 0;
+      if (Math.abs(delta) < 2) return;
+      const minHeight = this.node.computeSize?.()?.[1] || 0;
+      this.node.setSize?.([this.node.size[0], Math.max(minHeight, (this.node.size[1] || 0) + delta)]);
       this.node.setDirtyCanvas?.(true, true);
     });
+  }
+
+  minHeight() {
+    return Math.min(MIN_UI_HEIGHT, this.contentHeight());
   }
 
   async _loadLoraNames() {
@@ -306,35 +336,91 @@ class UniCanvasConfigWidget {
     return Math.min(REFERENCE_LIMIT, count);
   }
 
+  _graphLink(id) {
+    const links = this.node.graph?.links ?? this.node.graph?._links;
+    if (id == null || !links) return null;
+    return typeof links.get === "function" ? links.get(id) : links[id] ?? null;
+  }
+
+  _graphNode(id) {
+    return this.node.graph?.getNodeById?.(id) ?? null;
+  }
+
+  // The UniCanvas node this config feeds: its Mode (model family) decides how the prompt
+  // names the references.
+  _linkedUniCanvas() {
+    for (const output of this.node.outputs || []) {
+      for (const id of output?.links || []) {
+        const target = this._graphNode(this._graphLink(id)?.target_id);
+        if (target?.uniCanvasWidget) return target.uniCanvasWidget;
+      }
+    }
+    return null;
+  }
+
+  _referenceNaming() {
+    const canvas = this._linkedUniCanvas();
+    return { index: canvas?.modelDescriptors, mode: canvas?.settings?.generation_mode };
+  }
+
   _resolveInputPreview(name) {
     const input = (this.node.inputs || []).find((item) => item?.name === name);
     if (input?.link == null) return null;
-    const link = this.node.graph?.links?.get?.(input.link) || this.node.graph?._links?.get?.(input.link);
-    const origin = link?.origin_node;
+    const link = this._graphLink(input.link);
+    const origin = link?.origin_node ?? this._graphNode(link?.origin_id);
     if (!origin) return null;
-    if (origin.type === "LoadImage") {
-      const info = origin.images?.[0];
-      const filename = info?.filename || String(origin.widgets_values?.[0] || "");
-      if (filename) {
-        const params = new URLSearchParams({ filename, type: info?.type || "input" });
-        if (info?.subfolder) params.set("subfolder", info.subfolder);
-        return { url: "/view?" + params.toString(), label: filename };
-      }
+    // Load Image style nodes: the chosen file names the reference.
+    const imageWidget = origin.widgets?.find((widget) => widget?.name === "image");
+    const info = origin.images?.[0];
+    const raw = String(imageWidget?.value ?? info?.filename ?? "");
+    if (raw) {
+      const match = raw.match(/^(.*?)(?:\s*\[(input|output|temp)\])?$/);
+      const path = match?.[1] || raw;
+      const type = match?.[2] || info?.type || "input";
+      const slash = path.lastIndexOf("/");
+      const filename = slash === -1 ? path : path.slice(slash + 1);
+      const params = new URLSearchParams({ filename, type });
+      if (slash !== -1) params.set("subfolder", path.slice(0, slash));
+      return { url: "/view?" + params.toString(), label: filename, key: raw };
     }
-    if (origin.imgs?.[0]?.src) return { url: origin.imgs[0].src, label: origin.title || origin.type };
-    return { url: null, label: origin.title || String(origin.type || "image") };
+    if (origin.imgs?.[0]?.src) return { url: origin.imgs[0].src, label: origin.title || origin.type, key: origin.imgs[0].src };
+    return { url: null, label: origin.title || String(origin.type || "image"), key: String(origin.id) };
+  }
+
+  // Cheap signature of everything the reference chips show; checked on canvas draws so a
+  // new file in a Load Image node or a Mode change on the linked UniCanvas shows at once.
+  _referenceSignature() {
+    const { mode } = this._referenceNaming();
+    const parts = [this.state.edit_model ? 1 : 0, mode || ""];
+    for (let n = 1; n <= REFERENCE_LIMIT; n++) {
+      const input = (this.node.inputs || []).find((item) => item?.name === referenceName(n));
+      if (!input) break;
+      parts.push(input.link == null ? "-" : this._resolveInputPreview(referenceName(n))?.key || String(input.link));
+    }
+    return parts.join("|");
+  }
+
+  refreshReferencesIfChanged() {
+    const now = Date.now();
+    if (now - (this._lastReferenceCheck || 0) < 250) return;
+    this._lastReferenceCheck = now;
+    const signature = this._referenceSignature();
+    if (signature === this._renderedReferenceSignature) return;
+    this.renderReferenceSlots();
   }
 
   renderReferenceSlots() {
     this.refList.textContent = "";
+    this._renderedReferenceSignature = this._referenceSignature();
     this.fitNode();
     if (!this.state.edit_model) {
       this.refHint.textContent = "Turn on Edit model to attach reference images.";
+      this._syncSocketLabels();
       return;
     }
-    this.refHint.textContent =
-      "References become <Picture 2..11> (MiniMax H3) / <image2..11> (Qwen-Image-2.1); connecting one reveals the next slot, up to " +
-      REFERENCE_LIMIT + ".";
+    const naming = this._referenceNaming();
+    this.refHint.textContent = referenceConventionHint(naming.index, naming.mode) +
+      " Connecting one reveals the next slot, up to " + REFERENCE_LIMIT + ".";
     // Always show the next free slot, so the first reference socket is discoverable too.
     const visible = Math.max(1, this._connectedReferenceCount());
     for (let n = 1; n <= visible; n++) {
@@ -345,8 +431,12 @@ class UniCanvasConfigWidget {
       const chip = document.createElement("div");
       chip.className = "vnccs-cfg-refchip" + (connected ? " connected" : "");
       const index = document.createElement("span");
-      index.className = "vnccs-cfg-refindex";
-      index.textContent = "<Picture " + (n + 1) + ">";
+      const slot = referenceSlotName(naming.index, naming.mode, n + 1);
+      index.className = "vnccs-cfg-refindex" + (slot.natural ? " natural" : "");
+      index.textContent = slot.text;
+      index.title = slot.natural
+        ? "This model family has no reference tag: describe the image in words"
+        : "Name this reference with " + slot.text + " in the prompt";
       chip.appendChild(index);
       if (connected && preview) {
         if (preview.url) {
@@ -358,6 +448,7 @@ class UniCanvasConfigWidget {
         const label = document.createElement("span");
         label.className = "vnccs-cfg-reflabel";
         label.textContent = preview.label;
+        label.title = preview.label;
         chip.appendChild(label);
         const disconnect = document.createElement("button");
         disconnect.className = "vnccs-cfg-x";
@@ -378,6 +469,23 @@ class UniCanvasConfigWidget {
       }
       this.refList.appendChild(chip);
     }
+    this._syncSocketLabels();
+  }
+
+  // A connected reference socket shows the chosen file name instead of reference_image_N.
+  _syncSocketLabels() {
+    let changed = false;
+    for (let n = 1; n <= REFERENCE_LIMIT; n++) {
+      const input = (this.node.inputs || []).find((item) => item?.name === referenceName(n));
+      if (!input) continue;
+      const preview = input.link != null && this.state.edit_model ? this._resolveInputPreview(referenceName(n)) : null;
+      const label = preview?.label ? preview.label : undefined;
+      if (input.label === label) continue;
+      if (label) input.label = label;
+      else delete input.label;
+      changed = true;
+    }
+    if (changed) this.node.setDirtyCanvas?.(true, true);
   }
 
   _updateStackBadge() {
@@ -563,7 +671,7 @@ app.registerExtension({
       this.addDOMWidget("vnccs_config_ui", "ui", configWidget.container, {
         serialize: false,
         hideOnZoom: false,
-        getMinHeight: () => configWidget.contentHeight(),
+        getMinHeight: () => configWidget.minHeight(),
       });
       // The widget needs room to render its rows correctly (user request): the
       // node never goes below 300 px wide.
@@ -585,6 +693,12 @@ app.registerExtension({
     nodeType.prototype.onConnectionsChange = function () {
       onConnectionsChange?.apply(this, arguments);
       this.configWidget?.onGraphConnectionsChanged?.();
+    };
+    const onDrawForeground = nodeType.prototype.onDrawForeground;
+    nodeType.prototype.onDrawForeground = function () {
+      const result = onDrawForeground?.apply(this, arguments);
+      this.configWidget?.refreshReferencesIfChanged?.();
+      return result;
     };
     const onConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function () {

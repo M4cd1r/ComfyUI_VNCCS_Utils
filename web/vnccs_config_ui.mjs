@@ -12,7 +12,8 @@ export function ensureConfigStyles(doc = document) {
   const style = doc.createElement("style");
   style.id = STYLE_ID;
   style.textContent = `
-.vnccs-config-ui { container-type: inline-size; display:flex; flex-direction:column; gap:8px; padding:8px; color:#ece7f3; font:12px/1.35 Inter, system-ui, sans-serif; min-width:0; }
+.vnccs-config-ui { container-type: inline-size; display:flex; flex-direction:column; gap:8px; padding:8px; color:#ece7f3; font:12px/1.35 Inter, system-ui, sans-serif; min-width:0; max-height:100%; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:#6b5a80 transparent; }
+.vnccs-config-ui > * { flex:0 0 auto; }
 .vnccs-config-ui, .vnccs-config-ui * { box-sizing:border-box; }
 .vnccs-cfg-intro { display:flex; flex-direction:column; gap:6px; padding:8px 10px; border:1px solid #3a2f47; border-radius:10px; background:linear-gradient(180deg,#1d1726,#16121c); }
 .vnccs-cfg-intro-title { display:flex; align-items:center; gap:6px; font-weight:700; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#ffb3c2; }
@@ -61,6 +62,7 @@ export function ensureConfigStyles(doc = document) {
 .vnccs-cfg-refchip img { width:34px; height:34px; object-fit:cover; border-radius:5px; background:#0c0a10; }
 .vnccs-cfg-refchip .vnccs-cfg-reflabel { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#c9bfd6; }
 .vnccs-cfg-refchip .vnccs-cfg-refindex { color:#ffd45c; font-weight:700; flex:0 0 auto; font-size:11px; }
+.vnccs-cfg-refchip .vnccs-cfg-refindex.natural { color:#a79fb3; font-weight:600; font-style:italic; }
 .vnccs-cfg-hint { color:#8f86a0; font-size:11px; }
 .vnccs-cfg-x { border:0; background:transparent; color:#f08fa3; cursor:pointer; font:inherit; padding:0 2px; }
 .vnccs-cfg-x:hover { color:#ffb3c2; }

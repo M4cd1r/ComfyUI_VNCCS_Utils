@@ -38,6 +38,8 @@ export const TOOL_SHORTCUTS = Object.freeze({
 
 const FULLSCREEN_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg>';
+const EXIT_FULLSCREEN_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>';
 const TRUE_FULLSCREEN_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M13 7h4a2 2 0 0 1 2 2v4"/><path d="M11 17H7a2 2 0 0 1-2-2v-4"/></svg>';
 
@@ -53,16 +55,17 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-menu,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-bottom,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !important; }
 .vnccs-uc-stage-wrap { position: relative; }
-.vnccs-uc2-fullscreen-btn { position: absolute; top: 10px; right: 10px; z-index: 6; }
+.vnccs-uc2-fullscreen-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.vnccs-uc2-fullscreen-btn.exit { background: #e5484d; border-color: #e5484d; color: #fff; }
+.vnccs-uc2-fullscreen-btn.exit:hover { background: #f2555a; }
 .vnccs-uc2-fullscreen-portal { position: fixed; inset: 0; z-index: 2147482000; display: flex; flex-direction: column; background: #0e0b12; }
 .vnccs-uc2-fullscreen-portal > .vnccs-unicanvas { flex: 1 1 auto; min-height: 0; min-width: 0; }
 .vnccs-uc2-fullscreen-chrome { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #171320; color: #e8e8f0; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
 .vnccs-uc2-fullscreen-title { flex: 1 1 auto; font: 700 13px/1.2 inherit; letter-spacing: 0.04em; text-transform: uppercase; }
-.vnccs-uc2-true-fullscreen, .vnccs-uc2-fullscreen-exit { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--uc-border, rgba(255, 255, 255, 0.14)); border-radius: 8px; background: var(--uc-surface, rgba(255, 255, 255, 0.045)); color: inherit; cursor: pointer; font: inherit; }
+.vnccs-uc2-true-fullscreen { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--uc-border, rgba(255, 255, 255, 0.14)); border-radius: 8px; background: var(--uc-surface, rgba(255, 255, 255, 0.045)); color: inherit; cursor: pointer; font: inherit; }
 .vnccs-uc2-true-fullscreen svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .vnccs-uc2-true-fullscreen.active { border-color: rgba(255, 143, 163, 0.7); background: rgba(255, 143, 163, 0.18); color: #ffdce5; }
-.vnccs-uc2-fullscreen-exit { font-size: 15px; font-weight: 800; }
-.vnccs-uc2-true-fullscreen:hover, .vnccs-uc2-fullscreen-exit:hover { background: var(--uc-hover, rgba(255, 255, 255, 0.1)); }
+.vnccs-uc2-true-fullscreen:hover { background: var(--uc-hover, rgba(255, 255, 255, 0.1)); }
 .vnccs-uc2-output-actions { display: flex; gap: 6px; padding: 8px 8px 0; }
 .vnccs-uc2-output-actions .vnccs-uc-btn { flex: 1 1 auto; }
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
@@ -215,17 +218,8 @@ function buildUniCanvasFullscreenChrome(widget) {
     event.stopPropagation();
     toggleUniCanvasTrueFullscreen(widget);
   });
-  const exitBtn = document.createElement("button");
-  exitBtn.type = "button";
-  exitBtn.className = "vnccs-uc2-fullscreen-exit";
-  exitBtn.title = "Exit fullscreen";
-  exitBtn.textContent = "✕";
-  exitBtn.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    exitUniCanvasFullscreen(widget);
-  });
-  chrome.append(title, trueFullscreenBtn, exitBtn);
+  // Leaving fullscreen is the corner-bar fullscreen button, which turns into a red X.
+  chrome.append(title, trueFullscreenBtn);
   return { chrome, trueFullscreenBtn };
 }
 
@@ -293,6 +287,7 @@ export function enterUniCanvasFullscreen(widget) {
     onKeyPress,
     onFullscreenChange,
   };
+  syncUniCanvasFullscreenButton(widget);
   // The ResizeObserver re-lays out; the view fits the new size.
   widget.resize();
   widget.fitView();
@@ -324,26 +319,40 @@ export function exitUniCanvasFullscreen(widget) {
     }
   }
   widget._vnccsFullscreen = null;
+  syncUniCanvasFullscreenButton(widget);
   if (!widget._disposed) {
     widget.resize();
     widget.render();
   }
 }
 
+function syncUniCanvasFullscreenButton(widget) {
+  const btn = widget?._vnccsFullscreenButton;
+  if (!btn) return;
+  const active = Boolean(widget._vnccsFullscreen);
+  const label = active ? "Exit fullscreen" : "Fullscreen";
+  btn.classList.toggle("exit", active);
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  btn.innerHTML = active ? EXIT_FULLSCREEN_ICON_SVG : FULLSCREEN_ICON_SVG;
+}
+
 function installUniCanvasFullscreenButton(widget) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "vnccs-uc-icon vnccs-uc2-fullscreen-btn";
-  btn.title = "Fullscreen";
-  btn.setAttribute("aria-label", "Fullscreen");
-  btn.innerHTML = FULLSCREEN_ICON_SVG;
   btn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    enterUniCanvasFullscreen(widget);
+    if (widget._vnccsFullscreen) exitUniCanvasFullscreen(widget);
+    else enterUniCanvasFullscreen(widget);
   });
-  widget.stageWrap.appendChild(btn);
+  // Sits right of the settings gear in the corner bar; in fullscreen it is the red close button.
+  const gear = widget.gearBtn;
+  if (gear?.parentNode) gear.insertAdjacentElement("afterend", btn);
+  else widget.stageWrap.appendChild(btn);
   widget._vnccsFullscreenButton = btn;
+  syncUniCanvasFullscreenButton(widget);
 }
 
 export function buildUniCanvasCompositeCanvas(widget) {
@@ -405,15 +414,15 @@ export async function newUniCanvasDocument(widget) {
 }
 
 function installUniCanvasOutputActions(widget) {
+  // Only the standalone tab needs these: on a node the composite already goes to the
+  // node's image output, so Save to output would just duplicate it.
+  if (!widget.standalone) return;
   const row = document.createElement("div");
   row.className = "vnccs-uc2-output-actions";
   row.append(
-    widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory")
+    widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"),
+    widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas")
   );
-  if (widget.standalone) {
-    // Standalone mode replaces the node's image socket with Save to output + New.
-    row.append(widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas"));
-  }
   widget.left.insertBefore(row, widget.left.firstChild);
   widget._vnccsOutputActions = row;
 }

@@ -23,7 +23,7 @@ import {
   UNICANVAS_STANDALONE_SETTING_ID,
 } from "./vnccs_unicanvas_modes.mjs";
 import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -940,6 +940,7 @@ class UniCanvasWidget {
     this.samStatus.className = "vnccs-uc-sam-status";
     this.samPanel.append(this.samClearBtn, this.samModelSelect, this.samAddBtn, this.samSubtractBtn, this.samInvertBtn, this.samPointsLabel, this.samSegmentBtn, this.samApplyBtn, this.samStatus);
     this.stageWrap.appendChild(this.samPanel);
+    this.buildPromptGuideOverlay();
 
     this.left = document.createElement("div");
     this.left.className = "vnccs-uc-left";
@@ -1022,7 +1023,6 @@ class UniCanvasWidget {
       <div class="vnccs-uc-field">
         <div class="vnccs-uc-prompt-head"><span>Prompt</span><button class="vnccs-uc-prompt-help" type="button" data-action="prompt-help" data-prompt-help aria-expanded="false" aria-label="How to prompt this model" title="How to prompt this model">?</button></div>
         <textarea class="vnccs-uc-textarea" data-setting="positive" aria-label="Prompt" placeholder="positive prompt"></textarea>
-        <div class="vnccs-uc-prompt-guide" data-prompt-guide hidden></div>
       </div>
       <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
       <div class="vnccs-uc-config-banner" data-config-banner hidden></div>
@@ -6725,14 +6725,79 @@ class UniCanvasWidget {
     this.autoResizePromptTextareas();
   }
 
+  // The "?" guide opens over the canvas area only: the canvas dims behind it while the
+  // prompt in the left sidebar stays editable, so the guide can be read while typing.
+  buildPromptGuideOverlay() {
+    const overlay = document.createElement("div");
+    overlay.className = "vnccs-uc-prompt-guide";
+    overlay.dataset.promptGuide = "";
+    overlay.hidden = true;
+    const card = document.createElement("div");
+    card.className = "vnccs-uc-prompt-guide-card";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", "How to prompt this model");
+    const bar = document.createElement("div");
+    bar.className = "vnccs-uc-prompt-guide-bar";
+    const title = document.createElement("strong");
+    title.textContent = "Prompt guide";
+    this.promptGuideCopyBtn = this._button("Copy", "vnccs-uc-btn", () => void this.copyPromptGuide(), "Copy the guide, e.g. to paste it into an LLM that writes the prompt");
+    const close = this._button("×", "vnccs-uc-icon", () => this.togglePromptGuide(false), "Close");
+    close.setAttribute("aria-label", "Close prompt guide");
+    bar.append(title, this.promptGuideCopyBtn, close);
+    this.promptGuideBody = document.createElement("div");
+    this.promptGuideBody.className = "vnccs-uc-prompt-guide-body";
+    card.append(bar, this.promptGuideBody);
+    overlay.append(card);
+    overlay.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      if (e.target === overlay) this.togglePromptGuide(false);
+    });
+    overlay.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+    overlay.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.togglePromptGuide(false);
+    });
+    this.promptGuidePanel = overlay;
+    this.stageWrap.appendChild(overlay);
+  }
+
   togglePromptGuide(open) {
-    const panel = this.container.querySelector("[data-prompt-guide]");
+    const panel = this.promptGuidePanel;
     const button = this.container.querySelector("[data-prompt-help]");
     if (!panel) return;
     const show = typeof open === "boolean" ? open : panel.hidden;
     panel.hidden = !show;
     button?.setAttribute("aria-expanded", String(show));
-    if (show) this.syncPromptGuide();
+    if (show) {
+      this.syncPromptGuide();
+      this.promptGuideBody.scrollTop = 0;
+    }
+  }
+
+  async copyPromptGuide() {
+    const text = promptGuideText(resolvePromptGuide(this.modelDescriptors, this.settings.generation_mode));
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch (_) {
+      // Clipboard API needs a secure context; fall back to a hidden textarea copy.
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      this.container.appendChild(area);
+      area.select();
+      try { copied = document.execCommand("copy"); } catch (_) { copied = false; }
+      area.remove();
+    }
+    const button = this.promptGuideCopyBtn;
+    if (!button) return;
+    button.textContent = copied ? "Copied" : "Copy failed";
+    clearTimeout(this._promptGuideCopyTimer);
+    this._promptGuideCopyTimer = setTimeout(() => { button.textContent = "Copy"; }, 1400);
   }
 
   // Prompt help comes from the active family's backend descriptor (capabilities.prompt_guide).
@@ -6742,8 +6807,7 @@ class UniCanvasWidget {
     if (positive) positive.placeholder = guide?.hint || "positive prompt";
     const button = this.container.querySelector("[data-prompt-help]");
     if (button) button.title = guide ? `How to prompt ${guide.label}` : "How to prompt this model";
-    const panel = this.container.querySelector("[data-prompt-guide]");
-    if (panel && !panel.hidden) renderPromptGuide(panel, guide);
+    if (this.promptGuidePanel && !this.promptGuidePanel.hidden) renderPromptGuide(this.promptGuideBody, guide);
   }
 
   resizeTextareaToContent(textarea) {
@@ -7375,7 +7439,8 @@ class UniCanvasWidget {
     title.textContent = "Edit model reference images";
     const hint = document.createElement("div");
     hint.style.color = "rgba(232,232,240,.6)";
-    hint.textContent = "Up to 4 images. The first uploaded image is Picture 2 in the prompt.";
+    // The prompt name of each reference follows the active family (Mode).
+    hint.textContent = "Up to 4 images. " + referenceConventionHint(this.modelDescriptors, this.settings.generation_mode);
     panel.append(title, hint);
     const grid = document.createElement("div");
     grid.className = "vnccs-uc-refs-grid";
@@ -7383,7 +7448,7 @@ class UniCanvasWidget {
     const render = () => {
       grid.innerHTML = "";
       this.editReferenceImages().forEach((data, index) => {
-        const label = "Picture " + (index + 2);
+        const label = referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + 2).text;
         const cell = document.createElement("div");
         cell.className = "vnccs-uc-refs-cell";
         const marker = document.createElement("div");

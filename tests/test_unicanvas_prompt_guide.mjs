@@ -136,7 +136,7 @@ test("the guide renders as text nodes only", () => {
 test("the widget wires the prompt help to the backend descriptors", () => {
   assert.match(mainSource, /from "\.\/vnccs_unicanvas_prompt_guide\.mjs"/);
   assert.match(mainSource, /data-prompt-help/);
-  assert.match(mainSource, /data-prompt-guide/);
+  assert.match(mainSource, /dataset\.promptGuide = ""/, "the guide overlay keeps its data-prompt-guide hook");
   assert.match(mainSource, /indexModelDescriptors\(data\.model_modules\)/);
   assert.match(mainSource, /syncPromptGuide\(\)/);
   assert.match(mainSource, /PROMPT_GUIDE_CSS/);

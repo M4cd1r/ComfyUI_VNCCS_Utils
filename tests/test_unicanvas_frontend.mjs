@@ -50,10 +50,10 @@ test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet defau
     assert.ok(source.includes('["minimax_h3", "MiniMax H3"]'), "the edit-model backend needs the MiniMax H3 choice");
 });
 
-test("edit model reference images upload next to Steps with Picture markers", () => {
+test("edit model reference images upload next to Steps with per-family slot markers", () => {
     assert.ok(source.includes('data-action="edit-refs"'), "the cards icon button must exist");
     assert.ok(source.includes("data-edit-refs-badge"), "the icon must carry a count badge");
-    assert.ok(source.includes('"Picture " + (index + 2)'), "uploaded images must be marked Picture 2..");
+    assert.ok(source.includes("referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + 2)"), "uploaded images are marked with the active family's slot 2.. name");
     assert.ok(source.includes("edit_reference_images"), "the uploads must persist in the widget settings");
     assert.match(source, /openEditReferenceImages\(\)/, "the popover entry point must exist");
 });
