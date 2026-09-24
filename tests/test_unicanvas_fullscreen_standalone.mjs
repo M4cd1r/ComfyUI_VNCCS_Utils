@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 // All regexes avoid literal line breaks so the suite stays CRLF-tolerant on
@@ -85,7 +86,11 @@ test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
     assert.ok(/icon:\s*UNICANVAS_SIDEBAR_ICON_CLASS/.test(modesSource), "the tab must register an icon");
     assert.ok(modesSource.includes('const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";'),
         "the icon class must be a stable marker");
-    assert.ok(modesSource.includes("data:image/svg+xml"), "the icon is an inline SVG data URI");
+    assert.ok(modesSource.includes('new URL("./assets/unicanvas_icon.svg", import.meta.url).href'),
+        "the icon is the shipped UniCanvas SVG asset");
+    const icon = readFileSync(new URL("../web/assets/unicanvas_icon.svg", import.meta.url), "utf8");
+    assert.ok(icon.startsWith("<svg") && icon.includes('viewBox="0 0 32 32"') && icon.includes("stroke-dasharray"),
+        "a layer stack with a dashed selection marquee");
     assert.ok(modesSource.includes('background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat'),
         "the icon must render from CSS on the sidebar tab <i>");
     assert.ok(modesSource.includes('type: "custom"'), "the tab renders a custom DOM container");

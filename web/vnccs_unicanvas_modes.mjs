@@ -17,11 +17,10 @@ const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";
 const UNICANVAS_MODE_STYLE_ID = "vnccs-unicanvas-modes-styles";
 const UNICANVAS_FULLSCREEN_CLASS = "vnccs-uc-fullscreen";
 
-// Inline SVG data URI behind the sidebar icon class: the ComfyUI sidebar tab
-// strip renders the icon value as a CSS class on an <i> element, so painting the
-// SVG from CSS guarantees a visible icon regardless of the icon font.
-const UNICANVAS_SIDEBAR_ICON_SVG =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e8e8f0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Cpath d='M3 16l5-5 3.5 3.5 3-3L21 18'/%3E%3Ccircle cx='8.5' cy='8' r='1.4'/%3E%3C/svg%3E";
+// The UniCanvas sidebar icon (web/assets/unicanvas_icon.svg): a stack of layers with a dashed
+// selection around the active one. The ComfyUI sidebar tab strip renders the icon value as a CSS
+// class on an <i> element, so the SVG is painted from CSS and stays visible without an icon font.
+const UNICANVAS_SIDEBAR_ICON_SVG = new URL("./assets/unicanvas_icon.svg", import.meta.url).href;
 
 const BRUSH_SIZE_MIN = 1;
 const BRUSH_SIZE_MAX = 220;
@@ -43,7 +42,7 @@ const TRUE_FULLSCREEN_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M13 7h4a2 2 0 0 1 2 2v4"/><path d="M11 17H7a2 2 0 0 1-2-2v-4"/></svg>';
 
 const UNICANVAS_MODE_STYLES = `
-i.${UNICANVAS_SIDEBAR_ICON_CLASS} { display: inline-block; width: 1.35em; height: 1.35em; background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat; }
+i.${UNICANVAS_SIDEBAR_ICON_CLASS} { display: inline-block; width: 1.6em; height: 1.6em; background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat; }
 .vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 2147481000; background: #0e0b12; }
 .vnccs-uc2-standalone-shell > .vnccs-unicanvas { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; }
 .vnccs-uc2-config-hint { margin: 2px 8px 0; padding: 6px 8px; border: 1px dashed rgba(255, 143, 163, 0.35); border-radius: 8px; color: #f3c9d2; font-size: 12px; line-height: 1.3; }
