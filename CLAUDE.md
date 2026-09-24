@@ -114,5 +114,6 @@ Conventions:
 ## Workflow notes
 
 - Bump nothing in `pyproject.toml` unless releasing (the publish workflow triggers on it).
-- UI changes need Before/After evidence (`tests/e2e/evidence.mjs`, see `AGENTS.md`).
+- UI changes need an After capture only (`node evidence.mjs --topic <topic> --phase after`, see
+  `AGENTS.md`); no Before captures or pairs.
 - After frontend changes on a live instance, hard-reload (Ctrl+Shift+R).

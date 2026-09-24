@@ -60,18 +60,15 @@ through the read-only `window.__VNCCS_UC_E2E__` hook (`listLayers`, `getLayerPix
 `helpers/measure.mjs`. `PW_CHROMIUM_PATH=<chrome>` reuses a preinstalled Chromium instead of
 the one pinned by `@playwright/test`.
 
-Evidence for UI changes (Before/After, labels exactly `Before`/`After`, plus measured
-geometry) is produced by `node evidence.mjs --topic <topic> --phase before|after|compose`
-(workdir `tests/e2e`) and written to `tests/e2e/evidence/<topic>/` as `<phase>.png`,
-`<phase>.geometry.json` and, on `compose`, a labelled `<topic>.pair.png` plus a standalone
-`<topic>.after.png`. Keep the local copy and host it on an `evidence/<topic>` branch when
-opening a PR. Interaction-heavy topics may need their own scenario step in `evidence.mjs`
-(the per-task artifacts record which scenario a topic's pair came from). Built-in scenarios:
-`settings-panel` (opens the gear popover), `pose-editor` (imports `fixtures/backdrop.png`, then
-opens the pose editor - the Pose Studio tool, or `Add pose layer` on older builds),
+Evidence for UI changes is an **After** capture only - do not produce Before captures or
+Before/After pairs. Run `node evidence.mjs --topic <topic> --phase after` (workdir
+`tests/e2e`); it writes `tests/e2e/evidence/<topic>/after.png` plus the measured geometry in
+`after.geometry.json`. Keep the local copy and host it on an `evidence/<topic>` branch when
+opening a PR. Interaction-heavy topics may need their own scenario step in `evidence.mjs`.
+Built-in scenarios: `settings-panel` (opens the gear popover), `pose-editor` (imports
+`fixtures/backdrop.png`, then opens the pose editor with the Pose Studio tool),
 `config-override` (a `VNCCS_Config` node linked to a UniCanvas node) and `icons` (sidebar and
-tool column crop). ComfyUI resolves the custom-node path at startup, so a `before` capture of an
-older commit needs the server restarted on a worktree of that commit.
+tool column crop).
 
 ## Test platform (Docker)
 
