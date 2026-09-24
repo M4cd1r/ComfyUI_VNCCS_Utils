@@ -39,7 +39,7 @@ seed?, character?: { id, name }, sourceName?, derivedFrom?, assetId?, heightFact
   `_stageGeneratedImages` stores `{ prompt, negative, mode, model family/ckpt, loras, seed,
   steps, cfg, sampler, scheduler, denoise, bbox, historyId }` on each item), `importFile` /
   `createPsdLayer` (import/psd with the file or PSD layer name), `duplicateActiveLayer`
-  (duplicate, `derivedFrom`), `createUniCanvasPoseLayer` / `rasterizeUniCanvasPoseLayer`, and
+  (duplicate, `derivedFrom`), pose layer creation in `activatePoseTool` and pose rasterize, and
   the new sites in plans 01-08.
 - It is serialized in `serializeLayer` and restored as is. Old layers get
   `{ origin: "unknown" }`. It is shown in a layer row tooltip and in the history gallery.
@@ -121,13 +121,15 @@ library** (`vnccs_unicanvas/library/`), for cross-project reuse (a recurring cas
 
 Asset kinds and payloads (`asset.json` + blobs):
 
-- `character`: name, VNCCS character id (if any), **identity reference image** (used by plan
-  02), `heightFactor` (plan 08), default morphs, tags, and an optional linked **sprite set**
+- `character`: name, **reference image** (bound to pose mannequins as their character
+  reference, plans 01 and 02), identity prompt, `heightFactor` (plan 08), default mannequin
+  mesh morphs, tags, and an optional linked **sprite set**
   (plan 03 variants as blobs with their anchor/faceRect).
 - `background`: an image (+ optional depth map cache and the perspective model from plan 08, so
   a reused background brings its horizon calibration).
 - `prop`: an image with alpha and an anchor.
-- `pose`: a pose layer `poseData` (single or multi-character, plan 01).
+- `pose`: a pose layer's `layer.pose` (the studio scene, viewport and rect, single or
+  multi-character, plan 01), without the bound references.
 - `skin`: a VN preview skin (plan 07).
 - `preset`: a generation settings snapshot (model family, ckpt, LoRA stack, sampler, steps,
   cfg, prompt templates), so the look of a VN stays the same across scenes.
@@ -144,10 +146,11 @@ UX:
   depth-scale on, it is scaled for the drop y). Characters insert their sprite set as a sprite
   layer (plan 03), or a pose layer with the identity preselected when the asset has no sprites.
 - **Update from library** / **Push to library** on layers linked to an asset (a changed
-  identity reference or new sprite variants propagate on request, never automatically).
-- The character dropdown of pose layers (the `/vnccs/list_characters` source) also lists
-  library characters (`source: "library"`), and plan 02 bakes them with their identity
-  reference.
+  reference image or new sprite variants propagate on request, never automatically).
+- The pose **Character reference card** (plan 01 rows) gets a third source next to *From
+  layer* and *Upload image*: **From library** (`{ source: "library", assetId }`). Binding a
+  library character also applies its default mesh morphs to that mannequin, and plan 02 bakes
+  it with the library reference image.
 
 ## Phase C - Generation history
 

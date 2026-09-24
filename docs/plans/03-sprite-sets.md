@@ -34,10 +34,10 @@ A new layer type **`sprite`**:
     stored at exactly this size.
   - `anchor`: `{ x, y }` in rect space. Default is the feet contact point (bottom center of the
     alpha bbox, refined to the lowest opaque rows). It is used by plans 04, 06 and 08.
-  - `faceRect`: the head/face region in rect space. For sprites created from a pose layer it is
-    computed from the head bone projected through the capture camera (the head box +15%
-    margin). Otherwise it is set by the user with a rectangle drag in the sprite panel. It is
-    the default edit region for expressions.
+  - `faceRect`: the head/face region in rect space. For sprites created from a baked pose layer
+    it is the bake's `headRect` (plan 02: the head bone box projected through the capture camera
+    at bake time, +15% margin). Otherwise it is set by the user with a rectangle drag in the
+    sprite panel. It is the default edit region for expressions.
   - `variants[]`: `{ id, name, kind: "expression" | "outfit" | "pose" | "custom", prompt,
     seed, status: "empty" | "ready" | "failed", pixels (runtime canvas), createdAt, meta }`.
     `meta` is the plan 10 provenance.
@@ -53,10 +53,11 @@ everywhere.
 
 ## Creating a sprite layer
 
-- **From a baked pose layer** (context menu "Create sprite set"): the baked pixels become the
-  `neutral` variant. `faceRect` comes from the head bone, and the anchor comes from the feet
-  bones. The pose layer stays (hidden) and is linked by `sourceLayerId`, so a re-pose can later
-  regenerate the base.
+- **From a baked pose layer** (context menu "Create sprite set", one baked character; split
+  multi-character layers first, plan 01): the baked pixels become the `neutral` variant.
+  `faceRect` comes from the bake's `headRect`, and the anchor comes from the projected feet
+  bones (captured at bake time next to `headRect`). The pose layer stays (hidden) and is linked
+  by `sourceLayerId`, so a re-pose plus re-bake can later regenerate the base.
 - **From any raster layer** (context menu "Create sprite set"): the layer pixels become
   `neutral`, the anchor is detected from alpha, and `faceRect` is empty until the user drags it.
 - The sprite layer lands in the character's group (plan 05) and takes the character's name.
@@ -81,7 +82,9 @@ Pipeline for one variant:
 2. Region: for `expression` variants, an inpaint of `faceRect` with a soft-edged mask, so the
    body stays pixel-identical. For `outfit`, the full alpha with the face region protected.
 3. Model: the current edit family (edit families are preferred; non-edit families use the
-   masked inpaint path) with the identity reference (plan 02) as `Picture 2` when available.
+   masked inpaint path). The character's reference image (the pose layer's bound reference,
+   plan 01, or the library character, plan 10) goes in as `Picture 2` when the family takes
+   reference images.
 4. Result: the generated pixels are composited over the neutral variant **only inside the
    region**, with the neutral alpha preserved (the silhouette cannot change for expressions).
    For outfits, the alpha is taken from the result after background removal and re-anchored
@@ -116,8 +119,8 @@ one `historyGroup`.
 - `web/vnccs_unicanvas_layer_tools.mjs`: menu items `create-sprite-set` (raster and baked pose
   layers) and `split-variant-to-layer` (sprite: copies the active variant into a new raster
   layer).
-- `web/vnccs_unicanvas_pose_layers.mjs`: exports the head/feet projection helper used for
-  `faceRect` and `anchor`.
+- `web/vnccs_unicanvas_pose.mjs` / `web/vnccs_unicanvas_bake.mjs`: the bake records store the
+  projected head and feet points used for `faceRect` and `anchor`.
 - `nodes/unicanvas.py`: none. It reuses the draw route with the existing inpaint mask payload.
 
 ## Tests (CPU, generation stubbed)

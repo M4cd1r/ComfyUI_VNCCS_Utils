@@ -16,8 +16,8 @@ inside the plans.
 
 | # | Plan | Summary |
 |---|---|---|
-| 01 | [Multi-character pose scenes](01-multi-character-pose-scenes.md) | One pose layer holds up to 4 characters under a shared camera, including two-person interaction poses. |
-| 02 | [Character bake and scene Generate](02-character-bake-and-scene-generate.md) | Every mannequin can be baked into its character on demand; the final GENERATE bakes all characters that are still mannequins, then runs the scene edit. |
+| 01 | [Multi-character pose scenes](01-multi-character-pose-scenes.md) | Every mannequin of a live pose layer (up to 4 per Pose Studio scene) is bound to its own character reference, with interaction presets, per-character visibility masks and split/merge. |
+| 02 | [Character bake and scene Generate](02-character-bake-and-scene-generate.md) | Every bound mannequin can be baked into its character on demand through the existing `pose_edit` path; the final GENERATE bakes every character that is still a mannequin, then runs the scene edit. |
 | 03 | [Sprite sets](03-sprite-sets.md) | Expression and outfit variants of one character, pixel-aligned on one anchor, managed as one sprite layer. |
 | 04 | [Scene states](04-scene-states.md) | Named snapshots of layer visibility, placement, sprite variant and opacity (layer comps), switched in one click and exported in bulk. |
 | 05 | [Layer groups and auto naming](05-layer-groups-and-auto-naming.md) | Nested layer groups plus automatic layer and folder names from provenance and a small local LLM/VLM. |
@@ -79,6 +79,10 @@ them in full.
 - **Backend routes live in `nodes/unicanvas.py`** under `/vnccs/unicanvas/...`. They run heavy
   work in `asyncio.to_thread`, return `{error}` with a non-2xx status on failure, and
   lazy-download models on first use like the BiRefNet path.
+- **Snapshot of the code base.** The plans are written against `unicanvas-next` after the
+  live-Pose-Studio-layers change (the retired `layer.poseData` mannequin system, bridge and
+  "Generate character" recipe are gone). If the pose layer contract changes again, update
+  plans 01, 02, 03, 06 and 08 before implementing them.
 - **No GPU in E2E.** Specs in `tests/e2e/` must pass on the CPU Docker lane. Anything that needs
   inference is tested through a stubbed route (a `page.route` interception returning a fixture
   PNG) plus a Lane B manual check.
@@ -93,8 +97,14 @@ them in full.
 - **Layer**: an entry of `widget.layers` (`raster`, `mask`, `pose`, plus `group` and `sprite`
   added by these plans).
 - **Provenance / `layer.meta`**: where a layer's pixels came from (plan 10 phase A).
-- **Bake**: turning a mannequin render into a rendered character with the character-generation
-  recipe, while keeping the pose data (plan 02).
-- **Anchor**: the canonical point a character is placed by. Default is the feet contact point;
-  the torso anchor from spec 5.1b is used for pose re-renders (plans 01, 03, 08).
+- **Pose layer**: a `type: "pose"` layer holding a live Pose Studio scene in `layer.pose`
+  (`studio`, `rect`, `viewport`, `character`), edited through the embedded `PoseStudioWidget`
+  in `web/vnccs_unicanvas_pose.mjs` (`docs/UNICANVAS_POSE_LAYERS.md`).
+- **Character reference**: the image bound to a mannequin (`From layer` / `Upload image`, plus
+  `From library` from plan 10); per mannequin from plan 01 on.
+- **Bake**: turning a mannequin into its rendered character through the existing `pose_edit`
+  contract (QiE2511 / Klein9b), stored on the pose layer next to the mannequin render, which is
+  kept, so the pose stays editable (plan 02).
+- **Anchor**: the canonical point a character is placed by. The default is the feet contact
+  point (plans 03, 08).
 - **Scene state**: a named snapshot of the scene's presentational properties (plan 04).

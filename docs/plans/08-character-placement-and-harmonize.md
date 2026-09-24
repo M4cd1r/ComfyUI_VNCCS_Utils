@@ -20,8 +20,10 @@ tools that together make a character **sit in the scene**:
 - Color match (`web/vnccs_unicanvas_layer_tools.mjs`: `openColorMatchPopover`, realtime
   preview while dragging the strength, commit on release; route `/vnccs/unicanvas/color_match`).
 - Remove background, SAM segmentation (`/vnccs/unicanvas/segment`), inpaint/edit generation.
-- Pose layers with a camera and 3D mannequins (plan 01 adds ID masks from the same capture
-  path). Plans 03 and 01 define the **feet anchor** of sprite/pose layers.
+- Live pose layers with a camera and 3D mannequins (`web/vnccs_unicanvas_pose.mjs`). Plan 01
+  adds ID masks from the same capture path. Plans 02 and 03 record the **feet anchor** of
+  baked/sprite characters.
+- Panorama mode (`web/vnccs_unicanvas_panorama.mjs`) has its own spherical camera.
 - Transform tools (move/scale/rotate/perspective via `transformDraft`) and snap.
 
 ## 1. Ground plane and depth-correct scaling
@@ -41,7 +43,8 @@ heightPx }, groundTint }`, serialized with the state.
   proportional to (feetY - horizonY). So the **expected height at feet y** =
   `heightPx * (y - horizonY) / (referenceFeetY - horizonY)`. Characters may carry a relative
   height factor (`layer.meta.heightFactor`, default 1: 0.8 for a child, 1.1 for a tall
-  character), taken from the pose layer morph `height` when present.
+  character). For pose layers it is derived from the studio character's mesh `height` morph
+  when present.
 
 ### UX
 
@@ -106,8 +109,9 @@ stages. Each one is independently toggled and previewed live:
    character": the background composite in the character's bbox dilated by 25%, excluding the
    character. It uses the existing realtime strength slider path.
 2. **Relight (quick, client-side)** - for pose layers and baked characters with a normal pass:
-   the plan 01 capture additionally renders a **normal pass** (camera-space normals, the same
-   camera and size, stored as `layer.poseNormalCanvas` and serialized like the ID canvas).
+   `UniCanvasPoseEditor` gets `captureNormalPass(size)` next to plan 01's ID pass
+   (camera-space normals, the same camera and size, captured on `commit()`, stored as
+   `layer.poseNormalCanvas` and serialized to the state cache like the ID canvas).
    Shading = ambient + intensity x max(0, N·L) with the scene light, applied to the character
    pixels as a multiply/screen blend at a `strength` param. It runs in a small WebGL fragment
    pass (fallback: a 2D canvas per-pixel loop at half resolution during interaction, full
@@ -120,7 +124,7 @@ stages. Each one is independently toggled and previewed live:
    settings: "Relight the character to match the scene lighting and colors, blend the edges
    naturally, keep the identity, pose, outfit and silhouette unchanged." Results go to the
    staging popover. Accepting **replaces the character layer's pixels** (one history entry),
-   and the silhouette drift guard from plan 02 applies (the alpha bbox must stay within 3%).
+   and the silhouette drift guard from plan 02 applies (the alpha bbox must stay within 5%).
 
 Stages 1-2 commit into the layer as one history entry on "Apply". Until then they are a live
 preview over the untouched pixels. Cancel restores the pixels, the same pattern as the color
@@ -143,8 +147,7 @@ later leaves the occluder in place. A table stays a table.
   move hook, horizon estimation client, light model and gizmo.
 - New `web/vnccs_unicanvas_harmonize.mjs`: shadow layers and their regeneration, the harmonize
   panel, the relight WebGL pass, the AI harmonize request/staging, and the occluder builder.
-- `web/vnccs_unicanvas_pose_layers.mjs`: the normal pass in the capture (next to the plan 01 ID
-  pass).
+- `web/vnccs_unicanvas_pose.mjs`: the normal pass in `commit()` (next to the plan 01 ID pass).
 - `web/vnccs_unicanvas.js`: the tool registration (`G`), the move-tool hook, serialization of
   `scenePerspective`, `sceneLight`, `shadow`, `poseNormalCanvas`; history kinds for
   perspective/light edits.
@@ -182,6 +185,8 @@ later leaves the occluder in place. A table stays a table.
 ## Out of scope
 
 - Full 3D scene reconstruction or camera solving beyond horizon + calibration.
+- The perspective tool and depth-scale in panorama mode (the tool is disabled there with a
+  tooltip; the panorama camera already defines the view).
 - Physically based shadows from the background geometry.
 - Relighting arbitrary raster characters without a normal pass (only the AI stage covers
   them).

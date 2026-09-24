@@ -103,8 +103,10 @@ contents and duplicating it reuse the existing add/delete layer entries wrapped 
 Most layers already know what they are. Plan 10 phase A adds `layer.meta` (origin, prompt,
 character, source file, generation mode). Names derive from it deterministically:
 
-- Pose layer with a character: `<Character>` for a single character, `<A> & <B>` for a
-  multi-character layer (plan 01), and `Mannequin` without an identity.
+- Pose layer: the name of the bound character reference (the reference layer's name, the
+  uploaded file stem, or the library character name), `<A> & <B>` for several bound mannequins
+  (plan 01), and `Pose` when nothing is bound. Studio character names set in Pose Studio win
+  over file stems when the user changed them from the default "Main Character" / "Character N".
 - Sprite layer: `<Character>`. The active variant shows as a suffix chip, not in the name.
 - Baked result: `<Character> (baked)` only while the mannequin is also shown. Otherwise
   `<Character>`.

@@ -2,188 +2,197 @@
 
 ## Goal
 
-A pose layer holds **up to 4 characters under one shared camera**, so interactions work
-properly: a hug, a handshake, a fight, one character carrying another, two people at a
-table. Each character has its own pose, character identity, morphs and world transform. They
-occlude each other correctly because they live in one 3D scene and are rendered in one pass.
-
-This lifts the "v1 handles one character" limit from the design spec (section 1, "Out of
-scope") and delivers the first "Future work" item (section 14).
+Make **interactions between characters** a first-class UniCanvas workflow: one pose layer holds
+up to 4 mannequins under a shared camera (a hug, a handshake, a fight, carrying someone, two
+people at a table). **Each mannequin is bound to its own character reference**, and the scene
+knows which pixels belong to which character.
 
 ## Why
 
-Interactions are the hardest thing to get from image models. Two separate single-character
-layers know nothing about each other: hands do not meet, scale drifts, and occlusion is
-guessed. A shared skeleton scene gives exact contact points, consistent proportions and real
-depth ordering. Plan 02 then renders the characters from that scene.
+Interactions are the hardest thing to get from image models. Two separate layers know nothing
+about each other: hands do not meet, scale drifts, and occlusion is guessed. A shared 3D scene
+gives exact contact points, consistent proportions and real depth ordering. Plan 02 then renders
+every character of the scene with its own identity.
 
-## What already exists
+## What already exists (current code)
 
-- `web/vnccs_pose_characters.mjs`: `MAX_POSE_STUDIO_CHARACTERS = 4`,
-  `createPoseStudioCharacter`, `normalizePoseStudioCharacters`,
-  `serializePoseStudioCharacter`, `nextCharacterId/Slot/Color`, `DEFAULT_CHARACTER_COLORS`,
-  and the character transform helpers. This is the Pose Studio multi-character data model.
-  Reuse it and do not invent a second one.
-- `web/vnccs_pose_studio_core.js` (`PoseViewerCore`): an active character plus
-  `passiveCharacters` (a Map), `removePassiveCharacter`, `clearPassiveCharacters`. The
-  embedded UniCanvas editor already constructs `PoseViewerCore`, so the viewer can show
-  several characters.
-- The Pose Studio library already stores **scene assets** with a `characters` array (the
-  library loader in `web/vnccs_pose_studio.js` around the "Library scene contains N characters"
-  warning). Interaction poses can therefore be library scenes.
-- `web/vnccs_unicanvas_pose_layers.mjs`: `buildPoseLayerData` / `normalizePoseLayerData`
-  (schema v1, single `pose` + `character` + `camera` + `render`), the edit session
-  (`editUniCanvasPoseLayer`, `saveUniCanvasPoseEdit`, `cancelUniCanvasPoseEdit`), torso
-  framing (`computeTorsoAnchor`, `applyUniCanvasPoseFraming`), the draw record that keeps
-  placement stable (spec 5.1b), and the bridge (`handleUniCanvasPoseLayerRender`).
+- **Live pose layers** (`docs/UNICANVAS_POSE_LAYERS.md`): `type: "pose"` layers carry
+  `layer.pose = { version, rect, studio, character, viewport, ui, panoramaCamera }`.
+  `studio` is the full Pose Studio scene schema, edited by a real embedded `PoseStudioWidget`
+  (`web/vnccs_unicanvas_pose.mjs`, class `UniCanvasPoseEditor`: `activate`, `capturePreview`,
+  `commit`, `flush`, `generation`, `release`). The layer pixels are the transparent viewport
+  capture (`capturePreview` writes `layer.canvas` and `hiresCanvas`).
+- **Multiple mannequins already work inside one pose layer:** Pose Studio's own Characters
+  section manages up to `MAX_POSE_STUDIO_CHARACTERS = 4` mannequins
+  (`web/vnccs_pose_characters.mjs`: `createPoseStudioCharacter` with `id`, `slot`, `name`,
+  `color`, `transform`, `mesh`, `poses`, `animation`). They are stored in
+  `layer.pose.studio.characters`.
+- **One character reference per layer:** `layer.pose.character` is `{ source: "layer", layerId }`
+  or `{ source: "upload", name, dataURL }`. It is set from the Character reference card
+  (`buildCharacterMenu` / `refreshCharacterMenu`) and validated by `poseCharacterIssue`.
+  Generation (`UniCanvasPoseEditor.generation` -> `pose_edit { image1, image2 }` ->
+  `_prepare_pose_edit_images` in `nodes/unicanvas.py`) sends the pose render as `image1` and
+  the lower composite plus **the one** reference as `image2`. With several mannequins, the
+  model cannot know which identity belongs to which mannequin. That is the gap this plan closes.
+- The Pose Library (Scene tab) loads **scene assets with a `characters` array**
+  (`activeCharacterFromSceneAsset`, the multi-character scene loader in
+  `web/vnccs_pose_studio.js`).
+- The depth-only backdrop (`web/vnccs_unicanvas_pose_backdrop.mjs`) keeps mannequins from
+  sinking behind the flat 2D backdrop.
 
-## Data model: `poseData` schema v2
+## Data model
 
-`POSE_LAYER_SCHEMA_VERSION` becomes 2. `layer.poseData` gets:
+`layer.pose` gains:
 
-- `characters`: an array of 1-4 entries in the Pose Studio character shape (id, slot, color,
-  `character` identity `{id, name, source, morphs}`, `pose` stored relative to the shaped rest
-  exactly like today, and `transform` `{x, y, z, zoom}` from `normalizeCharacterTransform`).
-- `activeCharacterId`: the character the editor selects on open.
-- `camera` and `render`: unchanged, shared by all characters.
-- `interaction`: optional `{ libraryId, name }` when the scene came from an interaction
-  preset, for provenance only.
+- `characterRefs`: a map from a **studio character id** to a character reference in the
+  existing shape (`{ source: "layer", layerId }` | `{ source: "upload", name, dataURL }`, plus
+  `{ source: "library", assetId }` once plan 10 phase B lands). It also holds an optional
+  per-character `prompt` (a short identity description, for example "red-haired girl in a
+  school uniform"), used by plan 02.
+- **Compatibility:** `layer.pose.character` stays the reference of the **first** studio
+  character (the lowest slot). Reading goes through a new helper,
+  `poseCharacterRef(layer, characterId)`, in `web/vnccs_unicanvas_pose_state.mjs`. It returns
+  `characterRefs[id]`, falling back to `layer.pose.character` for the first character. Writing
+  the first character's reference also writes `layer.pose.character`, so the existing
+  generation path, workflows and caches keep working unchanged. `poseCharacterIssue` is
+  generalized to `poseCharacterIssues(host, layer)`, which returns one issue per character
+  without a valid reference (the same messages as today).
+- Serialization: `serializePose` handles `characterRefs` exactly like `character`. Uploaded
+  `dataURL`s are dropped from workflow metadata and kept in the state cache, and `mergePoseCache`
+  restores them per id.
+- Stale ids: when a studio character is removed, its `characterRefs` entry is dropped on the
+  next `onStateChange`. When a scene asset replaces the characters, references are remapped by
+  **slot** (the reference bound to slot N moves to the new character in slot N).
 
-**Migration:** `normalizePoseLayerData` accepts v1 and returns v2. A v1 layer becomes one
-character with slot 0 and the identity transform. The top-level `pose` / `character` fields
-of v1 are no longer written, but they stay readable forever. Every existing reader of
-`poseData.character` (the layer panel, `generateCharacterFromPoseLayer`, the character
-dropdown mirror) switches to a helper `getPoseLayerActiveCharacter(poseData)`. The E2E hook
-`getLayerPoseData` returns the v2 shape. `pose-roundtrip.spec.mjs` is updated to compare v2
-payloads, and its idempotence clause must still hold.
+## Character reference card (UX)
 
-## Editor UX (embedded mannequin editor)
+The card at the lower right (`buildCharacterMenu`) becomes per-mannequin:
 
-The edit overlay from `buildUniCanvasPoseEditOverlay` gets a **character strip** at its top
-edge:
+- With one mannequin it looks and behaves exactly like today.
+- With 2+ mannequins it shows a **row per mannequin**: the character color dot (the studio
+  `color`), the studio name (editable in Pose Studio's Characters section), a thumbnail of the
+  bound reference, and the actions *From layer* (select) / *Upload image* / *Clear*. A
+  one-line **identity prompt** field per row is optional.
+- Selecting a row also selects that mannequin in the embedded studio (its active character), so
+  the viewport highlights who is being bound. Selecting a mannequin in the studio highlights its
+  row.
+- Missing references show the issue inline on the row. The trigger button shows `2/3 characters
+  bound` when incomplete.
+- Every change is one history entry through `recordHistoryBefore`, like the current card.
 
-- One chip per character, showing the character color dot and name. Click selects the active
-  character. The active character becomes the viewer's active rig, and the others are pushed
-  back as passive characters.
-- `+` adds a character (disabled at 4). A new character copies the active character's
-  identity, gets `nextCharacterSlot` / `nextCharacterColor`, and is offset along +X by one
-  shoulder width so it does not spawn inside the first one.
-- `x` removes a character (disabled when only one is left).
-- A per-chip character picker (the same list as the existing character dropdown, from
-  `/vnccs/list_characters`) sets that character's identity and morphs.
+## Interaction presets
 
-Mannequin options in the left sidebar (`mountUniCanvasPoseOptions`) always edit the **active**
-character. Switching the active character rebinds the options section in place. It is not
-rebuilt with a flash, and the realtime rule applies: morph sliders repaint the active
-character live.
+- A curated set of **two- and three-person scene assets** ships in the pose library data as an
+  "Interactions" category: hug, handshake, high five, kiss on the cheek, arm around the
+  shoulder, princess carry, piggyback, punch/block, sitting side by side, whisper, pointing at
+  each other, dancing pair and a three-person group photo. They are authored at the default
+  mannequin proportions with contact points in place. They load through the existing Pose
+  Library path, so no new loader is written.
+- Applying one keeps the bound references (the slot remap above). The mannequins' **mesh
+  morphs** are kept per slot when the scene asset has none, so an adult and a child keep their
+  bodies.
+- **Contact under different proportions:** when kept morphs change body heights, contact drifts.
+  After applying, the character transforms of the preset are scaled by the height ratio of each
+  mannequin to the default mannequin (the relative placement is scaled around the pair's
+  midpoint). If Pose Studio's IK already exposes an effector API reachable from the embedded
+  widget, add a "Snap hands" helper that pins the paired hand effectors together. Otherwise the
+  helper is out of scope. No new IK system.
 
-**Placing characters relative to each other:** in the viewer, a move gizmo on the active
-character's root edits `transform` (x/z on the floor, y for jumps and lifts). This is the
-existing Pose Studio character transform. The UniCanvas layer transform tools still move the
-whole rendered layer on the canvas.
+## Per-character identity pass (ID mask)
 
-**Interaction presets:** the Pose Library button opens the existing library. Scene assets with
-2+ characters are shown in a separate "Interactions" tab. Applying one replaces the characters'
-poses and transforms. Identities are kept: character N of the scene maps to the chip in the
-same position, and missing characters are added with the first character's identity. A new
-set of interaction scene assets ships in the pose library data: hug, handshake, high five,
-kiss on cheek, arm around shoulder, carry (princess), piggyback, fight punch/block, sit side by
-side, whisper, pointing at each other, dancing pair, and a three-person group photo. Each asset
-must be authored at the default mannequin proportions so mapped identities keep contact.
+Plan 02 needs to know which pixels belong to which mannequin, **after occlusion**.
 
-**Contact preservation when morphs differ:** when identities with different heights are mapped
-onto an interaction preset, hands no longer meet exactly. Resolve this in v1 by scaling the
-preset's relative transforms by the height ratio. Only offer an IK "snap hands together"
-helper if the viewer already has an IK solver entry point. Otherwise it is out of scope. Do not
-add a new IK system for this plan.
+- `UniCanvasPoseEditor` gets `captureIdPass(size)`. It temporarily switches every mannequin to
+  an unlit flat material in its studio `color` (every other scene object hidden, no
+  antialiasing), renders through the same `viewer.capture(...)` call that `captureSurface`
+  uses, and then restores the materials. The depth buffer resolves occlusion, so the result is
+  an exact visible-pixel map per character.
+- It is produced together with the final capture in `commit()` (not on every preview frame) and
+  stored as a runtime canvas `layer.poseIdCanvas`, serialized as a crop PNG in the state cache
+  (like the layer pixels, never in workflow metadata).
+- `getPoseCharacterMask(layer, characterId, { dilate })` in
+  `web/vnccs_unicanvas_pose_state.mjs` returns a binary alpha mask in layer space by matching
+  the character's color. It is the only reader. When the ID canvas is missing or stale (the
+  studio state hash changed since it was captured), the next `commit()` regenerates it, and
+  callers `await editor.flush()` first. That is the same pattern `draw()` already uses before
+  generation.
+- `captureSoloPass(size, characterId)` renders one mannequin alone (the others hidden) with the
+  normal transparent capture. Plan 02 uses it as the full-body pose source, including the parts
+  occluded by the other characters.
 
-## Rendering and capture
+## Split and merge
 
-- Save pose renders **all** characters in one capture through the existing capture path
-  (`captureUniCanvasPoseLayerPNG` with the shared camera and `render.size`). Framing
-  (`applyUniCanvasPoseFraming`) centers on the **union** torso anchor, the mean of each
-  character's torso anchor. For a single character it reduces exactly to today's behavior,
-  so `pose-framing.spec.mjs` stays green.
-- **Per-character ID mask:** the same save also renders an ID pass. Every character is drawn in
-  its unique flat slot color, unlit, with no antialiasing on the ID pass, into an offscreen
-  target of the same size. It is stored on the layer as a runtime canvas `layer.poseIdCanvas`
-  and serialized as a crop PNG next to the layer pixels (`poseIdDataURL`). From it, the helper
-  `getPoseLayerCharacterMask(layer, characterId)` returns a binary alpha mask for one character
-  in layer space. Plan 02 uses these masks to bake and composite characters individually, and
-  plan 08 uses them for per-character contact shadows. Occlusion is real because the ID pass
-  uses the depth buffer.
-- The draw record / placement stability (spec 5.1b) is unchanged: the saved layer keeps its
-  canvas placement across edit/save cycles, anchored on the union torso anchor.
+- **Split characters to layers** (layer context menu, pose layers with 2+ mannequins): creates
+  one pose layer per mannequin. Each gets a copy of the studio scene with only that character,
+  the same `rect`, `viewport` and camera, and its own reference moved into `character`. The
+  original layer stays hidden, directly below, so the split is reversible. The whole operation
+  is one history entry. This is the path to per-character sprites (plan 03) and per-character
+  motion (plan 06).
+- **Merge pose layers** (multi-selection from plan 05, all pose layers with an identical `rect`
+  and `viewport`): the inverse. It is capped at 4 mannequins, and the references are merged by
+  character id.
+- `LAYER_MENU_ITEMS` in `web/vnccs_unicanvas_layer_tools.mjs` gets `split-characters` and
+  `merge-pose-layers` (`poseOnly`, with a mannequin-count condition). `Rasterize` stays, and it
+  drops `pose` and `poseIdCanvas`.
 
-## Bridge (live Pose Studio link)
+## Generation until plan 02 lands
 
-The Pose Studio bridge (`vnccs:unicanvas:pose-layer` bus, answered in
-`web/vnccs_pose_studio.js` near `VNCCS_POSE_LAYER_BUS_EVENT`) already renders the studio's full
-scene, which can hold several characters. The render detail gets a `characters` array in
-the v2 shape. `mergeUniCanvasPoseLayerDetail` stores it into `poseData.characters`. An optional
-`idMask` data URL in the final-quality render fills `poseIdCanvas`. When the studio does not
-send `idMask` (older studio), the ID canvas is marked stale and regenerated on the next
-embedded edit/save. Plan 02 falls back to whole-layer bake when a mask is missing.
-`pose-studio-bridge.spec.mjs` must stay green. Add a case that pushes a two-character scene and
-asserts `poseData.characters.length === 2`.
-
-## Layer utilities
-
-- **Split characters to layers** (layer context menu, pose layers with 2+ characters): creates
-  one pose layer per character. Each has the same camera, `render.size` and canvas placement,
-  and contains only that character. The original stays hidden so the split is reversible.
-  Everything happens in one undo entry. This is the path to per-character sprites (plan 03) and
-  per-character animation (plan 06).
-- **Merge pose layers** (multi-select of pose layers with identical camera and size): the
-  inverse, capped at 4 characters.
-- `Rasterize` keeps working. It drops `poseData` and the ID canvas.
+The single-shot `pose_edit` path stays as is. With 2+ mannequins and several bound references,
+`composePoseReference` places **each reference in its own column** of `image2`, ordered
+left-to-right by the mannequins' screen x in `image1`. The pose prompt gets a generated
+mapping line ("the character on the left is the first person in image2, ...") appended to
+`<user_prompt>`. This is a best-effort improvement. The reliable path is plan 02's per-character
+bake.
 
 ## Where the code goes
 
-- `web/vnccs_unicanvas_pose_layers.mjs`: schema v2, migration, the active-character helper, the
-  union anchor, the ID-mask capture and mask accessor, the split/merge operations, and the
-  bridge merge. If the file grows past about 2.3k lines, move the multi-character editor UI
-  (strip, chip picker, interactions tab) into a new `web/vnccs_unicanvas_pose_scene.mjs`.
-- `web/vnccs_unicanvas_layer_tools.mjs`: `LAYER_MENU_ITEMS` gains `split-characters` and
-  `merge-pose-layers` (pose-only, with a character-count condition).
-- `web/vnccs_unicanvas.js`: `serializeLayer` / `applySerializedState` carry `poseIdDataURL`.
-  The history clone (`cloneHistoryLayer`) includes `poseIdCanvas`.
-- `web/vnccs_pose_studio.js`: the bridge answerer adds `characters` and `idMask` to render
-  details.
-- Pose library data: the new interaction scene assets.
+- `web/vnccs_unicanvas_pose_state.mjs`: `characterRefs` helpers, `poseCharacterRef`,
+  `poseCharacterIssues`, `getPoseCharacterMask`, the slot remap, and serialization/merge.
+- `web/vnccs_unicanvas_pose.mjs`: the per-mannequin card rows, the selection sync with the
+  studio, `captureIdPass`, `captureSoloPass`, ID capture in `commit()`, and the
+  multi-reference layout in `generation()` / `composePoseReference`.
+- `web/vnccs_unicanvas_layer_tools.mjs`: split/merge menu items and actions.
+- `web/vnccs_unicanvas.js`: serialization of `poseIdCanvas`, `cloneHistoryLayer` / snapshot
+  support for it, and the `draw()` issue check switched to `poseCharacterIssues`.
+- Pose library data: the Interactions scene assets.
 
 ## Undo
 
-- Save pose (any number of characters changed): one `layerPixels` entry, as today, with
-  `poseData` and the ID canvas captured in the before/after snapshot.
-- Split and merge: one entry each.
-- Adding, removing or reordering characters inside an open edit session is **not** separate
-  history. Cancel reverts the whole session, like today.
+- A reference bind/clear: one entry (as today).
+- Split / merge: one entry each (a `historyGroup` of layer adds and a property change; plan 02
+  defines `historyGroup`).
+- Studio edits keep their current behavior (committed into the layer and synced as they happen
+  now).
 
 ## Tests
 
-- `pose-multi-character.spec.mjs` (new): add a pose layer, add a second character, save, and
-  assert `poseData.characters.length === 2`. The two character masks must be disjoint and
-  non-empty, and their union must lie inside the layer alpha. Run edit -> save twice unchanged
-  and assert identical pixels and poseData (the idempotence clause extended to v2). Split,
-  then assert two pose layers whose alpha union equals the original alpha (IoU >= 0.98).
-- Migration: load a fixture state with a v1 pose layer and assert it opens, renders and saves
-  as v2 with an unchanged bbox.
-- Existing specs `pose-roundtrip`, `pose-framing`, `pose-studio-bridge` and
-  `mannequin-options` stay green.
-- Evidence topic `multi-character`: before = a single mannequin, after = a hug interaction
-  preset with two characters, plus geometry (per-character bbox).
+- `pose-multi-character.spec.mjs` (CPU):
+  - Create a pose layer, add a second mannequin through the studio Characters section, and bind
+    two references (fixture PNGs) -> the card shows 2 rows, and `poseCharacterRef` resolves
+    each.
+  - Commit -> the ID canvas has exactly two non-empty, disjoint color regions, and their union
+    lies inside the layer alpha.
+  - Remove a mannequin -> its reference is dropped.
+  - Apply an interaction preset -> references stay by slot.
+  - Split -> two pose layers whose alpha union matches the original (IoU >= 0.98), each with
+    one reference.
+  - Undo the split.
+  - A legacy fixture state (one `character`, no `characterRefs`) loads and generates the same
+    request as before.
+- `pose-backdrop.spec.mjs` and `smoke.spec.mjs` stay green.
+- Evidence topic `multi-character`: before = one mannequin, after = the hug preset with two bound
+  characters (the card rows plus the canvas), with geometry (the per-character mask bbox).
 
 ## Acceptance
 
-- Up to 4 characters, correctly occluded, edited live with realtime morph sliders.
-- Interaction presets apply in one click and keep contact at default proportions.
-- Per-character masks are available for every saved multi-character pose layer.
-- A v1 layer opens and round-trips without drift.
+- Up to 4 mannequins per pose layer, each bound to its own reference, with realtime studio
+  editing as today.
+- Per-character visible masks are available after every commit.
+- Existing single-character layers, workflows and generation are unchanged.
 
 ## Out of scope
 
 - Physics or collision between characters.
 - A new IK system.
-- More than 4 characters per layer (split into several layers instead).
+- More than 4 mannequins per layer (use several layers).
 - Per-character cameras.

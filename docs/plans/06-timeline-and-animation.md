@@ -107,15 +107,24 @@ visibility and the active variant. The renderer applies it at draw time.
 
 ## Pose layers
 
-A pose layer may carry a Pose Studio animation (`poseData.animation`, the Pose Studio
-animation schema, imported through "Load animation from Pose Studio..." on the pose layer
-panel, or pushed by the bridge when the studio is in animation mode). In the timeline it
-shows as one "Pose animation" row with its range and time offset. Playback shows **mannequin
-renders**. Frames are pre-rendered lazily through the offscreen viewer at the layer's render
-size into a frame cache (LRU, 256 MB cap). While frames are missing, the nearest rendered
-frame is shown (last valid frame, no flashing). Baked characters (plan 02) do **not**
-re-bake per frame. With a baked layer, the pose animation row is disabled with the note
-"baked characters use 2D motion and sprite variants". Per-frame baking is out of scope.
+Pose layers already keep Pose Studio animation tracks in `layer.pose.studio` (each studio
+character's `animation`), and UniCanvas currently uses the selected frame for a still image
+(`docs/UNICANVAS_POSE_LAYERS.md`). In the timeline, a pose layer with animated characters
+shows one **Pose animation** row with its range and a time offset (scene frame -> studio frame
+mapping, with the studio fps converted to the scene fps).
+
+Playback shows **mannequin renders**. Only one `UniCanvasPoseEditor` instance is live at a time
+(it owns one embedded `PoseStudioWidget`), so frames are produced by an explicit **Prepare
+pose frames** action (it also runs automatically before an export). For each animated pose
+layer it activates the editor hidden (`activate(layer, { show: false })`), steps the studio
+animation frame by frame, captures through `captureSurface` at the layer rect size into a frame
+cache (LRU, 256 MB cap, keyed by the layer's pose hash + frame), and releases the editor. While
+frames are missing, playback shows the nearest cached frame (the last valid frame, never a
+blank). A pose edit invalidates that layer's cache.
+
+**Baked** characters (plan 02) do not re-bake per frame. On a baked layer the pose animation
+row is disabled with the note "baked characters use 2D motion and sprite variants", and 2D
+tracks and effects animate the baked pixels instead. Per-frame baking is out of scope.
 
 ## Export
 
@@ -152,8 +161,8 @@ re-bake per frame. With a baked layer, the pose animation row is disabled with t
   randomness), panel UI, transport, auto-key, presets and the export dialog/pipeline.
 - `web/vnccs_unicanvas.js`: the `getLayerRenderTransform` accessor wired into render,
   flatten, bounds, hit test and brush mapping; serialization; history kind.
-- `web/vnccs_unicanvas_pose_layers.mjs`: the pose animation import and the frame cache
-  renderer.
+- `web/vnccs_unicanvas_pose.mjs`: the hidden-activation frame stepping and capture used by
+  the frame cache (the cache itself lives in the timeline module).
 - `nodes/unicanvas.py`: the animation export job routes (begin/frames/end/cancel) and the
   encoders.
 

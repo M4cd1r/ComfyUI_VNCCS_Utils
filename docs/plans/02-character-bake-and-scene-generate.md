@@ -2,196 +2,187 @@
 
 ## Goal
 
-Edit models (Qwen Image 2.1, MiniMax H3, Qwen Image Edit, Flux Klein) look at the **whole
-scene** at once: the working area is `Picture 1` and the prompt is an instruction. The plan
-keeps that model and adds one thing on top: **every mannequin can turn itself into its
-character** ("bake"). The final **GENERATE** then works on a scene where every character
-has already been rendered.
+Edit models look at the **whole scene** at once: the working area is `Picture 1` and the prompt
+is an instruction. This plan keeps that model and adds one thing on top: **every mannequin can
+turn itself into its character** ("bake"). The final **GENERATE** then works on a scene whose
+characters are already rendered.
 
-In short:
+1. A pose layer mannequin with a bound character reference (plan 01; the single
+   `layer.pose.character` today) can be **baked** on demand. The mannequin render is replaced
+   by that character, generated in the same pose and placement, and the live 3D scene is kept.
+2. If a character is bound but **not baked yet**, or its bake is **stale** because the pose
+   changed, the main **GENERATE** first bakes every such character, and then runs the normal
+   scene generation over the composite with the baked characters.
+3. Mannequins **without** a character reference are pose guides. They are never baked, and they
+   are left out of the scene pass composite (see below).
 
-1. A pose layer (one or more mannequins, plan 01) with a selected VNCCS character can be
-   **baked** on demand: the mannequin render is replaced by that character, generated with the
-   character recipe, in exactly the same pose, silhouette and placement.
-2. If a character is selected but **not baked yet** (or its bake is stale because the pose
-   changed), pressing the main **GENERATE** first bakes every such character, in order, and
-   then runs the normal scene generation over the composited result.
-3. Mannequin-only layers (character `Mannequin`, no identity) are never auto-baked. They are
-   pose guides and stay as they are.
+This replaces the earlier "regional prompts" idea. There is no regional conditioning: the bake
+isolates identity per character, and the scene pass gives coherence.
 
-This replaces the "regional prompts" idea. There is no regional conditioning. Identity is
-isolated per character by the bake, and scene coherence comes from the scene edit.
+## What already exists (current code)
 
-## What already exists
-
-- `generateCharacterFromPoseLayer(layer)` in `web/vnccs_unicanvas.js` (near the end of the
-  widget class): it reads `layer.poseData.character`, builds the prompt from
-  `settings.char_gen_prompt` (`{character}` substitution), sends `img2img` to
-  `POST /vnccs/unicanvas/draw` with the char-gen recipe (`char_gen_mode`,
-  `char_gen_ckpt_name`, the LoRA, steps/cfg/sampler/scheduler), and **overwrites the layer
-  pixels**. This is the prototype of bake. It currently destroys the mannequin render and has
-  no state.
-- The settings popover (`openUniCanvasSettings`) already holds the character-generation
-  recipe.
-- `draw()`: the main GENERATE path (direct `/vnccs/unicanvas/draw` or a queued prompt with a
-  linked `VNCSS Config`), then `_stageGeneratedImages` and the staging popover.
-- Plan 01 adds per-character ID masks (`getPoseLayerCharacterMask`) and solo renders.
+- `draw()` in `web/vnccs_unicanvas.js` picks **one** pose layer (`poseGenerationLayer`: the
+  active one, or the first visible pose layer intersecting the bbox). It checks
+  `poseCharacterIssue`, requires `qwen_image_edit` (QiE2511) or `flux_klein` (Klein9b), calls
+  `UniCanvasPoseEditor.generation(layer, inferenceSize)` and sends
+  `pose_edit { image1, image2 }` with `positive` from `generatePromptFromLights` and
+  `denoise: 1`. The result is staged like any generation. **That call is already a bake of one
+  pose layer over the bbox.** This plan turns it into a per-character, per-layer, stateful
+  operation.
+- `nodes/unicanvas.py`: `_prepare_pose_edit_images` validates the two-image contract, and the
+  QiE2511/Klein9b adapters consume `_pose_edit_images`.
+- Remove background backends (`/vnccs/unicanvas/remove_bg`: edit model / BiRefNet / rembg /
+  SAM 3, chosen in the settings popover).
+- Plan 01: `characterRefs`, `getPoseCharacterMask`, `captureSoloPass`, `captureIdPass`.
 
 ## Bake data model
 
-Each pose layer gets `layer.bake`, serialized with the layer:
+Each pose layer gets `layer.pose.bake`:
 
-- `status`: `none` | `baked` | `stale` | `failed`.
-- `characters`: per character id, `{ status, poseHash, recipeHash, seed, bakedAt, error? }`.
-  A single-character layer has one entry.
-- `showMannequin`: a boolean view toggle (default false once baked).
+- `characters`: a map from a studio character id to `{ status: "none" | "baked" | "stale" |
+  "failed", poseHash, refHash, seed, model, bakedAt, headRect?, error? }`.
+- `showMannequin`: a boolean view toggle.
 
-The layer keeps **two pixel sources**:
+Pixel sources on the layer:
 
-- `layer.mannequinCanvas`: the mannequin render produced by Save pose / the bridge. This is
-  what today lives in `layer.canvas`.
-- `layer.bakedCanvas`: the composited baked characters, the same size and placement as the
-  mannequin canvas.
+- `layer.mannequinCanvas`: what `capturePreview` produces today. `capturePreview` writes here
+  instead of into `layer.canvas` directly.
+- `layer.bakedCanvas`: the composited baked characters in the same layer space.
+- `layer.canvas` (read by the renderer, flatten, export, thumbnails and the E2E hook) is a
+  **composite view**. Where a character is baked and `showMannequin` is false, its baked pixels
+  are shown. Unbaked characters show their mannequin pixels (cut with their ID masks). A
+  single-mannequin layer simply swaps canvases. The view is rebuilt only when one of its
+  inputs changes, and a swap is a reference change plus `invalidateLayerCaches`, not a copy per
+  frame.
+- **While the Pose tool is active on the layer**, the mannequin is shown (you are editing the
+  pose). Leaving the tool shows the baked pixels again.
+- Serialization: `mannequinDataURL` and `bakedDataURL` crops go to the state cache (never to
+  workflow metadata), and `bake` goes into `serializePose`. Old layers load with
+  `mannequinCanvas = canvas` and no bake entries.
 
-`layer.canvas` (what the renderer, export, thumbnails and generation read) points at
-`bakedCanvas` when `status` is `baked` or `stale` and `showMannequin` is false. Otherwise it
-points at `mannequinCanvas`. Switching never copies pixels. It swaps the reference and calls
-`invalidateLayerCaches`. Both canvases are serialized as crops (`mannequinDataURL`,
-`bakedDataURL`). Old states without them load with `mannequinCanvas = canvas` and
-`status = none`.
-
-**Hashes:** `poseHash` is a stable hash of that character's pose + transform + morphs +
-identity + the shared camera + render size. `recipeHash` is a hash of the char-gen settings
-and the identity reference (below). After every Save pose / bridge final capture, each
-baked character whose `poseHash` changed becomes `stale`. A recipe change marks all baked
-characters stale. `stale` keeps showing the old baked pixels (last valid frame) with a badge.
-It never flashes back to the mannequin.
-
-## Identity reference
-
-For a stable identity the bake must see the character, not only its name:
-
-- A character's identity reference image is resolved in this order: (1) an image field on the
-  `/vnccs/list_characters` entry, if the VNCCS pack provides one (`image`, `preview`, `sheet`;
-  read whatever exists, do not require it); (2) a user-assigned reference stored in UniCanvas,
-  set from the pose layer panel ("Set identity reference..." takes a canvas layer or an
-  uploaded file) and kept per character id in the project asset library (plan 10) or, before
-  plan 10 lands, in `settings.char_identity_refs` as a server-cached image id; (3) none, meaning
-  prompt + LoRA only, and the panel shows "no identity reference" as a warning, not an error.
-- With edit-model families the reference goes in as `Picture 2`, and the bake prompt template
-  gains a `{reference}` token that expands to the family's convention (`<image2>` for Qwen
-  Image 2.1, `<Picture 2>` for H3/others). The default template becomes: "Render
-  {character} from {reference} in exactly the pose, framing and silhouette of the mannequin in
-  {working}. Full body, clean lineart, flat background." `{working}` expands to the working
-  image token. The template lives in `settings.char_gen_prompt` as today.
+**Hashes and staleness:** `poseHash` covers that character's pose, mesh, transform and
+animation frame, plus the shared camera (`viewport`), `rect` size and lights. `refHash` covers
+the bound reference (layer id + that layer's pixel revision, or the upload data hash) and the
+identity prompt. After every `commit()`, a baked character whose `poseHash` or `refHash`
+changed becomes `stale`. A stale bake keeps showing the old baked pixels (last valid frame) with
+a badge. It never flashes back to the mannequin.
 
 ## Bake pipeline (one character)
 
-1. **Source:** a solo render of that character (the other characters hidden) from the pose
-   data. It uses an offscreen `PoseViewerCore` with the same camera and size, reusing the
-   capture path from `vnccs_unicanvas_pose_layers.mjs`. The solo render gives the model the
-   full body, including parts occluded by other characters.
-2. **Generate:** `POST /vnccs/unicanvas/draw`, `img2img` with the char-gen recipe, the solo
-   render as the working image, and the identity reference as `Picture 2`. RGBA output is
-   requested where the family supports it (Qwen Image 2.1 default). Otherwise the result goes
-   through the configured background removal backend (the existing `remove_bg` route, same
-   settings) so the baked character has alpha.
-3. **Align:** the generated image is placed back on the solo render's alpha bbox. If the
-   bbox of the result alpha differs by more than 3% in size or 2% in position (a model
-   drift), it is fitted onto the mannequin bbox anchored on the feet contact point. The
-   mannequin silhouette is authoritative.
-4. **Composite:** into `bakedCanvas`, clipped by that character's **visible** ID mask from
-   plan 01, dilated by 2 px to avoid seams. Occlusion therefore matches the 3D scene exactly.
-   Characters are composited back-to-front by camera depth of their torso anchors.
+The pipeline reuses the existing `pose_edit` contract. It adds no new model path.
 
-A single-character layer skips the clipping step (its mask is its alpha).
+1. **Working rect:** the pose layer's `rect` (not the generation bbox), expanded by 10% and
+   clamped to the world. Inference size follows the same scale rules as `getInferenceSize`,
+   applied to that rect.
+2. **image1:** `captureSoloPass` of that character (the full body even where others occlude
+   it) over the studio background color. This is what `generation()` builds today, restricted
+   to one character.
+3. **image2:** the lower visible composite (`poseLayerBelow`) plus **that character's**
+   reference, laid out exactly as `composePoseReference` does today.
+4. **Prompt:** the studio pose prompt plus that character's identity prompt plus lights,
+   through `generatePromptFromLights`. The scene Prompt field is **not** used for bakes.
+5. **Model:** the current engine when it is QiE2511 or Klein9b. Otherwise it is the **Bake
+   model** from the settings popover (a new "Character bake" group: family QiE2511 / Klein9b,
+   the preset card, and optional steps/cfg overrides). The default is the first *ready* preset of
+   those families. This removes today's "Pose layers require QiE2511 or Klein9b ... or hide the
+   pose layer" block for the scene pass, because only bakes need those families.
+6. **Extract:** the result is a full working-rect image. The character is cut out with the
+   configured remove-background backend on the crop around the dilated solo silhouette (+15%).
+   The alpha component overlapping the mannequin silhouette is kept, and the rest is dropped.
+   Hair and clothes extending past the mannequin are kept because the component is taken from
+   the generated alpha, not from the mannequin.
+7. **Composite:** into `bakedCanvas`, clipped by that character's **visible** ID mask (plan 01)
+   dilated by the extent of the generated alpha beyond the silhouette, so occlusion by other
+   mannequins matches the 3D scene. Characters are composited back to front by camera depth.
+8. **Head rect:** the projected head bone box of that character at bake time is stored as
+   `headRect` (used by plans 03 and 07).
 
 ## UX
 
-- **Pose layer panel** (the existing panel from `renderUniCanvasPoseLayerPanel`): each
-  character row shows its bake chip: `mannequin` / `baked` / `stale` / `baking...` /
-  `failed`. Per-row actions are **Bake** and **Re-bake** (new seed), plus a **Show
-  mannequin** eye toggle on the layer.
-- Layer context menu: `generate-character` is renamed **Bake characters** and bakes every
-  character on the layer that has an identity. The old action id stays as an alias so
-  persisted keyboard/menu references keep working.
-- **Bake is staged, not blind:** a manual bake result goes through the staging popover
-  (accept / discard / next), exactly like GENERATE, shown in place over the layer. With
-  `batch_size > 1`, the variants are staged and cycled. Accept writes `bakedCanvas` and the
-  `baked` status as one undo entry.
-- Progress: the existing generation progress bar with `Baking <name> (i/n)`.
+- **Character reference card** (plan 01 rows): each row gets a bake chip (`mannequin` /
+  `baked` / `stale` / `baking…` / `failed`) and **Bake** / **Re-bake** (new seed) actions.
+  The layer row gets a **Show mannequin** toggle.
+- Layer context menu: **Bake characters** (pose layers) bakes every bound, unbaked or stale
+  character of that layer.
+- **A manual bake is staged:** the result appears in the staging popover in place (accept /
+  discard / next, with batch variants). Accept writes the bake as one history entry.
+- Progress: the existing progress bar, showing `Baking <name> (i/n)`.
 
-## GENERATE with pending characters
+## GENERATE
 
-`draw()` gets a **pre-pass**:
+`draw()` gets a **bake pre-pass** that replaces the current single-pose branch:
 
-1. Collect bake candidates: visible pose layers inside the generation bbox (any overlap)
-   whose characters have a VNCCS identity and status `none`, `stale` (when
-   `settings.rebake_stale_on_generate`, default true) or `failed`.
-2. If there are none, run GENERATE exactly as today.
-3. If there are some, the GENERATE button shows a small count badge before the click
-   ("+2 bakes") so the cost is visible. On click, the candidates are baked sequentially
-   (auto-accept the first result, no staging per character, because the user asked for the
-   whole scene). Each result is written to its layer as one undo entry per layer, grouped
-   under one "Generate scene" history group (below).
-4. Then the normal scene generation runs on the updated composite, and its results go to
-   staging as today. The scene prompt is untouched. Nothing is injected into the user's
-   instruction.
-5. Cancel/failure: if a bake fails, GENERATE stops before the scene pass, the failed
-   characters are marked `failed` with the error on their chip, and the successful bakes are
-   kept.
+1. Collect candidates: visible pose layers intersecting the bbox. For each bound character
+   with status `none`, `failed` or `stale`, a bake is needed. Stale characters are included by
+   default, and the setting `rebake_stale_on_generate` can turn that off.
+2. The GENERATE button shows the pending count ("+2 bakes") before the click, so the cost is
+   visible.
+3. On click the candidates bake sequentially. Each result is **auto-accepted** (the user asked
+   for the whole scene) and written as one entry, and all of them are wrapped in one
+   `historyGroup` together with the scene pass acceptance later.
+4. **Scene pass:** runs the normal `draw()` path with the current engine over the bbox
+   composite in which pose layers show their baked pixels. **Guide-only mannequins** (no
+   reference) are excluded from the composite, with a status note ("1 pose guide not
+   rendered"). The scene Prompt is the edit instruction. If the Prompt field is empty, the
+   scene pass is skipped and GENERATE ends after the bakes ("Characters baked; add a prompt to
+   run a scene pass").
+5. A split GENERATE menu (a small chevron) offers **Bake characters only** and
+   **Generate (bake + scene)** (the default).
+6. Failure: if any bake fails, the scene pass does not run. Failed characters are marked with
+   the error on their row, and successful bakes are kept.
 
-**History group:** add a `historyGroup` entry kind that wraps several entries and
-undoes/redoes them as one step. It is needed because one click produced several layer
-changes. `applyHistoryEntry` handles it by applying the children in order (reverse order on
-undo).
+**`historyGroup`** is a new entry kind in `applyHistoryEntry`: it applies its children in order
+and undoes them in reverse. One click = one undo step. Plans 01, 03, 05 and 10 reuse it.
 
-**Queued mode (linked `VNCSS Config`):** bakes always use the direct
-`/vnccs/unicanvas/draw` route with their own char-gen recipe, because the char-gen recipe is
-independent of the linked graph. The scene pass then queues as today. In standalone mode
-everything is direct.
+**Queued mode** (linked `VNCSS Config`): bakes always use the direct `/vnccs/unicanvas/draw`
+route with the bake model, because the bake does not depend on the linked graph. Only the scene
+pass is queued, as today. **Panorama mode:** bakes run in the pose layer's own camera
+(`poseAtPanoramaCamera`). A pose shown at another panorama angle is baked from its original
+camera and projected like its pixels are today.
 
 ## Where the code goes
 
-- New `web/vnccs_unicanvas_bake.mjs`: the bake state model, hashes, identity reference
-  resolution, the solo render + generate + align + composite pipeline, the pre-pass collector,
-  and the panel chips. It is installed from the widget constructor.
-- `web/vnccs_unicanvas.js`: `generateCharacterFromPoseLayer` becomes a thin delegate to the
-  bake module. `draw()` calls the pre-pass before building the draw context. Serialization
-  covers `bake`, `mannequinDataURL` and `bakedDataURL`. `applyHistoryEntry` handles
-  `historyGroup`.
-- `web/vnccs_unicanvas_pose_layers.mjs`: marks bakes stale after save/bridge-final, exposes
-  the solo render.
-- `nodes/unicanvas.py`: no new generation route. The existing `draw` payload already carries
-  reference images for edit families (the edit reference slots). Add
-  `GET /vnccs/unicanvas/character_reference?id=` only if the identity reference is stored
-  server-side before plan 10 exists.
+- New `web/vnccs_unicanvas_bake.mjs`: the bake state, hashes, the pipeline, the pre-pass
+  collector, the staging integration, and the chips/actions on the card rows.
+- `web/vnccs_unicanvas_pose.mjs`: `capturePreview` targets `mannequinCanvas` and triggers the
+  view rebuild. It exposes the solo/ID passes (plan 01) and the head bone projection.
+  `generation()` becomes the one-character building block used by the bake module.
+- `web/vnccs_unicanvas_pose_state.mjs`: the bake serialization in `serializePose` /
+  `mergePoseCache`, and the composite view builder.
+- `web/vnccs_unicanvas.js`: the `draw()` pre-pass and scene pass rules, `historyGroup`,
+  the GENERATE split menu, the settings popover "Character bake" group, and serialization of
+  the two canvases.
+- `web/vnccs_unicanvas_layer_tools.mjs`: the `bake-characters` menu item.
+- `nodes/unicanvas.py`: none required. `_prepare_pose_edit_images` already takes arbitrary
+  sizes that match `inference_size`.
 
-## Tests (CPU lane, generation stubbed)
+## Tests (CPU, generation stubbed)
 
-- `bake.spec.mjs`: stub `/vnccs/unicanvas/draw` with `page.route`, returning a fixture RGBA
-  PNG. Then:
-  - Manual bake stages, accept -> the layer shows baked pixels and `status: baked`.
-  - Toggle Show mannequin -> pixels switch with no history entry.
-  - Edit the pose and save -> `stale`, and the baked pixels stay visible.
-  - Two characters -> the composite respects the ID masks (the pixels of character A never
-    appear inside B's visible mask).
-  - GENERATE with one unbaked and one mannequin-only layer -> exactly one bake request plus
-    one scene request, in that order, and one undo step reverts everything.
-  - A bake failure -> no scene request, `failed` chip.
-- Evidence topic `character-bake`: before = two mannequins, after = baked characters (the
-  fixture PNG in E2E; a real Lane B render for the PR description).
+- `bake.spec.mjs`, with `page.route` stubbing `/vnccs/unicanvas/draw` (a fixture PNG of a
+  character over a background) and `/vnccs/unicanvas/remove_bg` (a fixture alpha):
+  - Manual bake -> staged -> accept -> the layer shows baked pixels and its status is `baked`.
+    The request carries `pose_edit` with the solo image1.
+  - Toggle Show mannequin -> the pixels switch and no history entry is added.
+  - Edit the pose -> `stale`, and the baked pixels are still visible.
+  - Two mannequins -> the baked pixels of A never appear inside B's visible mask.
+  - GENERATE with one bound and one guide mannequin plus a prompt -> exactly one bake request,
+    then one scene request whose image contains no guide mannequin pixels. One undo reverts
+    everything.
+  - Empty prompt -> bakes only.
+  - A failed bake -> no scene request, and the row shows the error.
+- `smoke.spec.mjs` / `pose-backdrop.spec.mjs` stay green.
+- Evidence topic `character-bake`: before = two mannequins in a scene, after = baked (the
+  fixture in E2E; a real Lane B render for the PR description).
 
 ## Acceptance
 
-- Baking never moves or rescales a character. The mannequin silhouette and placement are
-  authoritative (the same 5% bbox tolerance as the bridge spec).
-- GENERATE on a scene with unbaked characters produces the scene in one click. One undo
-  reverts it.
-- The mannequin render is never lost and can be shown again at any time.
+- Baking never moves a character: the baked alpha bbox stays within 5% of the mannequin
+  silhouette bbox (the same tolerance as the other placement guarantees).
+- GENERATE on a scene with unbaked characters produces the scene in one click and one undo.
+- The mannequin and the 3D scene are never lost. The pose stays editable after baking.
 
 ## Out of scope
 
 - Regional prompting or attention masking in the scene pass.
-- Automatic identity reference extraction from arbitrary images.
-- Baking non-pose raster layers.
+- Per-frame baking of animations (plan 06 uses 2D motion and sprite variants).
+- Baking plain raster layers.

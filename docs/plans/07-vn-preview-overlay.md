@@ -62,7 +62,7 @@ Skins ship in `web/assets/vn_preview_skins/` and are selectable in the popover:
   mobile notch/rounded-corner mask for the portrait preset.
 - **Occlusion warning:** when enabled, the canvas highlights (red outline) any character layer
   whose **face region** is covered by the textbox or nameplate. The face region is
-  `sprite.faceRect` (plan 03), the pose layer head projection (plan 01) or, for other layers,
+  `sprite.faceRect` (plan 03), the bake `headRect` of a baked pose layer (plan 02) or, for other layers,
   the top 18% of the alpha bbox. Character layers are pose/sprite layers and layers filed under
   `Characters` (plan 05).
 
