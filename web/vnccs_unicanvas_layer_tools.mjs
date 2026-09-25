@@ -27,6 +27,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs";
 import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
@@ -151,7 +152,7 @@ function createPsdLayer(uc, entry) {
   const worldY = uc.bbox.y + top;
   uc.ensureWorldBounds(worldX + source.width, worldY + source.height, 64);
   uc.ensureWorldBounds(worldX, worldY, 64);
-  const layer = uc.addLayer("raster", entry.name || "PSD Layer", true, true);
+  const layer = uc.addLayer("raster", entry.name || "PSD Layer", true, true, createLayerMeta("psd", { sourceName: entry.name || undefined }));
   layer.visible = entry.hidden ? false : true;
   layer.opacity = normalizePsdOpacity(entry.opacity);
   layer.blendMode = psdBlendModeToComposite(entry.blendMode);
