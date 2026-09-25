@@ -7,6 +7,7 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { renderExportFrame } from "./vnccs_unicanvas_animation_export.mjs";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
@@ -976,6 +977,26 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
         // Scene timeline (issue #9): dock state, the timeline data and a layer's displayed bounds.
         getTimeline: () => widget.timelinePanel?.describe() ?? null,
+        // Timeline export (issue #18): the export composite of one frame over the bbox (what an
+        // exported frame at bbox size is), and a test seam that gives a pose layer's first
+        // mannequin a studio animation (snapshot JSON) so playback / preparation can be checked.
+        renderTimelineFrame: (frame) => {
+          const bbox = { ...widget.bbox };
+          const size = { width: Math.max(1, Math.round(bbox.width)), height: Math.max(1, Math.round(bbox.height)) };
+          return renderExportFrame(widget, frame, bbox, size).toDataURL("image/png");
+        },
+        setPoseLayerAnimation: (layerId, animation) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId && l.type === "pose");
+          if (!layer?.pose?.studio || widget.poseEditSession) return false;
+          if (widget.poseEditor?.layer === layer) widget.poseEditor.release();
+          const studio = JSON.parse(JSON.stringify(layer.pose.studio));
+          if (!Array.isArray(studio.characters) || !studio.characters.length) return false;
+          studio.characters[0].animation = JSON.parse(JSON.stringify(animation));
+          studio.timeline = { fps: animation.fps, duration: animation.duration, frameCount: animation.frameCount, currentFrame: 0, loop: animation.loop !== false };
+          layer.pose.studio = studio;
+          widget.requestRender();
+          return true;
+        },
         getLayerDisplayBounds: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           return layer ? widget.getLayerWorldBounds(layer) : null;
