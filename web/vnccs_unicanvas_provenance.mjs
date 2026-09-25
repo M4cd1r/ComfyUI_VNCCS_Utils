@@ -81,6 +81,11 @@ export function normalizeLayerMeta(raw) {
   }
   const category = normalizeLayerCategory(raw.category);
   if (category) meta.category = category;
+  // ControlNet that steered a generated layer (issue #45): type and strength.
+  if (raw.control && typeof raw.control === "object") {
+    const type = cleanString(raw.control.type, 64);
+    if (type) meta.control = { type, strength: cleanNumber(raw.control.strength) ?? 1, ...(cleanString(raw.control.layerName, 200) ? { layerName: cleanString(raw.control.layerName, 200) } : {}) };
+  }
   return meta;
 }
 
@@ -149,6 +154,7 @@ export function metaFromStagingSnapshot(snapshot) {
     scheduler: snapshot.scheduler,
     denoise: snapshot.denoise,
     loras: snapshot.loras,
+    control: snapshot.control,
   });
 }
 
@@ -177,6 +183,7 @@ export function formatProvenanceTooltip(meta, layers = []) {
     if (record.prompt) lines.push(`Prompt: ${truncate(record.prompt, 120)}`);
     if (record.model) lines.push(`Model: ${truncate(record.model, 80)}`);
     if (record.seed !== undefined) lines.push(`Seed: ${record.seed}`);
+    if (record.control) lines.push(`ControlNet: ${record.control.type} ${record.control.strength}`);
   }
   return lines.join("\n");
 }

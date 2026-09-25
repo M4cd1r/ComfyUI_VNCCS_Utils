@@ -41,6 +41,7 @@
  * `installUniCanvasHarmonize` and the serialize / history hooks exported here.
  */
 
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { buildStagingSnapshot, createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import {
   SCENE_LIGHT_HISTORY_KIND,
@@ -494,7 +495,7 @@ export function applyShadowLayerHistory(uc, entry, direction) {
   if (direction === "undo") {
     uc.layers = uc.layers.filter((item) => item.id !== layer.id);
     const previous = uc.layers.some((item) => item.id === entry.previousActiveLayerId) ? entry.previousActiveLayerId : null;
-    uc.activeLayerId = previous || uc.layers.find((item) => item.type !== "mask")?.id || uc.layers[0]?.id || null;
+    uc.activeLayerId = previous || uc.layers.find((item) => !isMaskSectionLayer(item))?.id || uc.layers[0]?.id || null;
   } else {
     if (!uc.layers.some((item) => item.id === layer.id)) {
       const source = sourceLayerOf(uc, layer);
@@ -1421,7 +1422,7 @@ export function applyOccluderLayerHistory(uc, entry, direction) {
   if (direction === "undo") {
     uc.layers = uc.layers.filter((item) => item.id !== layer.id);
     const previous = uc.layers.some((item) => item.id === entry.previousActiveLayerId) ? entry.previousActiveLayerId : null;
-    uc.activeLayerId = previous || uc.layers.find((item) => item.type !== "mask")?.id || uc.layers[0]?.id || null;
+    uc.activeLayerId = previous || uc.layers.find((item) => !isMaskSectionLayer(item))?.id || uc.layers[0]?.id || null;
   } else {
     if (!uc.layers.some((item) => item.id === layer.id)) {
       const source = uc.layers.find((item) => item.id === entry.sourceLayerId);
