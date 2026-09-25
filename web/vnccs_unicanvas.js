@@ -15,6 +15,7 @@ import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { SCENE_PERSPECTIVE_HISTORY_KIND, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreScenePerspective, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
+import { HISTORY_SETTINGS_HISTORY_KIND, installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
@@ -936,6 +937,7 @@ class UniCanvasWidget {
     installUniCanvasGroups(this);
     installUniCanvasScenePlace(this);
     installUniCanvasProjects(this);
+    installUniCanvasHistory(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -4114,7 +4116,9 @@ class UniCanvasWidget {
         this.activeLayerId = entry.layer.id;
       }
       this.invalidateLayerCaches(entry.layer);
+      void this.generationHistory?.onAcceptHistory(entry, direction);
     }
+    if (entry.kind === HISTORY_SETTINGS_HISTORY_KIND) this.generationHistory?.applySettingsHistory(entry, direction);
     if (entry.kind === "addLayer") {
       if (direction === "undo") {
         this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
@@ -6624,6 +6628,10 @@ class UniCanvasWidget {
     const snapshotSettings = poseRequest ? { ...this.settings, positive: poseRequest.positive, denoise: 1 } : this.settings;
     const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
     const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, snapshot };
+    const historyRun = this.generationHistory?.beginRun("generate", {
+      settings: snapshotSettings, snapshot, bbox: requestBbox, mode, inferenceSize, outputSize,
+      configLinked: this._isConfigLinked(), imageCanvas, maskCanvas: userMaskCanvas,
+    });
     if (configLinked) {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
@@ -6666,10 +6674,12 @@ class UniCanvasWidget {
         performance = data.performance || "";
         await this._stageGeneratedImages(data, maskCanvas, mode, drawContext);
       }
+      historyRun?.finish(this.stagingItems.filter((item) => item.snapshot?.historyId === snapshot.historyId));
       this.render();
       this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)${performance ? ` - ${performance}` : ""}`);
       this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
     } catch (err) {
+      historyRun?.fail(err);
       this.setStatus(`GENERATE failed: ${err.message || err}`, true);
       this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
     } finally {
@@ -6725,6 +6735,7 @@ class UniCanvasWidget {
       stagingItems: previousStagingItems,
       activeStagingIndex: previousActiveStagingIndex,
       previousActiveLayerId,
+      acceptedItem: staging,
     });
     this.requestRender();
     this.renderLayerList();
@@ -6732,6 +6743,7 @@ class UniCanvasWidget {
     this.scheduleFullSync();
     this.setStatus("Staging accepted; remaining results discarded");
     maybeAutoNameLayer(this, layer);
+    void this.generationHistory?.onStagingAccepted(staging, layer);
   }
 
   discardStaging() {

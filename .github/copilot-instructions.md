@@ -58,7 +58,7 @@ Layered; lower layers never import higher ones (no import cycles):
    (`sdxl`, `anima`, `flux_klein`, `qwen_image_edit`, `qwen_image21`, `z_image`,
    `minimax_h3`, `krea2_edit` + vendored `krea2_edit_inference`). Registration happens only
    in `models/__init__.py`.
-5. Features: `presets`, `assets`, `generation`, `draw_request`, `draw`, `segment`,
+5. Features: `presets`, `assets`, `projects`, `history`, `generation`, `draw_request`, `draw`, `segment`,
    `save_output`, `remove_bg`, `color_match`
 6. Entry points: `node` (`VNCCS_UniCanvas`), `routes` (all `/vnccs/unicanvas/*` endpoints)
 
