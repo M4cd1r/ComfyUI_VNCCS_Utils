@@ -46,6 +46,16 @@ test("fullscreen installs window capture-phase keyboard isolation", () => {
     }
 });
 
+test("fullscreen keyboard isolation hands the focused panorama sphere its keys first", () => {
+    const down = isolationHandler("onKeyDown");
+    assert.ok(down.indexOf("orbitTarget(event)?.keyDown(event)") >= 0, "keydown must reach the sphere");
+    assert.ok(down.indexOf("orbitTarget(event)?.keyDown(event)") < down.indexOf("handleUniCanvasShortcut"),
+        "the sphere must see its keys before the canvas shortcuts");
+    assert.ok(/if \(!event\.defaultPrevented\) handleUniCanvasShortcut/.test(down), "a key the sphere used must not also run a shortcut");
+    assert.ok(isolationHandler("onKeyUp").includes("orbitTarget(event)?.keyUp(event)"), "keyup must end the sphere's keyboard gesture");
+    assert.ok(modesSource.includes("event.target === widget.panoramaOrbit.canvas"), "only a focused sphere receives the keys");
+});
+
 test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc", () => {
     for (const [key, tool] of [["b", "brush"], ["v", "move"], ["e", "eraser"], ["m", "mask"], ["l", "lasso"], ["s", "rect"]]) {
         const pattern = new RegExp(`${key}:\\s*"${tool}"`);

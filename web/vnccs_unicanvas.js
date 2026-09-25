@@ -7505,7 +7505,13 @@ class UniCanvasWidget {
           const cached = await res.json();
           if (this._disposed || loadRevision !== this._stateLoadRevision) return;
           if (cached?.state?.version && Array.isArray(cached.state.layers)) {
-            if (Boolean(state.panorama) !== Boolean(cached.state.panorama)) throw new Error("Cached document mode does not match the workflow");
+            if (Boolean(state.panorama) !== Boolean(cached.state.panorama)) {
+              // An older or newer copy of this workflow owns that cache entry. Continue under a new
+              // id so later uploads from this document cannot overwrite it.
+              this.stateCacheId = this.createStateCacheId();
+              this.stateBackupKey = null;
+              throw new Error("Cached document mode does not match the workflow");
+            }
             if (state.panorama && cached.state.panorama) {
               const cachedById = new Map(cached.state.layers.map(layer => [layer.id, layer]));
               state = { ...cached.state, ...state, layers: state.layers.map(layer => ({

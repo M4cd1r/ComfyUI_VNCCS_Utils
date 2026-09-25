@@ -69,6 +69,9 @@ stale content. Workflows continue to depend on their ComfyUI host's state cache.
   capture, cache restoration, queue synchronization, and full-image export.
   On macOS the production shader is also tested using native OpenGL without a
   browser (only its GLSL version/precision declarations are adapted).
+- `tests/e2e/panorama.spec.mjs` drives the real UI with a 2048 × 1024 fixture:
+  panorama import, seam editing with undo/redo, save/reopen, PNG (node IMAGE)
+  and PSD export size, and the captured generation camera (draw route stubbed).
 - Final layout, pen/mouse interaction, actual model generation, and WebGL
   behavior must be checked in the real ComfyUI installation. A useful acceptance
   check is to paint across the seam, turn through 360°, undo/redo, generate while
