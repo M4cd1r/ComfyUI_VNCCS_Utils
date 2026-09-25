@@ -12169,6 +12169,8 @@ class PoseStudioWidget {
             const item = document.createElement('div');
             item.className = 'vnccs-ps-library-item';
             item.dataset.poseId = this.getLibraryPoseId(pose);
+            // UniCanvas hides the built-in interaction presets when they are switched off.
+            item.dataset.poseRepository = String(pose?.repository || "");
             if (this.getLibraryPoseId(pose) === this.librarySelectedName) item.classList.add('selected');
 
             const preview = document.createElement('div');

@@ -10,6 +10,8 @@
  * The seed is not user-facing: the backend draws a fresh one for every run.
  */
 
+import { filterUniCanvasChoices, isUniCanvasFamilyEnabled, isUniCanvasRemoveBgMethodEnabled, pickEnabledUniCanvasChoice } from "./vnccs_unicanvas_feature_toggles.mjs";
+
 export const REMOVE_BG_METHODS = [
   ["edit", "Edit model"],
   ["birefnet", "BiRefNet"],
@@ -37,7 +39,9 @@ export const REMOVE_BG_EDIT_KEYS = [
 export function resolveRemoveBgSelection(settings) {
   const source = settings || {};
   const raw = String(source.remove_bg_model || "birefnet");
-  const method = raw === "qi21" ? "edit" : raw;
+  // A method switched off in Settings > VNCCS > UniCanvas gives way to the first allowed one; with
+  // none allowed the saved method stays (bakes and sprites still cut out with it).
+  const method = pickEnabledUniCanvasChoice(raw === "qi21" ? "edit" : raw, REMOVE_BG_METHODS, isUniCanvasRemoveBgMethodEnabled);
   const editModel = REMOVE_BG_EDIT_MODES.some(([key]) => key === source.remove_bg_edit_model)
     ? source.remove_bg_edit_model
     : REMOVE_BG_EDIT_MODES[0][0];
@@ -62,7 +66,7 @@ export function removeBgEditSettings(settings, editModel) {
 export function buildRemoveBgSettings(settings, ui) {
   const { bind, makeSelect, commit, assets, familyDefaults, keepAreas } = ui;
   const selection = resolveRemoveBgSelection(settings);
-  const method = makeSelect(REMOVE_BG_METHODS, selection.method);
+  const method = makeSelect(filterUniCanvasChoices(REMOVE_BG_METHODS, isUniCanvasRemoveBgMethodEnabled, selection.method), selection.method);
   const methodRow = bind("Remove background", method);
   // Keep areas: painted Inpaint Mask pixels stay opaque whatever the backend.
   if (keepAreas) {
@@ -80,7 +84,7 @@ export function buildRemoveBgSettings(settings, ui) {
     editRows.push(row);
     return row;
   };
-  const mode = makeSelect(REMOVE_BG_EDIT_MODES, selection.editModel);
+  const mode = makeSelect(filterUniCanvasChoices(REMOVE_BG_EDIT_MODES, isUniCanvasFamilyEnabled, selection.editModel), selection.editModel);
   const modeRow = editRow("Mode", mode);
 
   const stored = () => {

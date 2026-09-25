@@ -20,6 +20,7 @@
 import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { autoFileLayer } from "./vnccs_unicanvas_filing.mjs";
 import { isGroupLayer } from "./vnccs_unicanvas_groups.mjs";
+import { isUniCanvasAutoNameModelEnabled, isUniCanvasEnabled, isUniCanvasNamingModelAvailable, pickEnabledUniCanvasChoice } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { groupCharacterName, modelLayerName, nameSourceForOrigin, normalizeLayerCategory, rulesCategory, rulesLayerName } from "./vnccs_unicanvas_naming_rules.mjs";
 
 export const DESCRIBE_LAYERS_ROUTE = "/vnccs/unicanvas/describe_layers";
@@ -41,14 +42,20 @@ const AUTO_NAME_DOWNLOAD = { qwen3vl_2b: "~4 GB", smolvlm_256m: "~500 MB" };
 
 export function resolveAutoNameModel(settings) {
   const value = settings?.[AUTO_NAME_MODEL_SETTING];
-  return AUTO_NAME_MODELS.some(([key]) => key === value) ? value : AUTO_NAME_MODELS[0][0];
+  const saved = AUTO_NAME_MODELS.some(([key]) => key === value) ? value : AUTO_NAME_MODELS[0][0];
+  // A model switched off in Settings > VNCCS > UniCanvas is replaced by an allowed one.
+  return pickEnabledUniCanvasChoice(saved, AUTO_NAME_MODELS, isUniCanvasAutoNameModelEnabled);
 }
 
 /** "off" | "rules" | "model". States saved before the setting existed read the old checkbox. */
 export function resolveAutoNamingLevel(settings) {
   const value = settings?.[AUTO_NAMING_SETTING];
-  if (AUTO_NAMING_LEVELS.some(([key]) => key === value)) return value;
-  return settings?.[AUTO_NAME_SETTING] === true ? "model" : "rules";
+  const level = AUTO_NAMING_LEVELS.some(([key]) => key === value) ? value
+    : settings?.[AUTO_NAME_SETTING] === true ? "model" : "rules";
+  // Settings > VNCCS > UniCanvas: naming switched off, or no naming model allowed to download.
+  if (!isUniCanvasEnabled("autoLayerNames")) return "off";
+  if (level === "model" && !isUniCanvasNamingModelAvailable()) return "rules";
+  return level;
 }
 
 function layerImageDataURL(uc, layer) {
@@ -99,6 +106,8 @@ async function requestNames(uc, layers, groups = [], { manual = false } = {}) {
     if (manual) uc.setStatus("[VNCCS UniCanvas] Auto-name: the layer is empty.", true);
     return 0;
   }
+  // No naming model may download (Settings > VNCCS > UniCanvas): the rules name stays.
+  if (!isUniCanvasNamingModelAvailable()) return 0;
   let data;
   try {
     data = await postDescribe(uc, { layers: items, groups: groupItems });

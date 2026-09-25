@@ -17,6 +17,8 @@
  * import and one install call (kept merge-friendly for parallel branches).
  */
 
+import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+
 export const BRUSH_FAMILY_TOOLS = new Set(["brush", "eraser", "mask"]);
 export const BRUSH_SIZE_MIN = 1;
 export const BRUSH_SIZE_MAX = 220;
@@ -395,8 +397,9 @@ export function installUniCanvasInputTools(uc) {
     uc.canvas.setPointerCapture?.(e.pointerId);
     if (uc.tool !== "sam") {
       // Right-button hold opens the radial HUD - the only right-button gesture
-      // (the former Alt brush-size drag was removed by request).
-      openRadialHud(uc, e);
+      // (the former Alt brush-size drag was removed by request). Settings > VNCCS >
+      // UniCanvas > Radial HUD can switch it off.
+      if (isUniCanvasEnabled("radialHud")) openRadialHud(uc, e);
     }
     uc.updateToolPreviewOverlay();
   });

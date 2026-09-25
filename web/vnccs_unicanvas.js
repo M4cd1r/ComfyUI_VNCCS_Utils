@@ -76,6 +76,20 @@ import {
 import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
 import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
 import { installUniCanvasControlScene, normalizeControlSource } from "./vnccs_unicanvas_control_scene.mjs";
+import {
+  bindUniCanvasFeatureToggles,
+  buildUniCanvasToggleSettings,
+  filterUniCanvasChoices,
+  installUniCanvasFeatureToggles,
+  isUniCanvasAutoNameModelEnabled,
+  isUniCanvasEnabled,
+  isUniCanvasFamilyEnabled,
+  isUniCanvasLoaderEnabled,
+  isUniCanvasRemoveBgAvailable,
+  isUniCanvasSettingsSectionEnabled,
+  isUniCanvasToolEnabled,
+  syncUniCanvasSelectOptions,
+} from "./vnccs_unicanvas_feature_toggles.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -964,6 +978,8 @@ class UniCanvasWidget {
     installUniCanvasFiling(this);
     installUniCanvasHistory(this);
     installUniCanvasTimeline(this, { createPoseEditor: () => new UniCanvasPoseEditor(this) });
+    // Settings > VNCCS > UniCanvas switches (issue #50): applied live to this widget.
+    installUniCanvasFeatureToggles(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -1106,6 +1122,7 @@ class UniCanvasWidget {
       this._button("Flatten layers", "vnccs-uc-btn danger", () => this.confirmFlattenLayers(), "Flatten all layers"),
       this._button("Export Layers as PSD", "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD")
     );
+    this.flattenLayersFooter.lastElementChild.dataset.psdAction = "export";
     const layersBody = document.createElement("div");
     layersBody.className = "vnccs-uc-layers-section";
     layersBody.append(this.layerSubhead, this.layersTopActions, this.layerList, this.flattenLayersFooter);
@@ -1140,6 +1157,7 @@ class UniCanvasWidget {
       </div>
       <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
       <div class="vnccs-uc-config-banner" data-config-banner hidden></div>
+      <div class="vnccs-uc-config-banner" data-toggle-notice hidden></div>
       <div class="vnccs-uc-model-tabs" data-config-override>
         <button class="vnccs-uc-model-tab" type="button" data-model-selection-mode="presets">Presets</button>
         <button class="vnccs-uc-model-tab" type="button" data-model-selection-mode="custom">Custom</button>
@@ -1750,6 +1768,8 @@ class UniCanvasWidget {
   }
 
   setTool(tool, force = false) {
+    // A tool switched off in Settings > VNCCS > UniCanvas falls back to Move.
+    if (tool !== "pose" && !isUniCanvasToolEnabled(tool)) tool = "move";
     if (this.tool === tool && !force) return;
     const previousTool = this.tool;
     if (previousTool === "pose" && tool !== "pose") {
@@ -2610,6 +2630,8 @@ class UniCanvasWidget {
   groupPresetsByType() {
     const groups = new Map();
     for (const preset of this.presets || []) {
+      // Presets of a family switched off in the settings are not offered.
+      if (!isUniCanvasFamilyEnabled(getUniCanvasModelModule(preset?.settings?.generation_mode || preset?.id).key)) continue;
       const label = this.getPresetGroupLabel(preset);
       if (!groups.has(label)) groups.set(label, []);
       groups.get(label).push(preset);
@@ -6423,7 +6445,7 @@ class UniCanvasWidget {
     catch (error) { this.setStatus(`Image import failed: ${error.message || error}`, true); return; }
     finally { URL.revokeObjectURL(url); this.fileInput.value = ""; }
     if (this._disposed || importRevision !== this._importRevision) return;
-    if (!this.panorama && isPanoramaCandidate(img.width, img.height)) {
+    if (!this.panorama && isUniCanvasEnabled("panoramas") && isPanoramaCandidate(img.width, img.height)) {
       const choice = await this.choosePanoramaImport(img);
       if (choice === "cancel" || this._disposed || importRevision !== this._importRevision) return;
       if (choice === "panorama") {
@@ -7381,7 +7403,28 @@ class UniCanvasWidget {
     this.renderModelSelectionControls();
     this.renderLoraStackControls();
     this.syncPromptGuide();
+    this.syncFeatureToggleControls();
     this.autoResizePromptTextareas();
+  }
+
+  // Families and loaders switched off in Settings > VNCCS > UniCanvas leave the pickers; a saved
+  // selection keeps its value and gets a notice instead of a silent model switch.
+  syncFeatureToggleControls() {
+    const mode = this.settings.generation_mode;
+    const modeSelect = this.container.querySelector('[data-setting="generation_mode"]');
+    syncUniCanvasSelectOptions(modeSelect, (value) => isUniCanvasFamilyEnabled(getUniCanvasModelModule(value).key), modeSelect?.value);
+    const loaderSelect = this.container.querySelector('[data-setting="model_loader"]');
+    syncUniCanvasSelectOptions(loaderSelect, (value) => isUniCanvasLoaderEnabled(getUniCanvasModelLoader(value).key), loaderSelect?.value);
+    const notice = this.container.querySelector("[data-toggle-notice]");
+    if (!notice) return;
+    const where = "is turned off in Settings > VNCCS > UniCanvas";
+    const module = getUniCanvasModelModule(mode);
+    const loader = getUniCanvasModelLoader(this.settings.model_loader);
+    const lines = [];
+    if (!isUniCanvasFamilyEnabled(module.key)) lines.push(`${module.label} ${where}.`);
+    if (this.settings.model_selection_mode === "custom" && !isUniCanvasLoaderEnabled(loader.key)) lines.push(`The ${loader.label} loader ${where}.`);
+    notice.textContent = lines.join(" ");
+    notice.hidden = !lines.length;
   }
 
   // The "?" guide opens over the canvas area only: the canvas dims behind it while the
@@ -8302,8 +8345,6 @@ class UniCanvasWidget {
       });
     });
     const addBtn = this._button("Add image", "vnccs-uc-btn", () => fileInput.click(), "Add a reference image");
-    // Asset library (vnccs_unicanvas_library.mjs): save the generation settings as a preset.
-    if (this.library) this.library.buildSettingsSection(section("library", "Asset library"));
 
     const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
       panel.remove();
@@ -8429,39 +8470,54 @@ class UniCanvasWidget {
 
     // Background removal (spec 10.3): the backend and, for the Edit model backend, its own
     // generation settings (vnccs_unicanvas_remove_bg.mjs).
-    section("remove_bg", "Remove background");
-    buildRemoveBgSettings(s, {
-      bind,
-      makeSelect,
-      commit,
-      assets: this.assets,
-      familyDefaults: (mode) => getUniCanvasModelModule(mode).defaults,
-      keepAreas: () => describeKeepAreas(this),
-    });
+    // Sections of features switched off in Settings > VNCCS > UniCanvas are left out (issue #50).
+    const sectionOn = (key) => isUniCanvasSettingsSectionEnabled(key);
+    if (sectionOn("remove_bg") && isUniCanvasRemoveBgAvailable()) {
+      section("remove_bg", "Remove background");
+      buildRemoveBgSettings(s, {
+        bind,
+        makeSelect,
+        commit,
+        assets: this.assets,
+        familyDefaults: (mode) => getUniCanvasModelModule(mode).defaults,
+        keepAreas: () => describeKeepAreas(this),
+      });
+    }
 
     // AI harmonize instruction (Harmonize panel, vnccs_unicanvas_harmonize.mjs), sent on every run.
-    section("harmonize", "Harmonize");
-    const harmonizePrompt = document.createElement("textarea");
-    harmonizePrompt.className = "vnccs-uc-textarea";
-    harmonizePrompt.rows = 3;
-    harmonizePrompt.placeholder = HARMONIZE_DEFAULT_PROMPT;
-    harmonizePrompt.value = typeof s[HARMONIZE_PROMPT_SETTING] === "string" ? s[HARMONIZE_PROMPT_SETTING] : "";
-    harmonizePrompt.dataset.harmonizePrompt = "";
-    harmonizePrompt.addEventListener("keydown", (e) => e.stopPropagation());
-    harmonizePrompt.addEventListener("input", () => { s[HARMONIZE_PROMPT_SETTING] = harmonizePrompt.value; commit(); });
-    bind("AI harmonize instruction (empty: the default)", harmonizePrompt);
+    if (sectionOn("harmonize")) {
+      section("harmonize", "Harmonize");
+      const harmonizePrompt = document.createElement("textarea");
+      harmonizePrompt.className = "vnccs-uc-textarea";
+      harmonizePrompt.rows = 3;
+      harmonizePrompt.placeholder = HARMONIZE_DEFAULT_PROMPT;
+      harmonizePrompt.value = typeof s[HARMONIZE_PROMPT_SETTING] === "string" ? s[HARMONIZE_PROMPT_SETTING] : "";
+      harmonizePrompt.dataset.harmonizePrompt = "";
+      harmonizePrompt.addEventListener("keydown", (e) => e.stopPropagation());
+      harmonizePrompt.addEventListener("input", () => { s[HARMONIZE_PROMPT_SETTING] = harmonizePrompt.value; commit(); });
+      bind("AI harmonize instruction (empty: the default)", harmonizePrompt);
+    }
 
     // Automatic layer names and folders (vnccs_unicanvas_naming.mjs, vnccs_unicanvas_filing.mjs).
     // "Auto-name" in the layer menu works at every level; only "Rules + model" downloads.
-    section("layer_names", "Layer names");
-    const namingLevel = makeSelect(AUTO_NAMING_LEVELS, resolveAutoNamingLevel(s));
-    namingLevel.dataset.namingLevel = "";
-    namingLevel.addEventListener("input", () => { s[AUTO_NAMING_SETTING] = namingLevel.value; commit(); });
-    bind("Auto naming", namingLevel);
-    const namingModel = makeSelect(AUTO_NAME_MODELS, resolveAutoNameModel(s));
-    namingModel.addEventListener("input", () => { s[AUTO_NAME_MODEL_SETTING] = namingModel.value; commit(); });
-    bind("Naming model (downloads on first use)", namingModel);
-    checkboxRow("Auto-file new layers into folders", resolveAutoFile(s), (checked) => { s[AUTO_FILE_SETTING] = checked; commit(); });
+    const namingOn = isUniCanvasEnabled("autoLayerNames");
+    const filingOn = isUniCanvasEnabled("autoFiling");
+    if (namingOn || filingOn) section("layer_names", "Layer names");
+    if (namingOn) {
+      const namingModels = filterUniCanvasChoices(AUTO_NAME_MODELS, isUniCanvasAutoNameModelEnabled);
+      // Without an allowed naming model, "Rules + model" is not offered (nothing can download).
+      const levels = namingModels.length ? AUTO_NAMING_LEVELS : AUTO_NAMING_LEVELS.filter(([key]) => key !== "model");
+      const namingLevel = makeSelect(levels, resolveAutoNamingLevel(s));
+      namingLevel.dataset.namingLevel = "";
+      namingLevel.addEventListener("input", () => { s[AUTO_NAMING_SETTING] = namingLevel.value; commit(); });
+      bind("Auto naming", namingLevel);
+      if (namingModels.length) {
+        const namingModel = makeSelect(namingModels, resolveAutoNameModel(s));
+        namingModel.addEventListener("input", () => { s[AUTO_NAME_MODEL_SETTING] = namingModel.value; commit(); });
+        bind("Naming model (downloads on first use)", namingModel);
+      }
+    }
+    if (filingOn) checkboxRow("Auto-file new layers into folders", resolveAutoFile(s), (checked) => { s[AUTO_FILE_SETTING] = checked; commit(); });
 
     // Speed and memory for every draw (nodes/unicanvas/performance.py). The attention kernel is
     // ComfyUI's own startup choice (Comfy Kitchen / sage / flash); the progress bar shows it.
@@ -8475,8 +8531,10 @@ class UniCanvasWidget {
 
     // Character bake (vnccs_unicanvas_bake.mjs): the model bakes use when the scene engine is not
     // QiE2511 or Klein9b, and whether GENERATE re-bakes stale characters.
-    section("character_bake", "Character bake");
-    this.poseBake?.buildSettings({ bind, makeSelect, checkboxRow, commit });
+    if (sectionOn("character_bake") && this.poseBake) {
+      section("character_bake", "Character bake");
+      this.poseBake.buildSettings({ bind, makeSelect, checkboxRow, commit });
+    }
 
     // Diagnostics for bug reports and AI agents.
     section("debug", "Debug");
@@ -8487,7 +8545,7 @@ class UniCanvasWidget {
     }, "Logs every UniCanvas request (draw, remove bg, SAM, naming, color match) with sizes and timings, plus draw tensors and Spectrum forecasts.");
 
     // Asset library (vnccs_unicanvas_library.mjs): save the generation settings as a preset.
-    if (this.library) this.library.buildSettingsSection(section("library", "Asset library"));
+    if (this.library && sectionOn("library")) this.library.buildSettingsSection(section("library", "Asset library"));
 
     const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
       panel.remove();
@@ -8524,6 +8582,8 @@ class UniCanvasWidget {
     }
     this._disposed = true;
     teardownUniCanvasWidgetModes(this);
+    this._vnccsTogglesOff?.();
+    this._vnccsTogglesOff = null;
     this.timelinePanel?.dispose();
     this.projectSession?.dispose();
     this._panoramaImportClose?.();
@@ -8557,6 +8617,8 @@ class UniCanvasWidget {
 app.registerExtension({
   name: "VNCCS.UniCanvas",
   settings: [
+    // Settings > VNCCS > UniCanvas on/off switches, generated from the toggle registry (issue #50).
+    ...buildUniCanvasToggleSettings(),
     {
       id: UNICANVAS_STANDALONE_SETTING_ID,
       category: ["VNCCS", "UniCanvas", "Standalone sidebar"],
@@ -8570,7 +8632,12 @@ app.registerExtension({
       },
     },
   ],
+  init() {
+    // The feature toggles read ComfyUI's stored settings through the app (issue #50).
+    bindUniCanvasFeatureToggles(app);
+  },
   setup() {
+    bindUniCanvasFeatureToggles(app);
     // Optional standalone Unicanvas sidebar tab (no node, no workflow), off by default.
     syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, readUniCanvasStandaloneSetting());
     if (app._vnccsUniCanvasPanoramaQueueSync) return;
