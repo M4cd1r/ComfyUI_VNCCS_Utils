@@ -83,6 +83,19 @@ if (topic === "pose-editor") {
   else await page.locator('[title="Add pose layer"]').first().click();
   await page.waitForTimeout(25_000);
 }
+if (topic === "scene-states") {
+  // Scene states (#7): an imported image, two states with the second one hiding the image.
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator('button[title="Import image"]').first().click(),
+  ]);
+  await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "backdrop.png"));
+  await page.waitForTimeout(2_500);
+  await page.locator('[data-scene-states] [data-state-action="new"]').first().click();
+  await page.locator('[data-scene-states] [data-state-action="new"]').first().click();
+  await page.locator(".vnccs-uc-layer .vnccs-uc-thumb").first().click();
+  await page.waitForTimeout(500);
+}
 if (topic === "multi-character") {
   // A pose layer with two mannequins: the Character reference card lists one row per mannequin.
   await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
@@ -145,6 +158,7 @@ const shots = {
   "multi-character": ".vnccs-unicanvas",
   "vn-preview": ".vnccs-unicanvas",
   "placement-harmonize": ".vnccs-unicanvas",
+  "scene-states": ".vnccs-unicanvas",
   "config-override": "body",
   "icons": "body",
   "auto-naming": ".vnccs-uc2-standalone-shell",
