@@ -36,6 +36,11 @@ import {
     serializePoseStudioCharacter,
 } from "./vnccs_pose_characters.mjs?v=20260908.14";
 import {
+    inheritSlotIdentity,
+    meshVerticalExtent,
+    scaleInteractionTransforms,
+} from "./vnccs_pose_interactions.mjs?v=20260925.1";
+import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
     clampVideoCaptureFps,
@@ -12811,7 +12816,10 @@ class PoseStudioWidget {
         if (asset.characters.length > MAX_POSE_STUDIO_CHARACTERS) {
             console.warn(`[VNCCS PoseStudio] Library scene contains ${asset.characters.length} characters; only the first ${MAX_POSE_STUDIO_CHARACTERS} can be loaded.`);
         }
-        const normalized = normalizePoseStudioCharacters(asset, { mesh: this.meshParams });
+        const normalized = normalizePoseStudioCharacters(
+            inheritSlotIdentity(asset, this.characters),
+            { mesh: this.meshParams },
+        );
         this.characters = normalized.characters;
         this.activeCharacterId = normalized.activeCharacterId;
         const active = this.getActiveCharacter();
@@ -12857,6 +12865,7 @@ class PoseStudioWidget {
         this.restoreActivePoseCameraParams({ updateViewer: false });
 
         await this.hydrateCharacterSceneModels({ showOverlay: true, recenterViewport: false });
+        if (!animation) this.applyInteractionHeightScaling(asset);
         this.animationTimeline?.setState(this.animationState);
         this.resetAnimationHistory();
         // Loading a pose is not an interface navigation action. Pose Manager
@@ -12874,6 +12883,43 @@ class PoseStudioWidget {
         this.syncCharacterEditorControls();
         this.renderCharactersUI();
         this.syncToNode(false, { skipCapture: true, skipAnimationHistory: true });
+    }
+
+    /**
+     * Interaction presets are authored at the default proportions. Once every
+     * mannequin's body is loaded, spread or tighten the placement by each
+     * body's height ratio so contact points still meet.
+     */
+    applyInteractionHeightScaling(asset) {
+        const interaction = asset?.interaction;
+        if (!Array.isArray(interaction?.reference_heights) || !this.characters?.length) return false;
+        const transforms = this.characters.map(character => this.characterTransformForScene(character));
+        const heights = this.characters.map(character => (
+            this._meshHeights?.get(JSON.stringify(character.mesh || {})) || 0
+        ));
+        const scaled = scaleInteractionTransforms(
+            transforms,
+            heights,
+            interaction,
+            this.characters.map(character => character.slot),
+        );
+        this.characters.forEach((character, index) => {
+            const transform = normalizeCharacterTransform(scaled[index]);
+            character.transform = transform;
+            if (character.animationState) character.animationState.baseTransform = { ...transform };
+            const pose = character.poses?.[this.activeTab];
+            if (pose && typeof pose === "object") {
+                pose.cameraParams = {
+                    ...(pose.cameraParams || {}),
+                    offset_x: transform.x,
+                    offset_y: transform.y,
+                    zoom: transform.zoom,
+                };
+            }
+        });
+        this.restoreActivePoseCameraParams({ updateViewer: false });
+        this.updateCharacterScene();
+        return true;
     }
 
     loadPoseSetAsset(asset) {
@@ -12999,8 +13045,17 @@ class PoseStudioWidget {
                 const activeSceneTransform = activeScenePose
                     ? extractActiveCharacterTransformFromSceneAsset(data.pose)
                     : null;
+                // Multi-character pose scenes (interaction presets included)
+                // replace the whole scene; mannequins keep bodies by slot.
+                const multiCharacterPose = assetType === "pose"
+                    && !isPoseSet
+                    && !this.isAnimationMode()
+                    && Array.isArray(data.pose.characters)
+                    && data.pose.characters.length > 1;
                 if (isPoseSet) {
                     this.loadPoseSetAsset(data.pose);
+                } else if (multiCharacterPose) {
+                    await this.loadCharacterSceneLibraryAsset(data.pose, { animation: false });
                 } else if (
                     assetType === "animation"
                     && Array.isArray(data.pose.characters)
@@ -13854,6 +13909,9 @@ class PoseStudioWidget {
             const currentKey = `${String(this.activeCharacterId || "")}\u0000${JSON.stringify(this.meshParams || {})}`;
             if (currentKey !== requestKey) return false;
             const d = this.modelDataFromMorphMessage(message);
+            // Interaction presets scale placement by each body's standing height.
+            if (!this._meshHeights) this._meshHeights = new Map();
+            this._meshHeights.set(requestedMeshSignature, meshVerticalExtent(d.vertices));
             if (this.viewer) {
                 // Reload mesh data without implicit camera math; if we need a reset,
                 // do the same explicit snap the Preview button uses.

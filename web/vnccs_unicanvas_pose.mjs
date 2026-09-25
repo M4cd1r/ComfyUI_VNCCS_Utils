@@ -425,7 +425,7 @@ export class UniCanvasPoseEditor {
         const characters = this.host._vnccsCharacterList || [];
         const key = JSON.stringify([refs.map(ref => [ref?.source, ref?.layerId, ref?.name]), characters,
             multi && [mannequins, pose.studio?.active_character_id ?? null]]);
-        if (key === this.characterMenuKey) return;
+        if (key === this.characterMenuKey) { this.host.poseBake?.renderCardChips(this); return; }
         this.characterMenuKey = key;
         if (!this.host._vnccsCharacterList) {
             void this.loadVnccsCharacters().then(list => {
@@ -437,7 +437,7 @@ export class UniCanvasPoseEditor {
         this.characterSingleParts.forEach(part => { part.hidden = multi; });
         this.characterList.hidden = !multi;
         this.characterCount.hidden = !multi;
-        if (multi) { this.renderCharacterRows(mannequins, refs); return; }
+        if (multi) { this.renderCharacterRows(mannequins, refs); this.host.poseBake?.renderCardChips(this); return; }
         this.characterList.replaceChildren();
         const character = refs[0];
         this.fillCharacterSource(this.characterSelect, character);
@@ -446,7 +446,8 @@ export class UniCanvasPoseEditor {
         if (src) this.characterPreview.src = src;
         else this.characterPreview.removeAttribute("src");
         this.characterClear.disabled = !character;
-        this.characterIssue.textContent = character ? "" : "Needed to generate: pick a VNCCS character or upload an image.";
+        this.characterIssue.textContent = character ? "" : "Optional: bind a VNCCS character or an image to bake this mannequin.";
+        this.host.poseBake?.renderCardChips(this);
     }
 
     renderCharacterRows(mannequins, refs) {
@@ -734,11 +735,18 @@ export class UniCanvasPoseEditor {
             const scale = Math.min(1, cap, final ? Math.max(screen, cap) : screen);
             const surface = this.captureSurface({ width: Math.max(1, Math.round(rect.width * scale)), height: Math.max(1, Math.round(rect.height * scale)) });
             if (!surface) return;
-            const ctx = this.layer.canvas.getContext("2d");
-            ctx.clearRect(0, 0, this.layer.canvas.width, this.layer.canvas.height);
-            ctx.drawImage(surface, rect.x - this.host.origin.x, rect.y - this.host.origin.y, rect.width, rect.height);
-            this.layer.hiresCanvas = surface;
-            this.layer.hiresRect = { ...rect };
+            // The render is always the mannequin; a layer with baked characters shows its composite
+            // view instead (vnccs_unicanvas_bake.mjs), rebuilt from this surface.
+            this.layer.mannequinSurface = surface;
+            if (this.host.poseBake?.showsBakedView(this.layer)) this.host.poseBake.rebuildView(this.layer);
+            else {
+                const ctx = this.layer.canvas.getContext("2d");
+                ctx.clearRect(0, 0, this.layer.canvas.width, this.layer.canvas.height);
+                ctx.drawImage(surface, rect.x - this.host.origin.x, rect.y - this.host.origin.y, rect.width, rect.height);
+                this.layer.hiresCanvas = surface;
+                this.layer.hiresRect = { ...rect };
+                this.layer._bakeViewBaked = false;
+            }
             this.host.markLayerPixelsChanged(this.layer);
             this.host.requestRender();
             if (final) this.host.refreshLayerRow?.(this.layer.id);
@@ -789,6 +797,7 @@ export class UniCanvasPoseEditor {
         this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
         this.updateIdPass();
         this.updateNormalPass();
+        this.host.poseBake?.afterCommit(this.layer);
     }
 
     // A depth clamp moved a character: persist it once per frame, like any other studio edit.
@@ -851,6 +860,67 @@ export class UniCanvasPoseEditor {
         };
     }
 
+    /**
+     * Inputs of one character bake over the working rect `work` (world coordinates), at `size`:
+     * image1 is that character's solo pass over the studio background, image2 the lower visible
+     * composite plus that character's reference, and the prompt is the studio pose prompt plus the
+     * identity prompt, through the lights. `solo` is the transparent solo pass over `pose.rect`.
+     */
+    async bakeInputs(layer, characterId, work, size) {
+        if (this.layer !== layer || !this.initialized) throw new Error("The pose layer changed. Bake again.");
+        const token = this.token;
+        const rect = { ...layer.pose.rect };
+        const scale = Math.min(1, 2048 / Math.max(rect.width, rect.height));
+        const solo = this.captureSoloPass({ width: Math.max(1, Math.round(rect.width * scale)), height: Math.max(1, Math.round(rect.height * scale)) }, characterId);
+        if (!solo) throw new Error("The pose editor could not render the character.");
+        const state = layer.pose.studio || {};
+        const params = state.export || {};
+        const bg = params.bg_color || [255, 255, 255];
+        const image1 = this.host._createCanvas(size.width, size.height);
+        const ctx = image1.getContext("2d");
+        ctx.fillStyle = `rgb(${bg.join(",")})`;
+        ctx.fillRect(0, 0, image1.width, image1.height);
+        const k = size.width / work.width;
+        ctx.drawImage(solo, (rect.x - work.x) * k, (rect.y - work.y) * k, rect.width * k, rect.height * k);
+        const image2 = await composePoseReference(this.host, layer, size, { rect: work, characterId });
+        if (token !== this.token || !this.host.layers.includes(layer)) throw new Error("The pose layer changed. Bake again.");
+        const index = state.activeTab || 0;
+        const posePrompt = state.pose_prompts?.[index] ?? state.poses?.[index]?.prompt ?? params.user_prompt ?? "";
+        const userPrompt = [posePrompt, poseCharacterPrompt(layer, characterId)].filter(Boolean).join("\n");
+        const positive = PoseStudioWidget.prototype.generatePromptFromLights.call({ exportParams: params }, state.lights || [], userPrompt);
+        return { image1: image1.toDataURL("image/png"), image2: image2.toDataURL("image/png"), positive, solo };
+    }
+
+    /** Projected head box and feet contact point of one character, normalized to `pose.rect`. */
+    characterAnchors(characterId) {
+        const v = this.studio?.viewer, THREE = v?.THREE, camera = v?.camera;
+        if (!THREE?.Vector3 || !camera) return null;
+        const mesh = this.characterMeshes().find(([id]) => id === String(characterId))?.[1];
+        if (!mesh) return null;
+        const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
+        const project = object => {
+            if (!object) return null;
+            const point = object.getWorldPosition(new THREE.Vector3()).project(camera);
+            return { x: (point.x + 1) / 2, y: (1 - point.y) / 2 };
+        };
+        try {
+            mesh.updateMatrixWorld?.(true);
+            const head = project(bone("head")), neck = project(bone("neck_01"));
+            const feet = ["foot_l", "foot_r", "ball_l", "ball_r"].map(name => project(bone(name))).filter(Boolean);
+            const result = {};
+            if (head) {
+                const aspect = (this.layer?.pose?.rect?.width || 1) / (this.layer?.pose?.rect?.height || 1);
+                const half = Math.max(0.02, neck ? Math.hypot((head.x - neck.x) * aspect, head.y - neck.y) * 1.3 : 0.05);
+                result.head = { x: head.x - half / aspect, y: head.y - half * 1.2, width: 2 * half / aspect, height: half * 2.2 };
+            }
+            if (feet.length) {
+                const lowest = Math.max(...feet.map(point => point.y));
+                result.feet = { x: feet.reduce((sum, point) => sum + point.x, 0) / feet.length, y: lowest };
+            }
+            return result.head || result.feet ? result : null;
+        } catch (_) { return null; }
+    }
+
     release() {
         this.saveUI();
         this.commit();
@@ -865,7 +935,7 @@ export class UniCanvasPoseEditor {
         this.studio?.dispose();
         this.studio?.container.remove();
         this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null;
-        this.characterSelect = null; this.characterMenuKey = null; this.characterList = null; this.characterRowSelects = null; this.stateKey = null; this.pages = null;
+        this.characterSelect = null; this.characterMenuKey = null; this.characterBakeSlot = null; this.characterList = null; this.characterRowSelects = null; this.stateKey = null; this.pages = null;
         this.sidePanel?.remove();
         this.controls = null; this.characterMenu = null; this.sidePanel = null; this.editBar = null;
         this.host.container.classList.remove("vnccs-uc-pose-active", "vnccs-uc-pose-editing");

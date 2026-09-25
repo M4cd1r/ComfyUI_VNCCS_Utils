@@ -350,8 +350,12 @@ function intersects(a, b) {
     return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
 
-/** Compose image2 from the lower stack and the explicitly selected character. */
-export async function composePoseReference(host, layer, size) {
+/**
+ * Compose image2 from the lower stack and the explicitly selected character. `rect` is the world
+ * rect image2 covers (the bbox by default, a bake's working rect otherwise); with `characterId`
+ * only that mannequin's reference is placed (a character bake).
+ */
+export async function composePoseReference(host, layer, size, { rect = host.bbox, characterId = null } = {}) {
     const out = host._createCanvas(size.width, size.height);
     const ctx = out.getContext("2d");
     ctx.fillStyle = "#ffffff";
@@ -361,7 +365,7 @@ export async function composePoseReference(host, layer, size) {
         ctx.save();
         ctx.globalAlpha = item.opacity;
         ctx.globalCompositeOperation = item.blendMode || "source-over";
-        host.drawRasterLayerToWorldRect(ctx, item, host.bbox, { x: 0, y: 0, width: out.width, height: out.height });
+        host.drawRasterLayerToWorldRect(ctx, item, rect, { x: 0, y: 0, width: out.width, height: out.height });
         ctx.restore();
     };
     [...lower].reverse().forEach(drawLayer);
@@ -375,7 +379,7 @@ export async function composePoseReference(host, layer, size) {
             if (!selected) throw new Error("The character layer no longer exists. Select another character image.");
             // An already visible lower layer is part of image2 exactly once.
             const bounds = host.getLayerWorldBounds(selected);
-            if (!lower.includes(selected) || (bounds && !intersects(bounds, host.bbox))) {
+            if (!lower.includes(selected) || (bounds && !intersects(bounds, rect))) {
                 if (!bounds) throw new Error("The character layer is empty. Select another character image.");
                 ctx.save(); ctx.globalAlpha = selected.opacity;
                 host.drawRasterLayerToWorldRect(ctx, selected, bounds, fit(bounds.width, bounds.height, box));
@@ -390,6 +394,10 @@ export async function composePoseReference(host, layer, size) {
     };
     // Several mannequins with their own references: one column each, left to right in the order
     // the mannequins appear in image1 (the prompt states the mapping, see posePromptMapping).
+    if (characterId != null) {
+        await drawReference(poseCharacterRef(layer, characterId), { x: 0, y: 0, width: out.width, height: out.height });
+        return out;
+    }
     const multi = poseMultiReferences(layer);
     if (multi) {
         const columnWidth = out.width / multi.entries.length;

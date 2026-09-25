@@ -116,3 +116,48 @@ test("removing a mannequin drops its reference", async ({ page }) => {
   expect(after.characters).toHaveLength(1);
   expect(after.hasCharacterRefs).toBe(false);
 });
+
+// Plan 01.2 (#16): an interaction preset from the Pose Library replaces the scene but keeps each
+// mannequin's reference and body by slot.
+async function setBodySlider(page, label, value) {
+  await page.locator(".vnccs-uc-pose-tabs").getByRole("tab", { name: "Body" }).click();
+  await page.evaluate(([text, next]) => {
+    const inputs = [...document.querySelectorAll('.vnccs-uc-pose-side input[type="range"]')];
+    const input = inputs.find((item) => [...(item.parentElement?.parentElement?.querySelectorAll("*") || [])]
+      .some((node) => node.childElementCount === 0 && node.textContent.trim() === text));
+    if (!input) throw new Error(`No ${text} slider`);
+    input.value = String(next);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, [label, value]);
+}
+
+test("an interaction preset keeps bound references and bodies by slot", async ({ page }) => {
+  await openUnicanvas(page);
+  await openPoseTool(page);
+  const pose = await poseLayer(page);
+  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
+  await uploadFor(page, 0, reference("alice.png", PNG_RED));
+  await uploadFor(page, 1, reference("bob.png", PNG_BLUE));
+  await expect(page.locator(`${CARD} .vnccs-uc-pose-character-count`)).toHaveText("2/2 characters bound");
+  // Character 2 is active after it was added: make it a child.
+  await setBodySlider(page, "Age", 10);
+  await expect.poll(async () => (await scene(page, pose.id)).characters[1]?.mesh?.age ?? null, { timeout: 30_000 }).toBe(10);
+  const before = await scene(page, pose.id);
+
+  await page.locator(".vnccs-uc-pose-editbar").getByRole("button", { name: "Pose Library" }).click();
+  const item = page.locator(".vnccs-ps-library-item", { hasText: "Handshake" }).first();
+  await expect(item).toBeVisible({ timeout: 30_000 });
+  await item.click();
+  await page.locator(".vnccs-ps-library-apply").click();
+
+  await expect.poll(async () => (await scene(page, pose.id)).characters.map((entry) => entry.transform?.x ?? null), { timeout: 60_000 })
+    .not.toEqual(before.characters.map((entry) => entry.transform?.x ?? null));
+  const after = await scene(page, pose.id);
+  expect(after.characters.map((entry) => entry.ref?.name)).toEqual(["alice.png", "bob.png"]);
+  expect(after.characters.map((entry) => entry.mesh?.age)).toEqual(before.characters.map((entry) => entry.mesh?.age));
+  // The child is shorter, so the pair stands closer than the preset's default 5.4 apart.
+  const gap = Math.abs(after.characters[1].transform.x - after.characters[0].transform.x);
+  expect(gap).toBeLessThan(5.2);
+});

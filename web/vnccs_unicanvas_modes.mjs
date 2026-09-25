@@ -932,6 +932,16 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: layer.canvas.toDataURL("image/png"),
           };
         },
+        // Asset library (Plan 10.4): a layer's visible pixels (alpha crop) with their world rect.
+        getLayerCrop: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          const crop = layer?.canvas ? widget.getLayerAlphaBounds(layer) : null;
+          if (!crop) return null;
+          return {
+            rect: { x: widget.origin.x + crop.x, y: widget.origin.y + crop.y, width: crop.width, height: crop.height },
+            dataURL: widget.cloneCanvasCrop(layer.canvas, crop).toDataURL("image/png"),
+          };
+        },
         // Scene states (issue #7): the state list without thumbnails, and each layer's live offset.
         getSceneStates: () => {
           const scene = widget.serializeSceneStates?.() || null;
@@ -960,10 +970,13 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         getPoseScene: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           if (!layer?.pose) return null;
+          const studioCharacters = Array.isArray(layer.pose.studio?.characters) ? layer.pose.studio.characters : [];
           const characters = poseStudioCharacters(layer.pose).map((item) => {
             const ref = poseCharacterRef(layer, item.id);
+            const mesh = studioCharacters.find((entry) => String(entry?.id) === item.id)?.mesh;
             return { ...item, ref: ref ? { source: ref.source, name: ref.name || null, layerId: ref.layerId || null } : null,
-              prompt: poseCharacterPrompt(layer, item.id) };
+              prompt: poseCharacterPrompt(layer, item.id), mesh: mesh ? JSON.parse(JSON.stringify(mesh)) : null,
+              transform: studioCharacters.find((entry) => String(entry?.id) === item.id)?.transform || null };
           });
           const current = currentPoseId(layer);
           let idPass = null;
@@ -985,6 +998,18 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             idPass = { width, height, ids: [...current.meta.ids], counts: masks.map((mask) => (mask ? mask.reduce((sum, value) => sum + (value ? 1 : 0), 0) : 0)), overlap, outside };
           }
           return { characters, idPass, hasCharacterRefs: Boolean(layer.pose.characterRefs) };
+        },
+        // Character bake (issue #5): per-character status, the Show mannequin toggle, which
+        // characters have baked pixels, and how many history entries exist.
+        getPoseBake: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          if (!layer?.pose) return null;
+          const characters = poseStudioCharacters(layer.pose).map((item) => ({
+            id: item.id, status: widget.poseBake?.status(layer, item.id) ?? "none",
+            error: layer.pose.bake?.characters?.[item.id]?.error || null,
+          }));
+          return { characters, showMannequin: layer.pose.bake?.showMannequin === true, parts: Object.keys(layer.bakeParts || {}),
+            bakedView: layer._bakeViewBaked === true, undo: widget.undoStack?.length ?? 0 };
         },
         // Automatic naming (issue #17): name, nameSource and the category the model answered.
         getLayerNaming: (layerId) => {

@@ -18,6 +18,7 @@ const MENU_LABELS = [
   "Auto-name",
   "Rasterize",
   "Edit pose",
+  "Bake characters",
   "Split characters to layers",
   "Merge pose layers",
   "Add contact shadow",
@@ -56,11 +57,11 @@ test("brushHardness is a brush-engine setting with radial-gradient stamps", () =
   assert.match(inputTools, /addEventListener\("input"/, "the hardness slider must update continuously from input events");
 });
 
-test("layer context menu defines all fifteen entries", () => {
+test("layer context menu defines all sixteen entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 15, "the shipped menu must define exactly fifteen entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 16, "the shipped menu must define exactly sixteen entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
 });
 

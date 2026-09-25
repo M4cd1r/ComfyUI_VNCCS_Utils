@@ -321,7 +321,7 @@ def register_unicanvas_layer_routes() -> None:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
-    # Durable projects (Plan 10.2): /vnccs/unicanvas/projects/...
+    # Durable projects (Plan 10.2) and the asset library (Plan 10.4): /vnccs/unicanvas/projects/..., /vnccs/unicanvas/library/...
     for method, path, handler in project_routes(web, _content_length_ok):
         getattr(PromptServer.instance.routes, method.lower())(path)(handler)
 

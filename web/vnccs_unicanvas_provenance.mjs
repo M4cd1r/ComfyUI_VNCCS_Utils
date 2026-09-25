@@ -25,7 +25,7 @@ export function normalizeLayerCategory(value) {
   return LAYER_CATEGORIES.find((category) => category.toLowerCase() === text);
 }
 
-const STRING_FIELDS = ["historyId", "prompt", "negative", "mode", "model", "sourceName", "derivedFrom", "assetId"];
+const STRING_FIELDS = ["historyId", "prompt", "negative", "mode", "model", "sourceName", "derivedFrom", "assetId", "assetScope", "assetKind"];
 const NUMBER_FIELDS = ["seed", "createdAt", "heightFactor", "steps", "cfg", "denoise"];
 
 let revisionCounter = 0;

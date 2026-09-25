@@ -22,6 +22,8 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_REPO_ID = "MIUProject/VNCCS_PoseLibrary_Main"
 SECONDARY_DEFAULT_REPO_ID = "Totemistyk/General_Poses_PoseStudio"
 LOCAL_USER_REPOSITORY = "local_user_poses"
+# Read-only presets shipped with the extension (pose_presets/<category>/<name>.json).
+BUNDLED_REPOSITORY = "vnccs_interaction_presets"
 DEFAULT_CATEGORY = "Uncategorized"
 POSE_ASSET_TYPE = "pose"
 ANIMATION_ASSET_TYPE = "animation"
@@ -125,6 +127,40 @@ def get_library_path():
     lib_path = os.path.join(base_dir, "PoseLibrary")
     os.makedirs(lib_path, exist_ok=True)
     return lib_path
+
+def get_bundled_library_path():
+    """Returns the read-only folder of presets shipped with the extension."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, "pose_presets")
+
+def iter_bundled_pose_files():
+    """Yields (name, path, category) for every bundled preset."""
+    root = get_bundled_library_path()
+    if not os.path.isdir(root):
+        return
+    for category_dir in sorted(os.listdir(root)):
+        folder = os.path.join(root, category_dir)
+        if not os.path.isdir(folder):
+            continue
+        for filename in sorted(os.listdir(folder)):
+            if not filename.endswith(".json"):
+                continue
+            name = sanitize_pose_name(filename[:-5])
+            if name:
+                yield name, os.path.join(folder, filename), category_dir
+
+def find_bundled_pose_file(name, category=None):
+    for bundled_name, path, category_dir in iter_bundled_pose_files():
+        if bundled_name != name:
+            continue
+        try:
+            found_category = get_raw_library_meta(read_pose_json(path)).get("category") or category_dir
+        except Exception:
+            found_category = category_dir
+        if category and found_category != category:
+            continue
+        return path, BUNDLED_REPOSITORY, found_category
+    return None, None, None
 
 class GitRepositorySyncUnavailable(RuntimeError):
     """Signals that repository sync should retry through the HTTP transport."""
@@ -1848,6 +1884,8 @@ def find_pose_file(name, repository=None, category=None):
     repository = str(repository or "").strip()
     category = str(category or "").strip()
 
+    if repository == BUNDLED_REPOSITORY:
+        return find_bundled_pose_file(name, category)
     if repository and category:
         path = get_pose_path(repository, category, name)
         if os.path.exists(path):
@@ -1878,6 +1916,8 @@ def find_pose_file(name, repository=None, category=None):
         if category and found_category != category:
             continue
         return path, found_repo, found_category
+    if not repository:
+        return find_bundled_pose_file(name, category)
     return None, None, None
 
 async def list_poses(request):
@@ -1892,10 +1932,23 @@ async def list_poses(request):
         for repo in load_pose_repositories()
     }
     repository_states[LOCAL_USER_REPOSITORY] = True
+    for name, path, category_dir in iter_bundled_pose_files():
+        try:
+            pose_data = read_pose_json(path)
+        except Exception:
+            continue
+        poses.append(build_pose_record(
+            name,
+            path,
+            pose_data,
+            full_details=full_details,
+            repository=BUNDLED_REPOSITORY,
+            category=get_raw_library_meta(pose_data).get("category") or category_dir,
+        ))
     try:
         walker = walk_pose_library(lib_path)
     except FileNotFoundError:
-        return web.json_response({"poses": []})
+        return web.json_response({"poses": poses})
 
     for root, _dirs, files in walker:
         rel = os.path.relpath(root, lib_path)
@@ -1985,6 +2038,8 @@ async def save_pose(request):
     
     if not name or not isinstance(pose, dict) or not pose:
         return web.json_response({"error": "Name and pose required"}, status=400)
+    if repository == BUNDLED_REPOSITORY or (old_name and str(old_repository).strip() == BUNDLED_REPOSITORY):
+        return web.json_response({"error": "Built-in interaction presets are read-only; save a copy to your library instead"}, status=403)
     if asset_type == ANIMATION_ASSET_TYPE and not isinstance(pose.get("animation"), dict):
         return web.json_response({"error": "Animation library items require a complete animation state"}, status=400)
     
@@ -2077,13 +2132,15 @@ async def delete_pose(request):
     if not name:
         return web.json_response({"error": "Name required"}, status=400)
 
-    pose_path, _repository, _category = find_pose_file(
+    pose_path, found_repository, _category = find_pose_file(
         name,
         request.query.get("repository"),
         request.query.get("category"),
     )
     if not pose_path or not os.path.exists(pose_path):
         return web.json_response({"error": "Pose not found"}, status=404)
+    if found_repository == BUNDLED_REPOSITORY:
+        return web.json_response({"error": "Built-in interaction presets are read-only"}, status=403)
 
     os.remove(pose_path)
     remove_previews(os.path.dirname(pose_path), name)

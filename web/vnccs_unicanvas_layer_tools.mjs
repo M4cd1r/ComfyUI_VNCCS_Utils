@@ -4,7 +4,7 @@
  *  - 10.1 Right-clicking a layer row opens a context menu: copy the layer PNG
  *    (with alpha) to the clipboard, save it via the save_output route, remove
  *    its background (QI2.1 or BiRefNet), color-match it to the composite below,
- *    plus the pose-layer entries Rasterize / Edit pose (pose layers only), Split characters
+ *    plus the pose-layer entries Rasterize / Edit pose / Bake characters (pose layers only), Split characters
  *    to layers (2+ mannequins), Merge pose layers (multi-selection of pose layers), and
  *    Add contact / cast shadow, Detach shadow, Harmonize... and Create foreground occluder
  *    (vnccs_unicanvas_harmonize.mjs).
@@ -44,6 +44,7 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "auto-name", label: "Auto-name" },
   { id: "rasterize", label: "Rasterize", poseOnly: true },
   { id: "edit-pose", label: "Edit pose", poseOnly: true },
+  { id: "bake-characters", label: "Bake characters", poseOnly: true },
   { id: "split-characters", label: "Split characters to layers", poseOnly: true, multiCharacter: true },
   { id: "merge-pose-layers", label: "Merge pose layers", poseOnly: true, poseSelection: true },
   // Shadow layers (vnccs_unicanvas_harmonize.mjs, Plan 08.2).
@@ -694,6 +695,22 @@ function openLayerContextMenu(uc, layer, e) {
     });
     menu.appendChild(entry);
   }
+  // Feature modules add entries through uc.layerMenuExtensions ({ id, label, visible(layer), run(layer, point) }).
+  for (const item of uc.layerMenuExtensions || []) {
+    if (item.visible && !item.visible(layer)) continue;
+    const entry = document.createElement("button");
+    entry.type = "button";
+    entry.textContent = item.label;
+    entry.dataset.menuItem = item.id;
+    entry.style.cssText = "text-align:left; padding:6px 10px; border:0; border-radius:6px; background:transparent; color:#e8e8f0; cursor:pointer;";
+    entry.addEventListener("pointerenter", () => { entry.style.background = "rgba(255,255,255,.08)"; });
+    entry.addEventListener("pointerleave", () => { entry.style.background = "transparent"; });
+    entry.addEventListener("click", () => {
+      closeLayerContextMenu(uc);
+      item.run(layer, { x: e.clientX, y: e.clientY });
+    });
+    menu.appendChild(entry);
+  }
   uc.container.appendChild(menu);
   placeInHost(uc.container, menu, e.clientX, e.clientY);
   uc._vnccsLayerMenu = menu;
@@ -714,6 +731,11 @@ function runLayerMenuAction(uc, layer, item, point = null) {
   if (item.id === "create-occluder") return uc.createForegroundOccluder?.(layer);
   if (item.id === "rasterize") {
     if (typeof uc.rasterizePoseLayer === "function") return uc.rasterizePoseLayer(layer);
+    uc.setStatus(POSE_TOOLS_UNAVAILABLE);
+    return undefined;
+  }
+  if (item.id === "bake-characters") {
+    if (typeof uc.bakePoseCharacters === "function") return uc.bakePoseCharacters(layer);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE);
     return undefined;
   }
