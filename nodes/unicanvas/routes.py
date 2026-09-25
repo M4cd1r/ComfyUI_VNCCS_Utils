@@ -31,6 +31,7 @@ from .presets import (
     _unicanvas_resolve_local_model_path,
 )
 from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress
+from .projects import project_routes
 from .remove_bg import _run_unicanvas_remove_bg
 from .save_output import _run_unicanvas_save_output
 from .segment import _run_unicanvas_segment
@@ -305,5 +306,9 @@ def register_unicanvas_layer_routes() -> None:
             return web.json_response(result)
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
+
+    # Durable projects (Plan 10.2): /vnccs/unicanvas/projects/...
+    for method, path, handler in project_routes(web, _content_length_ok):
+        getattr(PromptServer.instance.routes, method.lower())(path)(handler)
 
     _UNICANVAS_LAYER_ROUTES_REGISTERED = True
