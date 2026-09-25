@@ -132,7 +132,7 @@ test("the widget wires shadows through hooks, serialization and history", () => 
   assert.match(widget, /state\.sceneLight = serializeSceneLight\(this\.sceneLight\)/);
   assert.match(widget, /restoreSceneLight\(this, state\.sceneLight\)/);
   assert.match(widget, /layer\.shadow = normalizeShadow\(item\.shadow\)/);
-  assert.match(widget, /shadow: normalizeShadow\(layer\.shadow\),\n\s+canvas: this\.cloneCanvas/, "history clones keep the shadow");
+  assert.match(widget, /meta: cloneLayerMeta\(layer\.meta\),\n\s+shadow: normalizeShadow\(layer\.shadow\),/, "history clones keep the shadow");
   assert.ok(LAYER_MENU_ITEMS.some((item) => item.id === "add-contact-shadow"));
   assert.ok(LAYER_MENU_ITEMS.some((item) => item.id === "add-cast-shadow"));
   assert.ok(LAYER_MENU_ITEMS.some((item) => item.id === "detach-shadow"));

@@ -5,7 +5,8 @@
  *   under its source inside the same group, with `meta.origin = "shadow"` and a multiply blend.
  * - Its pixels are derived: before every frame (`uc.render`, called from the widget's rAF) each
  *   shadow compares a key of its source's pixel revision, the source's live move preview (plain
- *   and depth-scaled drags), its params, the scene light and the horizon, and redraws on a 2D
+ *   and depth-scaled drags), the scene-state offsets of the source and of the shadow
+ *   (vnccs_unicanvas_states.mjs), its params, the scene light and the horizon, and redraws on a 2D
  *   canvas when the key changed. A shadow therefore follows its character during a drag, before
  *   the pointer is released, and never needs its own move preview.
  * - Contact (`kind: "contact"`): a soft ellipse under the feet anchor, 60% of the character's alpha
@@ -183,6 +184,12 @@ export function castShadowStrength(light) {
 // Runtime: silhouettes and per-frame regeneration.
 // ---------------------------------------------------------------------------
 
+/** A layer's live scene-state offset (vnccs_unicanvas_states.mjs); render time only. */
+function stateOffsetOf(uc, layer) {
+  const offset = typeof uc.getLayerStateOffset === "function" ? uc.getLayerStateOffset(layer) : null;
+  return { x: offset?.x || 0, y: offset?.y || 0 };
+}
+
 function sourceLayerOf(uc, layer) {
   const id = layer?.shadow?.sourceLayerId;
   if (!id) return null;
@@ -190,7 +197,10 @@ function sourceLayerOf(uc, layer) {
   return source && source !== layer && !source.shadow ? source : null;
 }
 
-/** The source's black silhouette on a small canvas, its alpha rect, feet and feet width (world). */
+/**
+ * The source's black silhouette on a small canvas, its alpha rect, feet and feet width, in world
+ * pixels where the source shows (its scene-state offset included).
+ */
 function buildSilhouette(uc, source) {
   const bounds = uc.getLayerWorldBounds(source);
   if (!bounds || bounds.width < 1 || bounds.height < 1) return null;
@@ -222,7 +232,8 @@ function buildSilhouette(uc, source) {
 }
 
 function sourceSilhouette(uc, source) {
-  const key = `${source.id}:${source.pixelRevision ?? 0}`;
+  const offset = stateOffsetOf(uc, source);
+  const key = `${source.id}:${source.pixelRevision ?? 0}:${offset.x}:${offset.y}`;
   if (source._shadowSilhouette?.key !== key) source._shadowSilhouette = { key, value: buildSilhouette(uc, source) };
   return source._shadowSilhouette.value;
 }
@@ -256,11 +267,11 @@ function scratch(uc, name, width, height) {
   return { canvas, ctx };
 }
 
-function drawContactShadow(uc, ctx, placed, params) {
+function drawContactShadow(uc, ctx, base, placed, params) {
   const geometry = contactShadowGeometry(placed.feet, placed.rect.width, placed.feetWidth, params);
   const [r, g, b] = shadowTint(uc.sceneLight);
   ctx.save();
-  ctx.translate(geometry.cx - uc.origin.x, geometry.cy - uc.origin.y);
+  ctx.translate(geometry.cx - base.x, geometry.cy - base.y);
   ctx.scale(1, geometry.ry / geometry.rx);
   const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, geometry.rx);
   // Softness moves the start of the falloff toward the center.
@@ -281,14 +292,14 @@ const BLUR_LEVELS = [
   { blur: 1, stops: [[0, 0], [0.5, 0], [1, 1]] },
 ];
 
-function drawCastShadow(uc, ctx, placed, params) {
+function drawCastShadow(uc, ctx, base, placed, params) {
   const light = uc.sceneLight;
   const squash = castShadowSquash(uc.scenePerspective, placed.feet.y, placed.rect.height);
   const { c, d } = castShadowMatrix(light, squash);
   const maxBlur = params.blur * placed.rect.height * 0.06;
   const pad = Math.ceil(maxBlur * 2 + 2);
   // Bounds of the flattened silhouette in layer canvas pixels.
-  const fx = placed.feet.x - uc.origin.x, fy = placed.feet.y - uc.origin.y;
+  const fx = placed.feet.x - base.x, fy = placed.feet.y - base.y;
   const corners = [];
   for (const x of [placed.canvasRect.x, placed.canvasRect.x + placed.canvasRect.width]) {
     for (const y of [placed.canvasRect.y, placed.canvasRect.y + placed.canvasRect.height]) {
@@ -354,8 +365,11 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
   const silhouette = sourceSilhouette(uc, source);
   if (silhouette) {
     const placed = placedSilhouette(silhouette, uc.getLayerMovePreview(source));
-    if (shadow.kind === "contact") drawContactShadow(uc, ctx, placed, shadow.params);
-    else drawCastShadow(uc, ctx, placed, shadow.params);
+    // Canvas pixel = world - origin - the shadow's own state offset, so it lands where it shows.
+    const own = stateOffsetOf(uc, layer);
+    const base = { x: uc.origin.x + own.x, y: uc.origin.y + own.y };
+    if (shadow.kind === "contact") drawContactShadow(uc, ctx, base, placed, shadow.params);
+    else drawCastShadow(uc, ctx, base, placed, shadow.params);
   }
   uc.invalidateLayerRenderCaches(layer);
   layer._boundsCache = undefined;
@@ -364,8 +378,9 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
 
 function shadowKey(uc, layer, source) {
   const preview = uc.getLayerMovePreview(source);
+  const sourceOffset = stateOffsetOf(uc, source), ownOffset = stateOffsetOf(uc, layer);
   return JSON.stringify([
-    source.id, source.pixelRevision ?? 0,
+    source.id, source.pixelRevision ?? 0, sourceOffset.x, sourceOffset.y, ownOffset.x, ownOffset.y,
     preview ? [preview.dx || 0, preview.dy || 0, preview.scale || 1, preview.anchor?.x ?? 0, preview.anchor?.y ?? 0] : null,
     normalizeShadow(layer.shadow), normalizeSceneLight(uc.sceneLight), uc.scenePerspective?.horizonY ?? null,
     uc.origin.x, uc.origin.y, layer.canvas.width, layer.canvas.height,

@@ -10,6 +10,7 @@ import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
+import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -195,6 +196,14 @@ export function handleUniCanvasShortcut(widget, event) {
     else widget.undo();
     return true;
   }
+  // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
+  // (Alt+digit types other characters on some keyboards).
+  const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
+  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex) {
+    consumeUniCanvasShortcut(event);
+    widget.applySceneStateByIndex(Number(stateDigit[1] || stateDigit[0]) - 1);
+    return true;
+  }
   if (modifier || event.altKey) return false;
   // P toggles the VN preview overlay.
   if (lower === "p" && widget.vnPreview) {
@@ -316,16 +325,21 @@ export function enterUniCanvasFullscreen(widget) {
   // Escape contract, and the UniCanvas shortcut map runs first so the canvas
   // keeps its own keys.
   const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape");
+  // The focused panorama sphere rotates with the keyboard; this shield would otherwise stop its
+  // keys before they reach it, so it gets them first.
+  const orbitTarget = (event) => (widget.panoramaOrbit && event.target === widget.panoramaOrbit.canvas ? widget.panoramaOrbit : null);
   const onKeyDown = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
-    handleUniCanvasShortcut(widget, event);
+    orbitTarget(event)?.keyDown(event);
+    if (!event.defaultPrevented) handleUniCanvasShortcut(widget, event);
     event.stopImmediatePropagation();
     event.preventDefault();
   };
   const onKeyUp = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
+    orbitTarget(event)?.keyUp(event);
     event.stopImmediatePropagation();
     event.preventDefault();
   };
@@ -542,6 +556,7 @@ export async function newUniCanvasDocument(widget) {
   widget.activeLayerId = null;
   widget.undoStack = [];
   widget.redoStack = [];
+  widget.restoreSceneStates?.(null); // scene states belong to the old document
   widget.addLayer("raster", "Base Layer", false, false, createLayerMeta("base"));
   widget.updateHistoryButtons?.();
   widget.renderLayerList();
@@ -563,7 +578,7 @@ function installUniCanvasOutputActions(widget) {
   const saveRow = document.createElement("div");
   saveRow.className = "vnccs-uc2-save-actions";
   saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"));
-  widget.side.insertBefore(saveRow, widget.side.firstChild);
+  widget.side.insertBefore(saveRow, widget._vnccsProjectBar?.nextSibling || widget.side.firstChild);
   widget._vnccsSaveActions = saveRow;
 }
 
@@ -623,11 +638,18 @@ function writeStandaloneState(widget, state) {
 const standalonePersistState = new WeakMap();
 
 function installStandalonePersistence(widget) {
-  // Standalone mode has no workflow widget and no server state cache: the
-  // localStorage key "vnccs-unicanvas-standalone" holds the document instead.
+  // Standalone mode has no workflow widget and no server state cache: the document lives in a
+  // project (web/vnccs_unicanvas_project.mjs), and localStorage only keeps the project pointer.
+  // The old localStorage document ("vnccs-unicanvas-standalone") is read once for migration and
+  // is only written again when the project store is unavailable.
   const entry = { timer: null };
   standalonePersistState.set(widget, entry);
+  const projectActive = () => Boolean(widget.projectSession?.active);
   const schedulePersist = () => {
+    if (projectActive()) {
+      widget.scheduleStateUpload();
+      return;
+    }
     if (entry.timer !== null) window.clearTimeout(entry.timer);
     entry.timer = window.setTimeout(() => {
       entry.timer = null;
@@ -636,7 +658,9 @@ function installStandalonePersistence(widget) {
   };
   widget.getStateBackupKey = () => UNICANVAS_STANDALONE_STORAGE_KEY;
   widget.uploadStatePayload = async (state) => {
+    if (projectActive()) return widget.projectSession.flush();
     writeStandaloneState(widget, state);
+    return true;
   };
   const originalWriteLightStateToWidget = widget.writeLightStateToWidget;
   widget.writeLightStateToWidget = (...args) => {
@@ -655,7 +679,12 @@ export function flushStandalonePersistence(widget) {
   }
   // Write even for a disposed widget: the localStorage write is safe after
   // disposal and preserves the last pending document (symmetry with the
-  // dispose()-time flushStateUpload path).
+  // dispose()-time flushStateUpload path). With a project, dispose() already
+  // flushed the project save.
+  if (widget.projectSession?.enabled) {
+    if (!widget._disposed) void widget.projectSession.flush();
+    return;
+  }
   writeStandaloneState(widget, widget.buildSerializedState(true));
 }
 
@@ -903,6 +932,19 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: layer.canvas.toDataURL("image/png"),
           };
         },
+        // Scene states (issue #7): the state list without thumbnails, and each layer's live offset.
+        getSceneStates: () => {
+          const scene = widget.serializeSceneStates?.() || null;
+          if (!scene) return null;
+          return {
+            ...scene,
+            states: scene.states.map(({ thumbnailDataURL, ...state }) => ({ ...state, hasThumbnail: Boolean(thumbnailDataURL) })),
+            moveScope: widget.getSceneStateMoveScope?.() ?? null,
+            differs: widget.sceneStateDiffers?.() ?? false,
+            view: { ...widget.view },
+            offsets: Object.fromEntries((widget.layers || []).map((l) => [l.id, widget.getLayerStateOffset?.(l) || { x: 0, y: 0 }])),
+          };
+        },
         getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
         // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
@@ -913,6 +955,51 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         getLayerPixelRevision: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           return layer ? (layer.pixelRevision ?? 0) : null;
+        },
+        // Multi-character pose scenes (Plan 01): mannequins, bound references and ID pass stats.
+        getPoseScene: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          if (!layer?.pose) return null;
+          const characters = poseStudioCharacters(layer.pose).map((item) => {
+            const ref = poseCharacterRef(layer, item.id);
+            return { ...item, ref: ref ? { source: ref.source, name: ref.name || null, layerId: ref.layerId || null } : null,
+              prompt: poseCharacterPrompt(layer, item.id) };
+          });
+          const current = currentPoseId(layer);
+          let idPass = null;
+          if (current) {
+            const { width, height } = current.canvas;
+            // Layer alpha at ID pass resolution, to check that every mask lies inside it.
+            const alphaCanvas = document.createElement("canvas");
+            alphaCanvas.width = width; alphaCanvas.height = height;
+            const actx = alphaCanvas.getContext("2d", { willReadFrequently: true });
+            if (layer.hiresCanvas) actx.drawImage(layer.hiresCanvas, 0, 0, width, height);
+            const alpha = actx.getImageData(0, 0, width, height).data;
+            const masks = characters.map((item) => getPoseCharacterMask(layer, item.id)?.alpha || null);
+            let overlap = 0, outside = 0;
+            for (let pixel = 0; pixel < width * height; pixel += 1) {
+              const owners = masks.filter((mask) => mask?.[pixel]).length;
+              if (owners > 1) overlap += 1;
+              if (owners && alpha[pixel * 4 + 3] === 0) outside += 1;
+            }
+            idPass = { width, height, ids: [...current.meta.ids], counts: masks.map((mask) => (mask ? mask.reduce((sum, value) => sum + (value ? 1 : 0), 0) : 0)), overlap, outside };
+          }
+          return { characters, idPass, hasCharacterRefs: Boolean(layer.pose.characterRefs) };
+        },
+        // Automatic naming (issue #17): name, nameSource and the category the model answered.
+        getLayerNaming: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? { name: layer.name, nameSource: layer.nameSource || null, category: layer.meta?.category || null, groupId: layer.groupId || null } : null;
+        },
+        // Projects (Plan 10.3): the attached project/scene, save status and upload counters.
+        getProjectInfo: () => {
+          const session = widget.projectSession;
+          if (!session) return null;
+          return JSON.parse(JSON.stringify({
+            enabled: session.enabled, projectId: session.projectId, sceneId: session.sceneId, rev: session.rev,
+            status: session.status, name: session.project?.name ?? null, stats: session.stats,
+            scenes: (session.project?.scenes || []).map((scene) => ({ id: scene.id, name: scene.name, order: scene.order })),
+          }));
         },
         // Scene placement (Plan 08): perspective, a character's alpha rect and feet, a running
         // depth-scaled drag, and the view transform to aim pointer events at world points.

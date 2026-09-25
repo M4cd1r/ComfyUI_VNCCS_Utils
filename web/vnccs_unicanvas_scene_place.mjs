@@ -521,7 +521,9 @@ function lightGizmoGeometry(uc) {
   if (state.gizmoMeasure?.key !== key) state.gizmoMeasure = { key, measured: measureLayerCharacter(uc, layer) };
   const measured = state.gizmoMeasure.measured;
   if (!measured) return null;
-  let center = measured.feet;
+  // Where the character shows: its scene-state offset (vnccs_unicanvas_states.mjs) included.
+  const offset = typeof uc.getLayerStateOffset === "function" ? uc.getLayerStateOffset(layer) : null;
+  let center = { x: measured.feet.x + (offset?.x || 0), y: measured.feet.y + (offset?.y || 0) };
   let height = measured.rect.height;
   const preview = uc.getLayerMovePreview(layer);
   if (preview) {

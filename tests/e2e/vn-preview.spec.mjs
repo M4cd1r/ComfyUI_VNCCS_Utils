@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { importImageLayer, openPoseTool, openUnicanvas, poseLayer, setLayerNaming } from "./helpers/app.mjs";
 
 // Plan 07 (#10): the VN preview overlay is a preview only. It shows on the stage canvas and
 // never reaches save to output, flatten or a generation request.
@@ -41,6 +41,7 @@ function stagePixel(page, x, y) {
 
 test("the overlay draws on the stage but never reaches save, flatten or the generation payload", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // keep imported layers where the spec expects them
   await importImageLayer(page, FIXTURE);
   await page.waitForTimeout(500);
 
@@ -107,6 +108,7 @@ test("the overlay draws on the stage but never reaches save, flatten or the gene
 
 test("max lines wraps inside the textbox and 9:16 changes the frame aspect", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // keep imported layers where the spec expects them
   await setVnOn(page, true);
   await setSelect(page, "textLength", "max_lines");
   await expect.poll(async () => (await vn(page)).textLength).toBe("max_lines");
@@ -136,6 +138,7 @@ test("max lines wraps inside the textbox and 9:16 changes the frame aspect", asy
 
 test("a character whose face sits under the textbox is flagged, and the flag clears live while dragging up", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // keep imported layers where the spec expects them
   await openPoseTool(page);
   const pose = await poseLayer(page);
   await page.keyboard.press("Enter"); // leave the pose editor, keep the layer

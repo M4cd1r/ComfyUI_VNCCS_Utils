@@ -381,6 +381,7 @@ function finishStructureChange(uc, before, activeBefore, extraEntries = null) {
     activeAfter: uc.activeLayerId,
   };
   uc.pushHistoryEntry(extraEntries?.length ? { kind: "historyGroup", entries: [...extraEntries, entry] } : entry);
+  uc.autoNaming?.onLayerStructureChanged();
   uc.syncPoseToolToActiveLayer?.();
   uc.renderLayerList();
   uc.requestRender();
@@ -507,7 +508,8 @@ export function groupSelectedLayers(uc) {
   }
   const top = picks[0];
   const parentId = top.groupId || null;
-  const probe = createGroupLayer({ name: nextGroupName(uc.layers), groupId: parentId });
+  // A user-created group starts as "Group N" and takes an automatic name from its layers.
+  const probe = createGroupLayer({ name: nextGroupName(uc.layers), groupId: parentId, nameSource: "auto" });
   // The new group takes one nesting level; every pick must still fit below it.
   const parentDepth = parentId ? groupDepthOf(uc.layers, uc.layers.find((layer) => layer.id === parentId)) : 0;
   if (picks.some((layer) => parentDepth + 1 + groupSubtreeHeight(uc.layers, layer) > MAX_GROUP_DEPTH)) {
@@ -536,7 +538,7 @@ export function addEmptyGroup(uc) {
   const active = uc.activeLayer;
   // As in Photoshop, a new folder opens right above the active item, in the same container.
   const anchor = active && active.type !== "mask" && active.id !== uc.panorama?.settings?.baseLayerId ? active : null;
-  const group = createGroupLayer({ name: nextGroupName(uc.layers), groupId: anchor?.groupId || null });
+  const group = createGroupLayer({ name: nextGroupName(uc.layers), groupId: anchor?.groupId || null, nameSource: "auto" });
   const before = captureGroupStructure(uc.layers);
   const activeBefore = uc.activeLayerId;
   let index = anchor ? uc.layers.indexOf(anchor) : uc.layers.findIndex((layer) => layer.type !== "mask");
@@ -700,7 +702,7 @@ export function duplicateGroup(uc, group = uc.activeLayer) {
   for (const layer of [group, ...getGroupDescendants(uc.layers, group)]) {
     const newParent = layer === group ? parentId : idMap.get(layer.groupId) || null;
     const copy = isGroupLayer(layer)
-      ? createGroupLayer({ ...layer, id: undefined, groupId: newParent, name: layer === group ? `${layer.name} Copy` : layer.name,
+      ? createGroupLayer({ ...layer, id: undefined, groupId: newParent, name: layer === group ? `${layer.name} copy` : layer.name,
         meta: createLayerMeta("duplicate", { derivedFrom: layer.id }) })
       : copyLeafLayer(uc, layer, newParent);
     idMap.set(layer.id, copy.id);
