@@ -986,6 +986,18 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           }
           return { characters, idPass, hasCharacterRefs: Boolean(layer.pose.characterRefs) };
         },
+        // Character bake (issue #5): per-character status, the Show mannequin toggle, which
+        // characters have baked pixels, and how many history entries exist.
+        getPoseBake: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          if (!layer?.pose) return null;
+          const characters = poseStudioCharacters(layer.pose).map((item) => ({
+            id: item.id, status: widget.poseBake?.status(layer, item.id) ?? "none",
+            error: layer.pose.bake?.characters?.[item.id]?.error || null,
+          }));
+          return { characters, showMannequin: layer.pose.bake?.showMannequin === true, parts: Object.keys(layer.bakeParts || {}),
+            bakedView: layer._bakeViewBaked === true, undo: widget.undoStack?.length ?? 0 };
+        },
         // Automatic naming (issue #17): name, nameSource and the category the model answered.
         getLayerNaming: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);

@@ -4,7 +4,7 @@
  *  - 10.1 Right-clicking a layer row opens a context menu: copy the layer PNG
  *    (with alpha) to the clipboard, save it via the save_output route, remove
  *    its background (QI2.1 or BiRefNet), color-match it to the composite below,
- *    plus the pose-layer entries Rasterize / Edit pose (pose layers only), Split characters
+ *    plus the pose-layer entries Rasterize / Edit pose / Bake characters (pose layers only), Split characters
  *    to layers (2+ mannequins), Merge pose layers (multi-selection of pose layers), and
  *    Add contact / cast shadow, Detach shadow (vnccs_unicanvas_harmonize.mjs).
  *  - 10.2 "Import PSD" sits next to "Export Layers as PSD" and maps raster
@@ -43,6 +43,7 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "auto-name", label: "Auto-name" },
   { id: "rasterize", label: "Rasterize", poseOnly: true },
   { id: "edit-pose", label: "Edit pose", poseOnly: true },
+  { id: "bake-characters", label: "Bake characters", poseOnly: true },
   { id: "split-characters", label: "Split characters to layers", poseOnly: true, multiCharacter: true },
   { id: "merge-pose-layers", label: "Merge pose layers", poseOnly: true, poseSelection: true },
   // Shadow layers (vnccs_unicanvas_harmonize.mjs, Plan 08.2).
@@ -707,6 +708,11 @@ function runLayerMenuAction(uc, layer, item, point = null) {
   if (item.id === "detach-shadow") return uc.detachShadowLayer?.(layer);
   if (item.id === "rasterize") {
     if (typeof uc.rasterizePoseLayer === "function") return uc.rasterizePoseLayer(layer);
+    uc.setStatus(POSE_TOOLS_UNAVAILABLE);
+    return undefined;
+  }
+  if (item.id === "bake-characters") {
+    if (typeof uc.bakePoseCharacters === "function") return uc.bakePoseCharacters(layer);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE);
     return undefined;
   }

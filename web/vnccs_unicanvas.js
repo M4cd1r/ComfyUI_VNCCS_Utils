@@ -3,7 +3,8 @@
  */
 
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache, serializePoseId, restorePoseId } from "./vnccs_unicanvas_pose_state.mjs";
+import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId } from "./vnccs_unicanvas_pose_state.mjs";
+import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
@@ -941,6 +942,7 @@ class UniCanvasWidget {
     installUniCanvasGroups(this);
     installUniCanvasSceneStates(this);
     installUniCanvasPoseScene(this, { createEditor: () => new UniCanvasPoseEditor(this) });
+    installUniCanvasCharacterBake(this, { createEditor: () => new UniCanvasPoseEditor(this), modelModule: getUniCanvasModelModule });
     installUniCanvasScenePlace(this);
     installUniCanvasHarmonize(this);
     installUniCanvasProjects(this);
@@ -1741,6 +1743,7 @@ class UniCanvasWidget {
       this.endPoseEditSession();
     }
     this.tool = tool;
+    this.poseBake?.onToolChanged(previousTool, tool);
     if (tool === "pose") void this.activatePoseTool(!force);
     this.container.querySelectorAll("[data-tool]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.tool === tool);
@@ -3008,10 +3011,11 @@ class UniCanvasWidget {
     return 1024;
   }
 
-  getInferenceSize() {
+  // The bbox by default; a character bake passes its working rect (vnccs_unicanvas_bake.mjs).
+  getInferenceSize(rect = this.bbox) {
     const originalSize = {
-      width: Math.max(64, Math.round(this.bbox.width)),
-      height: Math.max(64, Math.round(this.bbox.height)),
+      width: Math.max(64, Math.round(rect.width)),
+      height: Math.max(64, Math.round(rect.height)),
     };
     const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
     const targetSide = this.getOptimalDimension() * scale;
@@ -3098,6 +3102,7 @@ class UniCanvasWidget {
 
   requestRender() {
     if (this._disposed) return;
+    this.poseBake?.scheduleGenerateLabel();
     if (this.renderQueued) return;
     this.renderQueued = true;
     window.requestAnimationFrame(() => {
@@ -3854,6 +3859,7 @@ class UniCanvasWidget {
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
       poseIdCanvas: layer.poseIdCanvas || null,
       poseIdMeta: layer.poseIdMeta || null,
+      ...this.poseBake?.snapshot(layer),
     };
   }
 
@@ -3868,6 +3874,7 @@ class UniCanvasWidget {
       layer.hiresCanvas = null; layer.hiresRect = null;
       this.panorama.projectLayer(layer);
       this.panorama.settings.contentRevision++;
+      this.poseBake?.restoreSnapshot(layer, snapshot, { rebuild: false });
       return;
     }
     if (snapshot.origin && (snapshot.origin.x !== this.origin.x || snapshot.origin.y !== this.origin.y || snapshot.size?.width !== this.size.width || snapshot.size?.height !== this.size.height)) {
@@ -3882,6 +3889,7 @@ class UniCanvasWidget {
     layer.hiresCanvas = snapshot.hiresCanvas || null;
     layer.hiresRect = snapshot.hiresRect ? { ...snapshot.hiresRect } : null;
     this.invalidateLayerCaches(layer);
+    this.poseBake?.restoreSnapshot(layer, snapshot);
   }
 
   materializeRasterLayerForEditing(layer) {
@@ -4019,6 +4027,7 @@ class UniCanvasWidget {
 
   recordHistoryBefore() {
     if (this._isRestoring || this.historyRestoring) return;
+    this.poseBake?.flushPendingHistory();
     this.undoStack.push(this.createHistorySnapshot());
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoStack = [];
@@ -4027,6 +4036,8 @@ class UniCanvasWidget {
 
   pushHistoryEntry(entry) {
     if (this._isRestoring || this.historyRestoring || !entry) return;
+    // Bakes made by GENERATE join the accepted scene result as one undo step.
+    entry = this.poseBake?.wrapHistoryEntry(entry) ?? entry;
     this.undoStack.push(entry);
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoStack = [];
@@ -4047,6 +4058,7 @@ class UniCanvasWidget {
       return;
     }
     this.panorama?.commit();
+    this.poseBake?.flushPendingHistory();
     if (!this.undoStack.length) return;
     if (this.transformDraft) {
       this.setStatus("Apply or cancel the active transform before undo", true);
@@ -5786,6 +5798,7 @@ class UniCanvasWidget {
       edit.addEventListener("click", (e) => { e.stopPropagation(); this.editPoseLayer(layer); });
       edit.addEventListener("dblclick", (e) => e.stopPropagation());
       row.append(thumb, label, edit, lock, del);
+      this.poseBake?.decorateLayerRow(row, layer);
     } else if (isPanoramaLayer(layer)) {
       const settings = this._button(PANORAMA_ICON, "vnccs-uc-icon vnccs-uc-layer-panorama-settings", null, "Panorama settings");
       settings.addEventListener("click", (e) => { e.stopPropagation(); this.showPanoramaLayerSettings(layer); });
@@ -6621,36 +6634,10 @@ class UniCanvasWidget {
 
   async draw() {
     if (this.drawInProgress) return;
-    const poseLayer = poseGenerationLayer(this);
-    let poseRequest = null;
-    if (poseLayer) {
-      const characterIssue = poseCharacterIssue(this, poseLayer);
-      if (characterIssue) {
-        // The character reference lives in the pose editor's sidebar: open it there.
-        if (!poseLayer.locked) {
-          this.editPoseLayer(poseLayer);
-          this.poseEditor?.setCharacterOpen(true);
-        } else this.setActiveLayer(poseLayer.id);
-        this.setStatus(poseLayer.locked ? "Unlock the pose layer to choose a character image." : characterIssue, true);
-        return;
-      }
-      if (!["qwen_image_edit", "flux_klein"].includes(this.getModelBase())) {
-        this.setStatus("Pose layers require QiE2511 or Klein9b. Select a compatible model or hide the pose layer.", true);
-        return;
-      }
-      const preparationKey = () => JSON.stringify([this.bbox, this.getInferenceSize(), this.getModelBase(),
-        this.panorama && [this.panorama.settings.yaw, this.panorama.settings.pitch, this.panorama.settings.roll, this.panorama.settings.fov]]);
-      const beforePreparation = preparationKey();
-      const preparationDocument = this.panorama;
-      this.drawInProgress = true;
-      this.drawBtn.disabled = true;
-      try {
-        this.poseEditor ||= new UniCanvasPoseEditor(this);
-        poseRequest = await this.poseEditor.generation(poseLayer, this.getInferenceSize());
-        if (this._disposed || preparationDocument !== this.panorama || preparationKey() !== beforePreparation) throw new Error("The canvas changed while preparing the pose. Generate again.");
-      } catch (error) { this.setStatus(`Pose generation: ${error.message || error}`, true); return; }
-      finally { this.drawInProgress = false; this.drawBtn.disabled = false; }
-    }
+    // Bound characters that are unbaked, failed or stale bake first (vnccs_unicanvas_bake.mjs);
+    // the scene pass below is the normal draw over the composite, with any Prompt, empty included.
+    if (this.poseBake && !(await this.poseBake.beforeScenePass())) return;
+    if (this._disposed) return;
     this.panorama?.commit();
     const requestPanorama = this.panorama;
     const panoramaCamera = this.panorama ? { ...this.panorama.settings } : null;
@@ -6703,7 +6690,7 @@ class UniCanvasWidget {
       this.setStatus("Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.", true);
       return;
     }
-    const mode = poseRequest ? "img2img" : !hasRaster ? "txt2img" : rasterCoversBbox ? "inpaint" : "outpaint";
+    const mode = !hasRaster ? "txt2img" : rasterCoversBbox ? "inpaint" : "outpaint";
     const imageCanvas = this.makeExportCanvas("image", inferenceSize, {
       fillBackground: mode === "img2img",
       forceOpaqueContentAlpha: mode === "outpaint",
@@ -6716,9 +6703,9 @@ class UniCanvasWidget {
     this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
     // The provenance snapshot is taken at request time: settings edited while the run is in
     // flight must not be attributed to its results.
-    const snapshotSettings = poseRequest ? { ...this.settings, positive: poseRequest.positive, denoise: 1 } : this.settings;
+    const snapshotSettings = this.settings;
     const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
-    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, snapshot };
+    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, panoramaCamera, requestPanorama, snapshot };
     const historyRun = this.generationHistory?.beginRun("generate", {
       settings: snapshotSettings, snapshot, bbox: requestBbox, mode, inferenceSize, outputSize,
       configLinked: this._isConfigLinked(), imageCanvas, maskCanvas: userMaskCanvas,
@@ -6797,6 +6784,8 @@ class UniCanvasWidget {
   async acceptStaging() {
     const staging = this.activeStaging;
     if (!staging) return;
+    // A staged character bake is accepted into its pose layer, not as a new layer.
+    if (staging.bake) return this.poseBake?.acceptStaged(staging);
     const previousStagingItems = this.stagingItems;
     const previousActiveStagingIndex = this.activeStagingIndex;
     const previousActiveLayerId = this.activeLayerId;
@@ -7654,6 +7643,8 @@ class UniCanvasWidget {
     if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
     // Per-character ID pass: state cache only, never workflow metadata.
     const poseId = includeData && layer.type === "pose" ? serializePoseId(layer) : null;
+    // Mannequin and baked character pixels (character bake): state cache only as well.
+    const bakePixels = includeData && layer.type === "pose" ? this.poseBake?.serialize(layer) : null;
     if (this.panorama) {
       this.panorama.commitLayer(layer);
       return {
@@ -7666,6 +7657,7 @@ class UniCanvasWidget {
         hiresRect: null, hiresDataURL: null,
         shadow: serializeShadow(layer.shadow),
         ...(poseId ? { poseId } : {}),
+        ...(bakePixels ? { bakePixels } : {}),
       };
     }
     const crop = includeData ? this.getLayerAlphaBounds(layer) : (layer._boundsCache === undefined ? null : layer._boundsCache);
@@ -7689,6 +7681,7 @@ class UniCanvasWidget {
       ...this.serializeStateOffset?.(layer),
     };
     if (poseId) payload.poseId = poseId;
+    if (bakePixels) payload.bakePixels = bakePixels;
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -7889,6 +7882,7 @@ class UniCanvasWidget {
           layer.hiresRect = { ...item.hiresRect };
         }
         if (layer.type === "pose" && item.poseId?.dataURL) await restorePoseId(layer, item.poseId, (url) => this.loadImage(url));
+        if (layer.type === "pose" && item.bakePixels) await this.poseBake?.restore(layer, item.bakePixels);
         if (!restoredPanorama) this.sanitizeMaskLayer(layer);
         bumpLayerPixelRevision(layer);
         layers.push(layer);
@@ -7912,6 +7906,7 @@ class UniCanvasWidget {
           : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0].id;
         if (!exact) this.saveLocalStateBackup(state);
       }
+      this.poseBake?.afterStateRestore();
       this.restoreSceneStates?.(state.sceneStates);
       this.syncPromptControls();
       this.updateSnapButton();
@@ -8271,6 +8266,11 @@ class UniCanvasWidget {
     section("inpaint", "Inpaint");
     checkboxRow("Crop and stitch: generate only around the mask, at full resolution", s.inpaint_crop_to_mask !== false, (checked) => { s.inpaint_crop_to_mask = checked; commit(); },
       "Like ComfyUI-Inpaint-CropAndStitch: the mask plus some context is cropped, generated at the working resolution and pasted back into the mask only. Off: the whole bbox is generated and the mask cut out of it.");
+
+    // Character bake (vnccs_unicanvas_bake.mjs): the model bakes use when the scene engine is not
+    // QiE2511 or Klein9b, and whether GENERATE re-bakes stale characters.
+    section("character_bake", "Character bake");
+    this.poseBake?.buildSettings({ bind, makeSelect, checkboxRow, commit });
 
     // Diagnostics for bug reports and AI agents.
     section("debug", "Debug");
