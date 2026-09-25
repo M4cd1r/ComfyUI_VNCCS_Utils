@@ -970,10 +970,13 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         getPoseScene: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           if (!layer?.pose) return null;
+          const studioCharacters = Array.isArray(layer.pose.studio?.characters) ? layer.pose.studio.characters : [];
           const characters = poseStudioCharacters(layer.pose).map((item) => {
             const ref = poseCharacterRef(layer, item.id);
+            const mesh = studioCharacters.find((entry) => String(entry?.id) === item.id)?.mesh;
             return { ...item, ref: ref ? { source: ref.source, name: ref.name || null, layerId: ref.layerId || null } : null,
-              prompt: poseCharacterPrompt(layer, item.id) };
+              prompt: poseCharacterPrompt(layer, item.id), mesh: mesh ? JSON.parse(JSON.stringify(mesh)) : null,
+              transform: studioCharacters.find((entry) => String(entry?.id) === item.id)?.transform || null };
           });
           const current = currentPoseId(layer);
           let idPass = null;
