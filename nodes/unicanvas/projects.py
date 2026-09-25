@@ -8,8 +8,10 @@ directory the state cache uses (ComfyUI wipes that on startup)::
         scenes/<sceneId>/scene.json  the buildSerializedState shape, pixel fields replaced by blob refs
         blobs/<sha256>.png           content-addressed pixels shared by every scene of the project
         thumbs/<sceneId>.png         512 px scene thumbnail
-        assets/                      reserved for Plan 10.4
+        assets/<assetId>/asset.json  project-scope library assets (Plan 10.4), pixels in blobs/
         history/<historyId>.json     generation history records (Plan 10.5, history.py)
+    <user dir>/<comfy user>/vnccs_unicanvas/library/     the global asset library, same format:
+        assets/<assetId>/asset.json, blobs/<sha256>.png
     <user dir>/<comfy user>/vnccs_unicanvas/trash/<projectId>-<timestamp>/   deleted projects, purged after 30 days
 
 ``ProjectStore`` holds the file logic and is what the tests exercise; ``project_routes`` wraps it
@@ -48,6 +50,12 @@ _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _PNG_PREFIX = "data:image/png;base64,"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _STORE_LOCK = threading.RLock()
+ASSET_SCHEMA_VERSION = 1
+ASSET_KINDS = ("character", "background", "prop", "pose", "preset")
+RESERVED_ASSET_KINDS = ("skin",)
+ASSET_SCOPES = ("project", "global")
+ASSET_THUMBNAIL_SIZE = 256
+MAX_ASSET_TAGS = 32
 
 
 class ProjectError(Exception):
@@ -132,6 +140,88 @@ def default_user_root() -> str:
     return str(root)
 
 
+def _put_blob_file(path: str, sha: str, data: bytes) -> dict[str, Any]:
+    if hashlib.sha256(data).hexdigest() != sha:
+        raise ProjectError("[VNCCS UniCanvas] The blob does not match its hash.", 400)
+    if not data.startswith(_PNG_SIGNATURE):
+        raise ProjectError("[VNCCS UniCanvas] Blobs must be PNG images.", 400)
+    created = not os.path.exists(path)
+    if created:
+        _atomic_write_bytes(path, data)
+    else:
+        os.utime(path)  # a re-referenced blob is fresh again for the GC grace period
+    return {"blob": f"{sha}.png", "created": created}
+
+
+def _read_blob_file(path: str) -> bytes:
+    if not os.path.isfile(path):
+        raise ProjectError("[VNCCS UniCanvas] Blob not found.", 404)
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _dehydrate_value(value: Any, blob_path: Callable[[str], str]) -> Any:
+    """Inline PNG pixel fields become ``{blob, crop}`` refs in the store ``blob_path`` points into."""
+    if isinstance(value, list):
+        return [_dehydrate_value(item, blob_path) for item in value]
+    if not isinstance(value, dict):
+        return value
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        if _is_pixel_key(key) and isinstance(item, str) and item.startswith(_PNG_PREFIX):
+            data = decode_png_data_url(item)
+            sha = hashlib.sha256(data).hexdigest()
+            _put_blob_file(blob_path(sha), sha, data)
+            ref_crop = value.get("hiresRect") if key.lower().startswith("hires") else value.get("crop")
+            out[key] = {"blob": f"{sha}.png", "crop": ref_crop}
+        elif _is_pixel_key(key) and isinstance(item, dict) and "blob" in item:
+            sha = str(item.get("blob") or "")[:-4]
+            if not os.path.isfile(blob_path(sha)):
+                raise ProjectError("[VNCCS UniCanvas] The scene references a blob that was never uploaded.", 400, missingBlob=item.get("blob"))
+            out[key] = {"blob": f"{sha}.png", "crop": item.get("crop")}
+        else:
+            out[key] = _dehydrate_value(item, blob_path)
+    return out
+
+
+def _hydrate_value(value: Any, read_blob: Callable[[str], bytes]) -> Any:
+    if isinstance(value, list):
+        return [_hydrate_value(item, read_blob) for item in value]
+    if not isinstance(value, dict):
+        return value
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        if _is_pixel_key(key) and isinstance(item, dict) and "blob" in item:
+            data = read_blob(str(item.get("blob") or "")[:-4])
+            out[key] = _PNG_PREFIX + base64.b64encode(data).decode("ascii")
+        else:
+            out[key] = _hydrate_value(item, read_blob)
+    return out
+
+
+def _collect_unreferenced_blobs(record_dirs: list[str], blobs: str, now: float | None) -> list[str]:
+    referenced: set[str] = set()
+    for record_dir in record_dirs:
+        for folder, _dirs, files in os.walk(record_dir):
+            for name in files:
+                if name.endswith(".json"):
+                    try:
+                        _collect_blob_refs(_read_json(os.path.join(folder, name)), referenced)
+                    except (OSError, ValueError):
+                        return []  # an unreadable record could hide references: collect nothing
+    now = _now() if now is None else now
+    removed = []
+    for name in os.listdir(blobs) if os.path.isdir(blobs) else []:
+        sha = name[:-4] if name.endswith(".png") else ""
+        path = os.path.join(blobs, name)
+        if sha in referenced or not _SHA_RE.match(sha):
+            continue
+        if now - os.path.getmtime(path) > BLOB_GC_MIN_AGE_SECONDS:
+            os.remove(path)
+            removed.append(sha)
+    return removed
+
+
 class ProjectStore:
     """File operations for one comfy user's projects."""
 
@@ -139,6 +229,7 @@ class ProjectStore:
         self.base = os.path.abspath(os.path.join(user_root, _safe_id(user, "user"), PROJECTS_DIRNAME))
         self.root = os.path.join(self.base, "projects")
         self.trash = os.path.join(self.base, "trash")
+        self.library = os.path.join(self.base, "library")
 
     # -- paths ---------------------------------------------------------------------------------
 
@@ -172,6 +263,11 @@ class ProjectStore:
         if not isinstance(sha, str) or not _SHA_RE.match(sha):
             raise ProjectError("[VNCCS UniCanvas] Invalid blob hash.", 400)
         return self._inside(os.path.join(self.project_dir(project_id), "blobs", f"{sha}.png"))
+
+    def library_blob_path(self, sha: str) -> str:
+        if not isinstance(sha, str) or not _SHA_RE.match(sha):
+            raise ProjectError("[VNCCS UniCanvas] Invalid blob hash.", 400)
+        return self._inside(os.path.join(self.library, "blobs", f"{sha}.png"), self.library)
 
     def thumb_path(self, project_id: str, scene_id: str) -> str:
         return self._inside(os.path.join(self.project_dir(project_id), "thumbs", f"{_safe_id(scene_id, 'scene id')}.png"))
@@ -298,17 +394,7 @@ class ProjectStore:
 
     def put_blob(self, project_id: str, sha: str, data: bytes) -> dict[str, Any]:
         self.load_project(project_id)
-        path = self.blob_path(project_id, sha)
-        if hashlib.sha256(data).hexdigest() != sha:
-            raise ProjectError("[VNCCS UniCanvas] The blob does not match its hash.", 400)
-        if not data.startswith(_PNG_SIGNATURE):
-            raise ProjectError("[VNCCS UniCanvas] Blobs must be PNG images.", 400)
-        created = not os.path.exists(path)
-        if created:
-            _atomic_write_bytes(path, data)
-        else:
-            os.utime(path)  # a re-referenced blob is fresh again for the GC grace period
-        return {"blob": f"{sha}.png", "created": created}
+        return _put_blob_file(self.blob_path(project_id, sha), sha, data)
 
     def store_png(self, project_id: str, data: bytes) -> str:
         sha = hashlib.sha256(data).hexdigest()
@@ -316,72 +402,31 @@ class ProjectStore:
         return sha
 
     def get_blob(self, project_id: str, sha: str) -> bytes:
-        path = self.blob_path(project_id, sha)
-        if not os.path.isfile(path):
-            raise ProjectError("[VNCCS UniCanvas] Blob not found.", 404)
-        with open(path, "rb") as handle:
-            return handle.read()
+        return _read_blob_file(self.blob_path(project_id, sha))
+
+    def get_library_blob(self, sha: str) -> bytes:
+        return _read_blob_file(self.library_blob_path(sha))
 
     def _dehydrate(self, project_id: str, value: Any) -> Any:
         """Replaces every inline PNG pixel field by a blob ref; refs the client sent must exist."""
-        if isinstance(value, list):
-            return [self._dehydrate(project_id, item) for item in value]
-        if not isinstance(value, dict):
-            return value
-        out: dict[str, Any] = {}
-        for key, item in value.items():
-            if _is_pixel_key(key) and isinstance(item, str) and item.startswith(_PNG_PREFIX):
-                ref_crop = value.get("hiresRect") if key.lower().startswith("hires") else value.get("crop")
-                out[key] = {"blob": f"{self.store_png(project_id, decode_png_data_url(item))}.png", "crop": ref_crop}
-            elif _is_pixel_key(key) and isinstance(item, dict) and "blob" in item:
-                sha = str(item.get("blob") or "")[:-4]
-                if not os.path.isfile(self.blob_path(project_id, sha)):
-                    raise ProjectError("[VNCCS UniCanvas] The scene references a blob that was never uploaded.", 400, missingBlob=item.get("blob"))
-                out[key] = {"blob": f"{sha}.png", "crop": item.get("crop")}
-            else:
-                out[key] = self._dehydrate(project_id, item)
-        return out
+        return _dehydrate_value(value, lambda sha: self.blob_path(project_id, sha))
 
     def _hydrate(self, project_id: str, value: Any) -> Any:
         """Turns blob refs back into PNG data URLs (for rendering a scene in node mode)."""
-        if isinstance(value, list):
-            return [self._hydrate(project_id, item) for item in value]
-        if not isinstance(value, dict):
-            return value
-        out: dict[str, Any] = {}
-        for key, item in value.items():
-            if _is_pixel_key(key) and isinstance(item, dict) and "blob" in item:
-                data = self.get_blob(project_id, str(item.get("blob") or "")[:-4])
-                out[key] = _PNG_PREFIX + base64.b64encode(data).decode("ascii")
-            else:
-                out[key] = self._hydrate(project_id, item)
-        return out
+        return _hydrate_value(value, lambda sha: self.get_blob(project_id, sha))
 
     def collect_garbage(self, project_id: str, now: float | None = None) -> list[str]:
         """Deletes blobs no scene, asset or history record references and that are older than 24 h."""
         with _STORE_LOCK:
             directory = self.project_dir(project_id)
-            referenced: set[str] = set()
-            for sub in ("scenes", "assets", "history"):
-                for folder, _dirs, files in os.walk(os.path.join(directory, sub)):
-                    for name in files:
-                        if name.endswith(".json"):
-                            try:
-                                _collect_blob_refs(_read_json(os.path.join(folder, name)), referenced)
-                            except (OSError, ValueError):
-                                return []  # an unreadable record could hide references: collect nothing
-            now = _now() if now is None else now
-            removed = []
-            blobs = os.path.join(directory, "blobs")
-            for name in os.listdir(blobs) if os.path.isdir(blobs) else []:
-                sha = name[:-4] if name.endswith(".png") else ""
-                path = os.path.join(blobs, name)
-                if sha in referenced or not _SHA_RE.match(sha):
-                    continue
-                if now - os.path.getmtime(path) > BLOB_GC_MIN_AGE_SECONDS:
-                    os.remove(path)
-                    removed.append(sha)
-            return removed
+            return _collect_unreferenced_blobs(
+                [os.path.join(directory, sub) for sub in ("scenes", "assets", "history")],
+                os.path.join(directory, "blobs"), now)
+
+    def collect_library_garbage(self, now: float | None = None) -> list[str]:
+        """The same GC for the global library: blobs no global asset references."""
+        with _STORE_LOCK:
+            return _collect_unreferenced_blobs([os.path.join(self.library, "assets")], os.path.join(self.library, "blobs"), now)
 
     # -- scenes --------------------------------------------------------------------------------
 
@@ -461,6 +506,154 @@ class ProjectStore:
                 project["activeSceneId"] = project["scenes"][0]["id"]
             return self._save_project(project)
 
+    # -- assets (Plan 10.4) ----------------------------------------------------------------------
+
+    def _asset_scope(self, scope: Any, project_id: Any = None) -> tuple[str, Callable[[str], str], str]:
+        """(assets dir, blob path for a sha, root every path must stay inside) of one scope."""
+        if scope == "global":
+            return os.path.join(self.library, "assets"), self.library_blob_path, self.library
+        if scope == "project":
+            self.load_project(str(project_id or ""))
+            directory = self.project_dir(str(project_id))
+            return os.path.join(directory, "assets"), lambda sha: self.blob_path(str(project_id), sha), directory
+        raise ProjectError("[VNCCS UniCanvas] Invalid asset scope.", 400)
+
+    def _asset_json(self, scope: Any, project_id: Any, asset_id: Any) -> str:
+        assets, _blob_path, root = self._asset_scope(scope, project_id)
+        return self._inside(os.path.join(assets, _safe_id(asset_id, "asset id"), "asset.json"), root)
+
+    def _ensure_library_writable(self) -> None:
+        try:
+            os.makedirs(os.path.join(self.library, "assets"), exist_ok=True)
+            os.makedirs(os.path.join(self.library, "blobs"), exist_ok=True)
+        except OSError as exc:
+            raise ProjectError(f"[VNCCS UniCanvas] The ComfyUI user directory is not writable ({self.base}): {exc}", 500) from exc
+
+    @staticmethod
+    def _asset_kind(kind: Any) -> str:
+        kind = str(kind or "")
+        if kind in RESERVED_ASSET_KINDS:
+            raise ProjectError(f"[VNCCS UniCanvas] The asset kind '{kind}' is reserved and not supported yet.", 400)
+        if kind not in ASSET_KINDS:
+            raise ProjectError("[VNCCS UniCanvas] Unknown asset kind.", 400)
+        return kind
+
+    @staticmethod
+    def _asset_tags(tags: Any) -> list[str]:
+        if not isinstance(tags, list):
+            return []
+        clean = []
+        for tag in tags:
+            text = str(tag or "").strip()[:64]
+            if text and text not in clean:
+                clean.append(text)
+        return clean[:MAX_ASSET_TAGS]
+
+    def _asset_thumbnail(self, blob_path: Callable[[str], str], payload: dict[str, Any], data: dict[str, Any]) -> dict[str, Any] | None:
+        source = payload.get("thumbnail")
+        if not (isinstance(source, str) and source.startswith(_PNG_PREFIX)):
+            source = data.get("imageDataURL") if isinstance(data.get("imageDataURL"), str) else None
+        if not source or not source.startswith(_PNG_PREFIX):
+            return None
+        png = _thumbnail_png(decode_png_data_url(source), ASSET_THUMBNAIL_SIZE)
+        sha = hashlib.sha256(png).hexdigest()
+        _put_blob_file(blob_path(sha), sha, png)
+        return {"blob": f"{sha}.png", "crop": None}
+
+    @staticmethod
+    def _asset_summary(asset: dict[str, Any], scope: str) -> dict[str, Any]:
+        thumb = asset.get("thumbnail")
+        return {
+            "id": asset.get("id"), "kind": asset.get("kind"), "name": asset.get("name"), "tags": asset.get("tags") or [],
+            "updatedAt": asset.get("updatedAt"), "rev": asset.get("rev"), "scope": scope,
+            "thumbnail": thumb.get("blob") if isinstance(thumb, dict) else None,
+        }
+
+    def list_assets(self, scope: Any, project_id: Any = None, kind: Any = None, query: Any = None) -> list[dict[str, Any]]:
+        assets, _blob_path, _root = self._asset_scope(scope, project_id)
+        needle = str(query or "").strip().lower()
+        items = []
+        for name in sorted(os.listdir(assets)) if os.path.isdir(assets) else []:
+            path = os.path.join(assets, name, "asset.json")
+            if not os.path.isfile(path):
+                continue
+            try:
+                asset = _read_json(path)
+            except (OSError, ValueError):
+                continue
+            if kind and asset.get("kind") != kind:
+                continue
+            if needle and needle not in str(asset.get("name") or "").lower() \
+                    and not any(needle in str(tag).lower() for tag in asset.get("tags") or []):
+                continue
+            items.append(self._asset_summary(asset, str(scope)))
+        items.sort(key=lambda item: item.get("updatedAt") or 0, reverse=True)
+        return items
+
+    def get_asset(self, scope: Any, project_id: Any, asset_id: Any) -> dict[str, Any]:
+        path = self._asset_json(scope, project_id, asset_id)
+        if not os.path.isfile(path):
+            raise ProjectError("[VNCCS UniCanvas] Asset not found.", 404)
+        return {**_read_json(path), "scope": str(scope)}
+
+    def create_asset(self, scope: Any, project_id: Any, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ProjectError("[VNCCS UniCanvas] Expected a JSON object.", 400)
+        with _STORE_LOCK:
+            if scope == "global":
+                self._ensure_library_writable()
+            kind = self._asset_kind(payload.get("kind"))
+            _assets, blob_path, _root = self._asset_scope(scope, project_id)
+            asset_id = _new_id("ast")
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            now = _now()
+            asset = {
+                "schemaVersion": ASSET_SCHEMA_VERSION, "id": asset_id, "kind": kind,
+                "name": str(payload.get("name") or kind.capitalize()).strip()[:200] or kind.capitalize(),
+                "tags": self._asset_tags(payload.get("tags")), "createdAt": now, "updatedAt": now, "rev": 1,
+                "thumbnail": self._asset_thumbnail(blob_path, payload, data),
+                "data": _dehydrate_value(data, blob_path),
+            }
+            _atomic_write_json(self._asset_json(scope, project_id, asset_id), asset)
+            return {**asset, "scope": str(scope)}
+
+    def put_asset(self, scope: Any, project_id: Any, asset_id: Any, payload: dict[str, Any]) -> dict[str, Any]:
+        """Push to library: replaces the asset's data (and name / tags when given); ``ifRev`` guards races."""
+        if not isinstance(payload, dict):
+            raise ProjectError("[VNCCS UniCanvas] Expected a JSON object.", 400)
+        with _STORE_LOCK:
+            asset = self.get_asset(scope, project_id, asset_id)
+            asset.pop("scope", None)
+            if_rev = payload.get("ifRev")
+            if if_rev is not None and int(if_rev) != int(asset.get("rev") or 0):
+                raise ProjectError("[VNCCS UniCanvas] The asset changed elsewhere.", 409, rev=asset.get("rev"))
+            _assets, blob_path, _root = self._asset_scope(scope, project_id)
+            if "kind" in payload and self._asset_kind(payload.get("kind")) != asset.get("kind"):
+                raise ProjectError("[VNCCS UniCanvas] An asset keeps its kind.", 400)
+            if "name" in payload:
+                name = str(payload.get("name") or "").strip()
+                if not name:
+                    raise ProjectError("[VNCCS UniCanvas] An asset needs a name.", 400)
+                asset["name"] = name[:200]
+            if "tags" in payload:
+                asset["tags"] = self._asset_tags(payload.get("tags"))
+            if isinstance(payload.get("data"), dict):
+                asset["data"] = _dehydrate_value(payload["data"], blob_path)
+                thumbnail = self._asset_thumbnail(blob_path, payload, payload["data"])
+                if thumbnail or payload.get("thumbnail") is not None:
+                    asset["thumbnail"] = thumbnail
+            asset["rev"] = int(asset.get("rev") or 0) + 1
+            asset["updatedAt"] = _now()
+            _atomic_write_json(self._asset_json(scope, project_id, asset["id"]), asset)
+            return {**asset, "scope": str(scope)}
+
+    def delete_asset(self, scope: Any, project_id: Any, asset_id: Any) -> None:
+        with _STORE_LOCK:
+            path = self._asset_json(scope, project_id, asset_id)
+            if not os.path.isfile(path):
+                raise ProjectError("[VNCCS UniCanvas] Asset not found.", 404)
+            shutil.rmtree(os.path.dirname(path))
+
     # -- export / import -----------------------------------------------------------------------
 
     def export_zip(self, project_id: str) -> bytes:
@@ -532,12 +725,12 @@ class ProjectStore:
             return self.load_project(project_id)
 
 
-def _thumbnail_png(data: bytes) -> bytes:
+def _thumbnail_png(data: bytes, size: int = THUMBNAIL_SIZE) -> bytes:
     from PIL import Image
 
     with Image.open(io.BytesIO(data)) as image:
         image.load()
-        image.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+        image.thumbnail((size, size))
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         return buffer.getvalue()
@@ -569,7 +762,7 @@ def _request_user(request) -> str:
 
 def project_routes(web, content_length_ok: Callable[[Any, int], bool],
                    store_factory: Callable[[str], ProjectStore] | None = None) -> list[tuple[str, str, Callable]]:
-    """(method, path, handler) triples for ``routes.py`` to register under /vnccs/unicanvas/projects."""
+    """(method, path, handler) triples for ``routes.py`` to register under /vnccs/unicanvas/projects and /library."""
     base = "/vnccs/unicanvas/projects"
 
     def store_for(request) -> ProjectStore:
@@ -662,6 +855,38 @@ def project_routes(web, content_length_ok: Callable[[Any, int], bool],
     async def import_(request, store):
         return await asyncio.to_thread(store.import_zip, await request.read())
 
+    def asset_scope(request):
+        return ("project", m(request, "id")) if m(request, "id") else ("global", None)
+
+    async def list_assets(request, store):
+        scope, project_id = asset_scope(request)
+        query = getattr(request, "query", None) or {}
+        if scope == "global":
+            await asyncio.to_thread(store.collect_library_garbage)
+        return {"assets": await asyncio.to_thread(store.list_assets, scope, project_id, query.get("kind") or None, query.get("q") or None)}
+
+    async def create_asset(request, store):
+        scope, project_id = asset_scope(request)
+        return await asyncio.to_thread(store.create_asset, scope, project_id, await body(request))
+
+    async def get_asset(request, store):
+        scope, project_id = asset_scope(request)
+        return await asyncio.to_thread(store.get_asset, scope, project_id, m(request, "asset"))
+
+    async def put_asset(request, store):
+        scope, project_id = asset_scope(request)
+        return await asyncio.to_thread(store.put_asset, scope, project_id, m(request, "asset"), await body(request))
+
+    async def delete_asset(request, store):
+        scope, project_id = asset_scope(request)
+        await asyncio.to_thread(store.delete_asset, scope, project_id, m(request, "asset"))
+        return {"deleted": True}
+
+    async def get_library_blob(request, store):
+        data = await asyncio.to_thread(store.get_library_blob, m(request, "sha"))
+        return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+    library = "/vnccs/unicanvas/library"
     small = 1024 * 1024
     return [
         ("GET", base, handler(small, list_)),
@@ -679,6 +904,18 @@ def project_routes(web, content_length_ok: Callable[[Any, int], bool],
         ("GET", f"{base}/{{id}}/thumbs/{{scene}}", handler(small, get_thumb)),
         ("PUT", f"{base}/{{id}}/blobs/{{sha}}", handler(_MAX_UPLOAD_BYTES, put_blob)),
         ("GET", f"{base}/{{id}}/blobs/{{sha}}", handler(small, get_blob)),
+        # Asset library (Plan 10.4): project scope under the project, global scope under /library.
+        ("GET", f"{base}/{{id}}/assets", handler(small, list_assets)),
+        ("POST", f"{base}/{{id}}/assets", handler(MAX_SCENE_BYTES, create_asset)),
+        ("GET", f"{base}/{{id}}/assets/{{asset}}", handler(small, get_asset)),
+        ("PUT", f"{base}/{{id}}/assets/{{asset}}", handler(MAX_SCENE_BYTES, put_asset)),
+        ("DELETE", f"{base}/{{id}}/assets/{{asset}}", handler(small, delete_asset)),
+        ("GET", f"{library}/assets", handler(small, list_assets)),
+        ("POST", f"{library}/assets", handler(MAX_SCENE_BYTES, create_asset)),
+        ("GET", f"{library}/assets/{{asset}}", handler(small, get_asset)),
+        ("PUT", f"{library}/assets/{{asset}}", handler(MAX_SCENE_BYTES, put_asset)),
+        ("DELETE", f"{library}/assets/{{asset}}", handler(small, delete_asset)),
+        ("GET", f"{library}/blobs/{{sha}}", handler(small, get_library_blob)),
         # Generation history (Plan 10.5) lives under .../{id}/history; history.py builds on this module.
         *_history_routes(web, content_length_ok, store_factory),
     ]

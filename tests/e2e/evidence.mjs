@@ -147,6 +147,25 @@ if (topic === "placement-harmonize") {
   await page.locator("[data-scene-depth-scale]").click();
   await page.waitForTimeout(800);
 }
+if (topic === "library") {
+  // Plan 10.4 (#23): a character saved to the global library, the Library tab open next to Layers.
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator('button[title="Import image"]').first().click(),
+  ]);
+  await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "character.png"));
+  await page.waitForTimeout(1_500);
+  const layerId = await page.evaluate(() => globalThis.__VNCCS_UC_E2E__.listLayers().find((layer) => layer.type === "raster")?.id);
+  await page.locator(`[data-layer-id="${layerId}"]`).first().click({ button: "right" });
+  await page.locator('.vnccs-uc-layer-menu [data-menu-item="library-save"]').click();
+  await page.locator('.vnccs-uc-library-dialog [data-field="name"]').fill("Evidence character");
+  await page.locator('.vnccs-uc-library-dialog [data-field="scope"]').evaluate((select) => { select.value = "global"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await page.locator('.vnccs-uc-library-dialog [data-action="save"]').click();
+  await page.waitForTimeout(800);
+  await page.locator('[data-library-tab="library"]').first().click();
+  await page.locator('.vnccs-uc-library [data-scope="global"]').first().click();
+  await page.waitForTimeout(800);
+}
 if (topic === "history-gallery") {
   // Plan 10.5 (#24): one stubbed generation (batch 3, one accepted) in a fresh project, then the
   // History gallery with that run selected.
@@ -180,6 +199,7 @@ const shots = {
   "multi-character": ".vnccs-unicanvas",
   "vn-preview": ".vnccs-unicanvas",
   "placement-harmonize": ".vnccs-unicanvas",
+  library: ".vnccs-unicanvas",
   "scene-states": ".vnccs-unicanvas",
   "history-gallery": ".vnccs-unicanvas",
   "config-override": "body",
