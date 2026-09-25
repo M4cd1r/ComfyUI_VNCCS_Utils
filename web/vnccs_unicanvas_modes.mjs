@@ -8,6 +8,7 @@
 
 import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { describeDepthScaleDrag, measureLayerCharacter, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -35,6 +36,7 @@ export const TOOL_SHORTCUTS = Object.freeze({
   m: "mask",
   l: "lasso",
   s: "rect",
+  g: "perspective",
 });
 
 const FULLSCREEN_ICON_SVG =
@@ -199,7 +201,7 @@ export function handleUniCanvasShortcut(widget, event) {
     widget.vnPreview.toggle();
     return true;
   }
-  // Tools: B brush, V move, E eraser, M mask, L lasso, S rect.
+  // Tools: B brush, V move, E eraser, M mask, L lasso, S rect, G perspective.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
     consumeUniCanvasShortcut(event);
     widget.setTool(TOOL_SHORTCUTS[lower]);
@@ -916,6 +918,17 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           return layer ? (layer.pixelRevision ?? 0) : null;
         },
+        // Scene placement (Plan 08): perspective, a character's alpha rect and feet, a running
+        // depth-scaled drag, and the view transform to aim pointer events at world points.
+        getScenePerspective: () => JSON.parse(JSON.stringify(normalizeScenePerspective(widget.scenePerspective))),
+        getLayerCharacter: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          const measured = layer ? measureLayerCharacter(widget, layer) : null;
+          return measured ? JSON.parse(JSON.stringify(measured)) : null;
+        },
+        getDepthScaleDrag: () => describeDepthScaleDrag(widget),
+        getView: () => ({ ...widget.view }),
+        getActiveTool: () => widget.tool,
         getLayerPose: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           // Deep clone: the caller must not be able to mutate layer state.
