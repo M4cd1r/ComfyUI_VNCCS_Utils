@@ -9,7 +9,7 @@
 import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
-import { describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
+import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
@@ -1038,6 +1038,23 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         // Shadows and scene light (Plan 08.2): the light and a layer's normalized `shadow`.
         getSceneLight: () => JSON.parse(JSON.stringify(normalizeSceneLight(widget.sceneLight))),
         getLayerShadow: (layerId) => describeShadow((widget.layers || []).find((l) => l.id === layerId)),
+        // Harmonize (Plan 08.3): the open panel's stages, and a synthetic normal pass for a layer
+        // (camera-space normals packed n * 0.5 + 0.5 over a world rect) so specs need no WebGL mannequin.
+        getHarmonize: () => describeHarmonize(widget),
+        setLayerNormalPass: async (layerId, dataURL, rect) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          if (!layer) return false;
+          const image = await widget.loadImage(dataURL);
+          const canvas = document.createElement("canvas");
+          canvas.width = image.naturalWidth || image.width;
+          canvas.height = image.naturalHeight || image.height;
+          canvas.getContext("2d").drawImage(image, 0, 0);
+          layer.poseNormalCanvas = canvas;
+          layer.poseNormalMeta = { key: layer.type === "pose" ? layer.poseIdMeta?.key ?? null : null, rect: { ...rect } };
+          return true;
+        },
+        // Forces the 2D relight fallback (half resolution while dragging) for the next panel.
+        setHarmonizeCpuRelight: (on) => { if (widget._harmonize) widget._harmonize.forceCpuRelight = Boolean(on); return true; },
         getView: () => ({ ...widget.view }),
         getActiveTool: () => widget.tool,
         getLayerPose: (layerId) => {

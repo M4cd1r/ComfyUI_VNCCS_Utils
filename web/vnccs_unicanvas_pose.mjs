@@ -645,6 +645,43 @@ export class UniCanvasPoseEditor {
         return result ? { canvas: result, ids } : null;
     }
 
+    /**
+     * Camera-space normals of every mannequin (MeshNormalMaterial packs them as n * 0.5 + 0.5, no
+     * color space conversion), with the same camera and size as the ID pass, for the relight in
+     * the Harmonize panel (vnccs_unicanvas_harmonize.mjs). Materials and visibility are restored.
+     */
+    captureNormalPass(size) {
+        if (!this.initialized) return null;
+        const w = this.studio, v = w.viewer, THREE = v.THREE;
+        if (!THREE?.MeshNormalMaterial || !v.scene) return null;
+        const meshes = this.characterMeshes();
+        const characterMeshes = new Set(meshes.map(([, mesh]) => mesh));
+        const hidden = [], swapped = [];
+        v.scene.traverse(object => {
+            if (characterMeshes.has(object) || !(object.isMesh || object.isLine || object.isPoints || object.isSprite)) return;
+            if (object.visible) { hidden.push(object); object.visible = false; }
+        });
+        const material = new THREE.MeshNormalMaterial();
+        for (const [, mesh] of meshes) {
+            swapped.push([mesh, mesh.material, mesh.visible]);
+            mesh.material = Array.isArray(mesh.material) ? mesh.material.map(() => material) : material;
+            mesh.visible = true;
+        }
+        const target = this.host._createCanvas(size.width, size.height);
+        let result = null;
+        try {
+            result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                { targetCanvas: target, transparent: true, hideReference: true, viewport: true });
+        } finally {
+            for (const [mesh, previous, visible] of swapped) { mesh.material = previous; mesh.visible = visible; }
+            hidden.forEach(object => { object.visible = true; });
+            material.dispose?.();
+            if (this.visible) v.renderInteractionOverlay?.();
+        }
+        return result ? { canvas: result } : null;
+    }
+
     /** One mannequin alone with the normal transparent capture, including parts others occlude. */
     captureSoloPass(size, characterId) {
         if (!this.initialized) return null;
@@ -670,6 +707,19 @@ export class UniCanvasPoseEditor {
         if (!pass) return;
         layer.poseIdCanvas = pass.canvas;
         layer.poseIdMeta = { key, ids: pass.ids, rect: { ...rect } };
+    }
+
+    // The normal pass sits next to the ID pass: same key, camera and size (runtime + state cache).
+    updateNormalPass() {
+        const layer = this.layer, rect = layer?.pose?.rect;
+        if (!rect) return;
+        const key = poseIdKey(layer.pose);
+        if (layer.poseNormalCanvas && layer.poseNormalMeta?.key === key) return;
+        const scale = Math.min(1, 1024 / Math.max(rect.width, rect.height));
+        const pass = this.captureNormalPass({ width: Math.max(1, Math.round(rect.width * scale)), height: Math.max(1, Math.round(rect.height * scale)) });
+        if (!pass) return;
+        layer.poseNormalCanvas = pass.canvas;
+        layer.poseNormalMeta = { key, rect: { ...rect } };
     }
 
     capturePreview(final = false) {
@@ -746,6 +796,7 @@ export class UniCanvasPoseEditor {
         this.host.panorama?.commitLayer(this.layer);
         this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
         this.updateIdPass();
+        this.updateNormalPass();
         this.host.poseBake?.afterCommit(this.layer);
     }
 

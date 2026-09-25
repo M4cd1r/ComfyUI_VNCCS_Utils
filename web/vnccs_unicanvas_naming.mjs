@@ -19,7 +19,7 @@
 
 import { autoFileLayer } from "./vnccs_unicanvas_filing.mjs";
 import { isGroupLayer } from "./vnccs_unicanvas_groups.mjs";
-import { groupCharacterName, nameSourceForOrigin, normalizeLayerCategory, rulesCategory, rulesLayerName } from "./vnccs_unicanvas_naming_rules.mjs";
+import { groupCharacterName, modelLayerName, nameSourceForOrigin, normalizeLayerCategory, rulesCategory, rulesLayerName } from "./vnccs_unicanvas_naming_rules.mjs";
 
 export const DESCRIBE_LAYERS_ROUTE = "/vnccs/unicanvas/describe_layers";
 export const AUTO_NAME_SETTING = "auto_name_layers"; // legacy boolean: true reads as "model"
@@ -116,8 +116,9 @@ async function requestNames(uc, layers, groups = [], { manual = false } = {}) {
     const category = entry.parsed === false ? null : normalizeLayerCategory(entry.category);
     if (category && layer.meta) layer.meta.category = category;
     layer._modelNamed = true;
-    if (layer.nameSource === "auto" && entry.parsed !== false && typeof entry.name === "string" && entry.name.trim() && entry.name !== layer.name) {
-      layer.name = entry.name.trim().slice(0, 80);
+    const answer = typeof entry.name === "string" ? modelLayerName(layer, entry.name) : "";
+    if (layer.nameSource === "auto" && entry.parsed !== false && answer && answer !== layer.name) {
+      layer.name = answer.slice(0, 80);
       newToken(layer);
       uc.refreshLayerRow?.(layer.id);
       renamed += 1;
