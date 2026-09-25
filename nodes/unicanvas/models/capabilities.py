@@ -29,6 +29,29 @@ class MediaKind(str, Enum):
     PANORAMA = "panorama"
 
 
+class ControlType(str, Enum):
+    """What a ControlNet control image encodes. A family lists the ones its weights accept."""
+
+    DEPTH = "depth"
+    CANNY = "canny"
+    LINEART = "lineart"
+    POSE = "pose"
+    MLSD = "mlsd"
+    SCRIBBLE = "scribble"
+    GRAY = "gray"
+
+
+CONTROL_TYPE_LABELS: dict[ControlType, str] = {
+    ControlType.DEPTH: "Depth",
+    ControlType.CANNY: "Canny",
+    ControlType.LINEART: "Lineart",
+    ControlType.POSE: "Pose",
+    ControlType.MLSD: "MLSD (straight lines)",
+    ControlType.SCRIBBLE: "Scribble",
+    ControlType.GRAY: "Gray",
+}
+
+
 class ModelRole(str, Enum):
     """Generators create from a prompt; edit models transform the canvas and reference images."""
 
@@ -155,6 +178,79 @@ class ReferenceInputs:
         }
 
 
+@dataclass(frozen=True)
+class ControlNetWeights:
+    """Pinned weights of a ControlNet, like the ``config/unicanvas_presets.json`` asset entries.
+
+    ``hf_path`` is the file inside the Hugging Face repo; ``filename`` is the name the file gets in
+    ComfyUI's ``folder`` (``model_patches`` for the Fun ControlNet Union patches).
+    """
+
+    hf_repo: str
+    hf_path: str
+    revision: str = "main"
+    folder: str = "model_patches"
+    filename: str = ""
+    # The setting that may name a different (user-installed) file.
+    setting: str = ""
+
+    @property
+    def local_name(self) -> str:
+        return self.filename or self.hf_path.rsplit("/", 1)[-1]
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "hf_repo": self.hf_repo,
+            "hf_path": self.hf_path,
+            "revision": self.revision,
+            "folder": self.folder,
+            "filename": self.local_name,
+            "setting": self.setting or None,
+        }
+
+
+CONTROL_NET_PROMPT_NOTE = (
+    "With a ControlNet layer the control image carries the shape (lines, depth, pose); "
+    "describe the content, look and light, not where things are or how a figure stands."
+)
+
+
+@dataclass(frozen=True)
+class ControlNetSupport:
+    """A family's ControlNet (Union): what control images it reads and which weights apply them.
+
+    Declaring it is all the shared code and the UI need: the widget offers the ControlNet layer
+    with ``types``, a draw carrying a control image is validated against it, and the family's
+    :meth:`UniCanvasModelModule.apply_control` hook applies the weights.
+    """
+
+    types: tuple[ControlType, ...]
+    weights: ControlNetWeights
+    label: str = "ControlNet"
+    default_strength: float = 1.0
+    max_strength: float = 2.0
+    # Whether a control image may be combined with an Inpaint Mask in one draw.
+    combines_with_inpaint: bool = True
+    # Whether the apply node takes a start/end range (``start_percent`` / ``end_percent``).
+    supports_range: bool = False
+    prompt_note: str = CONTROL_NET_PROMPT_NOTE
+
+    def accepts(self, control_type: str) -> bool:
+        return any(kind.value == control_type for kind in self.types)
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "types": [{"key": kind.value, "label": CONTROL_TYPE_LABELS.get(kind, kind.value)} for kind in self.types],
+            "weights": self.weights.describe(),
+            "default_strength": self.default_strength,
+            "max_strength": self.max_strength,
+            "combines_with_inpaint": self.combines_with_inpaint,
+            "supports_range": self.supports_range,
+            "prompt_note": self.prompt_note,
+        }
+
+
 DEFAULT_PROMPT_GUIDE = PromptGuide(
     hint="Describe what should appear inside the bbox.",
     guide=(
@@ -180,6 +276,7 @@ class ModelCapabilities:
     external_config_message: str = ""
     supports_pose_edit: bool = False
     default_loader: str | None = None
+    control_net: ControlNetSupport | None = None
     extra: tuple[tuple[str, Any], ...] = field(default_factory=tuple)
 
     @property
@@ -229,5 +326,6 @@ class ModelCapabilities:
             "requires_external_config": self.requires_external_config,
             "supports_pose_edit": self.supports_pose_edit,
             "default_loader": self.default_loader,
+            "control_net": self.control_net.describe() if self.control_net is not None else None,
             **dict(self.extra),
         }

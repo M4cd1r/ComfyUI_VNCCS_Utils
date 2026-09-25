@@ -114,6 +114,9 @@ class DrawContext:
     crop_plan: Any = None
     full_source_rgba: Image.Image | None = None
     cropped_mask_rgba: Image.Image | None = None
+    # ControlNet: the control image (RGB, same size and crop as the source) and its tensor.
+    control_image: Image.Image | None = None
+    control_tensor: torch.Tensor | None = None
 
     @property
     def draw_id(self) -> str:
@@ -178,6 +181,22 @@ class ImageDrawPipeline:
             ctx.source = ctx.reference_source = ctx.pose_images[1]
             self.module.prepare_pose_edit(ctx)
         self.module.validate_source(ctx)
+        self.prepare_control()
+
+    def prepare_control(self) -> None:
+        """Decode the request's control image at the source size (the frontend crops it to the bbox)."""
+        ctx, control = self.ctx, self.request.control
+        if control is None:
+            return
+        control_rgba = _decode_data_url(control.image, "RGBA")
+        if control_rgba.size != ctx.source.size:
+            _uc_log(ctx.draw_id, "control image resized to source size", {"from": control_rgba.size, "to": ctx.source.size})
+            control_rgba = control_rgba.resize(ctx.source.size, Image.Resampling.BILINEAR)
+        # Transparent control pixels mean "no control there": black, like an empty canny/depth map.
+        background = Image.new("RGBA", control_rgba.size, (0, 0, 0, 255))
+        background.alpha_composite(control_rgba)
+        ctx.control_image = background.convert("RGB")
+        _uc_log(ctx.draw_id, "control image decoded", {"size": ctx.control_image.size, **control.describe()})
 
     def check_sizes(self) -> None:
         ctx, payload = self.ctx, self.request.payload
@@ -214,6 +233,9 @@ class ImageDrawPipeline:
         ctx.source_rgba = crop_image(ctx.source_rgba, plan)
         ctx.source = ctx.reference_source = ctx.source_rgba.convert("RGB")
         ctx.cropped_mask_rgba = crop_image(mask, plan, Image.Resampling.BILINEAR)
+        if ctx.control_image is not None:
+            # The control image follows the source: same crop rectangle, same working size.
+            ctx.control_image = crop_image(ctx.control_image, plan, Image.Resampling.BILINEAR)
         ctx.width, ctx.height = plan.work_size
         _uc_log(ctx.draw_id, "inpaint crop-and-stitch", {"box": plan.box, "work_size": plan.work_size, "full_size": plan.full_size})
 
@@ -308,6 +330,8 @@ class ImageDrawPipeline:
         ctx.reference_image_tensor = _pil_to_image_tensor(ctx.reference_source)
         if ctx.pose_images:
             ctx.settings["_pose_edit_images"] = [_pil_to_image_tensor(image) for image in ctx.pose_images]
+        if ctx.control_image is not None:
+            ctx.control_tensor = _pil_to_image_tensor(ctx.control_image)
         _uc_log(
             ctx.draw_id,
             "source prepared",
@@ -344,6 +368,9 @@ class ImageDrawPipeline:
     def sample(self) -> None:
         ctx, request = self.ctx, self.request
         ctx.model = self.module.prepare_model_for_sampling(ctx)
+        if request.control is not None:
+            ctx.model = self.module.apply_control(ctx)
+            _uc_log(ctx.draw_id, "control applied", request.control.describe())
         # Step cache (EasyCache) and the attention/VAE summary shown in the progress bar.
         note = step_cache_skip_reason(ctx.settings, request.steps) or ("" if self.module.supports_step_cache(ctx.settings) else "not with this family's settings")
         cached_model = ctx.model if note else apply_step_cache(ctx.model, ctx.settings, request.steps)
@@ -372,7 +399,7 @@ class ImageDrawPipeline:
         )
         # Drop sampling-only references before the VAE decode needs the memory.
         ctx.model = ctx.clip = ctx.positive = ctx.negative = None
-        ctx.image_tensor = ctx.reference_image_tensor = ctx.mask = None
+        ctx.image_tensor = ctx.reference_image_tensor = ctx.mask = ctx.control_tensor = None
         _release_generation_sampling_refs(ctx.settings, ctx.draw_id, COMMON_SCRATCH_KEYS + tuple(self.module.sampling_scratch_keys))
 
     def decode(self) -> None:
@@ -451,6 +478,8 @@ class ImageDrawPipeline:
             "debug_id": ctx.draw_id,
             "performance": ctx.settings.get("_performance", ""),
         }
+        if request.control is not None:
+            result["control"] = request.control.describe()
         if request.payload.get("return_tensor"):
             result["tensor"] = ctx.decoded.detach().cpu()
         return result

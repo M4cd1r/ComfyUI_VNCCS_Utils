@@ -91,12 +91,29 @@ class UniCanvasModelModule:
             )
         task = request.task
         if capabilities.supports_task(task.key):
+            self.validate_control(request)
             return
         if capabilities.declared_task(task.key) is not None:
             raise ValueError(f"[VNCCS UniCanvas] {self.label}: {task.label} is not available in UniCanvas yet.")
         if capabilities.requires_source_image and MediaKind.IMAGE not in task.inputs:
             raise ValueError(self._source_image_message())
         raise ValueError(f"[VNCCS UniCanvas] {self.label} does not support {task.label}.")
+
+    def validate_control(self, request: DrawRequest) -> None:
+        """Reject a control image the family cannot apply (no ControlNet, wrong type, with a mask)."""
+        control = getattr(request, "control", None)
+        if control is None:
+            return
+        support = self.capabilities.control_net
+        if support is None:
+            raise ValueError(f"[VNCCS UniCanvas] {self.label} has no ControlNet: hide or disable the ControlNet layer, or pick a model with ControlNet.")
+        if not support.accepts(control.type):
+            accepted = ", ".join(kind.value for kind in support.types)
+            raise ValueError(f"[VNCCS UniCanvas] {self.label} ControlNet does not accept '{control.type}' control images (accepted: {accepted}).")
+        if request.mode in {"inpaint", "outpaint"} and not support.combines_with_inpaint:
+            raise ValueError(f"[VNCCS UniCanvas] {self.label} cannot combine a ControlNet layer with an inpaint mask.")
+        if not 0.0 <= control.strength <= support.max_strength:
+            raise ValueError(f"[VNCCS UniCanvas] ControlNet strength must be between 0 and {support.max_strength:g}.")
 
     def validate_source(self, ctx: DrawContext) -> None:
         """Reject a decoded source this family cannot work from (e.g. an empty bbox)."""
@@ -174,6 +191,16 @@ class UniCanvasModelModule:
 
     def prepare_model_for_sampling(self, ctx: DrawContext) -> Any:
         """Last model patch before sampling (after every LoRA)."""
+        return ctx.model
+
+    def apply_control(self, ctx: DrawContext) -> Any:
+        """Apply the draw's control image (``ctx.control_tensor``, ``ctx.request.control``) to the model.
+
+        Called right after :meth:`prepare_model_for_sampling`, only when the request carries a
+        control image; returns the patched model. Families that declare
+        ``capabilities.control_net`` implement it; the default leaves the model unchanged
+        (``validate_control`` already rejected control images for families without one).
+        """
         return ctx.model
 
     # -- model primitives ---------------------------------------------------------------
