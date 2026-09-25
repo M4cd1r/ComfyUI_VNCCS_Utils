@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Guidance for Claude Code in this repository. The binding project rules (realtime
-interaction, E2E suite, Docker test platform, LAN reachability) live in `AGENTS.md`:
+interaction, E2E suite, Docker test platform, evidence policy) live in `AGENTS.md`:
 
 @AGENTS.md
 
@@ -10,8 +10,8 @@ interaction, E2E suite, Docker test platform, LAN reachability) live in `AGENTS.
 A ComfyUI custom-node extension (VNCCS Utils): **UniCanvas** (in-node canvas editor with
 direct generation), **Pose Studio**, **3D Factory**, Model Manager/Selector, VNCSS Config,
 QWEN Detailer and helpers. Python backend runs inside ComfyUI; the frontend is plain ES
-modules in `web/` (no bundler, no build step). `.github/copilot-instructions.md` describes
-an older VNCCS layout and is out of date - trust the code and this file.
+modules in `web/` (no bundler, no build step). `.github/copilot-instructions.md` carries the
+same guidance for GitHub Copilot.
 
 ## Commands
 
@@ -41,8 +41,8 @@ is described in `AGENTS.md`.
 - `vnccs_sam3d/` - vendored SAM-3D / BiRefNet code.
 - `tests/` - `conftest.py` stubs `comfy`, `folder_paths`, `server` and points the bare
   `nodes` package at `nodes/`; `tests/helpers/` has shared helpers; `tests/e2e/` is Playwright.
-- `docs/` - feature docs (`UNICANVAS_MODEL_MODULES.md` explains model loaders/families),
-  `docs/plans/` is the forward roadmap, `docs/superpowers/` is historical.
+- `docs/` - feature docs (`UNICANVAS_MODEL_MODULES.md` explains model loaders/families);
+  the forward roadmap lives in GitHub Issues.
 
 ## UniCanvas backend (`nodes/unicanvas/`)
 
