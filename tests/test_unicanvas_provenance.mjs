@@ -132,7 +132,7 @@ test("staging items carry the run snapshot", () => {
 
 test("meta is serialized, restored with a normalizer and kept in history clones", () => {
     const serialize = method(widget, "serializeLayer(layer");
-    assert.equal((serialize.match(/meta: normalizeLayerMeta\(layer\.meta\)/g) || []).length, 2, "both the panorama and flat branch");
+    assert.equal((serialize.match(/meta: normalizeLayerMeta\(layer\.meta\)/g) || []).length, 3, "the group, panorama and flat branch");
     assert.match(method(widget, "async applySerializedState(state, { exact = false } = {})"), /meta: normalizeLayerMeta\(item\.meta\)/);
     assert.match(method(widget, "cloneHistoryLayer(layer)"), /meta: cloneLayerMeta\(layer\.meta\)/);
 });

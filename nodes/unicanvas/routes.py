@@ -14,6 +14,7 @@ from .assets import _get_checkpoint_names, _get_unicanvas_assets
 from .color_match import _run_unicanvas_color_match
 from .constants import _MAX_UPLOAD_BYTES
 from .debug import debug_enabled, debug_event, set_unicanvas_debug
+from .depth import _run_unicanvas_depth
 from .describe_layers import _run_unicanvas_describe_layers
 from .draw import _run_unicanvas_draw
 from .models.qwen_image21 import (
@@ -256,6 +257,19 @@ def register_unicanvas_layer_routes() -> None:
             return web.json_response(result)
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/depth")
+    async def vnccs_unicanvas_depth(request):
+        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+            return web.json_response({"error": "[VNCCS UniCanvas] Depth payload is too large."}, status=413)
+        try:
+            payload = await request.json()
+            result = await _run_logged("depth", _run_unicanvas_depth, payload)
+            return web.json_response(result)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": str(exc) or type(exc).__name__}, status=500)
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas/debug")
     async def vnccs_unicanvas_debug_status(_request):

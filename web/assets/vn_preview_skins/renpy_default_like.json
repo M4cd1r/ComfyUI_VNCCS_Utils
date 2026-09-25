@@ -1,0 +1,37 @@
+{
+  "format": "vnccs-vn-preview-skin",
+  "version": 1,
+  "id": "renpy_default_like",
+  "name": "Ren'Py default-like",
+  "note": "Proportions of a default 16:9 Ren'Py project GUI at 1920x1080. Generic shapes only, no Ren'Py assets.",
+  "designResolution": { "width": 1920, "height": 1080 },
+  "textbox": {
+    "anchor": "bottom", "marginX": 0, "marginBottom": 0, "height": 278,
+    "fill": "#000000", "fillAlpha": 0.7, "radius": 0,
+    "border": null,
+    "padding": { "left": 402, "right": 402, "top": 75, "bottom": 40 },
+    "nineSlice": null
+  },
+  "nameplate": {
+    "anchor": "top-left", "offsetX": 240, "offsetY": 0, "minWidth": 168, "height": 60, "paddingX": 5,
+    "fill": "#000000", "fillAlpha": 0, "radius": 0, "border": null, "textAlign": "center",
+    "font": { "family": "'DejaVu Sans', system-ui, sans-serif", "size": 45, "weight": "400", "color": "#cc6600" },
+    "nineSlice": null
+  },
+  "dialogue": {
+    "font": { "family": "'DejaVu Sans', system-ui, sans-serif", "size": 33, "weight": "400", "color": "#ffffff" },
+    "lineHeight": 1.3, "maxLines": 3,
+    "shadow": null,
+    "outline": null
+  },
+  "quickMenu": { "placement": "inside-bottom", "align": "center", "offsetY": 6, "fontSize": 21, "gap": 22, "color": "#888888", "alpha": 1, "fontFamily": "'DejaVu Sans', system-ui, sans-serif" },
+  "choiceMenu": {
+    "width": 1185, "height": 60, "gap": 33, "centerY": 0.4,
+    "fill": "#000000", "fillAlpha": 0.6, "radius": 0,
+    "border": null,
+    "font": { "family": "'DejaVu Sans', system-ui, sans-serif", "size": 33, "weight": "400", "color": "#cccccc" },
+    "nineSlice": null
+  },
+  "sideImage": { "width": 300, "height": 278, "marginLeft": 40, "border": { "color": "#ffffff", "alpha": 0.5, "width": 2 } },
+  "mobile": { "notchWidth": 0.32, "notchHeight": 64, "cornerRadius": 90 }
+}
