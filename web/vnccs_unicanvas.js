@@ -7869,9 +7869,8 @@ class UniCanvasWidget {
         bumpLayerPixelRevision(layer);
         layers.push(layer);
       }
-      name: `${layer.name} copy`,
-      // A document has one panorama layer; its copy is an ordinary spherical raster layer.
-      type: isPanoramaLayer(layer) ? "raster" : layer.type,
+      if (this._disposed || restoreRevision !== this._stateRestoreRevision) return false;
+      if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && isPanoramaLayer(layer))) throw new Error("The panorama base layer is missing");
       previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
