@@ -258,7 +258,7 @@ export function measureLayerCharacter(uc, layer) {
 export function backgroundLayer(uc) {
   for (let index = uc.layers.length - 1; index >= 0; index -= 1) {
     const layer = uc.layers[index];
-    if (layer.type === "raster" && isLayerEffectivelyVisible(uc.layers, layer) && uc.getLayerAlphaBounds(layer)) return layer;
+    if ((layer.type === "raster" || layer.type === "panorama") && isLayerEffectivelyVisible(uc.layers, layer) && uc.getLayerAlphaBounds(layer)) return layer;
   }
   return null;
 }
