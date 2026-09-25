@@ -351,7 +351,8 @@ test("serialized pose, move history, node output and PSD use the same dedicated 
     assert.match(ucSource, /if \(snapshot.pose\) layer.pose = serializePose\(snapshot.pose\)/);
     assert.match(ucSource, /if \(layer.pose\) \{ layer.pose.rect.x \+= dx; layer.pose.rect.y \+= dy;/);
     assert.match(ucSource, /async exportPSD\(\) \{\s*try \{\s*await this.poseEditor\?\.flush\(\)/);
-    assert.match(ucSource, /isImageLayer\(layer\) && layer.visible/);
+    // Visibility includes the layer's groups (Plan 05).
+    assert.match(ucSource, /isImageLayer\(layer\) && isLayerEffectivelyVisible\(this\.layers, layer\)/);
     assert.match(ucSource, /pose_edit: poseRequest\?\.pose_edit/);
     assert.match(ucSource, /positive: poseRequest.positive, denoise: 1/);
 });

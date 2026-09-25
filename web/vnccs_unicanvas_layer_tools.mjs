@@ -27,6 +27,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
@@ -352,8 +353,10 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
 
 function buildColorMatchReference(uc, layer, crop) {
   const index = uc.layers.indexOf(layer);
-  const below = uc.layers.slice(index + 1).filter((item) => item.visible);
-  const pool = below.length ? below : uc.layers.filter((item) => item.visible && item.id !== layer.id);
+  // Groups have no pixels; a layer hidden through its group does not count as visible.
+  const visible = (item) => item.canvas && isLayerEffectivelyVisible(uc.layers, item);
+  const below = uc.layers.slice(index + 1).filter(visible);
+  const pool = below.length ? below : uc.layers.filter((item) => visible(item) && item.id !== layer.id);
   if (!pool.length) return null;
   const canvas = document.createElement("canvas");
   canvas.width = crop.width;
