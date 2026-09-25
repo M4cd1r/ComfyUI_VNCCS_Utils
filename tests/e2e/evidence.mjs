@@ -83,12 +83,38 @@ if (topic === "pose-editor") {
   else await page.locator('[title="Add pose layer"]').first().click();
   await page.waitForTimeout(25_000);
 }
+if (topic === "scene-states") {
+  // Scene states (#7): an imported image, two states with the second one hiding the image.
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator('button[title="Import image"]').first().click(),
+  ]);
+  await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "backdrop.png"));
+  await page.waitForTimeout(2_500);
+  await page.locator('[data-scene-states] [data-state-action="new"]').first().click();
+  await page.locator('[data-scene-states] [data-state-action="new"]').first().click();
+  await page.locator(".vnccs-uc-layer .vnccs-uc-thumb").first().click();
+  await page.waitForTimeout(500);
+}
 if (topic === "multi-character") {
   // A pose layer with two mannequins: the Character reference card lists one row per mannequin.
   await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
   await page.waitForTimeout(25_000);
   await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
   await page.waitForTimeout(5_000);
+}
+if (topic === "character-bake") {
+  // A pose layer with a bound character: the reference card shows the bake chip and Bake button,
+  // and GENERATE announces the pending bake ("+1 bake").
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=";
+  await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
+  await page.waitForTimeout(25_000);
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator(".vnccs-uc-pose-side .vnccs-uc-pose-character").getByRole("button", { name: "Upload image" }).first().click(),
+  ]);
+  await chooser.setFiles({ name: "alice.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+  await page.waitForTimeout(1_500);
 }
 if (topic === "vn-preview") {
   // A scene (image layer + pose layer) with the Clean dark overlay on and the pose moved down so
@@ -134,6 +160,47 @@ if (topic === "placement-harmonize") {
   await page.locator("[data-scene-depth-scale]").click();
   await page.waitForTimeout(800);
 }
+if (topic === "library") {
+  // Plan 10.4 (#23): a character saved to the global library, the Library tab open next to Layers.
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator('button[title="Import image"]').first().click(),
+  ]);
+  await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "character.png"));
+  await page.waitForTimeout(1_500);
+  const layerId = await page.evaluate(() => globalThis.__VNCCS_UC_E2E__.listLayers().find((layer) => layer.type === "raster")?.id);
+  await page.locator(`[data-layer-id="${layerId}"]`).first().click({ button: "right" });
+  await page.locator('.vnccs-uc-layer-menu [data-menu-item="library-save"]').click();
+  await page.locator('.vnccs-uc-library-dialog [data-field="name"]').fill("Evidence character");
+  await page.locator('.vnccs-uc-library-dialog [data-field="scope"]').evaluate((select) => { select.value = "global"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await page.locator('.vnccs-uc-library-dialog [data-action="save"]').click();
+  await page.waitForTimeout(800);
+  await page.locator('[data-library-tab="library"]').first().click();
+  await page.locator('.vnccs-uc-library [data-scope="global"]').first().click();
+  await page.waitForTimeout(800);
+}
+if (topic === "history-gallery") {
+  // Plan 10.5 (#24): one stubbed generation (batch 3, one accepted) in a fresh project, then the
+  // History gallery with that run selected.
+  const fixture = await readFile(resolve(import.meta.dirname, "fixtures", "backdrop.png"));
+  const image = `data:image/png;base64,${fixture.toString("base64")}`;
+  await page.route("**/vnccs/unicanvas/draw", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ images: [image, image, image], performance: "stub" }),
+  }));
+  await page.locator(".vnccs-uc-project-name").first().click();
+  await page.locator(".vnccs-uc-project-browser-head button", { hasText: "New" }).click();
+  await page.locator(".vnccs-uc-modal .vnccs-uc-field input").fill(`Evidence history ${Date.now()}`);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(3_000);
+  await page.locator('textarea[data-setting="positive"]').first().fill("a red lighthouse at dusk");
+  await page.locator("button", { hasText: "GENERATE" }).first().click();
+  await page.locator('[title="Accept as layer"]').first().click({ timeout: 30_000 });
+  await page.waitForTimeout(2_000);
+  await page.locator(".vnccs-uc-history-open").first().click();
+  await page.locator(".vnccs-uc-history-card").first().click({ timeout: 30_000 });
+  await page.waitForTimeout(1_500);
+}
 // Scenario per topic keeps crops identical between before/after (same locator).
 const shots = {
   "mannequin-options": ".vnccs-uc-left",
@@ -143,8 +210,12 @@ const shots = {
   "settings-panel": ".vnccs-unicanvas",
   "pose-editor": ".vnccs-unicanvas",
   "multi-character": ".vnccs-unicanvas",
+  "character-bake": ".vnccs-unicanvas",
   "vn-preview": ".vnccs-unicanvas",
   "placement-harmonize": ".vnccs-unicanvas",
+  library: ".vnccs-unicanvas",
+  "scene-states": ".vnccs-unicanvas",
+  "history-gallery": ".vnccs-unicanvas",
   "config-override": "body",
   "icons": "body",
   "auto-naming": ".vnccs-uc2-standalone-shell",
@@ -183,6 +254,7 @@ const geometry = await target.evaluate((el, measureSelector) => {
   "config-override": ".vnccs-config-ui",
   icons: ".vnccs-uc-tools",
   "auto-naming": ".vnccs-uc-organize",
+  "history-gallery": ".vnccs-uc-history-gallery",
 }[topic] || null);
 await writeFile(resolve(outDir, `${phase}.geometry.json`), JSON.stringify(geometry, null, 2));
 await browser.close();

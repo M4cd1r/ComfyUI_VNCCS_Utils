@@ -8,8 +8,9 @@
 
 import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
-import { describeDepthScaleDrag, measureLayerCharacter, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -193,6 +194,14 @@ export function handleUniCanvasShortcut(widget, event) {
     consumeUniCanvasShortcut(event);
     if (lower === "y" || event.shiftKey) widget.redo();
     else widget.undo();
+    return true;
+  }
+  // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
+  // (Alt+digit types other characters on some keyboards).
+  const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
+  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex) {
+    consumeUniCanvasShortcut(event);
+    widget.applySceneStateByIndex(Number(stateDigit[1] || stateDigit[0]) - 1);
     return true;
   }
   if (modifier || event.altKey) return false;
@@ -547,6 +556,7 @@ export async function newUniCanvasDocument(widget) {
   widget.activeLayerId = null;
   widget.undoStack = [];
   widget.redoStack = [];
+  widget.restoreSceneStates?.(null); // scene states belong to the old document
   widget.addLayer("raster", "Base Layer", false, false, createLayerMeta("base"));
   widget.updateHistoryButtons?.();
   widget.renderLayerList();
@@ -922,6 +932,29 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: layer.canvas.toDataURL("image/png"),
           };
         },
+        // Asset library (Plan 10.4): a layer's visible pixels (alpha crop) with their world rect.
+        getLayerCrop: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          const crop = layer?.canvas ? widget.getLayerAlphaBounds(layer) : null;
+          if (!crop) return null;
+          return {
+            rect: { x: widget.origin.x + crop.x, y: widget.origin.y + crop.y, width: crop.width, height: crop.height },
+            dataURL: widget.cloneCanvasCrop(layer.canvas, crop).toDataURL("image/png"),
+          };
+        },
+        // Scene states (issue #7): the state list without thumbnails, and each layer's live offset.
+        getSceneStates: () => {
+          const scene = widget.serializeSceneStates?.() || null;
+          if (!scene) return null;
+          return {
+            ...scene,
+            states: scene.states.map(({ thumbnailDataURL, ...state }) => ({ ...state, hasThumbnail: Boolean(thumbnailDataURL) })),
+            moveScope: widget.getSceneStateMoveScope?.() ?? null,
+            differs: widget.sceneStateDiffers?.() ?? false,
+            view: { ...widget.view },
+            offsets: Object.fromEntries((widget.layers || []).map((l) => [l.id, widget.getLayerStateOffset?.(l) || { x: 0, y: 0 }])),
+          };
+        },
         getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
         // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
@@ -966,6 +999,18 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           }
           return { characters, idPass, hasCharacterRefs: Boolean(layer.pose.characterRefs) };
         },
+        // Character bake (issue #5): per-character status, the Show mannequin toggle, which
+        // characters have baked pixels, and how many history entries exist.
+        getPoseBake: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          if (!layer?.pose) return null;
+          const characters = poseStudioCharacters(layer.pose).map((item) => ({
+            id: item.id, status: widget.poseBake?.status(layer, item.id) ?? "none",
+            error: layer.pose.bake?.characters?.[item.id]?.error || null,
+          }));
+          return { characters, showMannequin: layer.pose.bake?.showMannequin === true, parts: Object.keys(layer.bakeParts || {}),
+            bakedView: layer._bakeViewBaked === true, undo: widget.undoStack?.length ?? 0 };
+        },
         // Automatic naming (issue #17): name, nameSource and the category the model answered.
         getLayerNaming: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
@@ -990,6 +1035,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           return measured ? JSON.parse(JSON.stringify(measured)) : null;
         },
         getDepthScaleDrag: () => describeDepthScaleDrag(widget),
+        // Shadows and scene light (Plan 08.2): the light and a layer's normalized `shadow`.
+        getSceneLight: () => JSON.parse(JSON.stringify(normalizeSceneLight(widget.sceneLight))),
+        getLayerShadow: (layerId) => describeShadow((widget.layers || []).find((l) => l.id === layerId)),
         getView: () => ({ ...widget.view }),
         getActiveTool: () => widget.tool,
         getLayerPose: (layerId) => {
@@ -997,6 +1045,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           // Deep clone: the caller must not be able to mutate layer state.
           return layer?.pose ? JSON.parse(JSON.stringify(layer.pose)) : null;
         },
+        // Generation history (Plan 10.5): the settings the panel shows and the staged results.
+        getSettings: () => JSON.parse(JSON.stringify(widget.settings || {})),
+        getStaging: () => (widget.stagingItems || []).map((item) => ({ historyId: item.historyId ?? null, historyIndex: item.historyIndex ?? null })),
       };
       if (!tabWatcher) tabWatcher = watchUniCanvasStandaloneTab(setActive);
       if (!containerObserver && typeof IntersectionObserver === "function") {

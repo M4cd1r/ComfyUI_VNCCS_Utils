@@ -1,7 +1,8 @@
 /** Serializable pose layer contracts shared by the canvas and editor host. */
 // Articulated mannequin mid-pose: filled head and joints read as a posable figure at tool size.
 export const POSE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle class="fill" cx="12" cy="3.7" r="2.5"/><rect class="fill" x="9.7" y="7" width="4.6" height="7.4" rx="2.3"/><path stroke-width="2.4" d="M10.4 8.4 7 6.4 5.8 2.9M13.6 8.4l3.2 2.9 2.9 1.4M10.8 13.8l-1.6 4-1 3.6M13.2 13.8l1.7 3.9 1.3 3.5"/><circle class="fill" cx="7" cy="6.4" r="1.4"/><circle class="fill" cx="16.8" cy="11.3" r="1.4"/><circle class="fill" cx="9.2" cy="17.8" r="1.4"/><circle class="fill" cx="14.9" cy="17.7" r="1.4"/></svg>';
-export const isImageLayer = layer => layer?.type === "raster" || layer?.type === "pose";
+// A panorama layer is an image layer that holds the equirectangular source (vnccs_unicanvas_panorama.mjs).
+export const isImageLayer = layer => layer?.type === "raster" || layer?.type === "pose" || layer?.type === "panorama";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 export function serializePose(pose, includeData = true) {
@@ -317,8 +318,12 @@ function intersects(a, b) {
     return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
 
-/** Compose image2 from the lower stack and the explicitly selected character. */
-export async function composePoseReference(host, layer, size) {
+/**
+ * Compose image2 from the lower stack and the explicitly selected character. `rect` is the world
+ * rect image2 covers (the bbox by default, a bake's working rect otherwise); with `characterId`
+ * only that mannequin's reference is placed (a character bake).
+ */
+export async function composePoseReference(host, layer, size, { rect = host.bbox, characterId = null } = {}) {
     const out = host._createCanvas(size.width, size.height);
     const ctx = out.getContext("2d");
     ctx.fillStyle = "#ffffff";
@@ -328,7 +333,7 @@ export async function composePoseReference(host, layer, size) {
         ctx.save();
         ctx.globalAlpha = item.opacity;
         ctx.globalCompositeOperation = item.blendMode || "source-over";
-        host.drawRasterLayerToWorldRect(ctx, item, host.bbox, { x: 0, y: 0, width: out.width, height: out.height });
+        host.drawRasterLayerToWorldRect(ctx, item, rect, { x: 0, y: 0, width: out.width, height: out.height });
         ctx.restore();
     };
     [...lower].reverse().forEach(drawLayer);
@@ -342,7 +347,7 @@ export async function composePoseReference(host, layer, size) {
             if (!selected) throw new Error("The character layer no longer exists. Select another character image.");
             // An already visible lower layer is part of image2 exactly once.
             const bounds = host.getLayerWorldBounds(selected);
-            if (!lower.includes(selected) || (bounds && !intersects(bounds, host.bbox))) {
+            if (!lower.includes(selected) || (bounds && !intersects(bounds, rect))) {
                 if (!bounds) throw new Error("The character layer is empty. Select another character image.");
                 ctx.save(); ctx.globalAlpha = selected.opacity;
                 host.drawRasterLayerToWorldRect(ctx, selected, bounds, fit(bounds.width, bounds.height, box));
@@ -357,6 +362,10 @@ export async function composePoseReference(host, layer, size) {
     };
     // Several mannequins with their own references: one column each, left to right in the order
     // the mannequins appear in image1 (the prompt states the mapping, see posePromptMapping).
+    if (characterId != null) {
+        await drawReference(poseCharacterRef(layer, characterId), { x: 0, y: 0, width: out.width, height: out.height });
+        return out;
+    }
     const multi = poseMultiReferences(layer);
     if (multi) {
         const columnWidth = out.width / multi.entries.length;

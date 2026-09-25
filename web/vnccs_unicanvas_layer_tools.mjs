@@ -4,8 +4,9 @@
  *  - 10.1 Right-clicking a layer row opens a context menu: copy the layer PNG
  *    (with alpha) to the clipboard, save it via the save_output route, remove
  *    its background (QI2.1 or BiRefNet), color-match it to the composite below,
- *    plus the pose-layer entries Rasterize / Edit pose (pose layers only), Split characters
- *    to layers (2+ mannequins) and Merge pose layers (multi-selection of pose layers).
+ *    plus the pose-layer entries Rasterize / Edit pose / Bake characters (pose layers only), Split characters
+ *    to layers (2+ mannequins), Merge pose layers (multi-selection of pose layers), and
+ *    Add contact / cast shadow, Detach shadow (vnccs_unicanvas_harmonize.mjs).
  *  - 10.2 "Import PSD" sits next to "Export Layers as PSD" and maps raster
  *    layers (name, visibility, opacity, blend mode) from the vendored ag-psd
  *    bundle, preserving order; anything UniCanvas cannot represent is skipped
@@ -30,6 +31,7 @@ import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { canCastShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
@@ -41,13 +43,20 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "auto-name", label: "Auto-name" },
   { id: "rasterize", label: "Rasterize", poseOnly: true },
   { id: "edit-pose", label: "Edit pose", poseOnly: true },
+  { id: "bake-characters", label: "Bake characters", poseOnly: true },
   { id: "split-characters", label: "Split characters to layers", poseOnly: true, multiCharacter: true },
   { id: "merge-pose-layers", label: "Merge pose layers", poseOnly: true, poseSelection: true },
+  // Shadow layers (vnccs_unicanvas_harmonize.mjs, Plan 08.2).
+  { id: "add-contact-shadow", label: "Add contact shadow", shadowSourceOnly: true },
+  { id: "add-cast-shadow", label: "Add cast shadow", shadowSourceOnly: true },
+  { id: "detach-shadow", label: "Detach shadow", shadowOnly: true },
 ]);
 
 // Split needs 2+ mannequins; merge needs this layer inside a multi-selection of 2+ pose layers.
 export function layerMenuItemAvailable(uc, layer, item) {
   if (item.poseOnly && layer?.type !== "pose") return false;
+  if (item.shadowSourceOnly && !canCastShadow(layer)) return false;
+  if (item.shadowOnly && !layer?.shadow) return false;
   if (item.multiCharacter && poseStudioCharacters(layer.pose).length < 2) return false;
   if (item.poseSelection) {
     const selected = new Set(uc.selectedLayerIds || []);
@@ -332,6 +341,10 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
   // Painted Inpaint Mask pixels over the layer stay opaque (keep areas).
   const keep = buildKeepMask(uc, crop);
   uc.setStatus(`[VNCCS UniCanvas] ${label} running${keep ? ` (keeping ${keep.painted} px)` : ""}...`);
+  const historyRun = uc.generationHistory?.beginRun("remove_bg", {
+    targetLayerId: layer.id, imageCanvas: source,
+    params: { method, editModel, extraPrompt: String(extraPrompt || ""), keepPixels: keep?.painted || 0 },
+  });
   try {
     const res = await fetch(REMOVE_BG_ROUTE, {
       method: "POST",
@@ -365,8 +378,10 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
     uc.requestRender();
     uc.syncLightStateToWidget();
     uc.scheduleFullSync();
+    historyRun?.finishLayer(layer, crop);
     uc.setStatus(`[VNCCS UniCanvas] ${label} complete.`);
   } catch (err) {
+    historyRun?.fail(err);
     uc.setStatus(`[VNCCS UniCanvas] ${label} failed: ${err.message || err}`, true);
   }
 }
@@ -530,6 +545,13 @@ function closeColorMatchPreview(uc, commit) {
     uc.syncLightStateToWidget();
     uc.scheduleFullSync();
   } else {
+    if (preview.commits) {
+      // One history record per applied color match: the final method and strength.
+      uc.generationHistory?.beginRun("color_match", {
+        targetLayerId: preview.layer.id, imageCanvas: preview.targetBase,
+        params: { method: preview.method, strength: preview.strength },
+      })?.finishLayer(preview.layer, preview.crop);
+    }
     uc.setStatus("[VNCCS UniCanvas] Color match applied.");
   }
   preview.element?.remove();
@@ -668,6 +690,22 @@ function openLayerContextMenu(uc, layer, e) {
     });
     menu.appendChild(entry);
   }
+  // Feature modules add entries through uc.layerMenuExtensions ({ id, label, visible(layer), run(layer, point) }).
+  for (const item of uc.layerMenuExtensions || []) {
+    if (item.visible && !item.visible(layer)) continue;
+    const entry = document.createElement("button");
+    entry.type = "button";
+    entry.textContent = item.label;
+    entry.dataset.menuItem = item.id;
+    entry.style.cssText = "text-align:left; padding:6px 10px; border:0; border-radius:6px; background:transparent; color:#e8e8f0; cursor:pointer;";
+    entry.addEventListener("pointerenter", () => { entry.style.background = "rgba(255,255,255,.08)"; });
+    entry.addEventListener("pointerleave", () => { entry.style.background = "transparent"; });
+    entry.addEventListener("click", () => {
+      closeLayerContextMenu(uc);
+      item.run(layer, { x: e.clientX, y: e.clientY });
+    });
+    menu.appendChild(entry);
+  }
   uc.container.appendChild(menu);
   placeInHost(uc.container, menu, e.clientX, e.clientY);
   uc._vnccsLayerMenu = menu;
@@ -680,8 +718,17 @@ function runLayerMenuAction(uc, layer, item, point = null) {
   if (item.id === "remove-bg-prompt") return openRemoveBgPromptPopover(uc, layer, point);
   if (item.id === "color-match") return openColorMatchPopover(uc, layer, point);
   if (item.id === "auto-name") return autoNameLayers(uc, [layer]);
+  if (item.id === "add-contact-shadow" || item.id === "add-cast-shadow") {
+    return uc.addShadowLayer?.(layer, item.id === "add-cast-shadow" ? "cast" : "contact");
+  }
+  if (item.id === "detach-shadow") return uc.detachShadowLayer?.(layer);
   if (item.id === "rasterize") {
     if (typeof uc.rasterizePoseLayer === "function") return uc.rasterizePoseLayer(layer);
+    uc.setStatus(POSE_TOOLS_UNAVAILABLE);
+    return undefined;
+  }
+  if (item.id === "bake-characters") {
+    if (typeof uc.bakePoseCharacters === "function") return uc.bakePoseCharacters(layer);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE);
     return undefined;
   }

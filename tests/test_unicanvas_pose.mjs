@@ -149,32 +149,29 @@ test("invalid selection and an unfinished transform cannot change the current to
     assert.ok(!calls.some(call => call[0] === "activate"));
 });
 
-test("Generate redirects a missing character to the pose picker without starting inference", async () => {
+test("Generate runs the character bake pre-pass first and stops when it fails (issue #5)", async () => {
     const { host, layer, calls } = selectionHarness();
+    let prePass = 0;
+    host.poseBake = { beforeScenePass: async () => { prePass++; return false; } };
     await host.draw();
-    assert.equal(host.tool, "pose"); assert.equal(host.activeLayerId, layer.id);
-    assert.ok(calls.some(call => call[0] === "character" && call[1]));
-    assert.match(calls.filter(call => call[0] === "status").at(-1)[1], /Choose a character image/);
-    assert.ok(!calls.some(call => call[0] === "generation"));
-    assert.equal(host.drawBtn.disabled, false);
+    assert.equal(prePass, 1);
+    assert.ok(!calls.some(call => call[0] === "generation" || call[0] === "character"), "a missing reference no longer opens the picker");
+    assert.equal(host.tool, "brush"); assert.notEqual(host.activeLayerId, layer.id);
+    assert.equal(host.drawInProgress, undefined);
 });
 
-test("Generate reaches pose capture while the Pose tool is active and a character is selected", async () => {
-    const { host, layer, raster, calls } = selectionHarness();
-    layer.pose.character = { source:"layer", layerId:raster.id };
-    host.editPoseLayer(layer); await host.draw();
-    assert.equal(host.tool, "pose");
-    assert.ok(calls.some(call => call[0] === "generation" && call[1] === layer.id));
-    assert.equal(host.drawInProgress, false); assert.equal(host.drawBtn.disabled, false);
+test("the scene pass no longer requires a pose-capable engine or a bound reference", () => {
+    const body = ucSource.slice(ucSource.indexOf("  async draw() {"), ucSource.indexOf("  imageResultToURL(image) {"));
+    assert.match(body, /this\.poseBake && !\(await this\.poseBake\.beforeScenePass\(\)\)/);
+    assert.doesNotMatch(body, /Pose layers require|poseCharacterIssue|poseEditor\.generation/);
+    assert.match(body, /const mode = !hasRaster \? "txt2img"/);
 });
 
-test("deleted and uncached character references reopen selection instead of sending an empty image2", async () => {
-    const { host, layer, calls } = selectionHarness();
+test("an uploaded character with pixels is a valid reference", () => {
+    const { host, layer } = selectionHarness();
     for (const character of [{ source:"layer", layerId:"missing" }, { source:"upload", name:"Missing.png" }]) {
-        layer.pose.character = character; calls.length = 0;
-        await host.draw();
-        assert.ok(calls.some(call => call[0] === "character" && call[1]));
-        assert.ok(!calls.some(call => call[0] === "generation"));
+        layer.pose.character = character;
+        assert.ok(state.poseCharacterIssue(host, layer));
     }
     layer.pose.character = { source:"upload", name:"Saved.png", dataURL:"data:image/png;base64,cGl4ZWxz" };
     assert.equal(state.poseCharacterIssue(host, layer), null);
@@ -263,7 +260,7 @@ test("the character reference section previews layer references and clears them"
     const character = { id: "character", name: "Alice", type: "raster", visible: true };
     host.layers.push(character); host.getLayerThumbnailCanvas = () => Object.assign(new Element("canvas"), { name:"Alice" });
     editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
-    assert.match(editor.characterIssue.textContent, /Needed to generate/);
+    assert.match(editor.characterIssue.textContent, /Optional: bind/);
     editor.characterSelect.value = character.id; editor.characterSelect.fire("change");
     assert.equal(layer.pose.character.layerId, character.id);
     assert.equal(editor.characterPreview.src, "image:Alice"); assert.equal(editor.characterIssue.textContent, "");

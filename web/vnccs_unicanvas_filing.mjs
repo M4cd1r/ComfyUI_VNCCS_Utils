@@ -44,6 +44,7 @@ export function planFiling(layers, { pinnedId = null, fallbackOther = true } = {
   const plan = [];
   for (const layer of layers) {
     if (!isUnfiledLayer(layer, { pinnedId })) continue;
+    if (layer.shadow) continue; // shadow layers stay filed under their source (harmonize)
     const target = filingTarget(layer, layers, { fallbackOther });
     if (target) plan.push({ layerId: layer.id, name: layer.name, ...target });
   }
