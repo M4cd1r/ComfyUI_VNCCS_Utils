@@ -8,6 +8,7 @@
 
 import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { describeDepthScaleDrag, measureLayerCharacter, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
@@ -931,6 +932,36 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         getLayerPixelRevision: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           return layer ? (layer.pixelRevision ?? 0) : null;
+        },
+        // Multi-character pose scenes (Plan 01): mannequins, bound references and ID pass stats.
+        getPoseScene: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          if (!layer?.pose) return null;
+          const characters = poseStudioCharacters(layer.pose).map((item) => {
+            const ref = poseCharacterRef(layer, item.id);
+            return { ...item, ref: ref ? { source: ref.source, name: ref.name || null, layerId: ref.layerId || null } : null,
+              prompt: poseCharacterPrompt(layer, item.id) };
+          });
+          const current = currentPoseId(layer);
+          let idPass = null;
+          if (current) {
+            const { width, height } = current.canvas;
+            // Layer alpha at ID pass resolution, to check that every mask lies inside it.
+            const alphaCanvas = document.createElement("canvas");
+            alphaCanvas.width = width; alphaCanvas.height = height;
+            const actx = alphaCanvas.getContext("2d", { willReadFrequently: true });
+            if (layer.hiresCanvas) actx.drawImage(layer.hiresCanvas, 0, 0, width, height);
+            const alpha = actx.getImageData(0, 0, width, height).data;
+            const masks = characters.map((item) => getPoseCharacterMask(layer, item.id)?.alpha || null);
+            let overlap = 0, outside = 0;
+            for (let pixel = 0; pixel < width * height; pixel += 1) {
+              const owners = masks.filter((mask) => mask?.[pixel]).length;
+              if (owners > 1) overlap += 1;
+              if (owners && alpha[pixel * 4 + 3] === 0) outside += 1;
+            }
+            idPass = { width, height, ids: [...current.meta.ids], counts: masks.map((mask) => (mask ? mask.reduce((sum, value) => sum + (value ? 1 : 0), 0) : 0)), overlap, outside };
+          }
+          return { characters, idPass, hasCharacterRefs: Boolean(layer.pose.characterRefs) };
         },
         // Automatic naming (issue #17): name, nameSource and the category the model answered.
         getLayerNaming: (layerId) => {
