@@ -192,6 +192,14 @@ export function handleUniCanvasShortcut(widget, event) {
     else widget.undo();
     return true;
   }
+  // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
+  // (Alt+digit types other characters on some keyboards).
+  const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
+  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex) {
+    consumeUniCanvasShortcut(event);
+    widget.applySceneStateByIndex(Number(stateDigit[1] || stateDigit[0]) - 1);
+    return true;
+  }
   if (modifier || event.altKey) return false;
   // Tools: B brush, V move, E eraser, M mask, L lasso, S rect.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
@@ -533,6 +541,7 @@ export async function newUniCanvasDocument(widget) {
   widget.activeLayerId = null;
   widget.undoStack = [];
   widget.redoStack = [];
+  widget.restoreSceneStates?.(null); // scene states belong to the old document
   widget.addLayer("raster", "Base Layer", false, false, createLayerMeta("base"));
   widget.updateHistoryButtons?.();
   widget.renderLayerList();
@@ -892,6 +901,19 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             width: layer.canvas.width,
             height: layer.canvas.height,
             dataURL: layer.canvas.toDataURL("image/png"),
+          };
+        },
+        // Scene states (issue #7): the state list without thumbnails, and each layer's live offset.
+        getSceneStates: () => {
+          const scene = widget.serializeSceneStates?.() || null;
+          if (!scene) return null;
+          return {
+            ...scene,
+            states: scene.states.map(({ thumbnailDataURL, ...state }) => ({ ...state, hasThumbnail: Boolean(thumbnailDataURL) })),
+            moveScope: widget.getSceneStateMoveScope?.() ?? null,
+            differs: widget.sceneStateDiffers?.() ?? false,
+            view: { ...widget.view },
+            offsets: Object.fromEntries((widget.layers || []).map((l) => [l.id, widget.getLayerStateOffset?.(l) || { x: 0, y: 0 }])),
           };
         },
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,

@@ -11,6 +11,7 @@ import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaH
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
+import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS } from "./vnccs_unicanvas_states.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
@@ -929,6 +930,7 @@ class UniCanvasWidget {
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
     installUniCanvasGroups(this);
+    installUniCanvasSceneStates(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -3314,6 +3316,8 @@ class UniCanvasWidget {
       }
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.lassoPoints = [point];
+    } else if (this.pointerMode === "move" && !e.altKey && this.beginSceneStateMove?.()) {
+      // "Move affects: this state" changes the active scene state's offset, not the pixels.
     } else if (this.pointerMode === "move" && !e.altKey && this.beginMultiLayerMove()) {
       // A group or a multi-selection moves as one gesture (vnccs_unicanvas_groups.mjs).
     } else if (this.pointerMode === "move" && !e.altKey && this.activeLayer && !this.activeLayer.locked) {
@@ -3424,7 +3428,9 @@ class UniCanvasWidget {
     if (this.pointerMode === "lasso" && this.lassoPoints.length > 2) {
       this.commitLassoShape();
     }
-    if (this.pointerMode === "layer-move" && this.dragStart?.moveTargets) {
+    if (this.pointerMode === "layer-move" && this.dragStart?.stateMove) {
+      this.commitSceneStateMove?.(this.dragStart);
+    } else if (this.pointerMode === "layer-move" && this.dragStart?.moveTargets) {
       this.commitMultiLayerMove();
     } else if (this.pointerMode === "layer-move" && this.dragStart?.layerCanvas) {
       this.moveActiveLayerPixels(this.dragStart.previewDx || 0, this.dragStart.previewDy || 0, true);
@@ -3530,7 +3536,8 @@ class UniCanvasWidget {
 
   commitRectShape() {
     const layer = this.activeLayer;
-    const rect = this.shapeDraft;
+    const offset = this.getLayerStateOffset(layer);
+    const rect = this.shapeDraft && { ...this.shapeDraft, x: this.shapeDraft.x - offset.x, y: this.shapeDraft.y - offset.y };
     if (!layer || layer.locked || !rect || rect.width <= 0 || rect.height <= 0) return;
     if (!this.ensureWorldBounds(rect.x + rect.width, rect.y + rect.height, 128)) return;
     if (!this.ensureWorldBounds(rect.x, rect.y, 128)) return;
@@ -3888,6 +3895,7 @@ class UniCanvasWidget {
       groupId: layer.groupId || null,
       nameSource: layer.nameSource,
       meta: cloneLayerMeta(layer.meta),
+      stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this.cloneCanvas(layer.canvas),
       panoramaCanvas: this.panorama ? this.cloneCanvas(layer.panoramaCanvas) : null,
       _panoramaBefore: this.panorama && layer._panoramaBefore ? this.cloneCanvas(layer._panoramaBefore) : null,
@@ -4065,6 +4073,16 @@ class UniCanvasWidget {
       for (const child of entries) this.applyHistoryEntry(child, direction);
       return;
     }
+    if (SCENE_STATE_HISTORY_KINDS.has(entry.kind)) {
+      // Scene states (vnccs_unicanvas_states.mjs): layer properties and the state list.
+      this.historyRestoring = true;
+      try {
+        this.applySceneStateHistory?.(entry, direction);
+      } finally {
+        this.historyRestoring = false;
+      }
+      return;
+    }
     this.cancelDeferredCanvasCommit();
     this.historyRestoring = true;
     if (entry.kind === "groupStructure") {
@@ -4157,17 +4175,28 @@ class UniCanvasWidget {
     if (target) target._vnccsHistoryRecorded = false;
   }
 
+  // Where the layer shows: its stored pixels plus the live scene-state offset.
   getLayerWorldBounds(layer = this.activeLayer) {
     if (!layer) return null;
-    if (layer.hiresCanvas && layer.hiresRect) return this.normalizeLayerWorldRect(layer.hiresRect);
+    const offset = this.getLayerStateOffset(layer);
+    if (layer.hiresCanvas && layer.hiresRect) {
+      const rect = this.normalizeLayerWorldRect(layer.hiresRect);
+      return { ...rect, x: rect.x + offset.x, y: rect.y + offset.y };
+    }
     const crop = this.getLayerAlphaBounds(layer);
     if (!crop) return null;
     return {
-      x: this.origin.x + crop.x,
-      y: this.origin.y + crop.y,
+      x: this.origin.x + crop.x + offset.x,
+      y: this.origin.y + crop.y + offset.y,
       width: crop.width,
       height: crop.height,
     };
+  }
+
+  // The live scene-state offset (world pixels) of a layer; render time only, never baked in.
+  getLayerStateOffset(layer) {
+    if (this.panorama || !layer || layer.type === "mask" || isGroupLayer(layer)) return { x: 0, y: 0 };
+    return normalizeStateOffset(layer.stateOffset);
   }
 
   // ---------------------------------------------------------------------------
@@ -4200,7 +4229,11 @@ class UniCanvasWidget {
     if (this.transformDraft) return null; // another layer's transform is still open
     const source = this.createTransformSource(layer);
     if (!source?.canvas || !source.bounds) return null;
+    // The draft works where the layer shows (scene-state offset included); Apply writes back.
+    const stateOffset = this.getLayerStateOffset(layer);
+    source.bounds = { ...source.bounds, x: source.bounds.x + stateOffset.x, y: source.bounds.y + stateOffset.y };
     this.transformDraft = {
+      stateOffset,
       layerId: layer.id,
       before: source.before,
       sourceCanvas: source.canvas,
@@ -4399,14 +4432,16 @@ class UniCanvasWidget {
       this.cancelTransformDraft();
       return;
     }
-    const bounds = transformDraftBounds(draft, 32);
-    if (!bounds) return;
+    const shown = transformDraftBounds(draft, 32);
+    if (!shown) return;
+    const stateOffset = draft.stateOffset || { x: 0, y: 0 };
+    const bounds = { ...shown, x: shown.x - stateOffset.x, y: shown.y - stateOffset.y };
     if (!this.ensureWorldBounds(bounds.x, bounds.y, 256, false)) return;
     if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256, false)) return;
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
     ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
     ctx.save();
-    ctx.translate(-this.origin.x, -this.origin.y);
+    ctx.translate(-this.origin.x - stateOffset.x, -this.origin.y - stateOffset.y);
     this.drawTransformDraft(ctx, draft, 48);
     ctx.restore();
     layer.hiresCanvas = null;
@@ -4798,8 +4833,10 @@ class UniCanvasWidget {
     const layer = this.tool === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
     if (!layer || layer.locked) return;
     if (!this.ensureVisibleWorldBounds(Math.max(128, this.brushSize * 2))) return;
-    const start = this.alignCoordForTool(a, this.brushSize);
-    const end = this.alignCoordForTool(b, this.brushSize);
+    // Paint lands where the layer shows: undo its scene-state offset for the stored pixels.
+    const offset = this.getLayerStateOffset(layer);
+    const start = this.alignCoordForTool({ x: a.x - offset.x, y: a.y - offset.y }, this.brushSize);
+    const end = this.alignCoordForTool({ x: b.x - offset.x, y: b.y - offset.y }, this.brushSize);
     if (!this.ensureStrokeWorldBounds(start, end, this.brushSize)) return;
     this.materializeRasterLayerForEditing(layer);
     const strokeBounds = this.getStrokeCanvasBounds(layer, start, end, this.brushSize);
@@ -5034,8 +5071,20 @@ class UniCanvasWidget {
       this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, this.shouldUseLayerLod(layer));
       return;
     }
+    // Scene-state offset: hi-res layers get it inside drawRasterLayerToWorldRect.
+    const offset = this.getLayerStateOffset(layer);
+    const visible = this._visibleWorldRectForRender;
+    if (offset.x || offset.y) {
+      ctx.save();
+      ctx.translate(offset.x, offset.y);
+      if (visible) this._visibleWorldRectForRender = { ...visible, x: visible.x - offset.x, y: visible.y - offset.y };
+    }
     if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
     else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+    if (offset.x || offset.y) {
+      this._visibleWorldRectForRender = visible;
+      ctx.restore();
+    }
   }
 
   shouldUseLayerLod(layer) {
@@ -5043,6 +5092,9 @@ class UniCanvasWidget {
   }
 
   drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, smoothing = true, useLod = false) {
+    // Every composite (viewport, export, generation, flatten) shows the scene-state offset.
+    const stateOffset = this.getLayerStateOffset(layer);
+    if (stateOffset.x || stateOffset.y) worldRect = { ...worldRect, x: worldRect.x - stateOffset.x, y: worldRect.y - stateOffset.y };
     if (layer.hiresCanvas && layer.hiresRect) {
       const rect = this.normalizeLayerWorldRect(layer.hiresRect);
       const left = Math.max(worldRect.x, rect.x);
@@ -6013,6 +6065,7 @@ class UniCanvasWidget {
       blendMode: layer.blendMode || "source-over",
       groupId: layer.groupId || null,
       meta: createLayerMeta("duplicate", { derivedFrom: layer.id, character: layer.meta?.character }),
+      stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this._createCanvas(),
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
@@ -6094,7 +6147,8 @@ class UniCanvasWidget {
       if (layer.hiresCanvas && layer.hiresRect) {
         this.drawRasterLayerToWorldRect(target, layer, worldRect, destRect, false);
       } else {
-        target.drawImage(layer.canvas, 0, 0);
+        const offset = this.getLayerStateOffset(layer);
+        target.drawImage(layer.canvas, offset.x, offset.y);
       }
       target.restore();
     }, this._groupScratchPool);
@@ -7296,8 +7350,10 @@ class UniCanvasWidget {
         cached: previous.cached ?? true,
         hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
         hiresDataURL: null,
+        ...this.serializeStateOffset?.(layer),
       };
     });
+    state.sceneStates = this.serializeSceneStates?.() ?? null;
     widget.value = JSON.stringify(state);
   }
 
@@ -7339,6 +7395,7 @@ class UniCanvasWidget {
       settings: this.settings,
       layers: this.layers.map((l) => this.serializeLayer(l, includeLayerData)),
       activeLayerId: this.activeLayerId,
+      sceneStates: this.serializeSceneStates?.() ?? null,
     };
   }
 
@@ -7542,6 +7599,7 @@ class UniCanvasWidget {
       dataURL: null,
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
       hiresDataURL: null,
+      ...this.serializeStateOffset?.(layer),
     };
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
@@ -7704,6 +7762,8 @@ class UniCanvasWidget {
           meta: normalizeLayerMeta(item.meta),
           canvas: this._createCanvas(nextSize.width, nextSize.height),
         };
+        const stateOffset = item.type !== "mask" ? normalizeStateOffset(item.stateOffset) : null;
+        if (stateOffset && (stateOffset.x || stateOffset.y)) layer.stateOffset = stateOffset;
         if (item.dataURL) {
           const img = await this.loadImage(item.dataURL);
           if (restoredPanorama) {
@@ -7746,6 +7806,7 @@ class UniCanvasWidget {
           : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0].id;
         this.saveLocalStateBackup(state);
       }
+      this.restoreSceneStates?.(state.sceneStates);
       this.syncPromptControls();
       this.updateSnapButton();
       this.updatePanoramaControls();
