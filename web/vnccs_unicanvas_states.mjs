@@ -311,12 +311,13 @@ function afterPropertyChange(uc) {
   uc.syncActiveLayerControls?.();
   uc.requestRender?.();
   uc.syncLightStateToWidget?.();
-  if (uc.layers.some((layer) => layer.type === "pose")) uc.scheduleFullSync?.();
+  uc.scheduleFullSync?.(); // the server cache or project scene gets the new properties
 }
 
 function afterListChange(uc) {
   renderStatesPanel(uc);
   uc.syncLightStateToWidget?.();
+  uc.scheduleFullSync?.();
 }
 
 // Runs `fn` with the state's properties applied to the layers, then restores the live ones.
@@ -525,10 +526,18 @@ export function getSceneStateMoveScope(uc) {
 }
 
 export function beginSceneStateMove(uc) {
-  if (getSceneStateMoveScope(uc) !== MOVE_SCOPE_STATE || !uc.dragStart) return false;
+  if (!uc.dragStart) return false;
+  // Depth scaling (vnccs_unicanvas_scene_place.mjs) measures the stored pixels and states have
+  // no per-state scale, so a state move, or a move of an offset layer, stays a plain move.
+  const plain = () => { uc.dragStart.depthScale = null; };
+  if (getSceneStateMoveScope(uc) !== MOVE_SCOPE_STATE) {
+    if (!uc.panorama && !isZeroOffset(normalizeStateOffset(uc.activeLayer?.stateOffset))) plain();
+    return false;
+  }
   const targets = stateMoveTargets(uc);
   if (!targets.length) return false;
   endPreview(uc, false);
+  plain();
   uc.pointerMode = "layer-move";
   uc.dragStart.stateMove = true;
   uc.dragStart.layerId = uc.activeLayerId;
@@ -601,6 +610,7 @@ export function applySceneStateHistory(uc, entry, direction) {
   } else if (entry.kind === "sceneStates") {
     restoreListSnapshot(uc, undo ? entry.before : entry.after);
     uc.syncLightStateToWidget?.();
+    uc.scheduleFullSync?.();
   } else if (entry.kind === "sceneStateOffset") {
     applyOffsetChanges(uc, entry.stateId, entry.changes, undo ? "Before" : "After");
     const state = findState(uc, entry.stateId);
@@ -844,6 +854,7 @@ function toggleMoveScope(uc) {
   scene(uc).moveScope = current === MOVE_SCOPE_STATE ? MOVE_SCOPE_ALL : MOVE_SCOPE_STATE;
   renderStatesPanel(uc);
   uc.syncLightStateToWidget?.();
+  uc.scheduleFullSync?.();
 }
 
 // Export ----------------------------------------------------------------------------------------
@@ -1025,6 +1036,7 @@ function buildStatesSection(uc) {
   uc.stateNewHiddenInput.addEventListener("change", () => {
     scene(uc).newLayersHidden = uc.stateNewHiddenInput.checked;
     uc.syncLightStateToWidget?.();
+    uc.scheduleFullSync?.();
   });
   hidden.append(uc.stateNewHiddenInput, document.createTextNode("New layers hidden in other states"));
   options.append(uc.stateMoveScopeBtn, hidden, button("export", "Export states...", "Export one PNG per state to output/", () => openExportStatesDialog(uc)));

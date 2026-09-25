@@ -8,6 +8,7 @@
 
 import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { describeDepthScaleDrag, measureLayerCharacter, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -35,6 +36,7 @@ export const TOOL_SHORTCUTS = Object.freeze({
   m: "mask",
   l: "lasso",
   s: "rect",
+  g: "perspective",
 });
 
 const FULLSCREEN_ICON_SVG =
@@ -201,7 +203,13 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   if (modifier || event.altKey) return false;
-  // Tools: B brush, V move, E eraser, M mask, L lasso, S rect.
+  // P toggles the VN preview overlay.
+  if (lower === "p" && widget.vnPreview) {
+    consumeUniCanvasShortcut(event);
+    widget.vnPreview.toggle();
+    return true;
+  }
+  // Tools: B brush, V move, E eraser, M mask, L lasso, S rect, G perspective.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
     consumeUniCanvasShortcut(event);
     widget.setTool(TOOL_SHORTCUTS[lower]);
@@ -315,16 +323,21 @@ export function enterUniCanvasFullscreen(widget) {
   // Escape contract, and the UniCanvas shortcut map runs first so the canvas
   // keeps its own keys.
   const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape");
+  // The focused panorama sphere rotates with the keyboard; this shield would otherwise stop its
+  // keys before they reach it, so it gets them first.
+  const orbitTarget = (event) => (widget.panoramaOrbit && event.target === widget.panoramaOrbit.canvas ? widget.panoramaOrbit : null);
   const onKeyDown = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
-    handleUniCanvasShortcut(widget, event);
+    orbitTarget(event)?.keyDown(event);
+    if (!event.defaultPrevented) handleUniCanvasShortcut(widget, event);
     event.stopImmediatePropagation();
     event.preventDefault();
   };
   const onKeyUp = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
+    orbitTarget(event)?.keyUp(event);
     event.stopImmediatePropagation();
     event.preventDefault();
   };
@@ -563,7 +576,7 @@ function installUniCanvasOutputActions(widget) {
   const saveRow = document.createElement("div");
   saveRow.className = "vnccs-uc2-save-actions";
   saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"));
-  widget.side.insertBefore(saveRow, widget.side.firstChild);
+  widget.side.insertBefore(saveRow, widget._vnccsProjectBar?.nextSibling || widget.side.firstChild);
   widget._vnccsSaveActions = saveRow;
 }
 
@@ -623,11 +636,18 @@ function writeStandaloneState(widget, state) {
 const standalonePersistState = new WeakMap();
 
 function installStandalonePersistence(widget) {
-  // Standalone mode has no workflow widget and no server state cache: the
-  // localStorage key "vnccs-unicanvas-standalone" holds the document instead.
+  // Standalone mode has no workflow widget and no server state cache: the document lives in a
+  // project (web/vnccs_unicanvas_project.mjs), and localStorage only keeps the project pointer.
+  // The old localStorage document ("vnccs-unicanvas-standalone") is read once for migration and
+  // is only written again when the project store is unavailable.
   const entry = { timer: null };
   standalonePersistState.set(widget, entry);
+  const projectActive = () => Boolean(widget.projectSession?.active);
   const schedulePersist = () => {
+    if (projectActive()) {
+      widget.scheduleStateUpload();
+      return;
+    }
     if (entry.timer !== null) window.clearTimeout(entry.timer);
     entry.timer = window.setTimeout(() => {
       entry.timer = null;
@@ -636,7 +656,9 @@ function installStandalonePersistence(widget) {
   };
   widget.getStateBackupKey = () => UNICANVAS_STANDALONE_STORAGE_KEY;
   widget.uploadStatePayload = async (state) => {
+    if (projectActive()) return widget.projectSession.flush();
     writeStandaloneState(widget, state);
+    return true;
   };
   const originalWriteLightStateToWidget = widget.writeLightStateToWidget;
   widget.writeLightStateToWidget = (...args) => {
@@ -655,7 +677,12 @@ export function flushStandalonePersistence(widget) {
   }
   // Write even for a disposed widget: the localStorage write is safe after
   // disposal and preserves the last pending document (symmetry with the
-  // dispose()-time flushStateUpload path).
+  // dispose()-time flushStateUpload path). With a project, dispose() already
+  // flushed the project save.
+  if (widget.projectSession?.enabled) {
+    if (!widget._disposed) void widget.projectSession.flush();
+    return;
+  }
   writeStandaloneState(widget, widget.buildSerializedState(true));
 }
 
@@ -916,6 +943,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             offsets: Object.fromEntries((widget.layers || []).map((l) => [l.id, widget.getLayerStateOffset?.(l) || { x: 0, y: 0 }])),
           };
         },
+        getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
         // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
         getLayerMeta: (layerId) => {
@@ -926,6 +954,32 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           return layer ? (layer.pixelRevision ?? 0) : null;
         },
+        // Automatic naming (issue #17): name, nameSource and the category the model answered.
+        getLayerNaming: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? { name: layer.name, nameSource: layer.nameSource || null, category: layer.meta?.category || null, groupId: layer.groupId || null } : null;
+        },
+        // Projects (Plan 10.3): the attached project/scene, save status and upload counters.
+        getProjectInfo: () => {
+          const session = widget.projectSession;
+          if (!session) return null;
+          return JSON.parse(JSON.stringify({
+            enabled: session.enabled, projectId: session.projectId, sceneId: session.sceneId, rev: session.rev,
+            status: session.status, name: session.project?.name ?? null, stats: session.stats,
+            scenes: (session.project?.scenes || []).map((scene) => ({ id: scene.id, name: scene.name, order: scene.order })),
+          }));
+        },
+        // Scene placement (Plan 08): perspective, a character's alpha rect and feet, a running
+        // depth-scaled drag, and the view transform to aim pointer events at world points.
+        getScenePerspective: () => JSON.parse(JSON.stringify(normalizeScenePerspective(widget.scenePerspective))),
+        getLayerCharacter: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          const measured = layer ? measureLayerCharacter(widget, layer) : null;
+          return measured ? JSON.parse(JSON.stringify(measured)) : null;
+        },
+        getDepthScaleDrag: () => describeDepthScaleDrag(widget),
+        getView: () => ({ ...widget.view }),
+        getActiveTool: () => widget.tool,
         getLayerPose: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           // Deep clone: the caller must not be able to mutate layer state.

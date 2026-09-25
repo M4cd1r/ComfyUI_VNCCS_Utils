@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory } from "../web/vnccs_unicanvas_panorama.mjs";
 import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
 import * as provenance from "../web/vnccs_unicanvas_provenance.mjs";
+import * as scenePlace from "../web/vnccs_unicanvas_scene_place.mjs";
 import * as groups from "../web/vnccs_unicanvas_groups.mjs";
 import * as sceneStates from "../web/vnccs_unicanvas_states.mjs";
 
@@ -62,7 +63,7 @@ class Element {
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
   isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
-  normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, ...provenance, ...groups, ...sceneStates,
+  normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, ...provenance, ...groups, ...scenePlace, ...sceneStates,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
   uid: () => "new-layer", HISTORY_LIMIT: 20,
@@ -250,6 +251,28 @@ test("panorama restoration is transactional and rejects incomplete cached pixels
     assert.equal(w.layers.at(-1).id, "base"); assert.equal(old.disposed, true);
     assert.equal(w.bbox.width, 1024); assert.equal(w.layers[0].panoramaCanvas.width, 4096);
   } finally { context.PanoramaDocument = realDocument; }
+});
+
+test("a workflow copy whose cache holds the other document mode never overwrites that cache", async () => {
+  const realFetch = context.fetch;
+  try {
+    for (const [workflow, cached] of [
+      [{ version: 2, panorama: null }, { version: 3, panorama: settings({ baseLayerId: "base" }) }],
+      [{ version: 3, panorama: settings({ baseLayerId: "base" }) }, { version: 2, panorama: null }],
+    ]) {
+      context.fetch = async () => ({ ok: true, json: async () => ({ state: { ...cached, layers: [{ id: "base", type: "raster", dataURL: "pixels" }] } }) });
+      let applied = false;
+      const w = widget({
+        node: { widgets: [{ name: "unicanvas_state", value: JSON.stringify({ ...workflow, storage: "server_cache", state_id: "shared", layers: [{ id: "base", type: "raster" }] }) }] },
+        createStateCacheId: () => "fresh", stateHasLayerPixels: () => false, loadLocalStateBackup: () => null,
+        applySerializedSettings() {}, applySerializedState: async () => { applied = true; },
+      });
+      const warn = console.warn; console.warn = () => {};
+      try { await w._loadFromNode(); } finally { console.warn = warn; }
+      assert.equal(applied, false);
+      assert.equal(w.stateCacheId, "fresh", "later uploads must go to a new cache entry");
+    }
+  } finally { context.fetch = realFetch; }
 });
 
 test("an older asynchronous panorama restore cannot replace a newer document", async () => {
