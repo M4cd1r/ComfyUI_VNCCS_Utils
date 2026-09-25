@@ -9,6 +9,26 @@
 
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import {
+    INTERPOLATION_NAMES,
+    INTERPOLATION_PRESETS,
+    applyInterpolation,
+    clamp,
+    cloneJSON,
+    createKeyId,
+    findKeySegment,
+    findKeyframesInRange,
+    finiteNumber,
+    framesForElapsed,
+    moveKeyframeSelection,
+    niceTickStep,
+    resizeFrameCount,
+    resolveKeyframeSelections,
+    retimeFrameCount,
+} from "./vnccs_animation_core.mjs";
+
+// Generic keyframe math lives in the shared core; re-exported for existing importers.
+export { INTERPOLATION_PRESETS, applyInterpolation, findKeyframesInRange, moveKeyframeSelection };
 
 export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";
@@ -61,40 +81,9 @@ export const TIMELINE_FINGER_GROUPS = Object.freeze([
     { id: "little", label: "Little Finger" },
 ]);
 
-export const INTERPOLATION_PRESETS = Object.freeze([
-    { value: "hold", label: "Hold / Step" },
-    { value: "linear", label: "Linear" },
-    { value: "easeIn", label: "Ease In" },
-    { value: "easeOut", label: "Ease Out" },
-    { value: "easeInOut", label: "Easy Ease" },
-    { value: "smooth", label: "Smooth" },
-]);
-
-const INTERPOLATION_NAMES = new Set(INTERPOLATION_PRESETS.map(item => item.value));
-let fallbackKeyId = 1;
 let timelineKeyClipboard = null;
 let hoveredTimeline = null;
 let timelineShortcutDocument = null;
-
-const finiteNumber = (value, fallback = 0) => {
-    const number = Number(value);
-    return Number.isFinite(number) ? number : fallback;
-};
-
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-
-const cloneJSON = (value, fallback = {}) => {
-    try {
-        return JSON.parse(JSON.stringify(value ?? fallback));
-    } catch (_) {
-        return JSON.parse(JSON.stringify(fallback));
-    }
-};
-
-const createKeyId = () => {
-    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-    return `key_${Date.now().toString(36)}_${(fallbackKeyId++).toString(36)}`;
-};
 
 export function normalizeQuaternion(value) {
     const q = Array.isArray(value) && value.length >= 4
@@ -174,20 +163,6 @@ export function slerpQuaternion(aValue, bValue, tValue) {
     const s0 = Math.sin(theta0 - theta) / sinTheta0;
     const s1 = Math.sin(theta) / sinTheta0;
     return normalizeQuaternion(a.map((component, index) => component * s0 + b[index] * s1));
-}
-
-export function applyInterpolation(tValue, interpolation = "linear") {
-    const t = clamp(finiteNumber(tValue), 0, 1);
-    switch (interpolation) {
-        case "hold": return 0;
-        case "easeIn": return t * t * t;
-        case "easeOut": return 1 - Math.pow(1 - t, 3);
-        case "easeInOut": return t < 0.5
-            ? 4 * t * t * t
-            : 1 - Math.pow(-2 * t + 2, 3) / 2;
-        case "smooth": return t * t * t * (t * (t * 6 - 15) + 10);
-        default: return t;
-    }
 }
 
 function normalizePose(pose) {
@@ -504,23 +479,8 @@ export function evaluateTrackValue(state, trackName, frameValue) {
     const keys = track?.keys || [];
     if (!keys.length) return baseValueForTrack(state, trackName);
     const frame = clamp(finiteNumber(frameValue), 0, Math.max(0, state.frameCount - 1));
-    if (frame <= keys[0].frame) return canonicalTrackValue(trackName, keys[0].value);
-    if (frame >= keys[keys.length - 1].frame) {
-        return canonicalTrackValue(trackName, keys[keys.length - 1].value);
-    }
-
-    let low = 1;
-    let high = keys.length - 1;
-    while (low < high) {
-        const middle = Math.floor((low + high) / 2);
-        if (keys[middle].frame < frame) low = middle + 1;
-        else high = middle;
-    }
-    const rightIndex = low;
-    const left = keys[rightIndex - 1];
-    const right = keys[rightIndex];
-    const span = Math.max(1, right.frame - left.frame);
-    const t = applyInterpolation((frame - left.frame) / span, left.interpolation);
+    const { left, right, t } = findKeySegment(keys, frame);
+    if (left === right) return canonicalTrackValue(trackName, left.value);
     if (valueTypeForTrack(trackName) === "quaternion") {
         return slerpQuaternion(left.value, right.value, t);
     }
@@ -795,84 +755,6 @@ export function setKeyframeInterpolation(state, trackName, frameValue, interpola
     return true;
 }
 
-function resolveKeyframeSelections(state, selections = []) {
-    const resolved = [];
-    const seen = new Set();
-    const lookups = new Map();
-    for (const selection of selections || []) {
-        const trackName = selection?.trackName;
-        const track = state?.tracks?.[trackName];
-        if (!track) continue;
-        if (!lookups.has(trackName)) {
-            lookups.set(trackName, {
-                byId: new Map(track.keys.map(key => [key.id, key])),
-                byFrame: new Map(track.keys.map(key => [key.frame, key])),
-            });
-        }
-        const lookup = lookups.get(trackName);
-        const key = selection.keyId
-            ? lookup.byId.get(selection.keyId)
-            : lookup.byFrame.get(Math.round(finiteNumber(selection?.frame)));
-        if (!key || seen.has(key.id)) continue;
-        seen.add(key.id);
-        resolved.push({ trackName, key });
-    }
-    return resolved;
-}
-
-export function findKeyframesInRange(state, trackNames, range = {}) {
-    const names = Array.isArray(trackNames) ? trackNames : [];
-    const firstTrack = clamp(Math.floor(finiteNumber(range.startTrack)), 0, Math.max(0, names.length - 1));
-    const lastTrack = clamp(Math.floor(finiteNumber(range.endTrack)), 0, Math.max(0, names.length - 1));
-    const startTrack = Math.min(firstTrack, lastTrack);
-    const endTrack = Math.max(firstTrack, lastTrack);
-    const startFrame = Math.min(finiteNumber(range.startFrame), finiteNumber(range.endFrame));
-    const endFrame = Math.max(finiteNumber(range.startFrame), finiteNumber(range.endFrame));
-    const selections = [];
-    for (let index = startTrack; index <= endTrack; index++) {
-        const trackName = names[index];
-        for (const key of state?.tracks?.[trackName]?.keys || []) {
-            if (key.frame >= startFrame && key.frame <= endFrame) {
-                selections.push({ trackName, keyId: key.id, frame: key.frame });
-            }
-        }
-    }
-    return selections;
-}
-
-export function moveKeyframeSelection(state, selections, deltaFrameValue) {
-    const resolved = resolveKeyframeSelections(state, selections);
-    if (!resolved.length) return { delta: 0, selections: [] };
-    const requestedDelta = Math.round(finiteNumber(deltaFrameValue));
-    const minimumFrame = Math.min(...resolved.map(item => item.key.frame));
-    const maximumFrame = Math.max(...resolved.map(item => item.key.frame));
-    const delta = clamp(requestedDelta, -minimumFrame, state.frameCount - 1 - maximumFrame);
-    if (!delta) {
-        return {
-            delta: 0,
-            selections: resolved.map(({ trackName, key }) => ({ trackName, keyId: key.id, frame: key.frame })),
-        };
-    }
-
-    const byTrack = new Map();
-    for (const item of resolved) {
-        if (!byTrack.has(item.trackName)) byTrack.set(item.trackName, []);
-        byTrack.get(item.trackName).push(item.key);
-    }
-    for (const [trackName, movingKeys] of byTrack) {
-        const track = state.tracks[trackName];
-        const movingIds = new Set(movingKeys.map(key => key.id));
-        const destinationFrames = new Set(movingKeys.map(key => key.frame + delta));
-        const stationary = track.keys.filter(key => !movingIds.has(key.id) && !destinationFrames.has(key.frame));
-        for (const key of movingKeys) key.frame += delta;
-        track.keys = [...stationary, ...movingKeys].sort((a, b) => a.frame - b.frame);
-    }
-    return {
-        delta,
-        selections: resolved.map(({ trackName, key }) => ({ trackName, keyId: key.id, frame: key.frame })),
-    };
-}
-
 export function copyKeyframeSelection(state, selections) {
     const resolved = resolveKeyframeSelections(state, selections);
     if (!resolved.length) return null;
@@ -928,22 +810,7 @@ export function pasteKeyframeSelection(state, clipboard, startFrameValue) {
 }
 
 export function retimeAnimationFrameCount(state, nextFrameCountValue) {
-    const nextFrameCount = clamp(Math.round(finiteNumber(nextFrameCountValue, state.frameCount)), MIN_FRAME_COUNT, MAX_FRAME_COUNT);
-    const previousFrameCount = state.frameCount;
-    if (previousFrameCount === nextFrameCount) return state;
-    const previousLast = Math.max(1, previousFrameCount - 1);
-    const nextLast = nextFrameCount - 1;
-    for (const track of Object.values(state.tracks || {})) {
-        const byFrame = new Map();
-        for (const key of track.keys || []) {
-            key.frame = clamp(Math.round((key.frame / previousLast) * nextLast), 0, nextLast);
-            byFrame.set(key.frame, key);
-        }
-        track.keys = Array.from(byFrame.values()).sort((a, b) => a.frame - b.frame);
-    }
-    state.frameCount = nextFrameCount;
-    state.currentFrame = clamp(Math.round((state.currentFrame / previousLast) * nextLast), 0, nextLast);
-    return state;
+    return retimeFrameCount(state, nextFrameCountValue, { minFrames: MIN_FRAME_COUNT, maxFrames: MAX_FRAME_COUNT });
 }
 
 /**
@@ -952,29 +819,7 @@ export function retimeAnimationFrameCount(state, nextFrameCountValue) {
  * instead of moving, merging, or deleting animation data.
  */
 export function resizeAnimationFrameCount(state, nextFrameCountValue) {
-    if (!state) return state;
-    const requestedFrameCount = clamp(
-        Math.round(finiteNumber(nextFrameCountValue, state.frameCount)),
-        MIN_FRAME_COUNT,
-        MAX_FRAME_COUNT,
-    );
-    let lastKeyFrame = -1;
-    for (const track of Object.values(state.tracks || {})) {
-        for (const key of track.keys || []) {
-            lastKeyFrame = Math.max(lastKeyFrame, Math.round(finiteNumber(key.frame, -1)));
-        }
-    }
-    state.frameCount = clamp(
-        Math.max(requestedFrameCount, lastKeyFrame + 1),
-        MIN_FRAME_COUNT,
-        MAX_FRAME_COUNT,
-    );
-    state.currentFrame = clamp(
-        Math.round(finiteNumber(state.currentFrame)),
-        0,
-        state.frameCount - 1,
-    );
-    return state;
+    return resizeFrameCount(state, nextFrameCountValue, { minFrames: MIN_FRAME_COUNT, maxFrames: MAX_FRAME_COUNT });
 }
 
 export function getAnimationFPS(state) {
@@ -986,12 +831,11 @@ export function getAnimationFPS(state) {
 }
 
 export function playbackFrameForElapsed(elapsedMilliseconds, fpsValue) {
-    const fps = clamp(
-        finiteNumber(fpsValue, DEFAULT_ANIMATION_FPS),
-        MIN_ANIMATION_FPS,
-        MAX_ANIMATION_FPS,
-    );
-    return Math.floor((Math.max(0, finiteNumber(elapsedMilliseconds)) / 1000) * fps);
+    return framesForElapsed(elapsedMilliseconds, fpsValue, {
+        fallbackFps: DEFAULT_ANIMATION_FPS,
+        minFps: MIN_ANIMATION_FPS,
+        maxFps: MAX_ANIMATION_FPS,
+    });
 }
 
 export function resolveCaptureCameraParams(poseParams = {}, currentParams = {}, animationMode = false) {
@@ -1454,14 +1298,6 @@ export function timelineContentPointToPosition(point, {
         Math.max(0, Math.floor(finiteNumber(rowCount)) - 1),
     );
     return { frame, row };
-}
-
-function niceTickStep(frameCount) {
-    const target = Math.max(1, frameCount / 12);
-    const magnitude = Math.pow(10, Math.floor(Math.log10(target)));
-    const residual = target / magnitude;
-    const nice = residual >= 5 ? 5 : residual >= 2 ? 2 : 1;
-    return Math.max(1, nice * magnitude);
 }
 
 export function computeVirtualTrackRange({
