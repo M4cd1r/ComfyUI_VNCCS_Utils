@@ -16,9 +16,11 @@ import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_
 import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
-import { SCENE_PERSPECTIVE_HISTORY_KIND, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreScenePerspective, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { SHADOW_LAYER_HISTORY_KIND, applyShadowLayerHistory, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
 import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs";
+import { HISTORY_SETTINGS_HISTORY_KIND, installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
@@ -941,10 +943,12 @@ class UniCanvasWidget {
     installUniCanvasSceneStates(this);
     installUniCanvasPoseScene(this, { createEditor: () => new UniCanvasPoseEditor(this) });
     installUniCanvasScenePlace(this);
+    installUniCanvasHarmonize(this);
     installUniCanvasProjects(this);
     installUniCanvasLibrary(this);
     installUniCanvasAutoNaming(this);
     installUniCanvasFiling(this);
+    installUniCanvasHistory(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -3924,6 +3928,7 @@ class UniCanvasWidget {
       groupId: layer.groupId || null,
       nameSource: layer.nameSource,
       meta: cloneLayerMeta(layer.meta),
+      shadow: normalizeShadow(layer.shadow),
       stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this.cloneCanvas(layer.canvas),
       panoramaCanvas: this.panorama ? this.cloneCanvas(layer.panoramaCanvas) : null,
@@ -4157,7 +4162,9 @@ class UniCanvasWidget {
         this.activeLayerId = entry.layer.id;
       }
       this.invalidateLayerCaches(entry.layer);
+      void this.generationHistory?.onAcceptHistory(entry, direction);
     }
+    if (entry.kind === HISTORY_SETTINGS_HISTORY_KIND) this.generationHistory?.applySettingsHistory(entry, direction);
     if (entry.kind === "addLayer") {
       if (direction === "undo") {
         this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
@@ -4170,6 +4177,8 @@ class UniCanvasWidget {
     }
     if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
     if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
+    if (entry.kind === SCENE_LIGHT_HISTORY_KIND) applySceneLightHistory(this, entry, direction);
+    if (entry.kind === SHADOW_LAYER_HISTORY_KIND) applyShadowLayerHistory(this, entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
@@ -6712,6 +6721,10 @@ class UniCanvasWidget {
     const snapshotSettings = poseRequest ? { ...this.settings, positive: poseRequest.positive, denoise: 1 } : this.settings;
     const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
     const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, snapshot };
+    const historyRun = this.generationHistory?.beginRun("generate", {
+      settings: snapshotSettings, snapshot, bbox: requestBbox, mode, inferenceSize, outputSize,
+      configLinked: this._isConfigLinked(), imageCanvas, maskCanvas: userMaskCanvas,
+    });
     if (configLinked) {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
@@ -6754,10 +6767,12 @@ class UniCanvasWidget {
         performance = data.performance || "";
         await this._stageGeneratedImages(data, maskCanvas, mode, drawContext);
       }
+      historyRun?.finish(this.stagingItems.filter((item) => item.snapshot?.historyId === snapshot.historyId));
       this.render();
       this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)${performance ? ` - ${performance}` : ""}`);
       this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
     } catch (err) {
+      historyRun?.fail(err);
       this.setStatus(`GENERATE failed: ${err.message || err}`, true);
       this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
     } finally {
@@ -6813,6 +6828,7 @@ class UniCanvasWidget {
       stagingItems: previousStagingItems,
       activeStagingIndex: previousActiveStagingIndex,
       previousActiveLayerId,
+      acceptedItem: staging,
     });
     this.requestRender();
     this.renderLayerList();
@@ -6820,6 +6836,7 @@ class UniCanvasWidget {
     this.scheduleFullSync();
     this.setStatus("Staging accepted; remaining results discarded");
     this.autoNaming.onLayerCreated(layer);
+    void this.generationHistory?.onStagingAccepted(staging, layer);
   }
 
   discardStaging() {
@@ -7379,6 +7396,7 @@ class UniCanvasWidget {
     state.snapToGrid = this.snapToGrid;
     state.resizeTransformMode = this.resizeTransformMode;
     state.scenePerspective = serializeScenePerspective(this.scenePerspective);
+    state.sceneLight = serializeSceneLight(this.sceneLight);
     this.normalizeLoraStack();
     state.settings = { ...this.settings };
     state.activeLayerId = this.activeLayerId;
@@ -7404,6 +7422,7 @@ class UniCanvasWidget {
         cached: previous.cached ?? true,
         hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
         hiresDataURL: null,
+        shadow: serializeShadow(layer.shadow),
         ...this.serializeStateOffset?.(layer),
       };
     });
@@ -7446,6 +7465,7 @@ class UniCanvasWidget {
       snapToGrid: this.snapToGrid,
       resizeTransformMode: this.resizeTransformMode,
       scenePerspective: serializeScenePerspective(this.scenePerspective),
+      sceneLight: serializeSceneLight(this.sceneLight),
       settings: this.settings,
       layers: this.layers.map((l) => this.serializeLayer(l, includeLayerData)),
       activeLayerId: this.activeLayerId,
@@ -7646,6 +7666,7 @@ class UniCanvasWidget {
         crop: { x: 0, y: 0, width: this.panorama.settings.width, height: this.panorama.settings.height },
         dataURL: includeData ? layer.panoramaCanvas.toDataURL("image/png") : null,
         hiresRect: null, hiresDataURL: null,
+        shadow: serializeShadow(layer.shadow),
         ...(poseId ? { poseId } : {}),
       };
     }
@@ -7666,6 +7687,7 @@ class UniCanvasWidget {
       dataURL: null,
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
       hiresDataURL: null,
+      shadow: serializeShadow(layer.shadow),
       ...this.serializeStateOffset?.(layer),
     };
     if (poseId) payload.poseId = poseId;
@@ -7843,6 +7865,8 @@ class UniCanvasWidget {
           meta: normalizeLayerMeta(item.meta),
           canvas: this._createCanvas(nextSize.width, nextSize.height),
         };
+        // Shadow layers (vnccs_unicanvas_harmonize.mjs); older states have none.
+        if (layer.type === "raster") layer.shadow = normalizeShadow(item.shadow);
         const stateOffset = item.type !== "mask" ? normalizeStateOffset(item.stateOffset) : null;
         if (stateOffset && (stateOffset.x || stateOffset.y)) layer.stateOffset = stateOffset;
         if (item.dataURL) {
@@ -7873,12 +7897,13 @@ class UniCanvasWidget {
       }
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return false;
       if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && isPanoramaLayer(layer))) throw new Error("The panorama base layer is missing");
-      previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
+      previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "sceneLight", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
       this.snapToGrid = state.snapToGrid === true;
       this.resizeTransformMode = normalizeTransformMode(state.resizeTransformMode);
       restoreScenePerspective(this, state.scenePerspective);
+      restoreSceneLight(this, state.sceneLight);
       this.settings = { ...this.settings, ...(state.settings || {}) };
       if (layers.length) {
         this.layers = layers;

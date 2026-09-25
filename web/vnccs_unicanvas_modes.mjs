@@ -8,8 +8,9 @@
 
 import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
-import { describeDepthScaleDrag, measureLayerCharacter, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -1019,6 +1020,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           return measured ? JSON.parse(JSON.stringify(measured)) : null;
         },
         getDepthScaleDrag: () => describeDepthScaleDrag(widget),
+        // Shadows and scene light (Plan 08.2): the light and a layer's normalized `shadow`.
+        getSceneLight: () => JSON.parse(JSON.stringify(normalizeSceneLight(widget.sceneLight))),
+        getLayerShadow: (layerId) => describeShadow((widget.layers || []).find((l) => l.id === layerId)),
         getView: () => ({ ...widget.view }),
         getActiveTool: () => widget.tool,
         getLayerPose: (layerId) => {
@@ -1026,6 +1030,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           // Deep clone: the caller must not be able to mutate layer state.
           return layer?.pose ? JSON.parse(JSON.stringify(layer.pose)) : null;
         },
+        // Generation history (Plan 10.5): the settings the panel shows and the staged results.
+        getSettings: () => JSON.parse(JSON.stringify(widget.settings || {})),
+        getStaging: () => (widget.stagingItems || []).map((item) => ({ historyId: item.historyId ?? null, historyIndex: item.historyIndex ?? null })),
       };
       if (!tabWatcher) tabWatcher = watchUniCanvasStandaloneTab(setActive);
       if (!containerObserver && typeof IntersectionObserver === "function") {

@@ -63,3 +63,56 @@ test("the widget only hooks scene placement in", () => {
   const modes = readFileSync(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
   assert.match(modes, /g: "perspective"/);
 });
+
+test("scene light normalizes old, broken and valid values", async () => {
+  const { defaultSceneLight, normalizeSceneLight } = await import("../web/vnccs_unicanvas_scene_place.mjs");
+  assert.deepEqual(normalizeSceneLight(undefined), defaultSceneLight());
+  assert.deepEqual(normalizeSceneLight({ azimuth: -90, elevation: 120, intensity: -1, color: "red", ambientColor: "#ABCDEF" }),
+    { ...defaultSceneLight(), azimuth: 270, elevation: 89, intensity: 0, ambientColor: "#abcdef" });
+  assert.equal(normalizeSceneLight({ azimuth: 725 }).azimuth, 5);
+});
+
+test("the sun handle round-trips azimuth and elevation", async () => {
+  const { lightFromHandle, sunHandlePosition } = await import("../web/vnccs_unicanvas_scene_place.mjs");
+  const center = { x: 100, y: 400 };
+  for (const light of [{ azimuth: 0, elevation: 30 }, { azimuth: 90, elevation: 60 }, { azimuth: 225, elevation: 10 }]) {
+    const handle = sunHandlePosition(center, 120, light);
+    const back = lightFromHandle(center, 120, handle);
+    assert.ok(Math.abs(back.azimuth - light.azimuth) < 1e-6, `azimuth ${light.azimuth}`);
+    assert.ok(Math.abs(back.elevation - light.elevation) < 1e-6, `elevation ${light.elevation}`);
+  }
+  // Front light sits toward the camera (below the feet), a light on the right to the right.
+  assert.ok(sunHandlePosition(center, 120, { azimuth: 0, elevation: 30 }).y > center.y);
+  assert.ok(sunHandlePosition(center, 120, { azimuth: 90, elevation: 30 }).x > center.x);
+  assert.equal(lightFromHandle(center, 120, center).elevation, 89, "the feet are the zenith");
+});
+
+test("shadow direction and length follow the light", async () => {
+  const { shadowGroundDirection, shadowLengthFactor } = await import("../web/vnccs_unicanvas_scene_place.mjs");
+  const right = shadowGroundDirection({ azimuth: 90 });
+  assert.ok(right.x < -0.99, "a light on the right throws the shadow left");
+  assert.ok(shadowGroundDirection({ azimuth: 0 }).z > 0.99, "a front light throws it away from the camera");
+  assert.ok(Math.abs(shadowLengthFactor({ elevation: 45 }) - 1) < 1e-9);
+  assert.ok(shadowLengthFactor({ elevation: 10 }) > shadowLengthFactor({ elevation: 45 }));
+});
+
+test("light estimate reads the dominant luminance gradient", async () => {
+  const { estimateLightAzimuth } = await import("../web/vnccs_unicanvas_scene_place.mjs");
+  const grid = (fn) => {
+    const width = 16, height = 16, data = new Float32Array(width * height);
+    for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) data[y * width + x] = fn(x / 15, y / 15);
+    return [data, width, height];
+  };
+  assert.ok(Math.abs(estimateLightAzimuth(...grid((x) => x)) - 90) < 1e-6, "brighter right: light on the right");
+  assert.ok(Math.abs(estimateLightAzimuth(...grid((x) => 1 - x)) - 270) < 1e-6);
+  assert.ok(Math.abs(estimateLightAzimuth(...grid((x, y) => y))) < 1e-6, "brighter toward the camera: front light");
+  assert.equal(estimateLightAzimuth(...grid(() => 0.5)), null, "a flat image proposes nothing");
+});
+
+test("the light has its own history kind and is serialized", () => {
+  const widget = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../web/vnccs_unicanvas_scene_place.mjs", import.meta.url), "utf8");
+  assert.match(source, /kind: SCENE_LIGHT_HISTORY_KIND, before, after/);
+  assert.match(source, /Object\.assign\(uc\.sceneLight, lightFromHandle/, "the gizmo updates the light on pointermove");
+  assert.match(widget, /applySceneLightHistory\(this, entry, direction\)/);
+});

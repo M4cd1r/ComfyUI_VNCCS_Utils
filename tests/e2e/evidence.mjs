@@ -166,6 +166,28 @@ if (topic === "library") {
   await page.locator('.vnccs-uc-library [data-scope="global"]').first().click();
   await page.waitForTimeout(800);
 }
+if (topic === "history-gallery") {
+  // Plan 10.5 (#24): one stubbed generation (batch 3, one accepted) in a fresh project, then the
+  // History gallery with that run selected.
+  const fixture = await readFile(resolve(import.meta.dirname, "fixtures", "backdrop.png"));
+  const image = `data:image/png;base64,${fixture.toString("base64")}`;
+  await page.route("**/vnccs/unicanvas/draw", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ images: [image, image, image], performance: "stub" }),
+  }));
+  await page.locator(".vnccs-uc-project-name").first().click();
+  await page.locator(".vnccs-uc-project-browser-head button", { hasText: "New" }).click();
+  await page.locator(".vnccs-uc-modal .vnccs-uc-field input").fill(`Evidence history ${Date.now()}`);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(3_000);
+  await page.locator('textarea[data-setting="positive"]').first().fill("a red lighthouse at dusk");
+  await page.locator("button", { hasText: "GENERATE" }).first().click();
+  await page.locator('[title="Accept as layer"]').first().click({ timeout: 30_000 });
+  await page.waitForTimeout(2_000);
+  await page.locator(".vnccs-uc-history-open").first().click();
+  await page.locator(".vnccs-uc-history-card").first().click({ timeout: 30_000 });
+  await page.waitForTimeout(1_500);
+}
 // Scenario per topic keeps crops identical between before/after (same locator).
 const shots = {
   "mannequin-options": ".vnccs-uc-left",
@@ -179,6 +201,7 @@ const shots = {
   "placement-harmonize": ".vnccs-unicanvas",
   library: ".vnccs-unicanvas",
   "scene-states": ".vnccs-unicanvas",
+  "history-gallery": ".vnccs-unicanvas",
   "config-override": "body",
   "icons": "body",
   "auto-naming": ".vnccs-uc2-standalone-shell",
@@ -217,6 +240,7 @@ const geometry = await target.evaluate((el, measureSelector) => {
   "config-override": ".vnccs-config-ui",
   icons: ".vnccs-uc-tools",
   "auto-naming": ".vnccs-uc-organize",
+  "history-gallery": ".vnccs-uc-history-gallery",
 }[topic] || null);
 await writeFile(resolve(outDir, `${phase}.geometry.json`), JSON.stringify(geometry, null, 2));
 await browser.close();

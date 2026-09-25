@@ -9,7 +9,7 @@ directory the state cache uses (ComfyUI wipes that on startup)::
         blobs/<sha256>.png           content-addressed pixels shared by every scene of the project
         thumbs/<sceneId>.png         512 px scene thumbnail
         assets/<assetId>/asset.json  project-scope library assets (Plan 10.4), pixels in blobs/
-        history/                     reserved for Plan 10.5
+        history/<historyId>.json     generation history records (Plan 10.5, history.py)
     <user dir>/<comfy user>/vnccs_unicanvas/library/     the global asset library, same format:
         assets/<assetId>/asset.json, blobs/<sha256>.png
     <user dir>/<comfy user>/vnccs_unicanvas/trash/<projectId>-<timestamp>/   deleted projects, purged after 30 days
@@ -916,4 +916,12 @@ def project_routes(web, content_length_ok: Callable[[Any, int], bool],
         ("PUT", f"{library}/assets/{{asset}}", handler(MAX_SCENE_BYTES, put_asset)),
         ("DELETE", f"{library}/assets/{{asset}}", handler(small, delete_asset)),
         ("GET", f"{library}/blobs/{{sha}}", handler(small, get_library_blob)),
+        # Generation history (Plan 10.5) lives under .../{id}/history; history.py builds on this module.
+        *_history_routes(web, content_length_ok, store_factory),
     ]
+
+
+def _history_routes(web, content_length_ok, store_factory):
+    from .history import history_routes  # deferred: history.py imports this module
+
+    return history_routes(web, content_length_ok, store_factory)
