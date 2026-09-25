@@ -437,6 +437,7 @@ def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
         "inference_size": {"width": 1280, "height": 960},
         "output_size": {"width": 640, "height": 480},
         "pose_edit": {"image1": "data:image/png;base64,AAAA", "image2": "data:image/png;base64,BBBB"},
+        "control": {"image": "data:image/png;base64,CTRL", "type": "depth", "strength": 0.8},
         # Not composition keys: the node state owns the draw id and the generation settings,
         # so these must not cross the bridge from queued_draw.
         "debug_id": "frontend-debug-id",
