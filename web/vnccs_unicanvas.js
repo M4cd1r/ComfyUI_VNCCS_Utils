@@ -17,6 +17,8 @@ import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
 import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS } from "./vnccs_unicanvas_states.mjs";
 import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
+import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs";
+import { TIMELINE_HISTORY_KIND, applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, OCCLUDER_LAYER_HISTORY_KIND, SHADOW_LAYER_HISTORY_KIND, applyOccluderLayerHistory, applyShadowLayerHistory, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
@@ -959,6 +961,7 @@ class UniCanvasWidget {
     installUniCanvasAutoNaming(this);
     installUniCanvasFiling(this);
     installUniCanvasHistory(this);
+    installUniCanvasTimeline(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -2189,6 +2192,11 @@ class UniCanvasWidget {
         target._vnccsPropsBefore = { layerId: layer.id, opacity: layer.opacity, blendMode: layer.blendMode };
       }
       if (target.dataset.layerControl === "blendMode") layer.blendMode = target.value || "source-over";
+      // Timeline mode with auto-key: the slider writes an opacity key, not the rest value.
+      if (target.dataset.layerControl === "opacity" && this.timelinePanel?.keyOpacity(layer, target.value, e.type === "change")) {
+        target._vnccsPropsBefore = null;
+        return;
+      }
       if (target.dataset.layerControl === "opacity") {
         layer.opacity = Number(target.value);
         this.invalidateLayerThumbnail(layer);
@@ -3364,6 +3372,8 @@ class UniCanvasWidget {
       }
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.lassoPoints = [point];
+    } else if (this.pointerMode === "move" && !e.altKey && this.timelinePanel?.beginMove()) {
+      // Timeline mode with auto-key: the drag writes a position key at the playhead.
     } else if (this.pointerMode === "move" && !e.altKey && this.beginSceneStateMove?.()) {
       // "Move affects: this state" changes the active scene state's offset, not the pixels.
     } else if (this.pointerMode === "move" && !e.altKey && this.beginMultiLayerMove()) {
@@ -3476,7 +3486,9 @@ class UniCanvasWidget {
     if (this.pointerMode === "lasso" && this.lassoPoints.length > 2) {
       this.commitLassoShape();
     }
-    if (this.pointerMode === "layer-move" && this.dragStart?.stateMove) {
+    if (this.pointerMode === "layer-move" && this.dragStart?.timelineMove) {
+      this.timelinePanel?.commitMove(this.dragStart);
+    } else if (this.pointerMode === "layer-move" && this.dragStart?.stateMove) {
       this.commitSceneStateMove?.(this.dragStart);
     } else if (this.pointerMode === "layer-move" && this.dragStart?.moveTargets) {
       this.commitMultiLayerMove();
@@ -3584,8 +3596,10 @@ class UniCanvasWidget {
 
   commitRectShape() {
     const layer = this.activeLayer;
-    const offset = this.getLayerStateOffset(layer);
-    const rect = this.shapeDraft && { ...this.shapeDraft, x: this.shapeDraft.x - offset.x, y: this.shapeDraft.y - offset.y };
+    // Rest pixels: the rect's corner goes through the inverse frame transform (scene-state offset
+    // and, in timeline mode, the keyed transform).
+    const corner = this.shapeDraft && this.layerPointFromWorld(layer, this.shapeDraft);
+    const rect = this.shapeDraft && { ...this.shapeDraft, x: Math.round(corner.x), y: Math.round(corner.y) };
     if (!layer || layer.locked || !rect || rect.width <= 0 || rect.height <= 0) return;
     if (!this.ensureWorldBounds(rect.x + rect.width, rect.y + rect.height, 128)) return;
     if (!this.ensureWorldBounds(rect.x, rect.y, 128)) return;
@@ -4147,6 +4161,15 @@ class UniCanvasWidget {
       for (const child of entries) this.applyHistoryEntry(child, direction);
       return;
     }
+    if (entry.kind === TIMELINE_HISTORY_KIND) {
+      this.historyRestoring = true;
+      try {
+        this.timelinePanel?.applyHistory(entry, direction);
+      } finally {
+        this.historyRestoring = false;
+      }
+      return;
+    }
     if (SCENE_STATE_HISTORY_KINDS.has(entry.kind)) {
       // Scene states (vnccs_unicanvas_states.mjs): layer properties and the state list.
       this.historyRestoring = true;
@@ -4257,28 +4280,47 @@ class UniCanvasWidget {
     if (target) target._vnccsHistoryRecorded = false;
   }
 
-  // Where the layer shows: its stored pixels plus the live scene-state offset.
+  // Where the layer shows: its stored pixels through its render transform (scene-state offset
+  // and, in timeline mode, the keyed transform of the displayed frame).
   getLayerWorldBounds(layer = this.activeLayer) {
+    const rest = this.getLayerRestBounds(layer);
+    if (!rest) return null;
+    const matrix = this.getLayerRenderTransform(layer);
+    if (isTranslationMatrix(matrix)) return { ...rest, x: rest.x + matrix[4], y: rest.y + matrix[5] };
+    return transformRectBounds(matrix, rest);
+  }
+
+  // The stored pixels' world rect, before any render-time offset or transform.
+  getLayerRestBounds(layer) {
     if (!layer) return null;
-    const offset = this.getLayerStateOffset(layer);
-    if (layer.hiresCanvas && layer.hiresRect) {
-      const rect = this.normalizeLayerWorldRect(layer.hiresRect);
-      return { ...rect, x: rect.x + offset.x, y: rect.y + offset.y };
-    }
+    if (layer.hiresCanvas && layer.hiresRect) return this.normalizeLayerWorldRect(layer.hiresRect);
     const crop = this.getLayerAlphaBounds(layer);
     if (!crop) return null;
-    return {
-      x: this.origin.x + crop.x + offset.x,
-      y: this.origin.y + crop.y + offset.y,
-      width: crop.width,
-      height: crop.height,
-    };
+    return { x: this.origin.x + crop.x, y: this.origin.y + crop.y, width: crop.width, height: crop.height };
   }
 
   // The live scene-state offset (world pixels) of a layer; render time only, never baked in.
   getLayerStateOffset(layer) {
     if (this.panorama || !layer || isMaskSectionLayer(layer) || isGroupLayer(layer)) return { x: 0, y: 0 };
     return normalizeStateOffset(layer.stateOffset);
+  }
+
+  // The one render-time placement of a layer as a 2D affine matrix [a, b, c, d, e, f]: the
+  // scene-state offset, plus the keyed transform of the displayed timeline frame
+  // (vnccs_unicanvas_timeline.mjs). With no timeline it is a translation by the state offset.
+  getLayerRenderTransform(layer) {
+    const framed = layer?._timelineFrame?.matrix || this.timelinePanel?.layerMatrix(layer);
+    if (framed) return framed;
+    const offset = this.getLayerStateOffset(layer);
+    return [1, 0, 0, 1, offset.x, offset.y];
+  }
+
+  // World point -> the layer's rest pixel space (inverse render transform).
+  layerPointFromWorld(layer, point) {
+    const matrix = this.getLayerRenderTransform(layer);
+    if (isTranslationMatrix(matrix)) return { x: point.x - matrix[4], y: point.y - matrix[5] };
+    const inverse = invertMatrix(matrix);
+    return inverse ? applyMatrix(inverse, point) : { x: point.x, y: point.y };
   }
 
   // ---------------------------------------------------------------------------
@@ -4306,6 +4348,10 @@ class UniCanvasWidget {
 
   beginTransformDraft(layer) {
     if (!layer || layer.locked) return null;
+    if (this.timelinePanel?.blocksPixelTransform(layer)) {
+      this.setStatus("Free Transform edits the rest pixels: scale / rotate in the timeline, or go to a frame where the layer is at rest", true);
+      return null;
+    }
     const existing = this.getLayerTransformDraft(layer);
     if (existing) return existing;
     if (this.transformDraft) return null; // another layer's transform is still open
@@ -4917,10 +4963,10 @@ class UniCanvasWidget {
     const layer = this.tool === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
     if (!layer || layer.locked) return;
     if (!this.ensureVisibleWorldBounds(Math.max(128, this.brushSize * 2))) return;
-    // Paint lands where the layer shows: undo its scene-state offset for the stored pixels.
-    const offset = this.getLayerStateOffset(layer);
-    const start = this.alignCoordForTool({ x: a.x - offset.x, y: a.y - offset.y }, this.brushSize);
-    const end = this.alignCoordForTool({ x: b.x - offset.x, y: b.y - offset.y }, this.brushSize);
+    // Paint lands where the layer shows: the inverse render transform (scene-state offset and
+    // timeline frame) maps the pointer onto the stored pixels.
+    const start = this.alignCoordForTool(this.layerPointFromWorld(layer, a), this.brushSize);
+    const end = this.alignCoordForTool(this.layerPointFromWorld(layer, b), this.brushSize);
     if (!this.ensureStrokeWorldBounds(start, end, this.brushSize)) return;
     this.materializeRasterLayerForEditing(layer);
     const strokeBounds = this.getStrokeCanvasBounds(layer, start, end, this.brushSize);
@@ -5043,6 +5089,7 @@ class UniCanvasWidget {
     this.drawResizeOverlay(ctx);
     if (this.panorama) ctx.restore();
     this.drawBbox(ctx);
+    this.timelinePanel?.drawCameraOverlay(ctx);
     ctx.restore();
     // VN preview: screen-space preview pass only (never in drawFlattenedLayers / makeExportCanvas).
     this.vnPreview?.drawOverlay(ctx, w, h);
@@ -5163,13 +5210,20 @@ class UniCanvasWidget {
   }
 
   drawRasterLayerVisible(ctx, layer) {
+    const frame = layer._timelineFrame;
+    if (frame?.matrix && (frame.variant || frame.blur || !isTranslationMatrix(frame.matrix))) {
+      this.drawTimelineLayer(ctx, layer, frame, this._visibleWorldRectForRender, this.view.scale, this.shouldUseLayerLod(layer));
+      return;
+    }
     if (layer.hiresCanvas && layer.hiresRect) {
       const visible = this._visibleWorldRectForRender || this.visibleWorldRect();
       this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, this.shouldUseLayerLod(layer));
       return;
     }
-    // Scene-state offset: hi-res layers get it inside drawRasterLayerToWorldRect.
-    const offset = this.getLayerStateOffset(layer);
+    // Scene-state offset (and a translation-only timeline frame): hi-res layers get it inside
+    // drawRasterLayerToWorldRect.
+    const matrix = this.getLayerRenderTransform(layer);
+    const offset = { x: matrix[4], y: matrix[5] };
     const visible = this._visibleWorldRectForRender;
     if (offset.x || offset.y) {
       ctx.save();
@@ -5184,13 +5238,54 @@ class UniCanvasWidget {
     }
   }
 
+  // Draws a layer's rest pixels (or a timeline sprite variant) through its frame matrix, in a
+  // world-space context. `visibleWorld` limits the source crop; `pixelScale` is screen px per
+  // world px (for the blur radius); `useLod` reuses the render LOD cache in the viewport.
+  drawTimelineLayer(ctx, layer, frame, visibleWorld, pixelScale = 1, useLod = false) {
+    const matrix = frame.matrix;
+    const inverse = invertMatrix(matrix);
+    if (!inverse) return;
+    ctx.save();
+    ctx.transform(...matrix);
+    if (frame.blur) ctx.filter = `blur(${Math.max(0, frame.blur * pixelScale)}px)`;
+    if (frame.variant?.canvas) {
+      const rect = frame.variant.rect;
+      ctx.drawImage(frame.variant.canvas, rect.x, rect.y, rect.width, rect.height);
+    } else if (layer.hiresCanvas && layer.hiresRect) {
+      const rect = this.normalizeLayerWorldRect(layer.hiresRect);
+      ctx.drawImage(layer.hiresCanvas, rect.x, rect.y, rect.width, rect.height);
+    } else {
+      const saved = this._visibleWorldRectForRender;
+      // The source crop is the visible rect mapped back into the layer's rest space.
+      this._visibleWorldRectForRender = visibleWorld ? transformRectBounds(inverse, visibleWorld) : null;
+      if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+      else if (this._visibleWorldRectForRender) this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+      else ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
+      this._visibleWorldRectForRender = saved;
+    }
+    ctx.restore();
+  }
+
   shouldUseLayerLod(layer) {
     return Boolean(layer && layer.id !== this.activeLayerId && !this.getLayerMovePreview(layer) && !this.getLayerTransformDraft(layer));
   }
 
   drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, smoothing = true, useLod = false) {
+    const frame = layer._timelineFrame;
+    if (frame?.matrix && (frame.variant || frame.blur || !isTranslationMatrix(frame.matrix))) {
+      // A timeline frame with scale / rotation / variant / blur: world -> dest, then the frame.
+      const sx = destRect.width / worldRect.width;
+      const sy = destRect.height / worldRect.height;
+      ctx.save();
+      ctx.transform(sx, 0, 0, sy, destRect.x - worldRect.x * sx, destRect.y - worldRect.y * sy);
+      this.configureImageContext(ctx, smoothing);
+      this.drawTimelineLayer(ctx, layer, frame, worldRect, sx);
+      ctx.restore();
+      return;
+    }
     // Every composite (viewport, export, generation, flatten) shows the scene-state offset.
-    const stateOffset = this.getLayerStateOffset(layer);
+    const renderMatrix = this.getLayerRenderTransform(layer);
+    const stateOffset = { x: renderMatrix[4], y: renderMatrix[5] };
     if (stateOffset.x || stateOffset.y) worldRect = { ...worldRect, x: worldRect.x - stateOffset.x, y: worldRect.y - stateOffset.y };
     if (layer.hiresCanvas && layer.hiresRect) {
       const rect = this.normalizeLayerWorldRect(layer.hiresRect);
@@ -6257,7 +6352,7 @@ class UniCanvasWidget {
       target.save();
       target.globalAlpha = layer.opacity;
       target.globalCompositeOperation = layer.blendMode || "source-over";
-      if (layer.hiresCanvas && layer.hiresRect) {
+      if ((layer.hiresCanvas && layer.hiresRect) || layer._timelineFrame) {
         this.drawRasterLayerToWorldRect(target, layer, worldRect, destRect, false);
       } else {
         const offset = this.getLayerStateOffset(layer);
@@ -7473,6 +7568,9 @@ class UniCanvasWidget {
       };
     });
     state.sceneStates = this.serializeSceneStates?.() ?? null;
+    const timeline = this.timelinePanel?.serialize() ?? null;
+    if (timeline) state.timeline = timeline;
+    else delete state.timeline;
     widget.value = JSON.stringify(state);
   }
 
@@ -7516,6 +7614,8 @@ class UniCanvasWidget {
       layers: this.layers.map((l) => this.serializeLayer(l, includeLayerData)),
       activeLayerId: this.activeLayerId,
       sceneStates: this.serializeSceneStates?.() ?? null,
+      // Scene timeline (issue #9): absent when empty, so old states serialize unchanged.
+      ...((timeline) => (timeline ? { timeline } : {}))(this.timelinePanel?.serialize()),
       ...this.projectSession?.ref(),
     };
   }
@@ -7978,6 +8078,7 @@ class UniCanvasWidget {
       }
       this.poseBake?.afterStateRestore();
       this.restoreSceneStates?.(state.sceneStates);
+      this.timelinePanel?.restore(state.timeline);
       this.syncPromptControls();
       this.updateSnapButton();
       this.updatePanoramaControls();
@@ -8403,6 +8504,7 @@ class UniCanvasWidget {
     }
     this._disposed = true;
     teardownUniCanvasWidgetModes(this);
+    this.timelinePanel?.dispose();
     this.projectSession?.dispose();
     this._panoramaImportClose?.();
     this.panoramaLayerPanel?.dispose();

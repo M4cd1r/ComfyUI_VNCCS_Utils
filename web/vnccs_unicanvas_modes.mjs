@@ -143,6 +143,11 @@ export function handleUniCanvasShortcut(widget, event) {
   // An open modal owns the keyboard: Enter activates its confirm button and
   // Escape closes the modal instead of leaving fullscreen or switching tools.
   if (isUniCanvasModalOpen(widget)) return false;
+  // The timeline dock owns its keys (Space, Delete, copy / paste, undo, arrows) while focused.
+  if (widget.timelinePanel?.handleKey(event)) {
+    consumeUniCanvasShortcut(event);
+    return true;
+  }
   const key = String(event.key || "");
   // Pose editing owns Enter/Esc first: both save the pose and leave the editor (a Pose
   // Studio dialog keeps them). A second Esc then leaves fullscreen.
@@ -205,6 +210,11 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   if (modifier || event.altKey) return false;
+  // Scene timeline (issue #9): Space plays / pauses while the timeline dock is open.
+  if (key === " " && widget.timelinePanel?.togglePlay()) {
+    consumeUniCanvasShortcut(event);
+    return true;
+  }
   // P toggles the VN preview overlay.
   if (lower === "p" && widget.vnPreview) {
     consumeUniCanvasShortcut(event);
@@ -964,6 +974,12 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           };
         },
         getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
+        // Scene timeline (issue #9): dock state, the timeline data and a layer's displayed bounds.
+        getTimeline: () => widget.timelinePanel?.describe() ?? null,
+        getLayerDisplayBounds: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? widget.getLayerWorldBounds(layer) : null;
+        },
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
         // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
         getLayerMeta: (layerId) => {

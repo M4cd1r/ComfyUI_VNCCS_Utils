@@ -246,9 +246,11 @@ test("Alt+digit applies states by index", () => {
 
 test("the widget routes composites, bounds and tools through the state offset", () => {
   for (const pattern of [
-    /drawRasterLayerToWorldRect\(ctx, layer, worldRect, destRect, smoothing = true, useLod = false\) \{\n\s+\/\/[^\n]*\n\s+const stateOffset = this\.getLayerStateOffset\(layer\);/,
+    // The render transform (issue #9) is the state offset plus the timeline frame.
+    /getLayerRenderTransform\(layer\) \{[\s\S]{0,200}const offset = this\.getLayerStateOffset\(layer\);\n\s+return \[1, 0, 0, 1, offset\.x, offset\.y\];/,
+    /const renderMatrix = this\.getLayerRenderTransform\(layer\);\n\s+const stateOffset = \{ x: renderMatrix\[4\], y: renderMatrix\[5\] \};/,
     /target\.drawImage\(layer\.canvas, offset\.x, offset\.y\)/,
-    /getLayerWorldBounds\(layer = this\.activeLayer\) \{[\s\S]{0,120}getLayerStateOffset/,
+    /getLayerWorldBounds\(layer = this\.activeLayer\) \{[\s\S]{0,160}getLayerRenderTransform/,
     /beginSceneStateMove\?\.\(\)/,
     /commitSceneStateMove\?\.\(this\.dragStart\)/,
     /SCENE_STATE_HISTORY_KINDS\.has\(entry\.kind\)/,
