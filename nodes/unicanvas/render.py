@@ -259,6 +259,13 @@ class FlatDocument:
     def missing_pixels(self, layer: dict[str, Any]) -> None:
         """A visible layer has no stored pixels; flat documents skip it."""
 
+    def layer_offset(self, layer: dict[str, Any]) -> tuple[int, int]:
+        """The live scene-state offset (world pixels), applied at render time, never baked in."""
+        offset = layer.get("stateOffset")
+        if not isinstance(offset, dict):
+            return 0, 0
+        return int(round(_number(offset.get("x"), 0))), int(round(_number(offset.get("y"), 0)))
+
     def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
         """Validate a layer's crop rectangle against the output size."""
 
@@ -278,7 +285,7 @@ class EquirectangularPanorama(FlatDocument):
 
     def __init__(self, state: dict[str, Any]):
         super().__init__(state)
-        self.panorama = state["panorama"]
+        self.panorama = _panorama_settings(state) or {}
         try:
             self.width, self.height = int(self.panorama["width"]), int(self.panorama["height"])
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -299,12 +306,15 @@ class EquirectangularPanorama(FlatDocument):
     def layers(self) -> list[Any]:
         layers = super().layers()
         base_id = self.panorama.get("baseLayerId")
-        if not any(isinstance(layer, dict) and layer.get("id") == base_id and layer.get("type") == "raster" for layer in layers):
+        if not any(isinstance(layer, dict) and layer.get("id") == base_id and layer.get("type") in _PANORAMA_BASE_TYPES for layer in layers):
             raise ValueError("The panorama base layer is missing")
         return sorted(layers, key=lambda layer: isinstance(layer, dict) and layer.get("id") == base_id)
 
     def missing_pixels(self, layer: dict[str, Any]) -> None:
         raise ValueError("Panorama layer pixels are missing")
+
+    def layer_offset(self, layer: dict[str, Any]) -> tuple[int, int]:
+        return 0, 0  # every panorama layer covers the whole document
 
     def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
         if crop != (0, 0, *size):
@@ -315,7 +325,23 @@ class EquirectangularPanorama(FlatDocument):
             raise ValueError("Panorama layer dimensions do not match the document")
 
 
-# state["panorama"]["projection"] -> document class. New projections (cubemap, ...) register here.
+# Version 4 states keep the panorama settings on the layer of type "panorama"; version 3
+# kept them in state["panorama"] with a raster base layer.
+PANORAMA_LAYER_TYPE = "panorama"
+_PANORAMA_BASE_TYPES = {"raster", PANORAMA_LAYER_TYPE}
+_IMAGE_LAYER_TYPES = {"raster", "pose", PANORAMA_LAYER_TYPE}
+
+
+def _panorama_settings(state: dict[str, Any]) -> dict[str, Any] | None:
+    """The document's panorama settings (with baseLayerId), from its panorama layer or a v3 entry."""
+    for layer in state.get("layers") or []:
+        if isinstance(layer, dict) and layer.get("type") == PANORAMA_LAYER_TYPE:
+            settings = layer.get("panorama")
+            return {**(settings if isinstance(settings, dict) else {}), "baseLayerId": layer.get("id")}
+    return state.get("panorama")
+
+
+# panorama settings "projection" -> document class. New projections (cubemap, ...) register here.
 PANORAMA_PROJECTIONS: dict[str, type[FlatDocument]] = {"equirectangular": EquirectangularPanorama}
 
 
@@ -324,7 +350,7 @@ def register_panorama_projection(name: str, document_class: type[FlatDocument]) 
 
 
 def _document_projection(state: dict[str, Any]) -> FlatDocument:
-    panorama = state.get("panorama")
+    panorama = _panorama_settings(state)
     if panorama is None:
         return FlatDocument(state)
     document_class = PANORAMA_PROJECTIONS.get(panorama.get("projection")) if isinstance(panorama, dict) else None
@@ -349,7 +375,7 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
     for layer in reversed(document.layers()):
         if not isinstance(layer, dict):
             continue
-        if layer.get("type") not in {"raster", "pose"} or layer.get("visible") is False:
+        if layer.get("type") not in _IMAGE_LAYER_TYPES or layer.get("visible") is False:
             continue
         crop = layer.get("crop")
         data_url = layer.get("dataURL")
@@ -362,8 +388,9 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         layer_w = max(1, int(round(_number(crop.get("width"), 1))))
         layer_h = max(1, int(round(_number(crop.get("height"), 1))))
         document.check_layer((layer_x, layer_y, layer_w, layer_h), (width, height))
-        dst_x = int(round(layer_x - bbox_local_x))
-        dst_y = int(round(layer_y - bbox_local_y))
+        offset_x, offset_y = document.layer_offset(layer)
+        dst_x = int(round(layer_x + offset_x - bbox_local_x))
+        dst_y = int(round(layer_y + offset_y - bbox_local_y))
         inter_left = max(0, dst_x)
         inter_top = max(0, dst_y)
         inter_right = min(width, dst_x + layer_w)

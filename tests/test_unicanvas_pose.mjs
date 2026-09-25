@@ -470,3 +470,68 @@ test("switching between pose layers restores each sidebar tab and scroll positio
     assert.equal(editor.pages[0].page.scrollTop, 123);
     assert.equal(editor.pages[0].page.scrollLeft, 7);
 });
+
+test("with two mannequins the reference card lists one row each and binds references per character", () => {
+    const { editor, host, layer } = harness();
+    const history = []; host.recordHistoryBefore = () => history.push("before");
+    layer.pose.studio = { active_character_id: "c2", characters: [
+        { id: "c1", slot: 0, name: "Alice", color: "#ffffff" }, { id: "c2", slot: 1, name: "Bob", color: "#8ec5ff" }] };
+    host._vnccsCharacterList = [];
+    host.layers.push({ id: "ref", name: "Ref", type: "raster", visible: true });
+    host.getLayerThumbnailCanvas = () => Object.assign(new Element("canvas"), { name: "Ref" });
+    editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
+    const rows = editor.characterList.children;
+    assert.equal(editor.characterList.hidden, false);
+    assert.ok(editor.characterSingleParts.every(part => part.hidden));
+    assert.equal(rows.length, 2);
+    assert.equal(editor.characterCount.textContent, "0/2 characters bound");
+    const select = row => row.children[1].children[1];
+    select(rows[1]).value = "ref"; select(rows[1]).fire("change");
+    assert.equal(state.poseCharacterRef(layer, "c2").layerId, "ref");
+    assert.equal(layer.pose.character, null, "binding the second mannequin leaves the first unbound");
+    assert.equal(editor.characterCount.textContent, "1/2 characters bound");
+    assert.equal(editor.characterList.children[0].children.at(-1).textContent, "Choose a character image from a layer or upload one, then press Generate.");
+    const prompt = editor.characterList.children[1].children[3];
+    prompt.fire("focus"); prompt.value = "tall man"; prompt.fire("input"); prompt.value = "tall man, glasses"; prompt.fire("input");
+    assert.equal(state.poseCharacterPrompt(layer, "c2"), "tall man, glasses");
+    assert.deepEqual(history, ["before", "before"], "one entry for the reference, one for the whole prompt edit");
+    // Clicking a row selects that mannequin in the studio.
+    const selected = []; editor.studio.selectCharacter = id => selected.push(id); editor.studio.activeCharacterId = "c2";
+    editor.characterList.children[0].fire("click", { target: new Element() });
+    assert.deepEqual(selected, ["c1"]);
+});
+
+test("the ID pass renders each mannequin in its own flat color and restores the scene", () => {
+    const { editor, host, layer } = harness();
+    layer.pose.studio = { characters: [{ id: "c1", slot: 0 }, { id: "c2", slot: 1 }] };
+    const mesh = name => ({ name, isMesh: true, visible: true, material: { name: `${name}-material` } });
+    const active = mesh("active"), passive = mesh("passive"), grid = mesh("grid"), frame = { name: "frame", isLine: true, visible: true };
+    const seen = [];
+    class MeshBasicMaterial { constructor(options) { Object.assign(this, options); } dispose() { this.disposed = true; } }
+    class Color { constructor(r, g, b) { this.rgb = [r, g, b]; } }
+    const viewer = { THREE: { MeshBasicMaterial, Color }, skinnedMesh: active, passiveCharacters: new Map([["c2", { mesh: passive }]]),
+        scene: { traverse: callback => [active, passive, grid, frame].forEach(callback) }, renderInteractionOverlay: noop,
+        capture: (width, height, _zoom, _bg, _x, _y, _yaw, _pitch, options) => {
+            seen.push({ active: active.material.color.rgb, passive: passive.material.color.rgb, grid: grid.visible, frame: frame.visible,
+                unlit: active.material.toneMapped === false, options });
+            return options.targetCanvas;
+        } };
+    editor.layer = layer; editor.initialized = true;
+    editor.studio = { viewer, activeCharacterId: "c1", exportParams: {} };
+    const result = editor.captureIdPass({ width: 40, height: 60 });
+    assert.deepEqual(result.ids, ["c1", "c2"]);
+    assert.deepEqual(seen[0].active, [1, 0, 0]); assert.deepEqual(seen[0].passive, [0, 1, 0]);
+    assert.equal(seen[0].grid, false); assert.equal(seen[0].frame, false); assert.equal(seen[0].unlit, true);
+    assert.equal(seen[0].options.viewport, true); assert.equal(seen[0].options.transparent, true);
+    assert.equal(active.material.name, "active-material"); assert.equal(passive.material.name, "passive-material");
+    assert.equal(grid.visible, true); assert.equal(frame.visible, true);
+    // updateIdPass keeps the result with its key and skips unchanged scenes.
+    editor.updateIdPass();
+    assert.equal(layer.poseIdMeta.key, state.poseIdKey(layer.pose));
+    const count = seen.length; editor.updateIdPass(); assert.equal(seen.length, count);
+    // The solo pass hides every other mannequin and restores them.
+    editor.captureSurface = () => { seen.push({ solo: [active.visible, passive.visible] }); return "solo"; };
+    assert.equal(editor.captureSoloPass({ width: 4, height: 4 }, "c2"), "solo");
+    assert.deepEqual(seen.at(-1).solo, [false, true]);
+    assert.equal(active.visible, true);
+});

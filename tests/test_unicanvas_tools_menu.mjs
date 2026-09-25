@@ -18,6 +18,8 @@ const MENU_LABELS = [
   "Auto-name",
   "Rasterize",
   "Edit pose",
+  "Split characters to layers",
+  "Merge pose layers",
 ];
 
 test("widget source installs both tool packs", () => {
@@ -49,11 +51,11 @@ test("brushHardness is a brush-engine setting with radial-gradient stamps", () =
   assert.match(inputTools, /addEventListener\("input"/, "the hardness slider must update continuously from input events");
 });
 
-test("layer context menu defines all eight entries", () => {
+test("layer context menu defines all ten entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 8, "the shipped menu must define exactly eight entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 10, "the shipped menu must define exactly ten entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
 });
 

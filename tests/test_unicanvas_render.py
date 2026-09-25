@@ -111,6 +111,50 @@ class UniCanvasRenderTests(unittest.TestCase):
         self.assertEqual(merged["layers"][0]["dataURL"], cached["layers"][0]["dataURL"])
         self.assertEqual(UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(merged)).size, (8, 4))
 
+    def panorama_layer_state(self):
+        """The same document saved as version 4: settings live on the panorama layer."""
+        state = self.panorama_state()
+        settings = state.pop("panorama")
+        state["version"] = 4
+        base = state["layers"][1]
+        base["type"] = "panorama"
+        base["panorama"] = {key: value for key, value in settings.items() if key != "baseLayerId"}
+        return state
+
+    def test_panorama_layer_state_renders_like_version_3(self):
+        expected = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(self.panorama_state()))
+        state = self.panorama_layer_state()
+        actual = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        self.assertEqual(actual.size, (8, 4))
+        self.assertEqual(actual.tobytes(), expected.tobytes())
+        state["layers"].reverse()
+        state["layers"][0]["panorama"].update(yaw=170, pitch=80, fov=30)
+        self.assertEqual(UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state)).tobytes(), expected.tobytes())
+
+    def test_panorama_layer_state_validates_its_layer_settings(self):
+        for changes in [{"width": 0}, {"projection": "cubemap"}]:
+            state = self.panorama_layer_state()
+            state["layers"][1]["panorama"].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        state = self.panorama_layer_state()
+        del state["layers"][1]["panorama"]
+        with self.assertRaisesRegex(ValueError, "Unsupported UniCanvas panorama projection"):
+            UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+
+    def test_version_4_live_state_over_a_version_3_cache_uses_the_layer_camera(self):
+        cached = self.panorama_state()
+        live = self.panorama_layer_state()
+        live["layers"][1]["panorama"]["width"] = 8
+        for layer in live["layers"]:
+            layer.update(dataURL=None, cached=True)
+        merged = UNICANVAS.state._merge_unicanvas_state_with_cache(live, cached)
+        self.assertIn("panorama", merged)  # stale document entry from the cache is ignored
+        self.assertEqual(UNICANVAS.render._panorama_settings(merged)["baseLayerId"], "base")
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(merged))
+        self.assertEqual(result.size, (8, 4))
+        self.assertEqual(result.getpixel((0, 2)), (255, 0, 0, 255))
+
     def test_multiply_blend_matches_canvas_formula(self):
         backdrop = Image.new("RGBA", (1, 1), (100, 200, 50, 255))
         source = Image.new("RGBA", (1, 1), (200, 100, 255, 255))

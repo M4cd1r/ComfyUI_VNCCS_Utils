@@ -9,7 +9,8 @@ import pytest
 from PIL import Image
 
 from nodes.unicanvas import gguf_compat, segment
-from nodes.unicanvas.describe_layers import clean_layer_name, layer_thumbnail
+from nodes.unicanvas import describe_layers
+from nodes.unicanvas.describe_layers import clean_layer_name, group_prompt, layer_thumbnail, parse_naming_answer
 
 
 def _fake_gguf(monkeypatch):
@@ -111,6 +112,57 @@ def test_sam3_keeps_the_union_of_grounded_instances(monkeypatch):
 ])
 def test_layer_names_are_cleaned(raw, expected):
     assert clean_layer_name(raw) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('{"name": "night street", "category": "Background"}', {"name": "Night Street", "category": "Background", "parsed": True}),
+    ('```json\n{"name": "Rain", "category": "effects"}\n```', {"name": "Rain", "category": "Effects", "parsed": True}),
+    ('Assistant: {"category": "Props", "name": "Wooden Chair"}', {"name": "Wooden Chair", "category": "Props", "parsed": True}),
+])
+def test_naming_answer_parses_name_and_category(raw, expected):
+    assert parse_naming_answer(raw, "Paint 3") == expected
+
+
+@pytest.mark.parametrize("raw", [
+    "Night Street",  # no JSON at all
+    '{"name": "Night Street"}',  # no category
+    '{"name": "Night Street", "category": "Scenery"}',  # category outside the fixed list
+    '{"name": "This picture shows a woman standing in a pond near a wall", "category": "Characters"}',
+    '{"name": 3, "category": "Props"}',
+    '{"name": "Rain", "category": "Effects"',  # truncated
+    "",
+    None,
+])
+def test_malformed_naming_answer_falls_back_to_rules_name_and_other(raw):
+    assert parse_naming_answer(raw, "Paint 3") == {"name": "Paint 3", "category": "Other", "parsed": False}
+    assert parse_naming_answer(raw) == {"name": None, "category": "Other", "parsed": False}
+
+
+def test_describe_layers_route_passes_prompt_and_fallback(monkeypatch):
+    seen = []
+
+    def fake_generate(messages, images, key, max_new_tokens):
+        text = messages[0]["content"][-1]["text"]
+        seen.append((text, bool(images)))
+        return "Street Props" if images is None else "no json here"
+
+    monkeypatch.setattr(describe_layers, "_generate", fake_generate)
+    monkeypatch.setattr(describe_layers, "_decode_data_url", lambda _url, _mode: Image.new("RGBA", (4, 4), (255, 0, 0, 255)))
+    result = describe_layers._run_unicanvas_describe_layers({
+        "layers": [{"id": "a", "image": "data:x", "prompt": "a red chair,  masterpiece", "fallback": "Red Chair"}],
+        "groups": [{"id": "g", "children": ["Chair", "Lamp"]}],
+        "model": "smolvlm_256m",
+    })
+    assert result["names"] == [{"id": "a", "name": "Red Chair", "category": "Other", "parsed": False}]
+    assert result["model"] == "smolvlm_256m"
+    assert "a red chair, masterpiece" in seen[0][0] and seen[0][1] is True
+    assert "'Chair', 'Lamp'" in seen[1][0] and seen[1][1] is False
+    assert result["groups"] == [{"id": "g", "name": "Street Props"}]
+
+
+def test_group_prompt_lists_child_names():
+    assert group_prompt([]) is None
+    assert "'Rain', 'Fog'" in group_prompt(["Rain", "  Fog "])
 
 
 def test_layer_thumbnail_crops_alpha_onto_gray():

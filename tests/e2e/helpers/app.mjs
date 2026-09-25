@@ -66,3 +66,21 @@ export async function poseLayer(page) {
   const layers = await page.evaluate(() => globalThis.__VNCCS_UC_E2E__.listLayers());
   return layers.find((layer) => layer.type === LAYER_TYPES.pose) || null;
 }
+
+/**
+ * Layer naming settings (gear popover, "Layer names" section): `level` is "off" | "rules" |
+ * "model", `autoFile` the "Auto-file new layers into folders" checkbox. Specs that count new
+ * layers or build their own folders turn auto-filing off first.
+ */
+export async function setLayerNaming(page, { level, autoFile } = {}) {
+  const shell = ".vnccs-uc2-standalone-shell";
+  await page.locator(`${shell} [title="UniCanvas settings"]`).first().click();
+  const panel = page.locator(".vnccs-uc-settings-popover");
+  await expect(panel).toHaveCount(1);
+  const section = panel.locator("details.vnccs-uc-settings-section", { has: page.locator("summary", { hasText: "Layer names" }) });
+  if (!(await section.evaluate((details) => details.open))) await section.locator("summary").click();
+  if (level) await section.locator('select[data-naming-level]').selectOption(level, { force: true });
+  if (autoFile !== undefined) await section.getByLabel("Auto-file new layers into folders").setChecked(autoFile, { force: true });
+  await panel.locator('button:has-text("Close")').click();
+  await expect(panel).toHaveCount(0);
+}

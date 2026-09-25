@@ -4,7 +4,8 @@
  *  - 10.1 Right-clicking a layer row opens a context menu: copy the layer PNG
  *    (with alpha) to the clipboard, save it via the save_output route, remove
  *    its background (QI2.1 or BiRefNet), color-match it to the composite below,
- *    plus the pose-layer entries Rasterize / Edit pose (pose layers only).
+ *    plus the pose-layer entries Rasterize / Edit pose (pose layers only), Split characters
+ *    to layers (2+ mannequins) and Merge pose layers (multi-selection of pose layers).
  *  - 10.2 "Import PSD" sits next to "Export Layers as PSD" and maps raster
  *    layers (name, visibility, opacity, blend mode) from the vendored ag-psd
  *    bundle, preserving order; anything UniCanvas cannot represent is skipped
@@ -29,6 +30,7 @@ import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
@@ -39,7 +41,20 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "auto-name", label: "Auto-name" },
   { id: "rasterize", label: "Rasterize", poseOnly: true },
   { id: "edit-pose", label: "Edit pose", poseOnly: true },
+  { id: "split-characters", label: "Split characters to layers", poseOnly: true, multiCharacter: true },
+  { id: "merge-pose-layers", label: "Merge pose layers", poseOnly: true, poseSelection: true },
 ]);
+
+// Split needs 2+ mannequins; merge needs this layer inside a multi-selection of 2+ pose layers.
+export function layerMenuItemAvailable(uc, layer, item) {
+  if (item.poseOnly && layer?.type !== "pose") return false;
+  if (item.multiCharacter && poseStudioCharacters(layer.pose).length < 2) return false;
+  if (item.poseSelection) {
+    const selected = new Set(uc.selectedLayerIds || []);
+    if (!selected.has(layer.id) || uc.layers.filter((entry) => selected.has(entry.id) && entry.type === "pose").length < 2) return false;
+  }
+  return true;
+}
 
 export const PSD_SKIP_REASONS = Object.freeze({
   clipping: "clipping mask",
@@ -160,6 +175,7 @@ function createPsdLayer(uc, entry) {
   const ctx = uc.configureImageContext(layer.canvas.getContext("2d"));
   ctx.drawImage(source, worldX - uc.origin.x, worldY - uc.origin.y);
   uc.invalidateLayerCaches(layer);
+  uc.autoNaming?.onLayerCreated(layer);
   return layer;
 }
 
@@ -650,7 +666,7 @@ function openLayerContextMenu(uc, layer, e) {
   menu.className = "vnccs-uc-layer-menu";
   menu.style.cssText = `position:absolute; z-index:40; min-width:230px; padding:6px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.12); display:grid; gap:2px; font:11px sans-serif;`;
   for (const item of LAYER_MENU_ITEMS) {
-    if (item.poseOnly && layer.type !== "pose") continue;
+    if (!layerMenuItemAvailable(uc, layer, item)) continue;
     // Only the Edit model backend reads a prompt.
     if (item.editOnly && resolveRemoveBgSelection(uc.settings).method !== "edit") continue;
     const entry = document.createElement("button");
@@ -679,6 +695,12 @@ function runLayerMenuAction(uc, layer, item, point = null) {
   if (item.id === "auto-name") return autoNameLayers(uc, [layer]);
   if (item.id === "rasterize") {
     if (typeof uc.rasterizePoseLayer === "function") return uc.rasterizePoseLayer(layer);
+    uc.setStatus(POSE_TOOLS_UNAVAILABLE);
+    return undefined;
+  }
+  if (item.id === "split-characters" || item.id === "merge-pose-layers") {
+    const action = item.id === "split-characters" ? uc.splitPoseCharacters : uc.mergePoseLayers;
+    if (typeof action === "function") return item.id === "split-characters" ? action(layer) : action(uc.selectedLayerIds);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE);
     return undefined;
   }

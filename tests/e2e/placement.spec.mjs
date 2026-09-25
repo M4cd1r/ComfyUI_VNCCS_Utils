@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openUnicanvas } from "./helpers/app.mjs";
+import { importImageLayer, openUnicanvas, setLayerNaming } from "./helpers/app.mjs";
 
 // Plan 08 (#11): horizon + calibration, depth-scaled moves around the feet anchor, lossless
 // repeated moves, undo of perspective edits and of depth-scaled moves. No GPU: the depth route
@@ -79,6 +79,7 @@ async function newLayerAfter(page, action) {
 
 test("perspective calibration drives live, lossless, undoable depth-scaled moves", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // keep imported layers where the spec expects them
   await newLayerAfter(page, () => importImageLayer(page, BACKDROP));
   const figure = await newLayerAfter(page, () => importImageLayer(page, CHARACTER));
   const start = await character(page, figure.id);
