@@ -681,6 +681,7 @@ function copyLeafLayer(uc, layer, groupId) {
   };
   if (layer.panoramaCanvas) copy.panoramaCanvas = uc.cloneCanvas(layer.panoramaCanvas);
   if (layer._panoramaBefore) copy._panoramaBefore = uc.cloneCanvas(layer._panoramaBefore);
+  Object.assign(copy, uc.sprites?.cloneLayerFields(layer));
   if (layer.hiresCanvas && layer.hiresRect) {
     copy.hiresCanvas = uc.cloneCanvas(layer.hiresCanvas);
     copy.hiresRect = { ...layer.hiresRect };

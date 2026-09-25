@@ -5,6 +5,7 @@
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
 import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId } from "./vnccs_unicanvas_pose_state.mjs";
 import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs";
+import { SPRITE_VARIANT_HISTORY_KIND, installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
@@ -944,6 +945,7 @@ class UniCanvasWidget {
     installUniCanvasSceneStates(this);
     installUniCanvasPoseScene(this, { createEditor: () => new UniCanvasPoseEditor(this) });
     installUniCanvasCharacterBake(this, { createEditor: () => new UniCanvasPoseEditor(this), modelModule: getUniCanvasModelModule });
+    installUniCanvasSprites(this, { modelModule: getUniCanvasModelModule });
     installUniCanvasScenePlace(this);
     installUniCanvasHarmonize(this);
     installUniCanvasProjects(this);
@@ -3848,6 +3850,8 @@ class UniCanvasWidget {
   createLayerPixelSnapshot(layer) {
     if (!layer) return null;
     if (this.panorama) this.panorama.commitLayer(layer);
+    // Sprite layers: canvas edits land in the active variant before the snapshot.
+    this.sprites?.syncFromCanvas(layer);
     const crop = this.getLayerAlphaBounds(layer);
     return {
       id: layer.id,
@@ -3862,6 +3866,7 @@ class UniCanvasWidget {
       poseIdCanvas: layer.poseIdCanvas || null,
       poseIdMeta: layer.poseIdMeta || null,
       ...this.poseBake?.snapshot(layer),
+      ...this.sprites?.snapshot(layer),
     };
   }
 
@@ -3892,6 +3897,7 @@ class UniCanvasWidget {
     layer.hiresRect = snapshot.hiresRect ? { ...snapshot.hiresRect } : null;
     this.invalidateLayerCaches(layer);
     this.poseBake?.restoreSnapshot(layer, snapshot);
+    this.sprites?.restoreSnapshot(layer, snapshot);
   }
 
   materializeRasterLayerForEditing(layer) {
@@ -3947,6 +3953,8 @@ class UniCanvasWidget {
       clone.hiresRect = { ...layer.hiresRect };
     }
     if (layer.poseIdCanvas) { clone.poseIdCanvas = layer.poseIdCanvas; clone.poseIdMeta = layer.poseIdMeta; }
+    // Sprite variants are shared by reference (copy on write).
+    Object.assign(clone, this.sprites?.cloneLayerFields(layer));
     this.invalidateLayerCaches(clone);
     return clone;
   }
@@ -4188,6 +4196,7 @@ class UniCanvasWidget {
       this.invalidateLayerCaches(entry.layer);
     }
     if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
+    if (entry.kind === SPRITE_VARIANT_HISTORY_KIND) this.sprites?.applyVariantHistory(entry, direction);
     if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
     if (entry.kind === SCENE_LIGHT_HISTORY_KIND) applySceneLightHistory(this, entry, direction);
     if (entry.kind === SHADOW_LAYER_HISTORY_KIND) applyShadowLayerHistory(this, entry, direction);
@@ -4499,6 +4508,7 @@ class UniCanvasWidget {
     ctx.translate(-this.origin.x - stateOffset.x, -this.origin.y - stateOffset.y);
     this.drawTransformDraft(ctx, draft, 48);
     ctx.restore();
+    this.sprites?.onTransform(layer, draft);
     layer.hiresCanvas = null;
     layer.hiresRect = null;
     this.invalidateLayerRenderCaches(layer);
@@ -4666,6 +4676,7 @@ class UniCanvasWidget {
       };
     }
     if (layer.pose) { layer.pose.rect.x += dx; layer.pose.rect.y += dy; }
+    this.sprites?.onMove(layer, source, dx, dy);
     this.invalidateLayerRenderCaches(layer);
     layer._boundsCache = crop ? this.clampCanvasBounds({
       x: Math.round(sourceOrigin.x + cropX - this.origin.x + dx),
@@ -4916,6 +4927,7 @@ class UniCanvasWidget {
     ctx.lineTo(end.x - this.origin.x, end.y - this.origin.y);
     ctx.stroke();
     ctx.restore();
+    this.sprites?.onStroke(layer, start, end, { size: this.brushSize, opacity: this.opacity, color: this.fg, erase: this.tool === "eraser" });
     this.markLayerPixelsChanged(layer, strokeBounds, this.tool !== "eraser");
     if (this.tool in this.lastDrawPointByTool) this.lastDrawPointByTool[this.tool] = { x: b.x, y: b.y };
   }
@@ -6076,6 +6088,7 @@ class UniCanvasWidget {
   syncActiveLayerControls() {
     this.renderToolSettings();
     this.updatePanoramaControls();
+    this.sprites?.renderPanel();
     const layer = this.activeLayer;
     if (!this.layerSubhead || !layer) return;
     const blend = this.layerSubhead.querySelector('[data-layer-control="blendMode"]');
@@ -6139,6 +6152,7 @@ class UniCanvasWidget {
       meta: createLayerMeta("duplicate", { derivedFrom: layer.id, character: layer.meta?.character }),
       stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this._createCanvas(),
+      ...this.sprites?.cloneLayerFields(layer),
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
     if (this.panorama) {
@@ -6788,6 +6802,8 @@ class UniCanvasWidget {
     if (!staging) return;
     // A staged character bake is accepted into its pose layer, not as a new layer.
     if (staging.bake) return this.poseBake?.acceptStaged(staging);
+    // A staged sprite variant is accepted into its sprite layer (vnccs_unicanvas_sprites.mjs).
+    if (staging.sprite) return this.sprites?.acceptStaged(staging);
     const previousStagingItems = this.stagingItems;
     const previousActiveStagingIndex = this.activeStagingIndex;
     const previousActiveLayerId = this.activeLayerId;
@@ -7413,6 +7429,7 @@ class UniCanvasWidget {
         hiresDataURL: null,
         shadow: serializeShadow(layer.shadow),
         ...this.serializeStateOffset?.(layer),
+        ...(layer.type === "sprite" ? { sprite: this.sprites?.serialize(layer, false) } : {}),
       };
     });
     state.sceneStates = this.serializeSceneStates?.() ?? null;
@@ -7684,6 +7701,8 @@ class UniCanvasWidget {
     };
     if (poseId) payload.poseId = poseId;
     if (bakePixels) payload.bakePixels = bakePixels;
+    // Sprite set: metadata always, variant pixels only with layer data.
+    if (layer.type === "sprite") payload.sprite = this.sprites?.serialize(layer, includeData);
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -7847,7 +7866,7 @@ class UniCanvasWidget {
           id: item.id || uid(),
           name: item.name || "Layer",
           nameSource: typeof item.nameSource === "string" ? item.nameSource : undefined,
-          type: item.type === "mask" ? "mask" : item.type === "pose" && item.pose ? "pose"
+          type: item.type === "mask" ? "mask" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite && !restoredPanorama ? "sprite"
             : isPanoramaLayer(item) && panoramaSettings?.baseLayerId === item.id ? "panorama" : "raster",
           pose: item.type === "pose" ? serializePose(item.pose) : undefined,
           visible: item.visible !== false,
@@ -7885,6 +7904,7 @@ class UniCanvasWidget {
         }
         if (layer.type === "pose" && item.poseId?.dataURL) await restorePoseId(layer, item.poseId, (url) => this.loadImage(url));
         if (layer.type === "pose" && item.bakePixels) await this.poseBake?.restore(layer, item.bakePixels);
+        if (layer.type === "sprite") await this.sprites?.restore(layer, item.sprite);
         if (!restoredPanorama) this.sanitizeMaskLayer(layer);
         bumpLayerPixelRevision(layer);
         layers.push(layer);

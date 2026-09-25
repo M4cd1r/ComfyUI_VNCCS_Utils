@@ -211,6 +211,11 @@ export function handleUniCanvasShortcut(widget, event) {
     widget.vnPreview.toggle();
     return true;
   }
+  // Sprite sets (issue #6): , / . step to the previous / next variant of the active sprite layer.
+  if ((key === "," || key === ".") && widget.sprites?.cycleActive(key === "." ? 1 : -1)) {
+    consumeUniCanvasShortcut(event);
+    return true;
+  }
   // Tools: B brush, V move, E eraser, M mask, L lasso, S rect, G perspective.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
     consumeUniCanvasShortcut(event);
@@ -942,6 +947,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: widget.cloneCanvasCrop(layer.canvas, crop).toDataURL("image/png"),
           };
         },
+        // Sprite sets (issue #6): the set's metadata and one variant's pixels (rect size).
+        getSpriteState: (layerId) => widget.sprites?.describe(layerId) ?? null,
+        getSpriteVariantPixels: (layerId, variantId) => widget.sprites?.variantDataURL(layerId, variantId) ?? null,
         // Scene states (issue #7): the state list without thumbnails, and each layer's live offset.
         getSceneStates: () => {
           const scene = widget.serializeSceneStates?.() || null;
