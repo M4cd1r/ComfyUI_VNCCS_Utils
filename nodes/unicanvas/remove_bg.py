@@ -1,18 +1,23 @@
 """Layer background removal: a registry of backends (edit model, BiRefNet, rembg ONNX, SAM 3).
 
 Backs ``POST /vnccs/unicanvas/remove_bg``
-``{ method: "edit" | "birefnet" | "rembg" | "sam3", edit_model?, image }``.
+``{ method: "edit" | "birefnet" | "rembg" | "sam3", edit_model?, image, keep? }``.
+
+``keep`` is an optional PNG data URL of the image's size (white = keep): the painted Inpaint
+Mask pixels. Every backend's result is merged with it at the registry level, so marked pixels
+stay fully opaque with their original color.
 """
 
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 from PIL import Image
 
+from .constants import _MAX_UPLOAD_BYTES
 from .imaging import _decode_data_url, _encode_png_data_url, _uc_image_to_rgb_tensor, _uc_rgba_tensor_to_image
 from .models.registry import UNICANVAS_MODEL_MODULES, _get_unicanvas_model_module
 from .rembg_onnx import remove_background_rembg
@@ -49,6 +54,57 @@ UC_EDIT_REMOVE_BG_UNAVAILABLE = (
 UC_SAM3_REMOVE_BG_UNAVAILABLE = (
     "[VNCCS UniCanvas] Remove bg – SAM 3 needs the SAM stack: {error}"
 )
+
+
+# The universal Remove bg instruction (mirrors REMOVE_BG_DEFAULT_PROMPT in
+# web/vnccs_unicanvas_remove_bg.mjs); the keep instruction goes on its own line after it.
+UC_REMOVE_BG_DEFAULT_PROMPT = "Remove the background, and output a PNG image"
+UC_REMOVE_BG_KEEP_INSTRUCTION = "Keep the marked regions fully visible in the output."
+UC_REMOVE_BG_KEEP_INVALID = "[VNCCS UniCanvas] Remove bg – the keep mask must be a PNG data URL: {error}"
+UC_REMOVE_BG_KEEP_SIZE = "[VNCCS UniCanvas] Remove bg – the keep mask is {got}, the image is {expected}."
+UC_REMOVE_BG_KEEP_TOO_LARGE = "[VNCCS UniCanvas] Remove bg – the keep mask is too large."
+
+
+def _uc_decode_keep_mask(raw: Any, size: tuple[int, int]) -> Image.Image | None:
+    """The optional ``keep`` field as an "L" mask of ``size`` (255 = keep), or None when absent."""
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str) or not raw.startswith("data:image/png;base64,"):
+        raise ValueError(UC_REMOVE_BG_KEEP_INVALID.format(error="expected data:image/png;base64,..."))
+    # base64 is 4/3 of the bytes: reject oversized text before decoding it.
+    if len(raw) > _MAX_UPLOAD_BYTES * 4 // 3 + 64:
+        raise ValueError(UC_REMOVE_BG_KEEP_TOO_LARGE)
+    try:
+        mask = _decode_data_url(raw, "RGBA", max_pixels=max(1, size[0] * size[1]))
+    except ValueError as exc:
+        if "too large" in str(exc):
+            raise ValueError(UC_REMOVE_BG_KEEP_TOO_LARGE) from exc
+        raise ValueError(UC_REMOVE_BG_KEEP_INVALID.format(error=exc)) from exc
+    except Exception as exc:
+        raise ValueError(UC_REMOVE_BG_KEEP_INVALID.format(error=exc)) from exc
+    if mask.size != tuple(size):
+        raise ValueError(UC_REMOVE_BG_KEEP_SIZE.format(
+            got=f"{mask.width}x{mask.height}", expected=f"{size[0]}x{size[1]}"))
+    # White and opaque = keep: luminance times alpha, so a transparent PNG keeps nothing.
+    rgba = np.asarray(mask, dtype=np.int32)
+    luma = (rgba[..., 0] * 299 + rgba[..., 1] * 587 + rgba[..., 2] * 114) // 1000
+    keep = (luma * rgba[..., 3] // 255).astype(np.uint8)
+    if not keep.any():
+        return None
+    return Image.fromarray(keep, mode="L")
+
+
+def apply_keep_mask(result: Image.Image, image: Image.Image, keep: Image.Image | None) -> Image.Image:
+    """Final alpha = max(backend alpha, keep); kept pixels take the original color."""
+    if keep is None:
+        return result
+    out = np.array(result.convert("RGBA"), dtype=np.uint8)
+    keep_arr = np.asarray(keep, dtype=np.uint8)
+    original = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    marked = keep_arr > 0
+    out[..., :3][marked] = original[marked]
+    out[..., 3] = np.maximum(out[..., 3], keep_arr)
+    return Image.fromarray(out, mode="RGBA")
 
 
 def _uc_resolve_edit_remove_bg_module(edit_model: str):
@@ -101,6 +157,8 @@ class RemoveBgRequest:
     edit_model: str
     payload: dict[str, Any]
     edit_settings: dict[str, Any] | None = None
+    # The keep mask ("L", image size, 255 = keep) when the request carries one.
+    keep: Image.Image | None = None
 
 
 class BackgroundRemover:
@@ -112,6 +170,13 @@ class BackgroundRemover:
 
     def prepare(self, request: RemoveBgRequest) -> None:
         """Fail fast, before any pixel work, when the backend is unavailable."""
+
+    def with_keep_mask(self, request: RemoveBgRequest) -> RemoveBgRequest:
+        """Let a backend see the keep mask before it runs (default: nothing to adjust).
+
+        The keep areas are forced opaque after every backend anyway (:func:`apply_keep_mask`).
+        """
+        return request
 
     def remove(self, image: Image.Image, request: RemoveBgRequest) -> Image.Image:
         """Return ``image`` as RGBA with the background made transparent."""
@@ -129,6 +194,14 @@ class EditModelRemover(BackgroundRemover):
         if request.edit_model not in _uc_remove_bg_edit_models():
             raise ValueError(f"[VNCCS UniCanvas] Unknown remove bg edit model '{request.edit_model}'.")
         _uc_resolve_edit_remove_bg_module(request.edit_model)
+
+    def with_keep_mask(self, request: RemoveBgRequest) -> RemoveBgRequest:
+        if request.keep is None:
+            return request
+        settings = dict(request.edit_settings or {})
+        base = str(settings.get("prompt") or "").strip() or UC_REMOVE_BG_DEFAULT_PROMPT
+        settings["prompt"] = f"{base}\n{UC_REMOVE_BG_KEEP_INSTRUCTION}"
+        return replace(request, edit_settings=settings)
 
     def remove(self, image: Image.Image, request: RemoveBgRequest) -> Image.Image:
         module = _uc_resolve_edit_remove_bg_module(request.edit_model)
@@ -275,7 +348,14 @@ def _run_unicanvas_remove_bg(payload: dict[str, Any]) -> dict[str, Any]:
     )
     remover.prepare(request)
     image = _decode_data_url(str(payload.get("image") or ""), "RGB")
+    keep = _uc_decode_keep_mask(payload.get("keep"), image.size)
+    if keep is not None:
+        request = remover.with_keep_mask(replace(request, keep=keep))
     result = remover.remove(image, request)
+    if keep is not None:
+        if result.size != image.size:
+            result = result.resize(image.size, Image.Resampling.LANCZOS)
+        result = apply_keep_mask(result, image, keep)
     return {
         "alpha": _encode_png_data_url(result),
         "width": result.width,

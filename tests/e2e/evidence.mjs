@@ -83,6 +83,50 @@ if (topic === "pose-editor") {
   else await page.locator('[title="Add pose layer"]').first().click();
   await page.waitForTimeout(25_000);
 }
+if (topic === "vn-preview") {
+  // A scene (image layer + pose layer) with the Clean dark overlay on and the pose moved down so
+  // its face sits under the textbox: the occlusion warning shows.
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator('button[title="Import image"]').first().click(),
+  ]);
+  await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "backdrop.png"));
+  await page.waitForTimeout(2_000);
+  await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
+  await page.waitForFunction(() => globalThis.__VNCCS_UC_E2E__?.getPoseBackdrop?.()?.distance != null, null, { timeout: 90_000 });
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(1_000);
+  await page.locator('[title="VN preview (P)"]').first().click();
+  await page.mouse.click(3, 3);
+  await page.locator('.vnccs-uc-tool[data-tool="move"]').click();
+  const box = await page.locator("canvas.vnccs-uc-stage").first().boundingBox();
+  const vn = await page.evaluate(() => globalThis.__VNCCS_UC_E2E__.getVnPreview());
+  const face = vn.characters[0]?.face;
+  if (face) {
+    const start = { x: box.x + face.x + face.width / 2, y: box.y + face.y + face.height + 40 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x, start.y + (vn.textbox.y + vn.textbox.height * 0.35) - (face.y + face.height / 2), { steps: 10 });
+    await page.mouse.up();
+  }
+  await page.waitForTimeout(800);
+}
+if (topic === "placement-harmonize") {
+  // Plan 08 (#11): a background and a character, the Perspective tool calibrated from the
+  // character (horizon at its eye level), so the horizon, ground grid and figure show.
+  for (const name of ["backdrop.png", "character.png"]) {
+    const [chooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.locator('button[title="Import image"]').first().click(),
+    ]);
+    await chooser.setFiles(resolve(import.meta.dirname, "fixtures", name));
+    await page.waitForTimeout(1_500);
+  }
+  await page.locator('.vnccs-uc-tool[data-tool="perspective"]').click();
+  await page.locator('[data-scene-action="calibrate"]').click();
+  await page.locator("[data-scene-depth-scale]").click();
+  await page.waitForTimeout(800);
+}
 // Scenario per topic keeps crops identical between before/after (same locator).
 const shots = {
   "mannequin-options": ".vnccs-uc-left",
@@ -91,6 +135,8 @@ const shots = {
   // phases, which keeps the before/after crops aligned.
   "settings-panel": ".vnccs-unicanvas",
   "pose-editor": ".vnccs-unicanvas",
+  "vn-preview": ".vnccs-unicanvas",
+  "placement-harmonize": ".vnccs-unicanvas",
   "config-override": "body",
   "icons": "body",
 };

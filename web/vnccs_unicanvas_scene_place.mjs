@@ -18,6 +18,8 @@
  * serialize / history hooks exported here.
  */
 
+import { isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
 export const PERSPECTIVE_TOOL = "perspective";
 export const SCENE_PERSPECTIVE_HISTORY_KIND = "scenePerspective";
@@ -149,14 +151,14 @@ export function measureLayerCharacter(uc, layer) {
 export function backgroundLayer(uc) {
   for (let index = uc.layers.length - 1; index >= 0; index -= 1) {
     const layer = uc.layers[index];
-    if (layer.type === "raster" && layer.visible && uc.getLayerAlphaBounds(layer)) return layer;
+    if (layer.type === "raster" && isLayerEffectivelyVisible(uc.layers, layer) && uc.getLayerAlphaBounds(layer)) return layer;
   }
   return null;
 }
 
 /** Layers the depth scale applies to: pose layers and raster layers above the background. */
 export function isDepthScaleLayer(uc, layer) {
-  if (!layer || layer.locked || layer.type === "mask") return false;
+  if (!layer || layer.type === "mask" || isLayerEffectivelyLocked(uc.layers, layer)) return false;
   if (layer.type === "pose") return true;
   return layer.type === "raster" && layer !== backgroundLayer(uc);
 }
@@ -676,7 +678,8 @@ export function installUniCanvasScenePlace(uc) {
   const originalUpdateLayerMovePreview = uc.updateLayerMovePreview;
   uc.updateLayerMovePreview = (point) => {
     const start = uc.dragStart;
-    if (start && start.depthScale === undefined) start.depthScale = depthScaleActive(uc) ? beginDepthScale(uc, uc.activeLayer, start) : null;
+    // A group or multi-selection move (vnccs_unicanvas_groups.mjs) keeps its plain offset.
+    if (start && start.depthScale === undefined) start.depthScale = depthScaleActive(uc) && !start.moveTargets ? beginDepthScale(uc, uc.activeLayer, start) : null;
     if (!start?.depthScale) return Reflect.apply(originalUpdateLayerMovePreview, uc, [point]);
     const placement = depthScalePlacement(perspectiveState(uc), start.depthScale, point, start.point);
     start.previewDx = placement.dx;

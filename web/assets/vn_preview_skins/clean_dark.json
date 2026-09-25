@@ -1,0 +1,36 @@
+{
+  "format": "vnccs-vn-preview-skin",
+  "version": 1,
+  "id": "clean_dark",
+  "name": "Clean dark",
+  "designResolution": { "width": 1920, "height": 1080 },
+  "textbox": {
+    "anchor": "bottom", "marginX": 60, "marginBottom": 44, "height": 260,
+    "fill": "#0c0b14", "fillAlpha": 0.78, "radius": 18,
+    "border": { "color": "#ffffff", "alpha": 0.18, "width": 2 },
+    "padding": { "left": 52, "right": 52, "top": 42, "bottom": 24 },
+    "nineSlice": null
+  },
+  "nameplate": {
+    "anchor": "top-left", "offsetX": 36, "offsetY": -30, "minWidth": 220, "height": 58, "paddingX": 26,
+    "fill": "#ff8fa3", "fillAlpha": 0.95, "radius": 12, "border": null,
+    "font": { "family": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", "size": 30, "weight": "700", "color": "#1a1020" },
+    "nineSlice": null
+  },
+  "dialogue": {
+    "font": { "family": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", "size": 34, "weight": "400", "color": "#ffffff" },
+    "lineHeight": 1.35, "maxLines": 4,
+    "shadow": { "color": "#000000", "alpha": 0.65, "blur": 4, "offsetX": 0, "offsetY": 2 },
+    "outline": null
+  },
+  "quickMenu": { "placement": "below", "align": "center", "offsetY": 10, "fontSize": 21, "gap": 30, "color": "#ffffff", "alpha": 0.72, "fontFamily": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" },
+  "choiceMenu": {
+    "width": 920, "height": 74, "gap": 22, "centerY": 0.38,
+    "fill": "#0c0b14", "fillAlpha": 0.82, "radius": 14,
+    "border": { "color": "#ffffff", "alpha": 0.25, "width": 2 },
+    "font": { "family": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", "size": 30, "weight": "500", "color": "#ffffff" },
+    "nineSlice": null
+  },
+  "sideImage": { "width": 200, "height": 200, "marginLeft": 30, "border": { "color": "#ffffff", "alpha": 0.55, "width": 2 } },
+  "mobile": { "notchWidth": 0.32, "notchHeight": 64, "cornerRadius": 90 }
+}
