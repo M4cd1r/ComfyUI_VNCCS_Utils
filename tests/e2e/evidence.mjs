@@ -96,6 +96,13 @@ if (topic === "scene-states") {
   await page.locator(".vnccs-uc-layer .vnccs-uc-thumb").first().click();
   await page.waitForTimeout(500);
 }
+if (topic === "multi-character") {
+  // A pose layer with two mannequins: the Character reference card lists one row per mannequin.
+  await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
+  await page.waitForTimeout(25_000);
+  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await page.waitForTimeout(5_000);
+}
 if (topic === "vn-preview") {
   // A scene (image layer + pose layer) with the Clean dark overlay on and the pose moved down so
   // its face sits under the textbox: the occlusion warning shows.
@@ -148,6 +155,7 @@ const shots = {
   // phases, which keeps the before/after crops aligned.
   "settings-panel": ".vnccs-unicanvas",
   "pose-editor": ".vnccs-unicanvas",
+  "multi-character": ".vnccs-unicanvas",
   "vn-preview": ".vnccs-unicanvas",
   "placement-harmonize": ".vnccs-unicanvas",
   "scene-states": ".vnccs-unicanvas",

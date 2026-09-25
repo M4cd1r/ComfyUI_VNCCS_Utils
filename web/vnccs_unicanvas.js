@@ -3,7 +3,7 @@
  */
 
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache, serializePoseId, restorePoseId } from "./vnccs_unicanvas_pose_state.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs";
@@ -12,6 +12,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
 import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS } from "./vnccs_unicanvas_states.mjs";
+import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { SCENE_PERSPECTIVE_HISTORY_KIND, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreScenePerspective, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
@@ -938,6 +939,7 @@ class UniCanvasWidget {
     installUniCanvasVnPreview(this);
     installUniCanvasGroups(this);
     installUniCanvasSceneStates(this);
+    installUniCanvasPoseScene(this, { createEditor: () => new UniCanvasPoseEditor(this) });
     installUniCanvasScenePlace(this);
     installUniCanvasProjects(this);
     installUniCanvasAutoNaming(this);
@@ -1810,7 +1812,7 @@ class UniCanvasWidget {
   }
 
   poseEditKey(pose) {
-    return JSON.stringify([pose?.studio ?? null, pose?.viewport ?? null, pose?.rect ?? null, pose?.character ?? null]);
+    return JSON.stringify([pose?.studio ?? null, pose?.viewport ?? null, pose?.rect ?? null, pose?.character ?? null, pose?.characterRefs ?? null]);
   }
 
   beginPoseEditSession(layer) {
@@ -1908,6 +1910,7 @@ class UniCanvasWidget {
     if (this.poseEditor?.layer === layer) this.poseEditor.release();
     layer.type = "raster";
     delete layer.pose;
+    delete layer.poseIdCanvas; delete layer.poseIdMeta;
     layer.meta = createLayerMeta("rasterize", { derivedFrom: layer.id, character: layer.meta?.character });
     this.invalidateLayerCaches(layer);
     this.syncPoseToolToActiveLayer();
@@ -3838,6 +3841,8 @@ class UniCanvasWidget {
       canvas: crop ? this.cloneCanvasCrop(layer.canvas, crop) : null,
       hiresCanvas: layer.type === "pose" && layer.hiresCanvas ? this.cloneCanvas(layer.hiresCanvas) : (layer.hiresCanvas || null),
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
+      poseIdCanvas: layer.poseIdCanvas || null,
+      poseIdMeta: layer.poseIdMeta || null,
     };
   }
 
@@ -3845,6 +3850,8 @@ class UniCanvasWidget {
     if (!layer || !snapshot) return;
     if (this.poseEditor?.layer === layer) this.poseEditor.release();
     if (snapshot.pose) layer.pose = serializePose(snapshot.pose);
+    // The ID canvas is replaced, never drawn into, so snapshots share it; a stale one is ignored.
+    if (layer.type === "pose") { layer.poseIdCanvas = snapshot.poseIdCanvas || null; layer.poseIdMeta = snapshot.poseIdMeta || null; }
     if (this.panorama && snapshot.panoramaCanvas) {
       layer.panoramaCanvas = this.cloneCanvas(snapshot.panoramaCanvas);
       layer.hiresCanvas = null; layer.hiresRect = null;
@@ -3917,6 +3924,7 @@ class UniCanvasWidget {
       clone.hiresCanvas = this.cloneCanvas(layer.hiresCanvas);
       clone.hiresRect = { ...layer.hiresRect };
     }
+    if (layer.poseIdCanvas) { clone.poseIdCanvas = layer.poseIdCanvas; clone.poseIdMeta = layer.poseIdMeta; }
     this.invalidateLayerCaches(clone);
     return clone;
   }
@@ -7608,6 +7616,8 @@ class UniCanvasWidget {
 
   serializeLayer(layer, includeData = true) {
     if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
+    // Per-character ID pass: state cache only, never workflow metadata.
+    const poseId = includeData && layer.type === "pose" ? serializePoseId(layer) : null;
     if (this.panorama) {
       this.panorama.commitLayer(layer);
       return {
@@ -7617,6 +7627,7 @@ class UniCanvasWidget {
         crop: { x: 0, y: 0, width: this.panorama.settings.width, height: this.panorama.settings.height },
         dataURL: includeData ? layer.panoramaCanvas.toDataURL("image/png") : null,
         hiresRect: null, hiresDataURL: null,
+        ...(poseId ? { poseId } : {}),
       };
     }
     const crop = includeData ? this.getLayerAlphaBounds(layer) : (layer._boundsCache === undefined ? null : layer._boundsCache);
@@ -7638,6 +7649,7 @@ class UniCanvasWidget {
       hiresDataURL: null,
       ...this.serializeStateOffset?.(layer),
     };
+    if (poseId) payload.poseId = poseId;
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -7829,6 +7841,7 @@ class UniCanvasWidget {
           layer.hiresCanvas = hires;
           layer.hiresRect = { ...item.hiresRect };
         }
+        if (layer.type === "pose" && item.poseId?.dataURL) await restorePoseId(layer, item.poseId, (url) => this.loadImage(url));
         if (!restoredPanorama) this.sanitizeMaskLayer(layer);
         bumpLayerPixelRevision(layer);
         layers.push(layer);
