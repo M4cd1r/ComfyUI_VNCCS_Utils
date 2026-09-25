@@ -14,6 +14,15 @@
  *   around its feet during the drag. Pixels are always resampled from the layer's source
  *   (`hiresCanvas` when present), so repeated moves never degrade; the drag stays one history
  *   entry of the move tool.
+ * - Scene light (Plan 08.2, #19): `widget.sceneLight = { azimuth, elevation, color, intensity,
+ *   ambientColor, ambientIntensity }` is serialized with the state and drives the shadow layers
+ *   (vnccs_unicanvas_harmonize.mjs). Azimuth is measured around the vertical axis: 0 is a light on
+ *   the camera side, 90 on the right, 180 behind the scene. The light gizmo is a sun handle on an
+ *   ellipse around the selected character's feet: its angle is the azimuth, its distance from the
+ *   feet the elevation (closer is higher). It shows in the Perspective tool and in the shadow
+ *   controls, updates live while dragged and records one history entry per gesture. Estimate
+ *   proposes an azimuth from the dominant luminance gradient of the blurred background around the
+ *   character (a heuristic), with Accept / Ignore.
  * Neither works in panorama mode. The widget only calls `installUniCanvasScenePlace` and the
  * serialize / history hooks exported here.
  */
@@ -23,6 +32,13 @@ import { isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_uni
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
 export const PERSPECTIVE_TOOL = "perspective";
 export const SCENE_PERSPECTIVE_HISTORY_KIND = "scenePerspective";
+export const SCENE_LIGHT_HISTORY_KIND = "sceneLight";
+/** Vertical squash of the gizmo's ground ellipse (the ground seen at an angle). */
+export const LIGHT_GIZMO_SQUASH = 0.35;
+const LIGHT_MIN_ELEVATION = 5;
+const LIGHT_MAX_ELEVATION = 89;
+const LIGHT_HANDLE_INNER = 0.12;
+const LIGHT_ESTIMATE_SIDE = 64;
 export const DEFAULT_GROUND_TINT = "#4cc9f0";
 export const MIN_CHARACTER_HEIGHT = 4;
 const DEPTH_MAX_SIDE = 1024;
@@ -62,6 +78,97 @@ export function normalizeScenePerspective(raw) {
 
 export function serializeScenePerspective(value) {
   return normalizeScenePerspective(value);
+}
+
+// ---------------------------------------------------------------------------
+// Scene light model (Plan 08.2).
+// ---------------------------------------------------------------------------
+
+export function defaultSceneLight() {
+  return { azimuth: 45, elevation: 40, color: "#fff4e0", intensity: 1, ambientColor: "#5a6478", ambientIntensity: 0.6 };
+}
+
+function hexColor(value, fallback) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = finite(value);
+  return number === null ? fallback : Math.min(max, Math.max(min, number));
+}
+
+/** Normalizes a saved / history / UI light. Azimuth wraps into [0, 360); the rest is clamped. */
+export function normalizeSceneLight(raw) {
+  const result = defaultSceneLight();
+  if (!raw || typeof raw !== "object") return result;
+  const azimuth = finite(raw.azimuth);
+  if (azimuth !== null) result.azimuth = ((azimuth % 360) + 360) % 360;
+  result.elevation = clampNumber(raw.elevation, LIGHT_MIN_ELEVATION, LIGHT_MAX_ELEVATION, result.elevation);
+  result.intensity = clampNumber(raw.intensity, 0, 2, result.intensity);
+  result.ambientIntensity = clampNumber(raw.ambientIntensity, 0, 2, result.ambientIntensity);
+  result.color = hexColor(raw.color, result.color);
+  result.ambientColor = hexColor(raw.ambientColor, result.ambientColor);
+  return result;
+}
+
+export function serializeSceneLight(value) {
+  return normalizeSceneLight(value);
+}
+
+const DEG = Math.PI / 180;
+
+/** Unit direction on the ground in which shadows fall: x to the right, z away from the camera. */
+export function shadowGroundDirection(light) {
+  const azimuth = normalizeSceneLight(light).azimuth * DEG;
+  return { x: -Math.sin(azimuth), z: Math.cos(azimuth) };
+}
+
+/** Shadow length per unit of height: 1 / tan(elevation), capped for grazing light. */
+export function shadowLengthFactor(light) {
+  return Math.min(6, 1 / Math.tan(normalizeSceneLight(light).elevation * DEG));
+}
+
+/** World position of the sun handle for a gizmo centered on `center` with ground radius `radius`. */
+export function sunHandlePosition(center, radius, light) {
+  const { azimuth, elevation } = normalizeSceneLight(light);
+  const reach = radius * (LIGHT_HANDLE_INNER + (1 - LIGHT_HANDLE_INNER) * (1 - elevation / 90));
+  return {
+    x: center.x + Math.sin(azimuth * DEG) * reach,
+    y: center.y + Math.cos(azimuth * DEG) * reach * LIGHT_GIZMO_SQUASH,
+  };
+}
+
+/** Inverse of sunHandlePosition: the azimuth and elevation of a handle dragged to `point`. */
+export function lightFromHandle(center, radius, point) {
+  const dx = point.x - center.x;
+  const dz = (point.y - center.y) / LIGHT_GIZMO_SQUASH;
+  const azimuth = ((Math.atan2(dx, dz) / DEG) + 360) % 360;
+  const t = Math.min(1, Math.hypot(dx, dz) / Math.max(1, radius));
+  const elevation = 90 * (1 - Math.max(0, t - LIGHT_HANDLE_INNER) / (1 - LIGHT_HANDLE_INNER));
+  return { azimuth, elevation: Math.min(LIGHT_MAX_ELEVATION, Math.max(LIGHT_MIN_ELEVATION, elevation)) };
+}
+
+/**
+ * Heuristic light azimuth from a (blurred) luminance grid: the mean gradient points toward the
+ * brighter side, which is taken as the side of the light. Brighter right is 90, brighter toward
+ * the camera (the bottom) is 0. The vertical term is halved because skies bias it upward.
+ * Returns null for a flat image.
+ */
+export function estimateLightAzimuth(luminance, width, height) {
+  if (!luminance || width < 3 || height < 3) return null;
+  let gx = 0, gy = 0, total = 0;
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const i = y * width + x;
+      gx += (luminance[i + 1] - luminance[i - 1]) / 2;
+      gy += (luminance[i + width] - luminance[i - width]) / 2;
+      total += 1;
+    }
+  }
+  gx /= total;
+  gy = gy / total / 2;
+  if (Math.hypot(gx, gy) < 1e-3) return null;
+  return ((Math.atan2(gx, gy) / DEG) + 360) % 360;
 }
 
 /** True when a horizon and a reference below it are set. */
@@ -354,6 +461,11 @@ function drawHorizonLine(uc, ctx, y, visible, { color, dashed = false, label = "
 
 export function drawScenePlaceOverlay(uc, ctx) {
   if (uc.panorama) return;
+  drawPerspectiveOverlay(uc, ctx);
+  if (isLightGizmoVisible(uc)) drawLightGizmo(uc, ctx);
+}
+
+function drawPerspectiveOverlay(uc, ctx) {
   const state = uc._scenePlace;
   const perspective = perspectiveState(uc);
   const dragging = uc.pointerMode === "layer-move" && uc.dragStart?.depthScale;
@@ -375,6 +487,250 @@ export function drawScenePlaceOverlay(uc, ctx) {
   if (state?.ghostY !== null && state?.ghostY !== undefined && uc.tool === PERSPECTIVE_TOOL) {
     drawHorizonLine(uc, ctx, state.ghostY, visible, { color: "#ff8fa3", dashed: true, label: "Proposed horizon" });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Scene light: gizmo, panel section and estimate (Plan 08.2).
+// ---------------------------------------------------------------------------
+
+function lightState(uc) {
+  if (!uc.sceneLight) uc.sceneLight = defaultSceneLight();
+  return uc.sceneLight;
+}
+
+/** The light gizmo shows in the Perspective tool and with the shadow controls (move tool on a shadow layer). */
+export function isLightGizmoVisible(uc) {
+  if (!uc || uc.panorama) return false;
+  return uc.tool === PERSPECTIVE_TOOL || (uc.tool === "move" && Boolean(uc.activeLayer?.shadow));
+}
+
+/** The character the gizmo orbits: the active layer, or the source of an active shadow layer. */
+function lightTargetLayer(uc) {
+  const active = uc.activeLayer;
+  if (!active || active.type === "mask" || active.type === "group") return null;
+  if (active.shadow?.sourceLayerId) return uc.layers.find((layer) => layer.id === active.shadow.sourceLayerId) || null;
+  return active === backgroundLayer(uc) ? null : active;
+}
+
+/** Feet and radius of the gizmo, following a running move preview of the character. */
+function lightGizmoGeometry(uc) {
+  const layer = lightTargetLayer(uc);
+  if (!layer) return null;
+  const state = uc._scenePlace;
+  const key = `${layer.id}:${layer.pixelRevision ?? 0}`;
+  if (state.gizmoMeasure?.key !== key) state.gizmoMeasure = { key, measured: measureLayerCharacter(uc, layer) };
+  const measured = state.gizmoMeasure.measured;
+  if (!measured) return null;
+  let center = measured.feet;
+  let height = measured.rect.height;
+  const preview = uc.getLayerMovePreview(layer);
+  if (preview) {
+    const scale = preview.scale || 1;
+    const anchor = preview.anchor || { x: 0, y: 0 };
+    center = { x: anchor.x + (center.x - anchor.x) * scale + preview.dx, y: anchor.y + (center.y - anchor.y) * scale + preview.dy };
+    height *= scale;
+  }
+  return { layer, center, radius: Math.max(24, height * 0.6) };
+}
+
+function drawSun(ctx, point, radius, fill, stroke, px) {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2 * px;
+  ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  for (let i = 0; i < 8; i += 1) {
+    const angle = i * Math.PI / 4;
+    ctx.moveTo(point.x + Math.cos(angle) * radius * 1.45, point.y + Math.sin(angle) * radius * 1.45);
+    ctx.lineTo(point.x + Math.cos(angle) * radius * 2, point.y + Math.sin(angle) * radius * 2);
+  }
+  ctx.stroke();
+}
+
+function drawLightGizmo(uc, ctx) {
+  const geometry = lightGizmoGeometry(uc);
+  if (!geometry) return;
+  const { center, radius } = geometry;
+  const light = lightState(uc);
+  const px = 1 / uc.view.scale;
+  const handle = sunHandlePosition(center, radius, light);
+  ctx.save();
+  ctx.lineWidth = 1.5 * px;
+  ctx.strokeStyle = "rgba(255,209,102,.55)";
+  ctx.setLineDash([6 * px, 5 * px]);
+  ctx.beginPath(); ctx.ellipse(center.x, center.y, radius, radius * LIGHT_GIZMO_SQUASH, 0, 0, Math.PI * 2); ctx.stroke();
+  const ghost = uc._scenePlace.lightGhost;
+  if (ghost !== null && ghost !== undefined) {
+    const proposed = sunHandlePosition(center, radius, { ...light, azimuth: ghost });
+    ctx.strokeStyle = "#ff8fa3";
+    ctx.beginPath(); ctx.arc(proposed.x, proposed.y, 9 * px, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // The line from the sun's footprint through the feet is the direction shadows fall.
+  ctx.strokeStyle = "#ffd166";
+  ctx.beginPath(); ctx.moveTo(handle.x, handle.y); ctx.lineTo(center.x, center.y); ctx.stroke();
+  drawSun(ctx, handle, 7 * px, light.color, "#ffd166", px);
+  ctx.font = `${12 * px}px sans-serif`;
+  ctx.fillStyle = "#ffd166";
+  ctx.fillText(`${Math.round(light.azimuth)}° · ${Math.round(light.elevation)}°`, handle.x + 16 * px, handle.y - 8 * px);
+  ctx.restore();
+}
+
+function hitLightHandle(uc, point) {
+  const geometry = lightGizmoGeometry(uc);
+  if (!geometry) return null;
+  const handle = sunHandlePosition(geometry.center, geometry.radius, lightState(uc));
+  return Math.hypot(point.x - handle.x, point.y - handle.y) <= Math.max(8, 14 / uc.view.scale) ? geometry : null;
+}
+
+function pushLightEdit(uc, before) {
+  const after = clone(normalizeSceneLight(uc.sceneLight));
+  if (JSON.stringify(before) === JSON.stringify(after)) return false;
+  uc.pushHistoryEntry({ kind: SCENE_LIGHT_HISTORY_KIND, before, after });
+  uc.syncLightStateToWidget();
+  return true;
+}
+
+/** Applies a whole-value light edit as one history entry. */
+export function editSceneLight(uc, mutate) {
+  const before = clone(normalizeSceneLight(lightState(uc)));
+  const next = clone(before);
+  mutate(next);
+  uc.sceneLight = normalizeSceneLight(next);
+  const changed = pushLightEdit(uc, before);
+  uc.renderToolSettings();
+  uc.requestRender();
+  return changed;
+}
+
+const LIGHT_SLIDERS = [
+  { key: "azimuth", label: "Light azimuth", min: 0, max: 359, step: 1, unit: "°" },
+  { key: "elevation", label: "Light elevation", min: LIGHT_MIN_ELEVATION, max: LIGHT_MAX_ELEVATION, step: 1, unit: "°" },
+  { key: "intensity", label: "Light intensity", min: 0, max: 2, step: 0.01 },
+  { key: "ambientIntensity", label: "Ambient intensity", min: 0, max: 2, step: 0.01 },
+];
+const LIGHT_COLORS = [
+  { key: "color", label: "Light color" },
+  { key: "ambientColor", label: "Ambient color" },
+];
+
+function formatLightValue(spec, value) {
+  return spec.unit ? `${Math.round(value)}${spec.unit}` : Number(value).toFixed(2);
+}
+
+/** The scene light section of a tool-settings panel (Perspective tool and shadow controls). */
+export function renderSceneLightControls(uc) {
+  const light = lightState(uc);
+  const state = uc._scenePlace;
+  const html = [`<div class="vnccs-uc-tool-settings-title">Scene light</div>`];
+  for (const spec of LIGHT_SLIDERS) {
+    html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">${spec.label}</span><input class="vnccs-uc-range" type="range" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${light[spec.key]}" data-light-control="${spec.key}"><span class="vnccs-uc-tool-setting-value" data-light-value="${spec.key}">${formatLightValue(spec, light[spec.key])}</span></label>`);
+  }
+  for (const spec of LIGHT_COLORS) {
+    html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">${spec.label}</span><input class="vnccs-uc-input" type="color" value="${light[spec.key]}" data-light-control="${spec.key}"></label>`);
+  }
+  html.push(`<div class="vnccs-uc-transform-actions"><button class="vnccs-uc-btn" type="button" data-scene-action="estimate-light" title="Propose the light azimuth from the brightness of the background around the character">Estimate light</button></div>`);
+  if (state?.lightGhost !== null && state?.lightGhost !== undefined) {
+    html.push(`<div class="vnccs-uc-transform-hint">Proposed light azimuth ${Math.round(state.lightGhost)}°</div>`);
+    html.push(`<div class="vnccs-uc-transform-actions"><button class="vnccs-uc-btn" type="button" data-scene-action="accept-light" title="Use the proposed azimuth">Accept</button><button class="vnccs-uc-btn" type="button" data-scene-action="ignore-light" title="Keep the current light">Ignore</button></div>`);
+  }
+  html.push(`<div class="vnccs-uc-transform-hint">Drag the sun around the character: its angle sets the azimuth, closer to the feet is a higher sun</div>`);
+  return html.join("");
+}
+
+/** Refreshes the light readouts (and the sliders not being dragged) without rebuilding the panel. */
+function updateLightReadouts(uc, activeInput = null) {
+  const panel = uc.toolSettings;
+  if (!panel) return;
+  const light = lightState(uc);
+  for (const spec of LIGHT_SLIDERS) {
+    const value = panel.querySelector(`[data-light-value="${spec.key}"]`);
+    if (value) value.textContent = formatLightValue(spec, light[spec.key]);
+    const input = panel.querySelector(`[data-light-control="${spec.key}"]`);
+    if (input && input !== activeInput) input.value = String(light[spec.key]);
+  }
+}
+
+/** Luminance of the blurred background around the character, on a small grid. */
+function backgroundLuminance(uc, background, rect) {
+  const region = { x: rect.x - rect.height, y: rect.y - rect.height * 0.5, width: rect.width + rect.height * 2, height: rect.height * 2 };
+  const scale = LIGHT_ESTIMATE_SIDE / Math.max(region.width, region.height);
+  const width = Math.max(3, Math.round(region.width * scale));
+  const height = Math.max(3, Math.round(region.height * scale));
+  const small = document.createElement("canvas");
+  small.width = width; small.height = height;
+  const smallCtx = small.getContext("2d");
+  smallCtx.imageSmoothingQuality = "high";
+  uc.drawRasterLayerToWorldRect(smallCtx, background, region, { x: 0, y: 0, width, height }, true, false);
+  const blurred = document.createElement("canvas");
+  blurred.width = width; blurred.height = height;
+  const blurredCtx = blurred.getContext("2d", { willReadFrequently: true });
+  blurredCtx.filter = "blur(2px)";
+  blurredCtx.drawImage(small, 0, 0);
+  const { data } = blurredCtx.getImageData(0, 0, width, height);
+  const luminance = new Float32Array(width * height);
+  for (let i = 0; i < luminance.length; i += 1) {
+    const alpha = data[i * 4 + 3] / 255;
+    luminance[i] = alpha * (0.2126 * data[i * 4] + 0.7152 * data[i * 4 + 1] + 0.0722 * data[i * 4 + 2]) / 255;
+  }
+  return { luminance, width, height };
+}
+
+function estimateLight(uc) {
+  const target = lightTargetLayer(uc);
+  const measured = target ? measureLayerCharacter(uc, target) : null;
+  if (!measured) {
+    uc.setStatus("Estimate light: select a character layer with visible pixels.", true);
+    return;
+  }
+  const background = backgroundLayer(uc);
+  if (!background || background === target) {
+    uc.setStatus("Estimate light: there is no background layer below the character.", true);
+    return;
+  }
+  const grid = backgroundLuminance(uc, background, measured.rect);
+  const azimuth = estimateLightAzimuth(grid.luminance, grid.width, grid.height);
+  if (azimuth === null) {
+    uc.setStatus("Estimate light: the background shows no dominant light direction; set it by hand.", true);
+    return;
+  }
+  uc._scenePlace.lightGhost = azimuth;
+  uc.setStatus(`Proposed light azimuth ${Math.round(azimuth)}°: Accept or Ignore.`);
+  uc.renderToolSettings();
+  uc.requestRender();
+}
+
+function startLightGesture(uc, e, geometry) {
+  uc._scenePlace.lightGesture = {
+    pointerId: e.pointerId,
+    before: clone(normalizeSceneLight(lightState(uc))),
+    center: { ...geometry.center },
+    radius: geometry.radius,
+  };
+  uc.canvas.setPointerCapture?.(e.pointerId);
+  uc.requestRender();
+}
+
+function installSceneLightControls(uc) {
+  const state = uc._scenePlace;
+  uc.toolSettings.addEventListener("input", (e) => {
+    const target = e.target;
+    const key = target?.dataset?.lightControl;
+    if (!key) return;
+    e.stopPropagation();
+    // The first input of a gesture remembers the value before it; change commits one entry.
+    if (!state.lightSlider) state.lightSlider = { before: clone(normalizeSceneLight(lightState(uc))) };
+    const value = LIGHT_COLORS.some((spec) => spec.key === key) ? target.value : Number(target.value);
+    uc.sceneLight = normalizeSceneLight({ ...lightState(uc), [key]: value });
+    updateLightReadouts(uc, target);
+    uc.requestRender();
+  });
+  uc.toolSettings.addEventListener("change", (e) => {
+    if (!e.target?.dataset?.lightControl || !state.lightSlider) return;
+    const { before } = state.lightSlider;
+    state.lightSlider = null;
+    pushLightEdit(uc, before);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +843,7 @@ function renderPerspectivePanel(uc) {
     html.push(`<div class="vnccs-uc-transform-actions">${button("accept", "Accept", "Use the proposed horizon")}${button("discard", "Discard", "Keep the current horizon")}</div>`);
   }
   html.push(`<div class="vnccs-uc-transform-hint">Drag the horizon line · the dot moves the vanishing point · figure feet: walk it along the ground · figure head: set its height</div>`);
+  html.push(renderSceneLightControls(uc));
   panel.innerHTML = html.join("");
   panel.classList.add("visible");
 }
@@ -598,6 +955,15 @@ function runSceneAction(uc, action) {
     state.ghostY = null;
     refreshScenePlaceUi(uc);
     uc.requestRender();
+  } else if (action === "estimate-light") estimateLight(uc);
+  else if (action === "accept-light" && state.lightGhost !== null && state.lightGhost !== undefined) {
+    const azimuth = state.lightGhost;
+    state.lightGhost = null;
+    editSceneLight(uc, (light) => { light.azimuth = azimuth; });
+  } else if (action === "ignore-light") {
+    state.lightGhost = null;
+    uc.renderToolSettings();
+    uc.requestRender();
   }
 }
 
@@ -624,7 +990,11 @@ function updatePanoramaAvailability(uc) {
 export function installUniCanvasScenePlace(uc) {
   if (!uc || uc._scenePlace) return uc;
   uc.scenePerspective = normalizeScenePerspective(uc.scenePerspective);
-  uc._scenePlace = { gesture: null, ghostY: null, busy: false, depthCache: new Map(), estimateToken: null, depthButton: null };
+  uc.sceneLight = normalizeSceneLight(uc.sceneLight);
+  uc._scenePlace = {
+    gesture: null, ghostY: null, busy: false, depthCache: new Map(), estimateToken: null, depthButton: null,
+    lightGesture: null, lightSlider: null, lightGhost: null, gizmoMeasure: null,
+  };
 
   const toolButton = uc._toolButton(PERSPECTIVE_TOOL, "Perspective (G)");
   toolButton.innerHTML = PERSPECTIVE_ICON;
@@ -701,14 +1071,27 @@ export function installUniCanvasScenePlace(uc) {
   };
 
   // Perspective tool gestures run before the widget's own canvas handlers (capture on the stage).
+  // The sun handle of the light gizmo wins over the perspective handles and the move tool.
   uc.stageWrap.addEventListener("pointerdown", (e) => {
-    if (uc.tool !== PERSPECTIVE_TOOL || e.button !== 0 || e.target !== uc.canvas || uc.panorama) return;
+    if (e.button !== 0 || e.target !== uc.canvas || uc.panorama) return;
+    const lightHit = isLightGizmoVisible(uc) ? hitLightHandle(uc, uc.worldFromEvent(e)) : null;
+    if (!lightHit && uc.tool !== PERSPECTIVE_TOOL) return;
     e.preventDefault();
     e.stopPropagation();
     uc.canvas.focus?.({ preventScroll: true });
-    startPerspectiveGesture(uc, e);
+    if (lightHit) startLightGesture(uc, e, lightHit);
+    else startPerspectiveGesture(uc, e);
   }, true);
   const onMove = (e) => {
+    const light = uc._scenePlace.lightGesture;
+    if (light && light.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopPropagation();
+      Object.assign(uc.sceneLight, lightFromHandle(light.center, light.radius, uc.worldFromEvent(e)));
+      updateLightReadouts(uc);
+      uc.requestRender();
+      return;
+    }
     const gesture = uc._scenePlace.gesture;
     if (!gesture || gesture.pointerId !== e.pointerId) return;
     e.preventDefault();
@@ -722,6 +1105,16 @@ export function installUniCanvasScenePlace(uc) {
     }
   };
   const onUp = (e) => {
+    const light = uc._scenePlace.lightGesture;
+    if (light && light.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopPropagation();
+      uc._scenePlace.lightGesture = null;
+      uc.sceneLight = normalizeSceneLight(uc.sceneLight);
+      pushLightEdit(uc, light.before);
+      uc.requestRender();
+      return;
+    }
     const gesture = uc._scenePlace.gesture;
     if (!gesture || gesture.pointerId !== e.pointerId) return;
     e.preventDefault();
@@ -748,6 +1141,7 @@ export function installUniCanvasScenePlace(uc) {
     e.stopPropagation();
     runSceneAction(uc, button.dataset.sceneAction);
   });
+  installSceneLightControls(uc);
   return uc;
 }
 
@@ -766,6 +1160,19 @@ export function restoreScenePerspective(uc, raw) {
     uc._scenePlace.depthCache.clear();
   }
   refreshScenePlaceUi(uc);
+}
+
+/** History hook: restores the light of a `sceneLight` entry. */
+export function applySceneLightHistory(uc, entry, direction) {
+  uc.sceneLight = normalizeSceneLight(direction === "undo" ? entry.before : entry.after);
+  if (uc._scenePlace) uc._scenePlace.lightGhost = null;
+  uc.renderToolSettings();
+}
+
+/** Serialize hook: the light restored from a saved state (old states get the default light). */
+export function restoreSceneLight(uc, raw) {
+  uc.sceneLight = normalizeSceneLight(raw);
+  if (uc._scenePlace) uc._scenePlace.lightGhost = null;
 }
 
 /** Read-only view of the running depth-scaled drag for the E2E hook. */

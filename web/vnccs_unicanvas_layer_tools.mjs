@@ -4,7 +4,8 @@
  *  - 10.1 Right-clicking a layer row opens a context menu: copy the layer PNG
  *    (with alpha) to the clipboard, save it via the save_output route, remove
  *    its background (QI2.1 or BiRefNet), color-match it to the composite below,
- *    plus the pose-layer entries Rasterize / Edit pose (pose layers only).
+ *    plus the pose-layer entries Rasterize / Edit pose (pose layers only) and
+ *    Add contact / cast shadow, Detach shadow (vnccs_unicanvas_harmonize.mjs).
  *  - 10.2 "Import PSD" sits next to "Export Layers as PSD" and maps raster
  *    layers (name, visibility, opacity, blend mode) from the vendored ag-psd
  *    bundle, preserving order; anything UniCanvas cannot represent is skipped
@@ -29,6 +30,7 @@ import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { canCastShadow } from "./vnccs_unicanvas_harmonize.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
@@ -39,6 +41,10 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "auto-name", label: "Auto-name" },
   { id: "rasterize", label: "Rasterize", poseOnly: true },
   { id: "edit-pose", label: "Edit pose", poseOnly: true },
+  // Shadow layers (vnccs_unicanvas_harmonize.mjs, Plan 08.2).
+  { id: "add-contact-shadow", label: "Add contact shadow", shadowSourceOnly: true },
+  { id: "add-cast-shadow", label: "Add cast shadow", shadowSourceOnly: true },
+  { id: "detach-shadow", label: "Detach shadow", shadowOnly: true },
 ]);
 
 export const PSD_SKIP_REASONS = Object.freeze({
@@ -638,6 +644,8 @@ function openLayerContextMenu(uc, layer, e) {
   menu.style.cssText = `position:absolute; z-index:40; min-width:230px; padding:6px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.12); display:grid; gap:2px; font:11px sans-serif;`;
   for (const item of LAYER_MENU_ITEMS) {
     if (item.poseOnly && layer.type !== "pose") continue;
+    if (item.shadowSourceOnly && !canCastShadow(layer)) continue;
+    if (item.shadowOnly && !layer.shadow) continue;
     // Only the Edit model backend reads a prompt.
     if (item.editOnly && resolveRemoveBgSelection(uc.settings).method !== "edit") continue;
     const entry = document.createElement("button");
@@ -664,6 +672,10 @@ function runLayerMenuAction(uc, layer, item, point = null) {
   if (item.id === "remove-bg-prompt") return openRemoveBgPromptPopover(uc, layer, point);
   if (item.id === "color-match") return openColorMatchPopover(uc, layer, point);
   if (item.id === "auto-name") return autoNameLayers(uc, [layer]);
+  if (item.id === "add-contact-shadow" || item.id === "add-cast-shadow") {
+    return uc.addShadowLayer?.(layer, item.id === "add-cast-shadow" ? "cast" : "contact");
+  }
+  if (item.id === "detach-shadow") return uc.detachShadowLayer?.(layer);
   if (item.id === "rasterize") {
     if (typeof uc.rasterizePoseLayer === "function") return uc.rasterizePoseLayer(layer);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE);

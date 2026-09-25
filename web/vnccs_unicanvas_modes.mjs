@@ -8,7 +8,8 @@
 
 import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { describeDepthScaleDrag, measureLayerCharacter, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -922,6 +923,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           return measured ? JSON.parse(JSON.stringify(measured)) : null;
         },
         getDepthScaleDrag: () => describeDepthScaleDrag(widget),
+        // Shadows and scene light (Plan 08.2): the light and a layer's normalized `shadow`.
+        getSceneLight: () => JSON.parse(JSON.stringify(normalizeSceneLight(widget.sceneLight))),
+        getLayerShadow: (layerId) => describeShadow((widget.layers || []).find((l) => l.id === layerId)),
         getView: () => ({ ...widget.view }),
         getActiveTool: () => widget.tool,
         getLayerPose: (layerId) => {
