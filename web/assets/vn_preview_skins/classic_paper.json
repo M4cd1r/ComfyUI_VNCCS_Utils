@@ -1,0 +1,37 @@
+{
+  "format": "vnccs-vn-preview-skin",
+  "version": 1,
+  "id": "classic_paper",
+  "name": "Classic paper",
+  "designResolution": { "width": 1920, "height": 1080 },
+  "textbox": {
+    "anchor": "bottom", "marginX": 60, "marginBottom": 44, "height": 260,
+    "fill": "#f3e6c4", "fillAlpha": 0.95, "radius": 6,
+    "border": { "color": "#8a6a3a", "alpha": 1, "width": 3 },
+    "padding": { "left": 56, "right": 56, "top": 44, "bottom": 24 },
+    "nineSlice": null
+  },
+  "nameplate": {
+    "anchor": "top-left", "offsetX": 40, "offsetY": -34, "minWidth": 240, "height": 60, "paddingX": 28,
+    "fill": "#6b4a25", "fillAlpha": 1, "radius": 4,
+    "border": { "color": "#f3e6c4", "alpha": 0.8, "width": 2 },
+    "font": { "family": "Georgia, 'Times New Roman', serif", "size": 32, "weight": "700", "color": "#f8efd8" },
+    "nineSlice": null
+  },
+  "dialogue": {
+    "font": { "family": "Georgia, 'Times New Roman', serif", "size": 34, "weight": "400", "color": "#3b2a1a" },
+    "lineHeight": 1.35, "maxLines": 4,
+    "shadow": null,
+    "outline": null
+  },
+  "quickMenu": { "placement": "below", "align": "center", "offsetY": 10, "fontSize": 21, "gap": 30, "color": "#f3e6c4", "alpha": 0.85, "fontFamily": "Georgia, 'Times New Roman', serif" },
+  "choiceMenu": {
+    "width": 920, "height": 74, "gap": 22, "centerY": 0.38,
+    "fill": "#f3e6c4", "fillAlpha": 0.95, "radius": 6,
+    "border": { "color": "#8a6a3a", "alpha": 1, "width": 3 },
+    "font": { "family": "Georgia, 'Times New Roman', serif", "size": 30, "weight": "400", "color": "#3b2a1a" },
+    "nineSlice": null
+  },
+  "sideImage": { "width": 200, "height": 200, "marginLeft": 30, "border": { "color": "#8a6a3a", "alpha": 0.9, "width": 3 } },
+  "mobile": { "notchWidth": 0.32, "notchHeight": 64, "cornerRadius": 90 }
+}

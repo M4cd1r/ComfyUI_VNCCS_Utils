@@ -193,6 +193,12 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   if (modifier || event.altKey) return false;
+  // P toggles the VN preview overlay.
+  if (lower === "p" && widget.vnPreview) {
+    consumeUniCanvasShortcut(event);
+    widget.vnPreview.toggle();
+    return true;
+  }
   // Tools: B brush, V move, E eraser, M mask, L lasso, S rect.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
     consumeUniCanvasShortcut(event);
@@ -894,6 +900,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: layer.canvas.toDataURL("image/png"),
           };
         },
+        getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
         // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
         getLayerMeta: (layerId) => {
