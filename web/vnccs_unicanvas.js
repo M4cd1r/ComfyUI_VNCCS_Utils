@@ -11,6 +11,7 @@ import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaH
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
+import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
 import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
@@ -927,6 +928,7 @@ class UniCanvasWidget {
     });
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
+    installUniCanvasProjects(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -7258,6 +7260,7 @@ class UniCanvasWidget {
       settings: this.settings,
       layers: this.layers.map((l) => this.serializeLayer(l, includeLayerData)),
       activeLayerId: this.activeLayerId,
+      ...this.projectSession?.ref(),
     };
   }
 
@@ -7317,6 +7320,8 @@ class UniCanvasWidget {
   }
 
   saveLocalStateBackup(state) {
+    // With a project the document is stored durably; the old backups stay untouched for rollback.
+    if (this.projectSession?.active) return;
     if (this.localStateBackupDisabled || !this.stateHasLayerPixels(state)) return;
     try {
       const payload = JSON.stringify({ saved_at: Date.now(), state });
@@ -7368,6 +7373,10 @@ class UniCanvasWidget {
 
   flushStateUpload(keepalive = false) {
     clearTimeout(this.stateUploadTimer);
+    if (this.projectSession?.active) {
+      this.pendingStateUpload = null;
+      return this.projectSession.flush();
+    }
     const state = this.buildSerializedState(true);
     this.pendingStateUpload = null;
     return this.uploadStatePayload(state, keepalive);
@@ -7380,11 +7389,13 @@ class UniCanvasWidget {
       return;
     }
     this.pendingStateUpload = null;
+    if (this.projectSession?.active) return this.projectSession.save();
     const state = this.buildSerializedState(true);
     return this.uploadStatePayload(state, false);
   }
 
   async uploadStatePayload(state, keepalive = false) {
+    if (this.projectSession?.active) return this.projectSession.flush();
     // The first flat snapshot after exit must follow any pending spherical upload.
     if (state.panorama || state.layers?.some(layer => layer.type === "pose") || this.panoramaUploadPromise) {
       const run = () => this.performStateUpload(state, keepalive);
@@ -7577,11 +7588,12 @@ class UniCanvasWidget {
     this.syncPromptControls();
   }
 
-  async applySerializedState(state) {
+  // `exact` (project scenes): apply the state as given, without the local-backup recovery.
+  async applySerializedState(state, { exact = false } = {}) {
     const restoreRevision = this._stateRestoreRevision = (this._stateRestoreRevision || 0) + 1;
     let restoredPanorama = null, previous = null;
     try {
-      if (!this.stateHasLayerPixels(state)) {
+      if (!exact && !this.stateHasLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
         if (backup && this.stateHasLayerPixels(backup)) {
           state = backup;
@@ -7590,7 +7602,7 @@ class UniCanvasWidget {
           this.setStatus("Skipped metadata-only canvas restore to protect existing images", true);
           // The existing pixels are protected, but the saved model/generation settings still apply.
           if (state.settings) this.applySerializedSettings(state.settings);
-          return;
+          return false;
         }
       }
       const panoramaSettings = normalizePanorama(state.panorama);
@@ -7639,7 +7651,7 @@ class UniCanvasWidget {
         bumpLayerPixelRevision(layer);
         layers.push(layer);
       }
-      if (this._disposed || restoreRevision !== this._stateRestoreRevision) return;
+      if (this._disposed || restoreRevision !== this._stateRestoreRevision) return false;
       if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && layer.type === "raster")) throw new Error("The panorama base layer is missing");
       previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
       this.poseEditor?.release();
@@ -7654,18 +7666,20 @@ class UniCanvasWidget {
         this.activeLayerId = state.activeLayerId && this.layers.some((layer) => layer.id === state.activeLayerId)
           ? state.activeLayerId
           : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0].id;
-        this.saveLocalStateBackup(state);
+        if (!exact) this.saveLocalStateBackup(state);
       }
       this.syncPromptControls();
       this.updateSnapButton();
       this.updatePanoramaControls();
       this.renderLayerList();
       previous.panorama?.dispose();
+      return true;
     } catch (err) {
       if (previous) Object.assign(this, previous);
       this.updatePanoramaControls();
       this.setStatus(`Canvas restore failed: ${err.message || err}`, true);
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
+      return false;
     } finally {
       if (restoredPanorama && restoredPanorama !== this.panorama) restoredPanorama.dispose();
     }
@@ -8050,6 +8064,7 @@ class UniCanvasWidget {
     }
     this._disposed = true;
     teardownUniCanvasWidgetModes(this);
+    this.projectSession?.dispose();
     this._panoramaImportClose?.();
     this.panoramaOrbit?.dispose();
     this.panorama?.dispose();
@@ -8105,6 +8120,9 @@ app.registerExtension({
       for (const node of app.graph?._nodes || []) {
         if (node.mode === 2 || node.mode === 4) continue;
         await node.uniCanvasWidget?.preparePanoramaForQueue();
+        // Execution renders the node's project scene: it must hold the latest edits.
+        const session = node.uniCanvasWidget?.projectSession;
+        if (session?.active && await session.flush() === false) throw new Error("UniCanvas project could not be saved; queue stopped to protect the latest edits");
       }
       return queuePrompt.apply(this, arguments);
     };
