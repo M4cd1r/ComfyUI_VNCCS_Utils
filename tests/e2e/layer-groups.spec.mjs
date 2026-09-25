@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openUnicanvas } from "./helpers/app.mjs";
+import { importImageLayer, openUnicanvas, setLayerNaming } from "./helpers/app.mjs";
 import { measureAlphaBBoxInPage } from "./helpers/measure.mjs";
 
 // Plan 05 (#8): nested layer groups, multi-selection and one-step group history.
@@ -78,6 +78,7 @@ async function dropOn(page, sourceId, targetId, zone) {
 
 test("layer groups: grouping, isolated opacity, visibility, drag in/out, group move, depth, history and reload", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // this spec counts and places layers itself
   const base = (await stack(page)).layers.find((layer) => layer.type === "raster");
 
   // Two content layers: an imported image and a painted stroke across it.

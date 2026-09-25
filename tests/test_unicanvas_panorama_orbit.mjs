@@ -101,6 +101,22 @@ test("wheel zoom and keyboard rotation update before gesture completion", () => 
   control.dispose();
 });
 
+test("keys forwarded by a parent key shield rotate live and end the gesture on keyup", () => {
+  // Fullscreen swallows key events at the window before they reach the sphere and hands them
+  // over through keyDown/keyUp instead.
+  const { control, doc, calls } = setup();
+  const down = { key: "ArrowLeft", preventDefault() { this.prevented = true; }, stopPropagation() {} };
+  control.keyDown(down);
+  assert.equal(doc.settings.yaw, -5); assert.equal(down.prevented, true);
+  assert.equal(calls.includes("end"), false);
+  control.keyUp({ key: "ArrowLeft", stopPropagation() {} });
+  assert.equal(calls.at(-1), "end");
+  const other = { key: "z", preventDefault() { this.prevented = true; }, stopPropagation() {} };
+  control.keyDown(other);
+  assert.equal(other.prevented, undefined, "keys the sphere does not use stay with the canvas shortcuts");
+  control.dispose();
+});
+
 test("camera bounds and rolled drag directions agree with the current horizon", () => {
   const { control, canvas, doc } = setup({ pitch: 85, fov: 26, roll: 90 });
   const delta = orbitDrag(doc.settings, .1, 0);

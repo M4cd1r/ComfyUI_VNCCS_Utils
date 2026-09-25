@@ -26,6 +26,7 @@
 import { clamp } from "./vnccs_unicanvas_input_tools.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs";
+import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
@@ -174,6 +175,7 @@ function createPsdLayer(uc, entry) {
   const ctx = uc.configureImageContext(layer.canvas.getContext("2d"));
   ctx.drawImage(source, worldX - uc.origin.x, worldY - uc.origin.y);
   uc.invalidateLayerCaches(layer);
+  uc.autoNaming?.onLayerCreated(layer);
   return layer;
 }
 
@@ -327,7 +329,9 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
   }
   const before = uc.createLayerPixelSnapshot(layer);
   const source = uc.cloneCanvasCrop(layer.canvas, crop);
-  uc.setStatus(`[VNCCS UniCanvas] ${label} running...`);
+  // Painted Inpaint Mask pixels over the layer stay opaque (keep areas).
+  const keep = buildKeepMask(uc, crop);
+  uc.setStatus(`[VNCCS UniCanvas] ${label} running${keep ? ` (keeping ${keep.painted} px)` : ""}...`);
   try {
     const res = await fetch(REMOVE_BG_ROUTE, {
       method: "POST",
@@ -337,6 +341,7 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
         edit_model: editModel,
         edit_settings: method === "edit" ? removeBgRunSettings(uc.settings, editModel, extraPrompt) : undefined,
         image: source.toDataURL("image/png"),
+        keep: keep?.dataUrl,
       }),
     });
     const data = await res.json();

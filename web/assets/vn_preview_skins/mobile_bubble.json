@@ -1,0 +1,36 @@
+{
+  "format": "vnccs-vn-preview-skin",
+  "version": 1,
+  "id": "mobile_bubble",
+  "name": "Mobile bubble",
+  "designResolution": { "width": 1080, "height": 1920 },
+  "textbox": {
+    "anchor": "bottom", "marginX": 40, "marginBottom": 150, "height": 420,
+    "fill": "#ffffff", "fillAlpha": 0.93, "radius": 48,
+    "border": { "color": "#ff8fa3", "alpha": 0.9, "width": 4 },
+    "padding": { "left": 50, "right": 50, "top": 70, "bottom": 36 },
+    "nineSlice": null
+  },
+  "nameplate": {
+    "anchor": "top-left", "offsetX": 48, "offsetY": -40, "minWidth": 240, "height": 78, "paddingX": 34,
+    "fill": "#ff5d7e", "fillAlpha": 1, "radius": 39, "border": null,
+    "font": { "family": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", "size": 40, "weight": "700", "color": "#ffffff" },
+    "nineSlice": null
+  },
+  "dialogue": {
+    "font": { "family": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", "size": 44, "weight": "400", "color": "#23202b" },
+    "lineHeight": 1.3, "maxLines": 5,
+    "shadow": null,
+    "outline": null
+  },
+  "quickMenu": { "placement": "below", "align": "center", "offsetY": 34, "fontSize": 30, "gap": 30, "color": "#ffffff", "alpha": 0.85, "fontFamily": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" },
+  "choiceMenu": {
+    "width": 900, "height": 110, "gap": 30, "centerY": 0.42,
+    "fill": "#ffffff", "fillAlpha": 0.93, "radius": 55,
+    "border": { "color": "#ff8fa3", "alpha": 0.9, "width": 4 },
+    "font": { "family": "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", "size": 40, "weight": "600", "color": "#23202b" },
+    "nineSlice": null
+  },
+  "sideImage": { "width": 220, "height": 220, "marginLeft": 36, "border": { "color": "#ff5d7e", "alpha": 0.8, "width": 3 } },
+  "mobile": { "notchWidth": 0.32, "notchHeight": 70, "cornerRadius": 110 }
+}

@@ -1,14 +1,22 @@
 """Content-based layer names from a small local vision model.
 
-Backs ``POST /vnccs/unicanvas/describe_layers`` ``{ layers: [{ id, image }], model? }`` ->
-``{ names: [{ id, name }] }``. Models (Apache-2.0, downloaded on first use into ``models/LLM/``,
-one kept loaded): Qwen3-VL-2B-Instruct (default, ~4 GB, recognises what it sees) and
-SmolVLM-256M-Instruct (~500 MB, fast but vague). A name is 1-5 words in Title Case; an
-answer that does not look like a name yields ``name: null`` so the layer keeps its current name.
+Backs ``POST /vnccs/unicanvas/describe_layers``::
+
+    { layers: [{ id, image, prompt?, fallback? }], groups?: [{ id, children: [name] }], model? }
+    -> { names: [{ id, name, category, parsed }], groups: [{ id, name }], model }
+
+Models (Apache-2.0, downloaded on first use into ``models/LLM/``, one kept loaded):
+Qwen3-VL-2B-Instruct (default, ~4 GB, recognises what it sees) and SmolVLM-256M-Instruct
+(~500 MB, fast but vague). The model answers ``{"name": ..., "category": ...}``; the answer is
+parsed strictly (a 1-5 word name, a category from ``LAYER_CATEGORIES``). On any parse failure the
+layer gets the frontend's rules name (``fallback``) and ``Other``, never a raw model string. A
+layer's generation prompt, when sent, is extra context for the model. Groups are named from their
+children's names with the same model, text only.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 from typing import Any
@@ -25,10 +33,22 @@ QWEN3VL_KEY = "qwen3vl_2b"
 NAMING_MODELS = (QWEN3VL_KEY, SMOLVLM_KEY)
 DEFAULT_NAMING_MODEL = QWEN3VL_KEY
 MAX_LAYERS_PER_REQUEST = 16
+MAX_GROUPS_PER_REQUEST = 16
+LAYER_CATEGORIES = ("Background", "Characters", "Props", "Effects", "Lighting", "Overlays", "Other")
+FALLBACK_CATEGORY = "Other"
 NAME_PROMPT = (
-    "Give this picture a short layer name of 1 to 4 words describing its main subject, "
-    "like 'Blonde Woman' or 'Night Street'. Answer with the name only."
+    "This picture is one layer of a digital illustration. Give it a short layer name of 1 to 4 "
+    "words describing its main subject, like 'Blonde Woman' or 'Night Street', and pick its "
+    "category from: " + ", ".join(LAYER_CATEGORIES) + ". "
+    'Answer with JSON only, like {"name": "Night Street", "category": "Background"}.'
 )
+PROMPT_CONTEXT = "The layer was generated from this prompt: "
+GROUP_PROMPT = (
+    "These layers are inside one folder of a digital illustration: {children}. "
+    "Give the folder a short name of 1 to 3 words, like 'Street Props' or 'Weather'. "
+    "Answer with the name only."
+)
+_MAX_PROMPT_CONTEXT = 300
 _THUMBNAIL_SIZE = 384
 _MODEL_LOCK = threading.Lock()
 _MODEL: dict[str, Any] = {}
@@ -99,31 +119,99 @@ def clean_layer_name(text: Any) -> str | None:
     return name[:40] or None
 
 
-def _describe(image: Image.Image, key: str = DEFAULT_NAMING_MODEL) -> str | None:
+_JSON_OBJECT = re.compile(r"\{[^{}]*\}", re.DOTALL)
+
+
+def parse_naming_answer(text: Any, fallback: Any = None) -> dict[str, Any]:
+    """Strict parse of a ``{"name", "category"}`` answer.
+
+    Returns ``{name, category, parsed}``. Anything else than one JSON object with a valid name and
+    a category from ``LAYER_CATEGORIES`` (case-insensitive) yields the rules name ``fallback``
+    and ``Other`` with ``parsed: False``; a raw model string never becomes a name.
+    """
+    fallback_name = str(fallback).strip()[:80] if isinstance(fallback, str) and fallback.strip() else None
+    failed = {"name": fallback_name, "category": FALLBACK_CATEGORY, "parsed": False}
+    match = _JSON_OBJECT.search(str(text or ""))
+    if not match:
+        return failed
+    try:
+        data = json.loads(match.group(0))
+    except (TypeError, ValueError):
+        return failed
+    if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not isinstance(data.get("category"), str):
+        return failed
+    category = next((item for item in LAYER_CATEGORIES if item.lower() == data["category"].strip().lower()), None)
+    name = clean_layer_name(data["name"])
+    if not category or not name:
+        return failed
+    return {"name": name, "category": category, "parsed": True}
+
+
+def _prompt_context(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:_MAX_PROMPT_CONTEXT]
+
+
+def _generate(messages: list[dict[str, Any]], images: list[Image.Image] | None, key: str, max_new_tokens: int) -> str:
     import torch
 
     model, processor, device = _load_model(key)
-    messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": NAME_PROMPT}]}]
     prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = processor(text=prompt, images=[layer_thumbnail(image)], return_tensors="pt").to(device)
+    if images:
+        inputs = processor(text=prompt, images=images, return_tensors="pt").to(device)
+    else:
+        inputs = processor(text=prompt, return_tensors="pt").to(device)
     if "pixel_values" in inputs and device.type == "cuda":
         inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
     with torch.inference_mode():
-        generated = model.generate(**inputs, max_new_tokens=12, do_sample=False)
-    answer = processor.batch_decode(generated[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
-    return clean_layer_name(answer)
+        generated = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+    return processor.batch_decode(generated[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
+
+
+def _describe(image: Image.Image, key: str = DEFAULT_NAMING_MODEL, prompt: Any = None, fallback: Any = None) -> dict[str, Any]:
+    text = NAME_PROMPT
+    context = _prompt_context(prompt)
+    if context:
+        text = f"{PROMPT_CONTEXT}{context!r}. {text}"
+    messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": text}]}]
+    return parse_naming_answer(_generate(messages, [layer_thumbnail(image)], key, 32), fallback)
+
+
+def group_prompt(children: Any) -> str | None:
+    names = [re.sub(r"\s+", " ", str(name)).strip()[:60] for name in (children if isinstance(children, list) else [])]
+    names = [name for name in names if name][:24]
+    return GROUP_PROMPT.format(children=", ".join(repr(name) for name in names)) if names else None
+
+
+def _name_group(children: Any, key: str) -> str | None:
+    text = group_prompt(children)
+    if not text:
+        return None
+    messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
+    try:
+        return clean_layer_name(_generate(messages, None, key, 12))
+    except Exception:
+        # A processor that refuses text-only input leaves the group with its current name.
+        return None
 
 
 def _run_unicanvas_describe_layers(payload: dict[str, Any]) -> dict[str, Any]:
-    items = (payload or {}).get("layers")
-    if not isinstance(items, list) or not items:
-        raise ValueError("[VNCCS UniCanvas] describe_layers needs a non-empty 'layers' list.")
+    items = (payload or {}).get("layers") or []
+    groups = (payload or {}).get("groups") or []
+    if not isinstance(items, list) or not isinstance(groups, list) or not (items or groups):
+        raise ValueError("[VNCCS UniCanvas] describe_layers needs a non-empty 'layers' or 'groups' list.")
     key = naming_model_key((payload or {}).get("model"))
     names = []
+    group_names = []
     with _COMFY_MODEL_OP_LOCK:
         for item in items[:MAX_LAYERS_PER_REQUEST]:
             if not isinstance(item, dict) or not item.get("id") or not item.get("image"):
                 continue
             image = _decode_data_url(str(item["image"]), "RGBA")
-            names.append({"id": str(item["id"]), "name": _describe(image, key)})
-    return {"names": names, "model": key}
+            result = _describe(image, key, item.get("prompt"), item.get("fallback"))
+            names.append({"id": str(item["id"]), **result})
+        for item in groups[:MAX_GROUPS_PER_REQUEST]:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            group_names.append({"id": str(item["id"]), "name": _name_group(item.get("children"), key)})
+    return {"names": names, "groups": group_names, "model": key}
