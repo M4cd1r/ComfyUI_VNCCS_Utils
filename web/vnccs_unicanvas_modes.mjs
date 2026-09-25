@@ -921,6 +921,11 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       // No behavior change.
       globalThis.__VNCCS_UC_E2E__ = {
         listLayers: () => (widget.layers || []).map((l) => ({ id: l.id, type: l.type, groupId: l.groupId || null, name: l.name })),
+        // ControlNet from the scene (#46): the stored source of a control layer, without its pixels.
+        getControlSource: (layerId) => {
+          const source = (widget.layers || []).find((l) => l.id === layerId)?.controlSource;
+          return source ? { type: source.type, bbox: { ...source.bbox }, hasImage: Boolean(source.image), params: JSON.parse(JSON.stringify(source.params)), linked: source.linked, handEdited: source.handEdited, poseLayerIds: [...source.poseLayerIds] } : null;
+        },
         // Layer groups (Plan 05): stack structure, selection and the export composite.
         getLayerStack: () => ({
           activeLayerId: widget.activeLayerId,

@@ -75,6 +75,7 @@ import {
 } from "./vnccs_unicanvas_modes.mjs";
 import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
 import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
+import { installUniCanvasControlScene, normalizeControlSource } from "./vnccs_unicanvas_control_scene.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -948,6 +949,7 @@ class UniCanvasWidget {
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
     installUniCanvasControl(this, { modelModule: getUniCanvasModelModule });
+    installUniCanvasControlScene(this);
     installUniCanvasVnPreview(this);
     installUniCanvasGroups(this);
     installUniCanvasSceneStates(this);
@@ -1801,6 +1803,16 @@ class UniCanvasWidget {
       }
       await this.poseEditor.activate(layer, { show: this.tool === "pose" });
     } catch (_) { /* The shared editor reports initialization errors. */ }
+  }
+
+  // Mannequin joints of a pose layer for a pose ControlNet layer (vnccs_unicanvas_control_scene.mjs):
+  // the editor projects them on every capture into layer.pose.openpose.
+  async projectPoseLayer(layer) {
+    if (layer?.type !== "pose") return;
+    if (this.poseEditSession && this.poseEditSession.layerId !== layer.id) throw new Error("Save or cancel the pose being edited first");
+    this.poseEditor ||= new UniCanvasPoseEditor(this);
+    await this.poseEditor.activate(layer, { show: this.tool === "pose" && this.poseEditSession?.layerId === layer.id });
+    await this.poseEditor.flush();
   }
 
   // Pose layers are edited only in an explicit session (the Pose tool, Edit pose, the row's
@@ -4077,6 +4089,8 @@ class UniCanvasWidget {
 
   pushHistoryEntry(entry) {
     if (this._isRestoring || this.historyRestoring || !entry) return;
+    // Hand edits on a ControlNet layer made from the scene (vnccs_unicanvas_control_scene.mjs).
+    entry = this.controlScene?.wrapHistoryEntry(entry) ?? entry;
     // Bakes made by GENERATE join the accepted scene result as one undo step.
     entry = this.poseBake?.wrapHistoryEntry(entry) ?? entry;
     this.undoStack.push(entry);
@@ -6273,7 +6287,7 @@ class UniCanvasWidget {
       stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this._createCanvas(),
       ...this.sprites?.cloneLayerFields(layer),
-      ...(isControlLayer(layer) ? { control: normalizeControlState(layer.control) } : {}),
+      ...(isControlLayer(layer) ? { control: normalizeControlState(layer.control), ...this.controlScene?.cloneFields(layer) } : {}),
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
     if (this.panorama) {
@@ -7848,6 +7862,11 @@ class UniCanvasWidget {
     // Sprite set: metadata always, variant pixels only with layer data.
     if (layer.type === "sprite") payload.sprite = this.sprites?.serialize(layer, includeData);
     if (isControlLayer(layer)) payload.control = normalizeControlState(layer.control);
+    // The scene source of a ControlNet layer (vnccs_unicanvas_control_scene.mjs); its PNG only with layer data.
+    if (isControlLayer(layer) && layer.controlSource) {
+      payload.controlSource = this.controlScene?.serialize(layer);
+      if (!includeData && payload.controlSource) delete payload.controlSource.image;
+    }
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -8026,6 +8045,7 @@ class UniCanvasWidget {
         if (layer.type === "raster") layer.shadow = normalizeShadow(item.shadow);
         // ControlNet layers (vnccs_unicanvas_control.mjs); older states have none.
         if (layer.type === "control") layer.control = normalizeControlState(item.control);
+        if (layer.type === "control" && item.controlSource) layer.controlSource = normalizeControlSource(item.controlSource) || undefined;
         const stateOffset = !isMaskSectionLayer(item) ? normalizeStateOffset(item.stateOffset) : null;
         if (stateOffset && (stateOffset.x || stateOffset.y)) layer.stateOffset = stateOffset;
         if (item.dataURL) {

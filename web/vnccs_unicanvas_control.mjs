@@ -262,6 +262,7 @@ export function installUniCanvasControl(uc, { modelModule = () => null } = {}) {
     },
 
     drawControlOverlay(ctx, layer) {
+      uc.controlScene?.syncLinked(layer);
       const control = normalizeControlState(layer.control);
       if (!control.showOverlay || uc.hasOpenStagingPanel?.()) return;
       ctx.save();
@@ -385,7 +386,11 @@ export function installUniCanvasControl(uc, { modelModule = () => null } = {}) {
         select.append(option);
       }
       select.value = control.type;
-      select.addEventListener("change", () => api.setControl(layer, { type: select.value }));
+      // A layer made from the scene re-runs its preprocessor (vnccs_unicanvas_control_scene.mjs).
+      select.addEventListener("change", () => {
+        if (layer.controlSource && uc.controlScene?.changeType(layer, select.value)) { api.syncPanelValues(layer); return; }
+        api.setControl(layer, { type: select.value });
+      });
       typeRow.append(select);
       panel.append(typeRow);
 
@@ -433,6 +438,7 @@ export function installUniCanvasControl(uc, { modelModule = () => null } = {}) {
       importBtn.addEventListener("click", () => api.fileInput?.click());
       actions.append(importBtn);
       panel.append(actions);
+      uc.controlScene?.renderSection(panel, layer);
       const hint = el("div", "vnccs-uc-control-hint",
         "Paint with the brush (white lines on black for canny/lineart, gray for depth) or paste an image. " +
         (support?.promptNote || "The prompt describes the content; the control carries the shape."));

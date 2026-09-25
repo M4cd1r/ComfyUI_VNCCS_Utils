@@ -78,6 +78,16 @@ HELPER_MODELS: dict[str, HelperModel] = {
         files=("config.json", "model.safetensors", "preprocessor_config.json"),
         folder=os.path.join("depth", "Depth-Anything-V2-Small-hf"),
     ),
+    # Informative Drawings "anime style" generator (MIT, carolineec/informative-drawings), the
+    # ControlNet lineart annotator; 17 MB, a plain state dict loaded with weights_only=True.
+    "lineart_informative_drawings": HelperModel(
+        key="lineart_informative_drawings",
+        label="Lineart (Informative Drawings)",
+        repo_id="lllyasviel/Annotators",
+        revision="9cf9fa959ab9a81454b68a082c57052e671677e6",
+        files=("sk_model.pth",),
+        folder=os.path.join("lineart", "Annotators"),
+    ),
 }
 
 _DOWNLOAD_LOCK = threading.Lock()
