@@ -178,6 +178,16 @@ def test_save_output_route_registered_with_existing_routes(monkeypatch):
 
             return decorator
 
+        def __getattr__(self, method):
+            def route(path):
+                def decorator(fn):
+                    registered.append((method.upper(), path))
+                    return fn
+
+                return decorator
+
+            return route
+
     fake_server = types.ModuleType("server")
     fake_server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(routes=_Routes()))
     monkeypatch.setitem(sys.modules, "server", fake_server)
