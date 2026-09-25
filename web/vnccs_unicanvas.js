@@ -6,8 +6,9 @@ import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
 import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache, serializePoseId, restorePoseId } from "./vnccs_unicanvas_pose_state.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs";
-import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs";
+import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
+  panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION } from "./vnccs_unicanvas_panorama.mjs";
+import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vnccs_unicanvas_panorama_panel.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
@@ -72,9 +73,7 @@ const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", impo
 
 const STYLES = `
 .vnccs-unicanvas [hidden] { display:none !important; }
-.vnccs-uc-panorama-controls { flex:0 0 auto; padding:0 !important; overflow:hidden; }
-.vnccs-uc-panorama-orbit { display:block; width:100%; height:144px; touch-action:none; cursor:grab; outline:none; }
-.vnccs-uc-panorama-orbit:focus-visible { box-shadow:inset 0 0 0 2px var(--uc-accent); border-radius:12px; }
+${PANORAMA_PANEL_CSS}
 .vnccs-unicanvas {
   --uc-bg:#0a0a0f; --uc-panel:rgba(20,16,30,.82); --uc-surface:rgba(30,28,44,.9);
   --uc-hover:rgba(44,40,62,.95); --uc-border:rgba(255,255,255,.08);
@@ -133,7 +132,7 @@ const STYLES = `
 .vnccs-uc-layers-top-actions { padding:6px; border-bottom:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
 .vnccs-uc-layers-top-actions .vnccs-uc-btn { width:100%; }
 .vnccs-uc-pose-editing .vnccs-uc-side > :not(.vnccs-uc-pose-side) { display:none !important; }
-.vnccs-uc-layer[data-layer-type="pose"] { grid-template-columns:34px minmax(0,1fr) 28px 28px 28px; }
+.vnccs-uc-layer[data-layer-type="pose"], .vnccs-uc-layer[data-layer-type="panorama"] { grid-template-columns:34px minmax(0,1fr) 28px 28px 28px; }
 .vnccs-uc-layer { display:grid; grid-template-columns:34px minmax(0,1fr) 28px 28px; gap:6px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
 .vnccs-uc-layer.active { border-color:rgba(255,143,163,.55); background:rgba(255,143,163,.12); }
 .vnccs-uc-layer.locked { border-color:rgba(255,193,7,.42); background:rgba(255,193,7,.08); }
@@ -1236,25 +1235,32 @@ class UniCanvasWidget {
     this.container.append(this.left, this.stageWrap, this.side, this.bottom);
   }
 
+  // The panorama layer's settings panel (vnccs_unicanvas_panorama_panel.mjs): sphere, camera,
+  // projection and navigation quality. Shown while the document has a panorama layer.
   buildPanoramaControls() {
-    const canvas = document.createElement("canvas");
-    canvas.className = "vnccs-uc-panorama-orbit";
-    this.panoramaOrbit = new PanoramaOrbitControl(canvas);
-    this.panoramaPanel = document.createElement("div");
-    this.panoramaPanel.className = "vnccs-uc-side-control vnccs-uc-panorama-controls";
-    this.panoramaPanel.append(canvas);
+    this.panoramaLayerPanel = buildPanoramaLayerPanel(this);
+    this.panoramaOrbit = this.panoramaLayerPanel.orbit;
+    this.panoramaPanel = this.panoramaLayerPanel.element;
     this.side.prepend(this.panoramaPanel);
     this.updatePanoramaControls();
   }
 
-  updatePanoramaControls(settings = this.panorama?.settings) {
+  updatePanoramaControls(settings = this.panorama?.pendingCamera || this.panorama?.settings) {
     if (!this.panoramaPanel) return;
-    this.panoramaPanel.hidden = !settings;
     const bboxButton = this.tools.querySelector('[data-tool="bbox"]');
     if (bboxButton) bboxButton.hidden = Boolean(settings);
-    this.panoramaOrbit?.update(this.panorama, settings);
+    this.panoramaLayerPanel.update(this.panorama, settings);
   }
 
+
+  // Layer row button: select the panorama layer and bring its settings panel into view.
+  showPanoramaLayerSettings(layer) {
+    if (!isPanoramaLayer(layer)) return;
+    if (this.activeLayerId !== layer.id) this.onLayerRowClick(layer.id, {});
+    this.updatePanoramaControls();
+    this.panoramaLayerPanel.details.open = true;
+    this.panoramaPanel.scrollIntoView?.({ block: "nearest" });
+  }
 
   choosePanoramaImport(img) {
     return new Promise((resolve) => {
@@ -1322,7 +1328,7 @@ class UniCanvasWidget {
         }
         this.invalidateLayerCaches(layer); next.commitLayer(layer);
       }
-      const base = this.addLayer("raster", name, false, true, createLayerMeta("import", { sourceName: name || undefined }));
+      const base = this.addLayer("panorama", name, false, true, createLayerMeta("import", { sourceName: name || undefined }));
       base.locked = true; next.settings.baseLayerId = base.id;
       next.ensureLayer(base).getContext("2d").drawImage(img, 0, 0);
       this.normalizeLayerOrder(); next.project();
@@ -3251,6 +3257,7 @@ class UniCanvasWidget {
     if (this._isRestoring || this._disposed) return;
     if (this.panorama) {
       if (this.panoramaOrbit?.gesture) this.panoramaOrbit.finish();
+      this.panoramaLayerPanel?.finishCamera();
       this.panorama.flushCamera();
       if (e.button === 0 && this.tool === "panorama") {
         if (!this.panorama.beginCamera()) return;
@@ -3633,7 +3640,7 @@ class UniCanvasWidget {
 
   addSamPoint(point, event) {
     const layer = this.activeLayer;
-    if (!layer || layer.type !== "raster") {
+    if (!layer || (layer.type !== "raster" && !isPanoramaLayer(layer))) {
       this.setSamStatus("Select a raster layer", true);
       return;
     }
@@ -3684,7 +3691,7 @@ class UniCanvasWidget {
     const requestPanorama = this.panorama;
     const panoramaRevision = requestPanorama?.revision;
     const layer = this.activeLayer;
-    if (!layer || layer.type !== "raster") {
+    if (!layer || (layer.type !== "raster" && !isPanoramaLayer(layer))) {
       this.setSamStatus("Select a raster layer", true);
       return;
     }
@@ -3763,7 +3770,7 @@ class UniCanvasWidget {
 
   applySamMask() {
     const layer = this.layers.find((item) => item.id === this.sam.layerId) || this.activeLayer;
-    if (!layer || layer.type !== "raster" || !this.sam.maskCanvas || !this.sam.crop) {
+    if (!layer || (layer.type !== "raster" && !isPanoramaLayer(layer)) || !this.sam.maskCanvas || !this.sam.crop) {
       this.setSamStatus("No SAM mask to apply", true);
       return;
     }
@@ -5770,6 +5777,11 @@ class UniCanvasWidget {
       edit.addEventListener("click", (e) => { e.stopPropagation(); this.editPoseLayer(layer); });
       edit.addEventListener("dblclick", (e) => e.stopPropagation());
       row.append(thumb, label, edit, lock, del);
+    } else if (isPanoramaLayer(layer)) {
+      const settings = this._button(PANORAMA_ICON, "vnccs-uc-icon vnccs-uc-layer-panorama-settings", null, "Panorama settings");
+      settings.addEventListener("click", (e) => { e.stopPropagation(); this.showPanoramaLayerSettings(layer); });
+      settings.addEventListener("dblclick", (e) => e.stopPropagation());
+      row.append(thumb, label, settings, lock, del);
     } else row.append(thumb, label, lock, del);
     row.addEventListener("click", (e) => this.onLayerRowClick(layer.id, e));
     this.attachLayerRowDragHandlers(row, layer);
@@ -5780,6 +5792,7 @@ class UniCanvasWidget {
         layer.name = String(next).trim() || layer.name;
         this.autoNaming.onLayerRenamedByUser(layer); // auto naming never replaces a name the user typed
         this.updateLayerRow(row, layer);
+        if (isPanoramaLayer(layer)) this.updatePanoramaControls();
         this.syncLightStateToWidget();
       }
     });
@@ -6038,6 +6051,7 @@ class UniCanvasWidget {
 
   syncActiveLayerControls() {
     this.renderToolSettings();
+    this.updatePanoramaControls();
     const layer = this.activeLayer;
     if (!this.layerSubhead || !layer) return;
     const blend = this.layerSubhead.querySelector('[data-layer-control="blendMode"]');
@@ -6090,7 +6104,8 @@ class UniCanvasWidget {
     const copy = {
       id: uid(),
       name: `${layer.name} copy`,
-      type: layer.type,
+      // A document has one panorama layer; its copy is an ordinary spherical raster layer.
+      type: isPanoramaLayer(layer) ? "raster" : layer.type,
       pose: serializePose(layer.pose),
       visible: layer.visible,
       locked: false,
@@ -7351,8 +7366,9 @@ class UniCanvasWidget {
     if (!state || typeof state !== "object") {
       state = this.buildSerializedState(false);
     }
-    state.version = this.panorama ? 3 : 2;
-    state.panorama = this.panorama ? { ...this.panorama.settings } : null;
+    state.version = this.panorama ? PANORAMA_STATE_VERSION : 2;
+    // Panorama settings live on the panorama layer (version 4), never on the document.
+    delete state.panorama;
     state.storage = "server_cache";
     state.state_id = this.getStateCacheId();
     state.origin = this.origin;
@@ -7376,6 +7392,7 @@ class UniCanvasWidget {
         type: layer.type,
         groupId: layer.groupId || null,
         pose: serializePose(layer.pose, false),
+        panorama: isPanoramaLayer(layer) && this.panorama ? panoramaLayerSettings(this.panorama.settings) : undefined,
         visible: layer.visible,
         locked: layer.locked,
         opacity: layer.opacity,
@@ -7418,8 +7435,7 @@ class UniCanvasWidget {
     this.panorama?.commit();
     const stateId = this.getStateCacheId();
     return {
-      version: this.panorama ? 3 : 2,
-      panorama: this.panorama ? { ...this.panorama.settings } : null,
+      version: this.panorama ? PANORAMA_STATE_VERSION : 2,
       storage: "server_cache",
       state_id: stateId,
       origin: this.origin,
@@ -7523,8 +7539,8 @@ class UniCanvasWidget {
         const raw = window.localStorage?.getItem(key);
         if (!raw) continue;
         const payload = JSON.parse(raw);
-        const state = payload?.state;
-        if (![1, 2, 3].includes(state?.version) || !Array.isArray(state.layers) || !this.stateHasLayerPixels(state)) continue;
+        const state = migratePanoramaState(payload?.state);
+        if (![1, 2, 3, 4].includes(state?.version) || !Array.isArray(state.layers) || !this.stateHasLayerPixels(state)) continue;
         return state;
       }
       return null;
@@ -7569,7 +7585,7 @@ class UniCanvasWidget {
   async uploadStatePayload(state, keepalive = false) {
     if (this.projectSession?.active) return this.projectSession.flush();
     // The first flat snapshot after exit must follow any pending spherical upload.
-    if (state.panorama || state.layers?.some(layer => layer.type === "pose") || this.panoramaUploadPromise) {
+    if (stateHasPanorama(state) || state.layers?.some(layer => layer.type === "pose") || this.panoramaUploadPromise) {
       const run = () => this.performStateUpload(state, keepalive);
       const pending = (this.panoramaUploadPromise || Promise.resolve()).then(run, run);
       this.panoramaUploadPromise = pending;
@@ -7624,6 +7640,7 @@ class UniCanvasWidget {
         pose: serializePose(layer.pose, includeData),
         id: layer.id, name: layer.name, nameSource: layer.nameSource || null, meta: normalizeLayerMeta(layer.meta), type: layer.type, groupId: layer.groupId || null, visible: layer.visible, locked: layer.locked,
         opacity: layer.opacity, blendMode: layer.blendMode || "source-over",
+        panorama: isPanoramaLayer(layer) ? panoramaLayerSettings(this.panorama.settings) : undefined,
         crop: { x: 0, y: 0, width: this.panorama.settings.width, height: this.panorama.settings.height },
         dataURL: includeData ? layer.panoramaCanvas.toDataURL("image/png") : null,
         hiresRect: null, hiresDataURL: null,
@@ -7704,7 +7721,9 @@ class UniCanvasWidget {
     if (!widget?.value || widget.value === "{}") return;
     try {
       let state = JSON.parse(widget.value);
-      if (![1, 2, 3].includes(state?.version) || !Array.isArray(state.layers)) return;
+      if (![1, 2, 3, 4].includes(state?.version) || !Array.isArray(state.layers)) return;
+      // Version 3 panorama workflows keep the camera on the document; move it to the panorama layer.
+      state = migratePanoramaState(state);
       // The workflow's own settings (model, CLIP, VAE, sampler, LoRAs...) are the newest ones: the
       // server cache and the local backup only refresh with the layer pixels, so they must never
       // win over what was saved in the workflow.
@@ -7721,14 +7740,16 @@ class UniCanvasWidget {
           const cached = await res.json();
           if (this._disposed || loadRevision !== this._stateLoadRevision) return;
           if (cached?.state?.version && Array.isArray(cached.state.layers)) {
-            if (Boolean(state.panorama) !== Boolean(cached.state.panorama)) {
+            cached.state = migratePanoramaState(cached.state);
+            const workflowPanorama = stateHasPanorama(state), cachedPanorama = stateHasPanorama(cached.state);
+            if (workflowPanorama !== cachedPanorama) {
               // An older or newer copy of this workflow owns that cache entry. Continue under a new
               // id so later uploads from this document cannot overwrite it.
               this.stateCacheId = this.createStateCacheId();
               this.stateBackupKey = null;
               throw new Error("Cached document mode does not match the workflow");
             }
-            if (state.panorama && cached.state.panorama) {
+            if (workflowPanorama && cachedPanorama) {
               const cachedById = new Map(cached.state.layers.map(layer => [layer.id, layer]));
               state = { ...cached.state, ...state, layers: state.layers.map(layer => ({
                 ...cachedById.get(layer.id), ...layer,
@@ -7791,7 +7812,8 @@ class UniCanvasWidget {
           return false;
         }
       }
-      const panoramaSettings = normalizePanorama(state.panorama);
+      state = migratePanoramaState(state);
+      const panoramaSettings = panoramaSettingsFromState(state);
       restoredPanorama = panoramaSettings ? new PanoramaDocument(this, panoramaSettings) : null;
       const nextOrigin = panoramaSettings ? { x: 0, y: 0 } : (state.origin || this.origin);
       const nextSize = panoramaSettings ? { width: 1024, height: 1024 } : (state.size || this.size);
@@ -7808,13 +7830,14 @@ class UniCanvasWidget {
           id: item.id || uid(),
           name: item.name || "Layer",
           nameSource: typeof item.nameSource === "string" ? item.nameSource : undefined,
-          type: item.type === "mask" ? "mask" : item.type === "pose" && item.pose ? "pose" : "raster",
+          type: item.type === "mask" ? "mask" : item.type === "pose" && item.pose ? "pose"
+            : isPanoramaLayer(item) && panoramaSettings?.baseLayerId === item.id ? "panorama" : "raster",
           pose: item.type === "pose" ? serializePose(item.pose) : undefined,
           visible: item.visible !== false,
           locked: item.locked === true,
           opacity: Number.isFinite(item.opacity) ? item.opacity : 1,
           blendMode: typeof item.blendMode === "string" ? item.blendMode : "source-over",
-          groupId: item.type !== "mask" && typeof item.groupId === "string" && item.groupId ? item.groupId : null,
+          groupId: item.type !== "mask" && !isPanoramaLayer(item) && typeof item.groupId === "string" && item.groupId ? item.groupId : null,
           meta: normalizeLayerMeta(item.meta),
           canvas: this._createCanvas(nextSize.width, nextSize.height),
         };
@@ -7847,7 +7870,7 @@ class UniCanvasWidget {
         layers.push(layer);
       }
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return false;
-      if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && layer.type === "raster")) throw new Error("The panorama base layer is missing");
+      if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && isPanoramaLayer(layer))) throw new Error("The panorama base layer is missing");
       previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
@@ -8269,7 +8292,7 @@ class UniCanvasWidget {
     teardownUniCanvasWidgetModes(this);
     this.projectSession?.dispose();
     this._panoramaImportClose?.();
-    this.panoramaOrbit?.dispose();
+    this.panoramaLayerPanel?.dispose();
     this.panorama?.dispose();
     this._eventAbortController?.abort();
     this._eventAbortController = null;

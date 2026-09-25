@@ -39,6 +39,11 @@ test("import as Panorama keeps the full 2048x1024 document behind a square editi
   expect(state.bbox).toMatchObject({ width: 1024, height: 1024 });
   for (const surface of state.surfaces) expect(surface).toEqual([2048, 1024]);
   expect(state.baseLocked).toBe(true);
+  // #28: the imported panorama is its own layer type with a settings panel.
+  const panoramaLayer = (await layers(page)).find((l) => l.type === "panorama");
+  expect(panoramaLayer?.id).toBe(state.settings.baseLayerId);
+  expect((await layers(page)).filter((l) => l.type === "panorama")).toHaveLength(1);
+  await expect(root(page).locator("[data-panorama-panel]")).toBeVisible();
   // The whole source survives: every pixel of the base surface is opaque.
   const baseId = await page.evaluate(() => ucWidget().panorama.settings.baseLayerId);
   expect(await panoAlpha(page, baseId, { x: 0, y: 0, width: 2048, height: 1024 })).toBe(2048 * 1024);
@@ -179,4 +184,67 @@ test("a generation result stays at the camera captured for its request", async (
   // yaw 0 with a 90 degree FOV covers longitudes -45..45: x 768..1280 on the 2048-wide surface.
   expect(await panoAlpha(page, accepted, { x: 800, y: 500, width: 448, height: 24 })).toBeGreaterThan(0);
   expect(await panoAlpha(page, accepted, { x: 1400, y: 500, width: 300, height: 24 })).toBe(0);
+});
+
+test("the panorama layer settings panel moves the camera live and saves its settings on the layer", async ({ page }) => {
+  await openPanorama(page);
+  const panoramaId = (await layers(page)).find((l) => l.type === "panorama").id;
+  await root(page).locator(`[data-layer-id="${panoramaId}"] button[title="Panorama settings"]`).click();
+  const panel = root(page).locator("[data-panorama-panel]");
+  await expect(panel.locator("details")).toHaveAttribute("open", "");
+  // Realtime: the camera follows each input event, before the change (release) event.
+  const yaw = panel.locator('input[type="range"][data-panorama-setting="yaw"]');
+  await yaw.evaluate((input) => { input.value = "60"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await expect.poll(async () => (await camera(page)).yaw).toBe(60);
+  await expect(panel.locator('input[type="number"][data-panorama-setting="yaw"]')).toHaveValue("60");
+  await yaw.evaluate((input) => input.dispatchEvent(new Event("change", { bubbles: true })));
+  await panel.locator('select[data-panorama-setting="quality"]').evaluate((select) => {
+    select.value = "sharp"; select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const saved = await page.evaluate(() => ucWidget().buildSerializedState(false));
+  expect(saved.version).toBe(4);
+  expect(saved.panorama).toBeUndefined();
+  const layer = saved.layers.find((l) => l.type === "panorama");
+  expect(layer.panorama).toMatchObject({ projection: "equirectangular", width: 2048, height: 1024, yaw: 60, quality: "sharp" });
+});
+
+test("a version 3 panorama workflow opens as a panorama layer with its pixels and camera", async ({ page }) => {
+  const { base } = await openPanorama(page);
+  await faceSeam(page);
+  await selectLayer(page, base.id);
+  await selectTool(page, "brush");
+  await stroke(page, [[0.4, 0.5], [0.6, 0.5]]);
+  const savedCamera = await camera(page);
+  const painted = [await panoAlpha(page, base.id, SEAM_LEFT), await panoAlpha(page, base.id, SEAM_RIGHT)];
+  const panoramaId = await page.evaluate(() => ucWidget().panorama.settings.baseLayerId);
+  const panoramaPixels = await panoAlpha(page, panoramaId, { x: 0, y: 0, width: 2048, height: 1024 });
+  // Rewrite the saved document into the version 3 format (camera on the document, raster base).
+  const workflow = await page.evaluate(async () => {
+    const w = ucWidget();
+    const state = w.buildSerializedState(true);
+    const layer = state.layers.find((l) => l.type === "panorama");
+    state.version = 3;
+    state.panorama = { ...layer.panorama, baseLayerId: layer.id };
+    delete state.panorama.quality;
+    layer.type = "raster"; delete layer.panorama;
+    state.state_id = `v3-${Date.now()}`;
+    const graph = window.app.graph.serialize();
+    const node = graph.nodes.find((n) => n.type === "VNCCS_UniCanvas");
+    const index = node.widgets_values.findIndex((value) => typeof value === "string" && value.includes('"state_id"'));
+    node.widgets_values[index] = JSON.stringify({ ...state, storage: "inline" });
+    return JSON.stringify(graph);
+  });
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => window.app?.graph && window.LiteGraph, null, { timeout: 60_000 });
+  await page.evaluate(async (data) => { await window.app.loadGraphData(JSON.parse(data)); }, workflow);
+  await openFullscreen(page);
+  await expect.poll(() => page.evaluate(() => Boolean(ucWidget()?.panorama)), { timeout: 30_000 }).toBe(true);
+  const migrated = (await layers(page)).find((l) => l.id === panoramaId);
+  expect(migrated.type).toBe("panorama");
+  expect(await camera(page)).toEqual(savedCamera);
+  expect(await panoAlpha(page, panoramaId, { x: 0, y: 0, width: 2048, height: 1024 })).toBe(panoramaPixels);
+  expect(await panoAlpha(page, base.id, SEAM_LEFT)).toBe(painted[0]);
+  expect(await panoAlpha(page, base.id, SEAM_RIGHT)).toBe(painted[1]);
+  expect((await page.evaluate(() => ucWidget().buildSerializedState(false))).version).toBe(4);
 });
