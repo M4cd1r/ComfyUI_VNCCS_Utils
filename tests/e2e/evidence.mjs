@@ -96,6 +96,27 @@ if (topic === "scene-states") {
   await page.locator(".vnccs-uc-layer .vnccs-uc-thumb").first().click();
   await page.waitForTimeout(500);
 }
+if (topic === "timeline") {
+  // Scene timeline (#9), standalone only: an imported image with "Enter from left" at frame 0,
+  // scrubbed to the middle of the move with the layer row expanded.
+  await page.locator('[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon').first().click();
+  await page.waitForTimeout(2_000);
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator('.vnccs-uc2-standalone-shell button[title="Import image"]').first().click(),
+  ]);
+  await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "character.png"));
+  await page.waitForTimeout(2_500);
+  await page.locator(".vnccs-uc2-standalone-shell [data-timeline-toggle]").first().click();
+  const row = page.locator(".vnccs-uc2-standalone-shell [data-timeline-dock] .vnccs-uc-tl-row.active .vnccs-uc-tl-label").first();
+  await row.click({ button: "right" });
+  await page.locator('[data-tl-action="preset-enterLeft"]').first().click();
+  await page.locator(".vnccs-uc2-standalone-shell [data-timeline-dock] .vnccs-uc-tl-row.active [data-expand]").first().click();
+  const frame = page.locator('.vnccs-uc2-standalone-shell [data-timeline-dock] [data-tl="frame"]').first();
+  await frame.fill("6");
+  await frame.dispatchEvent("input");
+  await page.waitForTimeout(800);
+}
 if (topic === "multi-character") {
   // A pose layer with two mannequins: the Character reference card lists one row per mannequin.
   await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
