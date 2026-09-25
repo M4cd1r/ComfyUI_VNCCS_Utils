@@ -34,7 +34,7 @@ pointing at a running test-platform instance:
     COMFYUI_URL=http://localhost:8188 npx playwright test
 
 The specs guard the standalone-tab smoke path, the measurement helper, the settings popover,
-the pose edit session and backdrop, the standalone sidebar setting, `VNCSS Config` overrides,
+the pose edit session and backdrop, the standalone sidebar setting, `VNCSS Config` overrides, the VN preview overlay,
 and the prompt guide; nothing calls GPU generation or downloads models. Geometric assertions
 read layer pixels and pose state through the read-only `window.__VNCCS_UC_E2E__` hook in
 `web/vnccs_unicanvas_modes.mjs`; `PW_CHROMIUM_PATH=<chrome>` reuses a preinstalled Chromium.
@@ -55,7 +55,7 @@ Evidence for UI changes is an **After** capture only - no Before captures or Bef
 pairs. Run `node evidence.mjs --topic <topic> --phase after` (workdir `tests/e2e`); it writes
 `tests/e2e/evidence/<topic>/after.png` plus `after.geometry.json`. Host the capture on an
 `evidence/<topic>` branch when opening a PR; built-in scenarios are `settings-panel`,
-`pose-editor`, `config-override`, and `icons`.
+`pose-editor`, `config-override`, `icons`, and `vn-preview`.
 
 After a code change or a container restart the browser keeps the OLD extension bundle: always
 hard-reload (Ctrl+Shift+R) before judging a fix on the live instance.

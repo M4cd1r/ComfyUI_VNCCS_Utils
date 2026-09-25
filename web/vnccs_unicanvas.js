@@ -11,6 +11,7 @@ import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaH
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
+import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
 import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
@@ -927,6 +928,7 @@ class UniCanvasWidget {
     });
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
+    installUniCanvasVnPreview(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -4054,6 +4056,7 @@ class UniCanvasWidget {
       }
       this.invalidateLayerCaches(entry.layer);
     }
+    if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
@@ -4837,6 +4840,8 @@ class UniCanvasWidget {
     if (this.panorama) ctx.restore();
     this.drawBbox(ctx);
     ctx.restore();
+    // VN preview: screen-space preview pass only (never in drawFlattenedLayers / makeExportCanvas).
+    this.vnPreview?.drawOverlay(ctx, w, h);
     const inferenceSize = this.getInferenceSize();
     this.updateZoomResetButton();
     const hudHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
