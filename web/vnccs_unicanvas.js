@@ -13,7 +13,8 @@ import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
+import { AUTO_FILE_SETTING, installUniCanvasFiling, resolveAutoFile } from "./vnccs_unicanvas_filing.mjs";
 import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
 import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs";
 import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs";
@@ -752,6 +753,7 @@ function makeDefaultUniCanvasSettings() {
     // Inpaint generates only the area around the mask at full resolution (crop and stitch).
     inpaint_crop_to_mask: true,
     auto_name_layers: false,
+    auto_file_layers: true,
     remove_bg_edit_model: "qwen_image21",
     edit_reference_images: [],
     qwen21_turbo_enabled: false,
@@ -929,6 +931,8 @@ class UniCanvasWidget {
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
     installUniCanvasGroups(this);
+    installUniCanvasAutoNaming(this);
+    installUniCanvasFiling(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -1075,7 +1079,7 @@ class UniCanvasWidget {
     layersBody.className = "vnccs-uc-layers-section";
     layersBody.append(this.layerSubhead, this.layersTopActions, this.layerList, this.flattenLayersFooter);
     const layersSection = this._section("Layers", layersBody, [
-      [UI_ICONS.plus, "Add raster", () => this.addLayer("raster")],
+      [UI_ICONS.plus, "Add raster", () => this.autoNaming.onLayerCreated(this.addLayer("raster"))],
       [UI_ICONS.mask, "Add mask", () => this.addLayer("mask")],
       [POSE_ICON, "Add pose layer", () => this.addPoseLayer()],
       [UI_ICONS.duplicate, "Duplicate selected", () => this.duplicateActiveLayer()],
@@ -1740,6 +1744,7 @@ class UniCanvasWidget {
       layer = this.addLayer("pose", "Pose Studio", true, true, createLayerMeta("paint"));
       layer.pose = { version: 1, rect: { ...this.bbox }, studio: {}, character: null,
         panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
+      this.autoNaming.onLayerCreated(layer);
       this.renderLayerList();
     }
     if (layer.locked || !layer.visible) {
@@ -1778,6 +1783,7 @@ class UniCanvasWidget {
     const layer = this.addLayer("pose", "Pose Studio", true, true);
     layer.pose = { version: 1, rect: { ...this.bbox }, studio: {}, character: null,
       panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
+    this.autoNaming.onLayerCreated(layer);
     this.renderLayerList();
     this.editPoseLayer(layer);
     return layer;
@@ -3990,6 +3996,8 @@ class UniCanvasWidget {
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoStack = [];
     this.updateHistoryButtons();
+    // Committed pixel edits refresh rules names (pose characters) and name new paint.
+    if (entry.kind === "layerPixels") this.autoNaming?.onLayerPixelsCommitted(this.layers.find((layer) => layer.id === entry.layerId));
   }
 
   undo() {
@@ -5693,7 +5701,7 @@ class UniCanvasWidget {
       const next = await this.promptInWidget("Rename Layer", "Layer name", layer.name);
       if (next !== null) {
         layer.name = String(next).trim() || layer.name;
-        layer.nameSource = "user"; // auto naming never replaces a name the user typed
+        this.autoNaming.onLayerRenamedByUser(layer); // auto naming never replaces a name the user typed
         this.updateLayerRow(row, layer);
         this.syncLightStateToWidget();
       }
@@ -6004,7 +6012,7 @@ class UniCanvasWidget {
     this.poseEditor?.commit();
     const copy = {
       id: uid(),
-      name: `${layer.name} Copy`,
+      name: `${layer.name} copy`,
       type: layer.type,
       pose: serializePose(layer.pose),
       visible: layer.visible,
@@ -6031,6 +6039,7 @@ class UniCanvasWidget {
     this.activeLayerId = copy.id;
     this.syncPoseToolToActiveLayer();
     this.pushHistoryEntry({ kind: "addLayer", layer: copy, previousActiveLayerId });
+    this.autoNaming.onLayerCreated(copy);
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
@@ -6176,7 +6185,7 @@ class UniCanvasWidget {
     this.requestRender();
     this.syncLightStateToWidget();
     this.scheduleFullSync();
-    maybeAutoNameLayer(this, layer);
+    this.autoNaming.onLayerCreated(layer);
   }
 
   loadImage(src) {
@@ -6714,7 +6723,7 @@ class UniCanvasWidget {
     this.syncLightStateToWidget();
     this.scheduleFullSync();
     this.setStatus("Staging accepted; remaining results discarded");
-    maybeAutoNameLayer(this, layer);
+    this.autoNaming.onLayerCreated(layer);
   }
 
   discardStaging() {
@@ -8080,12 +8089,17 @@ class UniCanvasWidget {
       familyDefaults: (mode) => getUniCanvasModelModule(mode).defaults,
     });
 
-    // Content-based layer names. "Auto-name" in the layer menu works either way.
+    // Automatic layer names and folders (vnccs_unicanvas_naming.mjs, vnccs_unicanvas_filing.mjs).
+    // "Auto-name" in the layer menu works at every level; only "Rules + model" downloads.
     section("layer_names", "Layer names");
+    const namingLevel = makeSelect(AUTO_NAMING_LEVELS, resolveAutoNamingLevel(s));
+    namingLevel.dataset.namingLevel = "";
+    namingLevel.addEventListener("input", () => { s[AUTO_NAMING_SETTING] = namingLevel.value; commit(); });
+    bind("Auto naming", namingLevel);
     const namingModel = makeSelect(AUTO_NAME_MODELS, resolveAutoNameModel(s));
     namingModel.addEventListener("input", () => { s[AUTO_NAME_MODEL_SETTING] = namingModel.value; commit(); });
     bind("Naming model (downloads on first use)", namingModel);
-    checkboxRow("Auto-name new layers from their content", s[AUTO_NAME_SETTING], (checked) => { s[AUTO_NAME_SETTING] = checked; commit(); });
+    checkboxRow("Auto-file new layers into folders", resolveAutoFile(s), (checked) => { s[AUTO_FILE_SETTING] = checked; commit(); });
 
     // Speed and memory for every draw (nodes/unicanvas/performance.py). The attention kernel is
     // ComfyUI's own startup choice (Comfy Kitchen / sage / flash); the progress bar shows it.

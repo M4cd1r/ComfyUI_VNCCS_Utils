@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { importImageLayer, openPoseTool, openUnicanvas, poseLayer, setLayerNaming } from "./helpers/app.mjs";
 import { measureAlphaBBoxInPage } from "./helpers/measure.mjs";
 
 const BACKDROP_IMAGE = fileURLToPath(new URL("./fixtures/backdrop.png", import.meta.url));
@@ -15,6 +15,7 @@ async function layerAlphaBBox(page, id) {
 // layers below act as a flat backdrop and the mannequin can never sink behind it.
 test("pose editor: mannequin only over a flat backdrop it cannot sink behind", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // the backdrop reads the layers below the pose in place
   await importImageLayer(page, BACKDROP_IMAGE);
   await openPoseTool(page);
 

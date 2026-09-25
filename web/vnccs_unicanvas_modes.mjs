@@ -904,6 +904,11 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           return layer ? (layer.pixelRevision ?? 0) : null;
         },
+        // Automatic naming (issue #17): name, nameSource and the category the model answered.
+        getLayerNaming: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? { name: layer.name, nameSource: layer.nameSource || null, category: layer.meta?.category || null, groupId: layer.groupId || null } : null;
+        },
         getLayerPose: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           // Deep clone: the caller must not be able to mutate layer state.

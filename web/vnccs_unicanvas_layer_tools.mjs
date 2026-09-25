@@ -159,6 +159,7 @@ function createPsdLayer(uc, entry) {
   const ctx = uc.configureImageContext(layer.canvas.getContext("2d"));
   ctx.drawImage(source, worldX - uc.origin.x, worldY - uc.origin.y);
   uc.invalidateLayerCaches(layer);
+  uc.autoNaming?.onLayerCreated(layer);
   return layer;
 }
 
