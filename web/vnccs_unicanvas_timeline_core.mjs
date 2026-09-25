@@ -2,7 +2,8 @@
  * VNCCS UniCanvas scene timeline (Plan 06, issue #9): the pure data model and evaluator.
  *
  *  - `widget.timeline = { schemaVersion, fps, frameCount, loop, currentFrame, workArea:
- *    { start, end }, tracks: { [trackId]: { target, property, type, keys } }, effects, markers }`.
+ *    { start, end }, tracks: { [trackId]: { target, property, type, keys } }, effects, markers,
+ *    poseClips }` (poseClips: pose layer animation offsets, issue #18).
  *    A track id is `${target}:${property}`; a target is a layer id, a group id or `camera`.
  *  - Layer / group properties: `position` (world-px offset from rest), `scale` and `rotation`
  *    (degrees) around the anchor, `opacity`, `visible` and `spriteVariant` (step), `blur` (px).
@@ -92,6 +93,7 @@ export function createTimeline(overrides = {}) {
     tracks: {},
     effects: [],
     markers: [],
+    poseClips: {},
     ...overrides,
   });
 }
@@ -167,6 +169,7 @@ export function normalizeTimeline(raw) {
   const markers = (Array.isArray(source.markers) ? source.markers : [])
     .filter((marker) => marker && Number.isFinite(Number(marker.frame)))
     .map((marker) => ({ id: typeof marker.id === "string" && marker.id ? marker.id : createKeyId(), frame: clamp(Math.round(Number(marker.frame)), 0, lastFrame), name: String(marker.name || "Marker").slice(0, 80) }));
+  const poseClips = normalizePoseClips(source.poseClips, lastFrame);
   const startRaw = clamp(Math.round(finiteNumber(source.workArea?.start, 0)), 0, lastFrame);
   const endRaw = clamp(Math.round(finiteNumber(source.workArea?.end, lastFrame)), 0, lastFrame);
   return {
@@ -179,13 +182,31 @@ export function normalizeTimeline(raw) {
     tracks,
     effects,
     markers,
+    poseClips,
   };
+}
+
+/**
+ * Pose animation clips (issue #18): `{ [poseLayerId]: { offset, enabled } }`, only for layers
+ * whose clip differs from the default (studio frame 0 at scene frame 0, enabled). `offset` is the
+ * scene frame where the studio animation starts; it may be negative (the clip started earlier).
+ */
+function normalizePoseClips(raw, lastFrame) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [id, clip] of Object.entries(raw)) {
+    if (!id || !clip || typeof clip !== "object") continue;
+    const offset = clamp(Math.round(finiteNumber(clip.offset)), -MAX_TIMELINE_FRAMES, lastFrame);
+    const enabled = clip.enabled !== false;
+    if (offset !== 0 || !enabled) out[id] = { offset, enabled };
+  }
+  return out;
 }
 
 export function isTimelineEmpty(timeline) {
   if (!timeline) return true;
   const keyed = Object.values(timeline.tracks || {}).some((track) => track.keys?.length);
-  return !keyed && !timeline.effects?.length && !timeline.markers?.length;
+  return !keyed && !timeline.effects?.length && !timeline.markers?.length && !Object.keys(timeline.poseClips || {}).length;
 }
 
 /** The serialized form, or null when there is nothing to keep (old states stay unchanged). */
@@ -294,6 +315,7 @@ export function pruneTimelineTargets(timeline, targetIds) {
   for (const [id, track] of Object.entries(timeline.tracks)) if (!keep.has(track.target)) { delete timeline.tracks[id]; changed = true; }
   const effects = timeline.effects.filter((effect) => keep.has(effect.target));
   if (effects.length !== timeline.effects.length) { timeline.effects = effects; changed = true; }
+  for (const id of Object.keys(timeline.poseClips || {})) if (!keep.has(id)) { delete timeline.poseClips[id]; changed = true; }
   return changed;
 }
 

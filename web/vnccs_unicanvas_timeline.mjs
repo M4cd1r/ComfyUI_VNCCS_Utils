@@ -14,6 +14,12 @@
  *    as before and a chip says so.
  *  - History: every key gesture, preset insert, effect change or setting change is one `timeline`
  *    entry (the whole timeline before / after; it is small JSON). Scrubbing and playback add none.
+ *  - Pose layers (issue #18): an animated pose layer gets a "Pose animation" row (drag it to move
+ *    its time offset). Playback shows prepared mannequin frames from `poseFrames`
+ *    (vnccs_unicanvas_timeline_pose.mjs); "Prepare pose frames" (also run before an export) steps
+ *    the studio animation in a hidden pose editor. Baked layers keep 2D motion only.
+ *  - "Export animation" (vnccs_unicanvas_animation_export.mjs) renders each frame offscreen through
+ *    the composite path and streams it to the backend encoder.
  */
 
 import {
@@ -62,6 +68,19 @@ import {
   trackIdFor,
 } from "./vnccs_unicanvas_timeline_core.mjs";
 import { getGroupDescendants, groupChainOf, isGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
+import {
+  POSE_BAKED_NOTE,
+  PoseFrameCache,
+  isPoseLayerBaked,
+  poseAnimationInfo,
+  poseClipOf,
+  poseClipSceneRange,
+  poseLayerHash,
+  setPoseClip,
+  studioFrameFor,
+  studioFramesForRange,
+} from "./vnccs_unicanvas_timeline_pose.mjs";
+import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs";
 
 const STYLE_ID = "vnccs-uc-timeline-styles";
 const LABEL_WIDTH = 180;
@@ -116,6 +135,9 @@ const STYLES = `
 .vnccs-uc-tl-menu .sep { height:1px; background:rgba(255,255,255,.1); margin:3px 0; }
 .vnccs-uc-tl-menu .head { opacity:.6; padding:3px 9px; }
 .vnccs-uc-tl-camera-frame { position:absolute; pointer-events:none; }
+.vnccs-uc-tl-pose { position:absolute; top:4px; bottom:4px; border-radius:4px; background:rgba(120,170,255,.3); border:1px solid rgba(120,170,255,.7); font-size:9px; padding-left:3px; overflow:hidden; white-space:nowrap; cursor:ew-resize; box-sizing:border-box; }
+.vnccs-uc-tl-pose.off { opacity:.4; }
+.vnccs-uc-tl-pose.baked { left:5px !important; right:5px; width:auto !important; background:rgba(255,255,255,.05); border-color:rgba(255,255,255,.2); cursor:default; font-style:italic; }
 `;
 
 function ensureStyles() {
@@ -146,6 +168,10 @@ class TimelineController {
     this.menu = null;
     this.dock = null;
     this.button = null;
+    this.poseFrames = new PoseFrameCache();
+    this.preparing = null;
+    this.exportDialog = null;
+    this.createPoseEditor = null;
   }
 
   // Availability and data ---------------------------------------------------------------------
@@ -220,6 +246,8 @@ class TimelineController {
       const needsAnchor = state.sx !== 1 || state.sy !== 1 || state.rotation;
       items.push({ state, anchor: needsAnchor ? this.anchorOf(item) : { x: 0, y: 0 } });
     }
+    const pose = this.poseFrame(layer, frame);
+    if (pose) any = true;
     if (!any) return null;
     const offset = this.uc.getLayerStateOffset(layer);
     const matrix = isGroupLayer(layer) ? null : composeLayerMatrix(offset, items);
@@ -228,6 +256,7 @@ class TimelineController {
       const found = layer.sprite?.variants?.find((item) => item.id === own.variantId);
       if (found?.pixels && found.id !== layer.sprite.activeVariantId) variant = { canvas: found.pixels, rect: { ...layer.sprite.rect } };
     }
+    if (pose) variant = { canvas: pose.canvas, rect: { ...layer.pose.rect }, poseFrame: pose.frame, exact: pose.exact };
     return {
       matrix,
       opacity: own?.opacity,
@@ -247,7 +276,7 @@ class TimelineController {
   /** Runs fn with the frame of `kind` applied to the layers (visibility, opacity, matrices). */
   withFrame(kind, fn) {
     const frame = this.frameFor(kind);
-    if (frame === null || !this.data || isTimelineEmpty(this.data)) {
+    if (frame === null || !this.data || (isTimelineEmpty(this.data) && !this.hasPoseAnimation())) {
       if (kind !== "composite" || this.uc._timelineRestPass) return fn();
       // Composites (generation, flatten, save) show the rest scene even while the dock is open.
       this.uc._timelineRestPass = true;
@@ -277,10 +306,137 @@ class TimelineController {
     }
   }
 
+  // Pose animation -----------------------------------------------------------------------------
+
+  /** `{ info, clip, baked }` for an animated pose layer, else null. */
+  poseClip(layer) {
+    const info = poseAnimationInfo(layer);
+    if (!info) return null;
+    return { info, clip: poseClipOf(this.data, layer.id), baked: isPoseLayerBaked(layer) };
+  }
+
+  hasPoseAnimation() {
+    return this.uc.layers.some((layer) => {
+      const entry = this.poseClip(layer);
+      return entry && entry.clip.enabled && !entry.baked;
+    });
+  }
+
+  /**
+   * The prepared mannequin frame of a pose layer at a scene frame: the exact studio frame, else the
+   * nearest cached one (never a blank); null without frames (the layer shows its still).
+   */
+  poseFrame(layer, frame) {
+    if (layer?.type !== "pose" || !layer.pose?.rect) return null;
+    const entry = this.poseClip(layer);
+    if (!entry || entry.baked || !entry.clip.enabled) return null;
+    const studioFrame = studioFrameFor(frame, entry.info, entry.clip, this.data.fps);
+    const found = this.poseFrames.nearest(layer.id, poseLayerHash(layer), studioFrame);
+    if (!found?.canvas) return null;
+    return { canvas: found.canvas, frame: found.frame, exact: found.frame === studioFrame };
+  }
+
+  /** Studio frames still missing for scene frames start..end, per animated pose layer. */
+  missingPoseFrames(start, end) {
+    const work = [];
+    for (const layer of this.uc.layers) {
+      const entry = this.poseClip(layer);
+      if (!entry || entry.baked || !entry.clip.enabled) continue;
+      const hash = poseLayerHash(layer);
+      const frames = studioFramesForRange(entry.info, entry.clip, this.data.fps, start, end)
+        .filter((frame) => !this.poseFrames.has(layer.id, hash, frame));
+      if (frames.length) work.push({ layer, hash, frames });
+    }
+    return work;
+  }
+
+  /**
+   * "Prepare pose frames": renders the studio frames the scene range needs into the frame cache,
+   * one layer at a time in a hidden pose editor. Resolves with the number of frames rendered.
+   */
+  async preparePoseFrames({ start = null, end = null, cancelled, onProgress } = {}) {
+    const timeline = this.ensureData();
+    if (this.preparing) return this.preparing;
+    const range = { start: start ?? 0, end: end ?? timeline.frameCount - 1 };
+    const work = this.missingPoseFrames(range.start, range.end);
+    const total = work.reduce((sum, item) => sum + item.frames.length, 0);
+    if (!total) { onProgress?.(0, 0); return 0; }
+    const uc = this.uc;
+    if (uc.poseEditSession || uc.tool === "pose") {
+      throw new Error("Save or cancel the pose edit before preparing pose frames");
+    }
+    const editor = (uc.poseEditor ||= this.createPoseEditor?.());
+    if (!editor?.captureAnimationFrames) throw new Error("The pose editor is not available");
+    this.pause();
+    let done = 0;
+    this.preparing = (async () => {
+      try {
+        for (const { layer, hash, frames } of work) {
+          if (cancelled?.()) break;
+          await editor.captureAnimationFrames(layer, frames, {
+            cancelled,
+            onFrame: (frame, canvas) => {
+              this.poseFrames.set(layer.id, hash, frame, canvas);
+              done += 1;
+              onProgress?.(done, total);
+              uc.setStatus?.(`Preparing pose frames ${done}/${total}`);
+            },
+          });
+        }
+        uc.setStatus?.(`Prepared ${done} pose frame${done === 1 ? "" : "s"}`);
+        return done;
+      } finally {
+        this.preparing = null;
+        this.renderDock();
+        uc.requestRender();
+      }
+    })();
+    return this.preparing;
+  }
+
+  async prepareFromDock() {
+    try {
+      await this.preparePoseFrames();
+    } catch (error) {
+      this.uc.setStatus?.(`Prepare pose frames: ${error?.message || error}`, true);
+    }
+  }
+
+  setPoseClipEnabled(layerId, enabled) {
+    this.edit((timeline) => setPoseClip(timeline, layerId, { enabled }), enabled ? "Pose animation on" : "Pose animation off");
+  }
+
+  setPoseClipOffset(layerId, offset) {
+    this.edit((timeline) => setPoseClip(timeline, layerId, { offset }), `Pose animation starts at frame ${offset}`);
+  }
+
+  /** Dragging the pose bar moves its time offset live; one history entry on release. */
+  beginPoseDrag(e, layerId) {
+    const before = this.snapshot();
+    const startFrame = this.frameAtClientX(e.clientX);
+    const startOffset = poseClipOf(this.data, layerId).offset;
+    let last = startOffset;
+    this.pause();
+    this.capture(e, (event) => {
+      const offset = startOffset + this.frameAtClientX(event.clientX) - startFrame;
+      if (offset === last) return;
+      last = offset;
+      setPoseClip(this.data, layerId, { offset });
+      this.renderBody();
+      this.uc.requestRender();
+    }, () => {
+      if (last !== startOffset) this.commit(before, `Pose animation starts at frame ${last}`);
+    });
+  }
+
+  openExport() {
+    return openAnimationExportDialog(this);
+  }
+
   /** Keeps the dock's rows in step with the layer stack and the active layer. */
   afterRender() {
     if (!this.dock || this.dock.hidden || this.gesture) return;
-    const signature = `${this.uc.activeLayerId}|${this.uc.layers.map((layer) => `${layer.id}:${layer.name}:${layer.groupId || ""}:${layer.collapsed ? 1 : 0}`).join(",")}`;
+    const signature = `${this.uc.activeLayerId}|${this.uc.layers.map((layer) => `${layer.id}:${layer.name}:${layer.groupId || ""}:${layer.collapsed ? 1 : 0}${layer.type === "pose" ? `:${poseLayerHash(layer)}:${isPoseLayerBaked(layer) ? 1 : 0}` : ""}`).join(",")}`;
     if (signature === this._signature) return;
     this._signature = signature;
     this.renderDock();
@@ -731,6 +887,8 @@ class TimelineController {
     this.autoKeyBtn = this.headButton("● Auto-key", "Auto-key: moves and value changes write keys at the playhead", () => { this.autoKey = !this.autoKey; this.syncHeader(); }, "auto-key");
     this.markerBtn = this.headButton("+ Marker", "Add a marker at the playhead", () => this.addMarker(), "marker");
     this.cameraBtn = this.headButton("Key camera", "Key the camera view rect from the current bbox", () => this.keyCameraFromBbox(), "camera-key");
+    this.prepareBtn = this.headButton("Prepare pose frames", "Render the pose layers' studio animation frames for playback (also runs before an export)", () => void this.prepareFromDock(), "prepare-pose");
+    this.exportBtn = this.headButton("Export...", "Export the timeline as WebM, MP4, GIF or a PNG sequence", () => this.openExport(), "export");
     this.generateBtn = this.headButton("Generate at frame", "GENERATE with the scene at the current frame instead of the rest scene", () => void this.generateAtFrame(), "generate-frame");
     this.animatedChip = document.createElement("span");
     this.animatedChip.className = "vnccs-uc-tl-chip";
@@ -746,7 +904,7 @@ class TimelineController {
     const closeBtn = this.headButton("✕", "Close the timeline (the canvas returns to the rest scene)", () => this.close(), "close");
     head.append(this.collapseBtn, title, this.startBtn, this.prevBtn, this.playBtn, this.nextBtn, this.endBtn, this.loopBtn,
       frame.wrap, fps.wrap, length.wrap, this.autoKeyBtn, this.animatedChip, this.autoKeyChip, spacer,
-      this.markerBtn, this.cameraBtn, this.generateBtn, closeBtn);
+      this.markerBtn, this.cameraBtn, this.prepareBtn, this.exportBtn, this.generateBtn, closeBtn);
   }
 
   buildInspector() {
@@ -847,6 +1005,8 @@ class TimelineController {
     if (document.activeElement !== this.fpsInput) this.fpsInput.value = String(timeline.fps);
     if (document.activeElement !== this.lengthInput) this.lengthInput.value = String(timeline.frameCount);
     this.generateBtn.disabled = Boolean(this.uc.drawInProgress);
+    this.prepareBtn.hidden = !this.uc.layers.some((layer) => poseAnimationInfo(layer));
+    this.prepareBtn.disabled = Boolean(this.preparing);
     this.syncAnimatedChip();
   }
 
@@ -892,6 +1052,8 @@ class TimelineController {
     for (const layer of visibleLayerRows(uc.layers)) {
       const depth = groupChainOf(uc.layers, layer).length;
       rows.push({ target: layer.id, label: `${isGroupLayer(layer) ? "▸ " : ""}${layer.name || "Layer"}`, depth, kind: "target", layer });
+      const pose = this.poseClip(layer);
+      if (pose) rows.push({ target: layer.id, label: "Pose animation", depth: depth + 1, kind: "pose", layer, pose });
       if (!this.expanded.has(layer.id)) continue;
       for (const property of LAYER_PROPERTIES) {
         if (timeline.tracks[trackIdFor(layer.id, property)]) rows.push({ target: layer.id, property, label: TIMELINE_PROPERTIES[property].label, depth: depth + 1, kind: "property" });
@@ -969,6 +1131,8 @@ class TimelineController {
       if (row.kind === "property") {
         const trackName = trackIdFor(row.target, row.property);
         for (const key of timeline.tracks[trackName]?.keys || []) lane.appendChild(this.keyElement(trackName, key));
+      } else if (row.kind === "pose") {
+        lane.appendChild(this.poseBar(row));
       } else if (row.kind === "effect") {
         const bar = document.createElement("div");
         bar.className = "vnccs-uc-tl-effect";
@@ -1021,6 +1185,32 @@ class TimelineController {
     body.append(ruler, rowsEl, playhead);
     this.updatePlayhead();
     body.scrollTop = scrollTop;
+  }
+
+  poseBar(row) {
+    const { info, clip, baked } = row.pose;
+    const bar = document.createElement("div");
+    bar.className = "vnccs-uc-tl-pose";
+    bar.dataset.poseClip = row.target;
+    if (baked) {
+      bar.classList.add("baked");
+      bar.dataset.poseBaked = "";
+      bar.textContent = `Pose animation disabled: ${POSE_BAKED_NOTE}`;
+      bar.title = bar.textContent;
+      return bar;
+    }
+    const range = poseClipSceneRange(info, clip, this.data.fps);
+    const last = this.data.frameCount - 1;
+    const from = clamp(range.start, 0, last);
+    const to = clamp(range.end, 0, last);
+    bar.style.left = `${this.xForFrame(from)}px`;
+    bar.style.width = `${Math.max(6, this.xForFrame(to) - this.xForFrame(from))}px`;
+    if (!clip.enabled) bar.classList.add("off");
+    const hash = poseLayerHash(row.layer);
+    const cached = [...(this.poseFrames.layers.get(row.target)?.hash === hash ? this.poseFrames.layers.get(row.target).frames : [])].length;
+    bar.textContent = `Pose ${info.frameCount}f @ ${round(info.fps, 2)}fps${clip.offset ? ` +${clip.offset}` : ""}${clip.enabled ? "" : " (off)"} · ${cached}/${info.frameCount} ready`;
+    bar.title = `Studio frames 0-${info.frameCount - 1} at ${round(info.fps, 2)} fps play from scene frame ${clip.offset}${info.loop ? " and loop" : ""}. Drag to move; right-click for options.`;
+    return bar;
   }
 
   keyElement(trackName, key) {
@@ -1091,6 +1281,7 @@ class TimelineController {
       return;
     }
     if (target.dataset.key || target.dataset.aggTarget) { this.beginKeyDrag(e, target); return; }
+    if (target.dataset.poseClip && !("poseBaked" in target.dataset)) { this.beginPoseDrag(e, target.dataset.poseClip); return; }
     if (target.closest("[data-lane]")) this.beginBoxSelect(e);
   }
 
@@ -1313,6 +1504,17 @@ class TimelineController {
     const rowIndex = target.closest("[data-row-index]")?.dataset.rowIndex;
     const row = rowIndex !== undefined ? this._rows?.[Number(rowIndex)] : null;
     if (!row) return;
+    if (row.kind === "pose") {
+      if (row.pose.baked) return;
+      const id = row.target;
+      this.showMenu(e, ({ add }) => {
+        add("Prepare pose frames", () => void this.prepareFromDock(), "pose-prepare");
+        add(row.pose.clip.enabled ? "Turn pose animation off" : "Turn pose animation on", () => this.setPoseClipEnabled(id, !row.pose.clip.enabled), "pose-toggle");
+        add("Start at the playhead", () => this.setPoseClipOffset(id, this.data.currentFrame), "pose-offset-playhead");
+        if (row.pose.clip.offset) add("Start at frame 0", () => this.setPoseClipOffset(id, 0), "pose-offset-reset");
+      });
+      return;
+    }
     if (row.target === CAMERA_TARGET) {
       this.showMenu(e, ({ add }) => {
         add("Key camera from bbox", () => this.keyCameraFromBbox(), "camera-key");
@@ -1382,20 +1584,42 @@ class TimelineController {
       animated: this.frameIsAnimated(),
       timeline: this.data ? snapshotTimeline(this.data) : null,
       selected: this.selectionList(),
+      poseFrames: {
+        bytes: this.poseFrames.bytes,
+        layers: Object.fromEntries([...this.poseFrames.layers].map(([id, record]) => [id, [...record.frames].sort((a, b) => a - b)])),
+      },
+      preparing: Boolean(this.preparing),
+      // Per animated pose layer: the studio frame the view frame needs and the one it shows.
+      poseDisplay: Object.fromEntries(this.uc.layers.filter((layer) => this.poseClip(layer)).map((layer) => {
+        const entry = this.poseClip(layer);
+        const frame = this.data ? this.data.currentFrame : 0;
+        const shown = this.data && !entry.baked && entry.clip.enabled ? this.poseFrame(layer, frame) : null;
+        return [layer.id, {
+          baked: entry.baked,
+          enabled: entry.clip.enabled,
+          offset: entry.clip.offset,
+          studioFrame: this.data ? studioFrameFor(frame, entry.info, entry.clip, this.data.fps) : 0,
+          shownFrame: shown ? shown.frame : null,
+          frameCount: entry.info.frameCount,
+        }];
+      })),
     };
   }
 
   dispose() {
     this.pause();
     this.closeMenu();
+    this.exportDialog?.remove();
+    this.poseFrames.clear();
     this.dock?.remove();
   }
 }
 
 /** Installs the timeline dock and its render hooks on a UniCanvas widget. */
-export function installUniCanvasTimeline(uc) {
+export function installUniCanvasTimeline(uc, { createPoseEditor } = {}) {
   if (!uc || uc.timelinePanel) return uc?.timelinePanel;
   const controller = new TimelineController(uc);
+  controller.createPoseEditor = createPoseEditor || null;
   uc.timelinePanel = controller;
   if (uc.timeline === undefined) uc.timeline = null;
 

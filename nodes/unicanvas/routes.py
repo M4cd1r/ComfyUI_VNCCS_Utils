@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any
 
+from .animation_export import animation_export_routes
 from .assets import _get_checkpoint_names, _get_unicanvas_assets
 from .color_match import _run_unicanvas_color_match
 from .constants import _MAX_UPLOAD_BYTES
@@ -323,6 +324,10 @@ def register_unicanvas_layer_routes() -> None:
 
     # Durable projects (Plan 10.2) and the asset library (Plan 10.4): /vnccs/unicanvas/projects/..., /vnccs/unicanvas/library/...
     for method, path, handler in project_routes(web, _content_length_ok):
+        getattr(PromptServer.instance.routes, method.lower())(path)(handler)
+
+    # Timeline animation export (Plan 06.2): /vnccs/unicanvas/animation/begin|frames|end|cancel|status.
+    for method, path, handler in animation_export_routes(web, _content_length_ok):
         getattr(PromptServer.instance.routes, method.lower())(path)(handler)
 
     _UNICANVAS_LAYER_ROUTES_REGISTERED = True

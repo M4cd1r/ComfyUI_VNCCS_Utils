@@ -343,7 +343,7 @@ test("serialize prunes deleted layers and restore round-trips", () => {
 test("the widget routes render, bounds, paint, history and persistence through the timeline", () => {
   const widget = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
   for (const pattern of [
-    /installUniCanvasTimeline\(this\);/,
+    /installUniCanvasTimeline\(this, \{ createPoseEditor: /,
     /getLayerRenderTransform\(layer\) \{/,
     /const start = this\.alignCoordForTool\(this\.layerPointFromWorld\(layer, a\), this\.brushSize\);/,
     /entry\.kind === TIMELINE_HISTORY_KIND/,
