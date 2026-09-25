@@ -11,6 +11,7 @@ import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaH
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
+import { SCENE_PERSPECTIVE_HISTORY_KIND, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreScenePerspective, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
 import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
@@ -927,6 +928,7 @@ class UniCanvasWidget {
     });
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
+    installUniCanvasScenePlace(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -4054,6 +4056,7 @@ class UniCanvasWidget {
       }
       this.invalidateLayerCaches(entry.layer);
     }
+    if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
@@ -4816,11 +4819,17 @@ class UniCanvasWidget {
         const movePreview = transformDraft ? null : this.getLayerMovePreview(layer);
         const visibleWorldRect = this._visibleWorldRectForRender;
         if (movePreview) {
-          ctx.translate(movePreview.dx, movePreview.dy);
+          // Depth-scale previews also scale around the feet anchor (scale 1 is a plain offset).
+          const scale = movePreview.scale || 1;
+          const anchor = movePreview.anchor || { x: 0, y: 0 };
+          ctx.translate(movePreview.dx + anchor.x, movePreview.dy + anchor.y);
+          ctx.scale(scale, scale);
+          ctx.translate(-anchor.x, -anchor.y);
           this._visibleWorldRectForRender = {
-            ...visibleWorldRect,
-            x: visibleWorldRect.x - movePreview.dx,
-            y: visibleWorldRect.y - movePreview.dy,
+            x: anchor.x + (visibleWorldRect.x - movePreview.dx - anchor.x) / scale,
+            y: anchor.y + (visibleWorldRect.y - movePreview.dy - anchor.y) / scale,
+            width: visibleWorldRect.width / scale,
+            height: visibleWorldRect.height / scale,
           };
         }
         if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
@@ -4955,7 +4964,7 @@ class UniCanvasWidget {
 
   drawRasterLayerVisible(ctx, layer) {
     if (layer.hiresCanvas && layer.hiresRect) {
-      const visible = this.visibleWorldRect();
+      const visible = this._visibleWorldRectForRender || this.visibleWorldRect();
       this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, this.shouldUseLayerLod(layer));
       return;
     }
@@ -7193,6 +7202,7 @@ class UniCanvasWidget {
     state.bbox = this.bbox;
     state.snapToGrid = this.snapToGrid;
     state.resizeTransformMode = this.resizeTransformMode;
+    state.scenePerspective = serializeScenePerspective(this.scenePerspective);
     this.normalizeLoraStack();
     state.settings = { ...this.settings };
     state.activeLayerId = this.activeLayerId;
@@ -7255,6 +7265,7 @@ class UniCanvasWidget {
       bbox: this.bbox,
       snapToGrid: this.snapToGrid,
       resizeTransformMode: this.resizeTransformMode,
+      scenePerspective: serializeScenePerspective(this.scenePerspective),
       settings: this.settings,
       layers: this.layers.map((l) => this.serializeLayer(l, includeLayerData)),
       activeLayerId: this.activeLayerId,
@@ -7641,11 +7652,12 @@ class UniCanvasWidget {
       }
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return;
       if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && layer.type === "raster")) throw new Error("The panorama base layer is missing");
-      previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
+      previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
       this.snapToGrid = state.snapToGrid === true;
       this.resizeTransformMode = normalizeTransformMode(state.resizeTransformMode);
+      restoreScenePerspective(this, state.scenePerspective);
       this.settings = { ...this.settings, ...(state.settings || {}) };
       if (layers.length) {
         this.layers = layers;
