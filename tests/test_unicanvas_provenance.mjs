@@ -133,7 +133,7 @@ test("staging items carry the run snapshot", () => {
 test("meta is serialized, restored with a normalizer and kept in history clones", () => {
     const serialize = method(widget, "serializeLayer(layer");
     assert.equal((serialize.match(/meta: normalizeLayerMeta\(layer\.meta\)/g) || []).length, 3, "the group, panorama and flat branch");
-    assert.match(method(widget, "async applySerializedState(state)"), /meta: normalizeLayerMeta\(item\.meta\)/);
+    assert.match(method(widget, "async applySerializedState(state, { exact = false } = {})"), /meta: normalizeLayerMeta\(item\.meta\)/);
     assert.match(method(widget, "cloneHistoryLayer(layer)"), /meta: cloneLayerMeta\(layer\.meta\)/);
 });
 
@@ -143,7 +143,7 @@ test("pixel-changing paths bump the revision and non-pixel paths do not", () => 
     }
     assert.doesNotMatch(method(widget, "invalidateLayerThumbnail(layer)"), /bumpLayerPixelRevision/,
         "opacity only refreshes the thumbnail");
-    assert.match(method(widget, "async applySerializedState(state)"), /bumpLayerPixelRevision\(layer\)/, "state load");
+    assert.match(method(widget, "async applySerializedState(state, { exact = false } = {})"), /bumpLayerPixelRevision\(layer\)/, "state load");
     assert.doesNotMatch(method(widget, "serializeLayer(layer"), /pixelRevision/, "the revision is not serialized");
     const row = method(widget, "createLayerRow(layer)");
     for (const handler of row.split("addEventListener").filter((part) => /layer\.(visible|locked|name) = /.test(part))) {

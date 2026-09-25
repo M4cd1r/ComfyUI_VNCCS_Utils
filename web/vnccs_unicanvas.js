@@ -3,7 +3,7 @@
  */
 
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache, serializePoseId, restorePoseId } from "./vnccs_unicanvas_pose_state.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
@@ -12,12 +12,16 @@ import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vn
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
+import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS } from "./vnccs_unicanvas_states.mjs";
+import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { SCENE_PERSPECTIVE_HISTORY_KIND, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreScenePerspective, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
+import { AUTO_FILE_SETTING, installUniCanvasFiling, resolveAutoFile } from "./vnccs_unicanvas_filing.mjs";
 import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
 import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs";
 import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs";
@@ -754,6 +758,7 @@ function makeDefaultUniCanvasSettings() {
     // Inpaint generates only the area around the mask at full resolution (crop and stitch).
     inpaint_crop_to_mask: true,
     auto_name_layers: false,
+    auto_file_layers: true,
     remove_bg_edit_model: "qwen_image21",
     edit_reference_images: [],
     qwen21_turbo_enabled: false,
@@ -932,7 +937,12 @@ class UniCanvasWidget {
     installUniCanvasLayerTools(this);
     installUniCanvasVnPreview(this);
     installUniCanvasGroups(this);
+    installUniCanvasSceneStates(this);
+    installUniCanvasPoseScene(this, { createEditor: () => new UniCanvasPoseEditor(this) });
     installUniCanvasScenePlace(this);
+    installUniCanvasProjects(this);
+    installUniCanvasAutoNaming(this);
+    installUniCanvasFiling(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -1079,7 +1089,7 @@ class UniCanvasWidget {
     layersBody.className = "vnccs-uc-layers-section";
     layersBody.append(this.layerSubhead, this.layersTopActions, this.layerList, this.flattenLayersFooter);
     const layersSection = this._section("Layers", layersBody, [
-      [UI_ICONS.plus, "Add raster", () => this.addLayer("raster")],
+      [UI_ICONS.plus, "Add raster", () => this.autoNaming.onLayerCreated(this.addLayer("raster"))],
       [UI_ICONS.mask, "Add mask", () => this.addLayer("mask")],
       [POSE_ICON, "Add pose layer", () => this.addPoseLayer()],
       [UI_ICONS.duplicate, "Duplicate selected", () => this.duplicateActiveLayer()],
@@ -1751,6 +1761,7 @@ class UniCanvasWidget {
       layer = this.addLayer("pose", "Pose Studio", true, true, createLayerMeta("paint"));
       layer.pose = { version: 1, rect: { ...this.bbox }, studio: {}, character: null,
         panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
+      this.autoNaming.onLayerCreated(layer);
       this.renderLayerList();
     }
     if (layer.locked || !layer.visible) {
@@ -1789,6 +1800,7 @@ class UniCanvasWidget {
     const layer = this.addLayer("pose", "Pose Studio", true, true);
     layer.pose = { version: 1, rect: { ...this.bbox }, studio: {}, character: null,
       panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
+    this.autoNaming.onLayerCreated(layer);
     this.renderLayerList();
     this.editPoseLayer(layer);
     return layer;
@@ -1806,7 +1818,7 @@ class UniCanvasWidget {
   }
 
   poseEditKey(pose) {
-    return JSON.stringify([pose?.studio ?? null, pose?.viewport ?? null, pose?.rect ?? null, pose?.character ?? null]);
+    return JSON.stringify([pose?.studio ?? null, pose?.viewport ?? null, pose?.rect ?? null, pose?.character ?? null, pose?.characterRefs ?? null]);
   }
 
   beginPoseEditSession(layer) {
@@ -1904,6 +1916,7 @@ class UniCanvasWidget {
     if (this.poseEditor?.layer === layer) this.poseEditor.release();
     layer.type = "raster";
     delete layer.pose;
+    delete layer.poseIdCanvas; delete layer.poseIdMeta;
     layer.meta = createLayerMeta("rasterize", { derivedFrom: layer.id, character: layer.meta?.character });
     this.invalidateLayerCaches(layer);
     this.syncPoseToolToActiveLayer();
@@ -3326,6 +3339,8 @@ class UniCanvasWidget {
       }
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.lassoPoints = [point];
+    } else if (this.pointerMode === "move" && !e.altKey && this.beginSceneStateMove?.()) {
+      // "Move affects: this state" changes the active scene state's offset, not the pixels.
     } else if (this.pointerMode === "move" && !e.altKey && this.beginMultiLayerMove()) {
       // A group or a multi-selection moves as one gesture (vnccs_unicanvas_groups.mjs).
     } else if (this.pointerMode === "move" && !e.altKey && this.activeLayer && !this.activeLayer.locked) {
@@ -3436,7 +3451,9 @@ class UniCanvasWidget {
     if (this.pointerMode === "lasso" && this.lassoPoints.length > 2) {
       this.commitLassoShape();
     }
-    if (this.pointerMode === "layer-move" && this.dragStart?.moveTargets) {
+    if (this.pointerMode === "layer-move" && this.dragStart?.stateMove) {
+      this.commitSceneStateMove?.(this.dragStart);
+    } else if (this.pointerMode === "layer-move" && this.dragStart?.moveTargets) {
       this.commitMultiLayerMove();
     } else if (this.pointerMode === "layer-move" && this.dragStart?.layerCanvas) {
       this.moveActiveLayerPixels(this.dragStart.previewDx || 0, this.dragStart.previewDy || 0, true);
@@ -3542,7 +3559,8 @@ class UniCanvasWidget {
 
   commitRectShape() {
     const layer = this.activeLayer;
-    const rect = this.shapeDraft;
+    const offset = this.getLayerStateOffset(layer);
+    const rect = this.shapeDraft && { ...this.shapeDraft, x: this.shapeDraft.x - offset.x, y: this.shapeDraft.y - offset.y };
     if (!layer || layer.locked || !rect || rect.width <= 0 || rect.height <= 0) return;
     if (!this.ensureWorldBounds(rect.x + rect.width, rect.y + rect.height, 128)) return;
     if (!this.ensureWorldBounds(rect.x, rect.y, 128)) return;
@@ -3830,6 +3848,8 @@ class UniCanvasWidget {
       canvas: crop ? this.cloneCanvasCrop(layer.canvas, crop) : null,
       hiresCanvas: layer.type === "pose" && layer.hiresCanvas ? this.cloneCanvas(layer.hiresCanvas) : (layer.hiresCanvas || null),
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
+      poseIdCanvas: layer.poseIdCanvas || null,
+      poseIdMeta: layer.poseIdMeta || null,
     };
   }
 
@@ -3837,6 +3857,8 @@ class UniCanvasWidget {
     if (!layer || !snapshot) return;
     if (this.poseEditor?.layer === layer) this.poseEditor.release();
     if (snapshot.pose) layer.pose = serializePose(snapshot.pose);
+    // The ID canvas is replaced, never drawn into, so snapshots share it; a stale one is ignored.
+    if (layer.type === "pose") { layer.poseIdCanvas = snapshot.poseIdCanvas || null; layer.poseIdMeta = snapshot.poseIdMeta || null; }
     if (this.panorama && snapshot.panoramaCanvas) {
       layer.panoramaCanvas = this.cloneCanvas(snapshot.panoramaCanvas);
       layer.hiresCanvas = null; layer.hiresRect = null;
@@ -3900,6 +3922,7 @@ class UniCanvasWidget {
       groupId: layer.groupId || null,
       nameSource: layer.nameSource,
       meta: cloneLayerMeta(layer.meta),
+      stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this.cloneCanvas(layer.canvas),
       panoramaCanvas: this.panorama ? this.cloneCanvas(layer.panoramaCanvas) : null,
       _panoramaBefore: this.panorama && layer._panoramaBefore ? this.cloneCanvas(layer._panoramaBefore) : null,
@@ -3908,6 +3931,7 @@ class UniCanvasWidget {
       clone.hiresCanvas = this.cloneCanvas(layer.hiresCanvas);
       clone.hiresRect = { ...layer.hiresRect };
     }
+    if (layer.poseIdCanvas) { clone.poseIdCanvas = layer.poseIdCanvas; clone.poseIdMeta = layer.poseIdMeta; }
     this.invalidateLayerCaches(clone);
     return clone;
   }
@@ -4002,6 +4026,8 @@ class UniCanvasWidget {
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoStack = [];
     this.updateHistoryButtons();
+    // Committed pixel edits refresh rules names (pose characters) and name new paint.
+    if (entry.kind === "layerPixels") this.autoNaming?.onLayerPixelsCommitted(this.layers.find((layer) => layer.id === entry.layerId));
   }
 
   undo() {
@@ -4075,6 +4101,16 @@ class UniCanvasWidget {
       // One user action, one undo step: children apply in order and undo in reverse.
       const entries = direction === "undo" ? [...(entry.entries || [])].reverse() : (entry.entries || []);
       for (const child of entries) this.applyHistoryEntry(child, direction);
+      return;
+    }
+    if (SCENE_STATE_HISTORY_KINDS.has(entry.kind)) {
+      // Scene states (vnccs_unicanvas_states.mjs): layer properties and the state list.
+      this.historyRestoring = true;
+      try {
+        this.applySceneStateHistory?.(entry, direction);
+      } finally {
+        this.historyRestoring = false;
+      }
       return;
     }
     this.cancelDeferredCanvasCommit();
@@ -4171,17 +4207,28 @@ class UniCanvasWidget {
     if (target) target._vnccsHistoryRecorded = false;
   }
 
+  // Where the layer shows: its stored pixels plus the live scene-state offset.
   getLayerWorldBounds(layer = this.activeLayer) {
     if (!layer) return null;
-    if (layer.hiresCanvas && layer.hiresRect) return this.normalizeLayerWorldRect(layer.hiresRect);
+    const offset = this.getLayerStateOffset(layer);
+    if (layer.hiresCanvas && layer.hiresRect) {
+      const rect = this.normalizeLayerWorldRect(layer.hiresRect);
+      return { ...rect, x: rect.x + offset.x, y: rect.y + offset.y };
+    }
     const crop = this.getLayerAlphaBounds(layer);
     if (!crop) return null;
     return {
-      x: this.origin.x + crop.x,
-      y: this.origin.y + crop.y,
+      x: this.origin.x + crop.x + offset.x,
+      y: this.origin.y + crop.y + offset.y,
       width: crop.width,
       height: crop.height,
     };
+  }
+
+  // The live scene-state offset (world pixels) of a layer; render time only, never baked in.
+  getLayerStateOffset(layer) {
+    if (this.panorama || !layer || layer.type === "mask" || isGroupLayer(layer)) return { x: 0, y: 0 };
+    return normalizeStateOffset(layer.stateOffset);
   }
 
   // ---------------------------------------------------------------------------
@@ -4214,7 +4261,11 @@ class UniCanvasWidget {
     if (this.transformDraft) return null; // another layer's transform is still open
     const source = this.createTransformSource(layer);
     if (!source?.canvas || !source.bounds) return null;
+    // The draft works where the layer shows (scene-state offset included); Apply writes back.
+    const stateOffset = this.getLayerStateOffset(layer);
+    source.bounds = { ...source.bounds, x: source.bounds.x + stateOffset.x, y: source.bounds.y + stateOffset.y };
     this.transformDraft = {
+      stateOffset,
       layerId: layer.id,
       before: source.before,
       sourceCanvas: source.canvas,
@@ -4413,14 +4464,16 @@ class UniCanvasWidget {
       this.cancelTransformDraft();
       return;
     }
-    const bounds = transformDraftBounds(draft, 32);
-    if (!bounds) return;
+    const shown = transformDraftBounds(draft, 32);
+    if (!shown) return;
+    const stateOffset = draft.stateOffset || { x: 0, y: 0 };
+    const bounds = { ...shown, x: shown.x - stateOffset.x, y: shown.y - stateOffset.y };
     if (!this.ensureWorldBounds(bounds.x, bounds.y, 256, false)) return;
     if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256, false)) return;
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
     ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
     ctx.save();
-    ctx.translate(-this.origin.x, -this.origin.y);
+    ctx.translate(-this.origin.x - stateOffset.x, -this.origin.y - stateOffset.y);
     this.drawTransformDraft(ctx, draft, 48);
     ctx.restore();
     layer.hiresCanvas = null;
@@ -4812,8 +4865,10 @@ class UniCanvasWidget {
     const layer = this.tool === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
     if (!layer || layer.locked) return;
     if (!this.ensureVisibleWorldBounds(Math.max(128, this.brushSize * 2))) return;
-    const start = this.alignCoordForTool(a, this.brushSize);
-    const end = this.alignCoordForTool(b, this.brushSize);
+    // Paint lands where the layer shows: undo its scene-state offset for the stored pixels.
+    const offset = this.getLayerStateOffset(layer);
+    const start = this.alignCoordForTool({ x: a.x - offset.x, y: a.y - offset.y }, this.brushSize);
+    const end = this.alignCoordForTool({ x: b.x - offset.x, y: b.y - offset.y }, this.brushSize);
     if (!this.ensureStrokeWorldBounds(start, end, this.brushSize)) return;
     this.materializeRasterLayerForEditing(layer);
     const strokeBounds = this.getStrokeCanvasBounds(layer, start, end, this.brushSize);
@@ -5056,8 +5111,20 @@ class UniCanvasWidget {
       this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, this.shouldUseLayerLod(layer));
       return;
     }
+    // Scene-state offset: hi-res layers get it inside drawRasterLayerToWorldRect.
+    const offset = this.getLayerStateOffset(layer);
+    const visible = this._visibleWorldRectForRender;
+    if (offset.x || offset.y) {
+      ctx.save();
+      ctx.translate(offset.x, offset.y);
+      if (visible) this._visibleWorldRectForRender = { ...visible, x: visible.x - offset.x, y: visible.y - offset.y };
+    }
     if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
     else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+    if (offset.x || offset.y) {
+      this._visibleWorldRectForRender = visible;
+      ctx.restore();
+    }
   }
 
   shouldUseLayerLod(layer) {
@@ -5065,6 +5132,9 @@ class UniCanvasWidget {
   }
 
   drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, smoothing = true, useLod = false) {
+    // Every composite (viewport, export, generation, flatten) shows the scene-state offset.
+    const stateOffset = this.getLayerStateOffset(layer);
+    if (stateOffset.x || stateOffset.y) worldRect = { ...worldRect, x: worldRect.x - stateOffset.x, y: worldRect.y - stateOffset.y };
     if (layer.hiresCanvas && layer.hiresRect) {
       const rect = this.normalizeLayerWorldRect(layer.hiresRect);
       const left = Math.max(worldRect.x, rect.x);
@@ -5720,7 +5790,7 @@ class UniCanvasWidget {
       const next = await this.promptInWidget("Rename Layer", "Layer name", layer.name);
       if (next !== null) {
         layer.name = String(next).trim() || layer.name;
-        layer.nameSource = "user"; // auto naming never replaces a name the user typed
+        this.autoNaming.onLayerRenamedByUser(layer); // auto naming never replaces a name the user typed
         this.updateLayerRow(row, layer);
         if (isPanoramaLayer(layer)) this.updatePanoramaControls();
         this.syncLightStateToWidget();
@@ -6033,7 +6103,7 @@ class UniCanvasWidget {
     this.poseEditor?.commit();
     const copy = {
       id: uid(),
-      name: `${layer.name} Copy`,
+      name: `${layer.name} copy`,
       // A document has one panorama layer; its copy is an ordinary spherical raster layer.
       type: isPanoramaLayer(layer) ? "raster" : layer.type,
       pose: serializePose(layer.pose),
@@ -6043,6 +6113,7 @@ class UniCanvasWidget {
       blendMode: layer.blendMode || "source-over",
       groupId: layer.groupId || null,
       meta: createLayerMeta("duplicate", { derivedFrom: layer.id, character: layer.meta?.character }),
+      stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this._createCanvas(),
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
@@ -6061,6 +6132,7 @@ class UniCanvasWidget {
     this.activeLayerId = copy.id;
     this.syncPoseToolToActiveLayer();
     this.pushHistoryEntry({ kind: "addLayer", layer: copy, previousActiveLayerId });
+    this.autoNaming.onLayerCreated(copy);
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
@@ -6124,7 +6196,8 @@ class UniCanvasWidget {
       if (layer.hiresCanvas && layer.hiresRect) {
         this.drawRasterLayerToWorldRect(target, layer, worldRect, destRect, false);
       } else {
-        target.drawImage(layer.canvas, 0, 0);
+        const offset = this.getLayerStateOffset(layer);
+        target.drawImage(layer.canvas, offset.x, offset.y);
       }
       target.restore();
     }, this._groupScratchPool);
@@ -6206,7 +6279,7 @@ class UniCanvasWidget {
     this.requestRender();
     this.syncLightStateToWidget();
     this.scheduleFullSync();
-    maybeAutoNameLayer(this, layer);
+    this.autoNaming.onLayerCreated(layer);
   }
 
   loadImage(src) {
@@ -6744,7 +6817,7 @@ class UniCanvasWidget {
     this.syncLightStateToWidget();
     this.scheduleFullSync();
     this.setStatus("Staging accepted; remaining results discarded");
-    maybeAutoNameLayer(this, layer);
+    this.autoNaming.onLayerCreated(layer);
   }
 
   discardStaging() {
@@ -7329,8 +7402,10 @@ class UniCanvasWidget {
         cached: previous.cached ?? true,
         hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
         hiresDataURL: null,
+        ...this.serializeStateOffset?.(layer),
       };
     });
+    state.sceneStates = this.serializeSceneStates?.() ?? null;
     widget.value = JSON.stringify(state);
   }
 
@@ -7372,6 +7447,8 @@ class UniCanvasWidget {
       settings: this.settings,
       layers: this.layers.map((l) => this.serializeLayer(l, includeLayerData)),
       activeLayerId: this.activeLayerId,
+      sceneStates: this.serializeSceneStates?.() ?? null,
+      ...this.projectSession?.ref(),
     };
   }
 
@@ -7431,6 +7508,8 @@ class UniCanvasWidget {
   }
 
   saveLocalStateBackup(state) {
+    // With a project the document is stored durably; the old backups stay untouched for rollback.
+    if (this.projectSession?.active) return;
     if (this.localStateBackupDisabled || !this.stateHasLayerPixels(state)) return;
     try {
       const payload = JSON.stringify({ saved_at: Date.now(), state });
@@ -7482,6 +7561,10 @@ class UniCanvasWidget {
 
   flushStateUpload(keepalive = false) {
     clearTimeout(this.stateUploadTimer);
+    if (this.projectSession?.active) {
+      this.pendingStateUpload = null;
+      return this.projectSession.flush();
+    }
     const state = this.buildSerializedState(true);
     this.pendingStateUpload = null;
     return this.uploadStatePayload(state, keepalive);
@@ -7494,11 +7577,13 @@ class UniCanvasWidget {
       return;
     }
     this.pendingStateUpload = null;
+    if (this.projectSession?.active) return this.projectSession.save();
     const state = this.buildSerializedState(true);
     return this.uploadStatePayload(state, false);
   }
 
   async uploadStatePayload(state, keepalive = false) {
+    if (this.projectSession?.active) return this.projectSession.flush();
     // The first flat snapshot after exit must follow any pending spherical upload.
     if (stateHasPanorama(state) || state.layers?.some(layer => layer.type === "pose") || this.panoramaUploadPromise) {
       const run = () => this.performStateUpload(state, keepalive);
@@ -7547,6 +7632,8 @@ class UniCanvasWidget {
 
   serializeLayer(layer, includeData = true) {
     if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
+    // Per-character ID pass: state cache only, never workflow metadata.
+    const poseId = includeData && layer.type === "pose" ? serializePoseId(layer) : null;
     if (this.panorama) {
       this.panorama.commitLayer(layer);
       return {
@@ -7557,6 +7644,7 @@ class UniCanvasWidget {
         crop: { x: 0, y: 0, width: this.panorama.settings.width, height: this.panorama.settings.height },
         dataURL: includeData ? layer.panoramaCanvas.toDataURL("image/png") : null,
         hiresRect: null, hiresDataURL: null,
+        ...(poseId ? { poseId } : {}),
       };
     }
     const crop = includeData ? this.getLayerAlphaBounds(layer) : (layer._boundsCache === undefined ? null : layer._boundsCache);
@@ -7576,7 +7664,9 @@ class UniCanvasWidget {
       dataURL: null,
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
       hiresDataURL: null,
+      ...this.serializeStateOffset?.(layer),
     };
+    if (poseId) payload.poseId = poseId;
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -7705,11 +7795,12 @@ class UniCanvasWidget {
     this.syncPromptControls();
   }
 
-  async applySerializedState(state) {
+  // `exact` (project scenes): apply the state as given, without the local-backup recovery.
+  async applySerializedState(state, { exact = false } = {}) {
     const restoreRevision = this._stateRestoreRevision = (this._stateRestoreRevision || 0) + 1;
     let restoredPanorama = null, previous = null;
     try {
-      if (!this.stateHasLayerPixels(state)) {
+      if (!exact && !this.stateHasLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
         if (backup && this.stateHasLayerPixels(backup)) {
           state = backup;
@@ -7718,7 +7809,7 @@ class UniCanvasWidget {
           this.setStatus("Skipped metadata-only canvas restore to protect existing images", true);
           // The existing pixels are protected, but the saved model/generation settings still apply.
           if (state.settings) this.applySerializedSettings(state.settings);
-          return;
+          return false;
         }
       }
       state = migratePanoramaState(state);
@@ -7750,6 +7841,8 @@ class UniCanvasWidget {
           meta: normalizeLayerMeta(item.meta),
           canvas: this._createCanvas(nextSize.width, nextSize.height),
         };
+        const stateOffset = item.type !== "mask" ? normalizeStateOffset(item.stateOffset) : null;
+        if (stateOffset && (stateOffset.x || stateOffset.y)) layer.stateOffset = stateOffset;
         if (item.dataURL) {
           const img = await this.loadImage(item.dataURL);
           if (restoredPanorama) {
@@ -7771,12 +7864,14 @@ class UniCanvasWidget {
           layer.hiresCanvas = hires;
           layer.hiresRect = { ...item.hiresRect };
         }
+        if (layer.type === "pose" && item.poseId?.dataURL) await restorePoseId(layer, item.poseId, (url) => this.loadImage(url));
         if (!restoredPanorama) this.sanitizeMaskLayer(layer);
         bumpLayerPixelRevision(layer);
         layers.push(layer);
       }
-      if (this._disposed || restoreRevision !== this._stateRestoreRevision) return;
-      if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && isPanoramaLayer(layer))) throw new Error("The panorama base layer is missing");
+      name: `${layer.name} copy`,
+      // A document has one panorama layer; its copy is an ordinary spherical raster layer.
+      type: isPanoramaLayer(layer) ? "raster" : layer.type,
       previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
@@ -7791,18 +7886,21 @@ class UniCanvasWidget {
         this.activeLayerId = state.activeLayerId && this.layers.some((layer) => layer.id === state.activeLayerId)
           ? state.activeLayerId
           : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0].id;
-        this.saveLocalStateBackup(state);
+        if (!exact) this.saveLocalStateBackup(state);
       }
+      this.restoreSceneStates?.(state.sceneStates);
       this.syncPromptControls();
       this.updateSnapButton();
       this.updatePanoramaControls();
       this.renderLayerList();
       previous.panorama?.dispose();
+      return true;
     } catch (err) {
       if (previous) Object.assign(this, previous);
       this.updatePanoramaControls();
       this.setStatus(`Canvas restore failed: ${err.message || err}`, true);
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
+      return false;
     } finally {
       if (restoredPanorama && restoredPanorama !== this.panorama) restoredPanorama.dispose();
     }
@@ -8128,12 +8226,17 @@ class UniCanvasWidget {
       keepAreas: () => describeKeepAreas(this),
     });
 
-    // Content-based layer names. "Auto-name" in the layer menu works either way.
+    // Automatic layer names and folders (vnccs_unicanvas_naming.mjs, vnccs_unicanvas_filing.mjs).
+    // "Auto-name" in the layer menu works at every level; only "Rules + model" downloads.
     section("layer_names", "Layer names");
+    const namingLevel = makeSelect(AUTO_NAMING_LEVELS, resolveAutoNamingLevel(s));
+    namingLevel.dataset.namingLevel = "";
+    namingLevel.addEventListener("input", () => { s[AUTO_NAMING_SETTING] = namingLevel.value; commit(); });
+    bind("Auto naming", namingLevel);
     const namingModel = makeSelect(AUTO_NAME_MODELS, resolveAutoNameModel(s));
     namingModel.addEventListener("input", () => { s[AUTO_NAME_MODEL_SETTING] = namingModel.value; commit(); });
     bind("Naming model (downloads on first use)", namingModel);
-    checkboxRow("Auto-name new layers from their content", s[AUTO_NAME_SETTING], (checked) => { s[AUTO_NAME_SETTING] = checked; commit(); });
+    checkboxRow("Auto-file new layers into folders", resolveAutoFile(s), (checked) => { s[AUTO_FILE_SETTING] = checked; commit(); });
 
     // Speed and memory for every draw (nodes/unicanvas/performance.py). The attention kernel is
     // ComfyUI's own startup choice (Comfy Kitchen / sage / flash); the progress bar shows it.
@@ -8188,6 +8291,7 @@ class UniCanvasWidget {
     }
     this._disposed = true;
     teardownUniCanvasWidgetModes(this);
+    this.projectSession?.dispose();
     this._panoramaImportClose?.();
     this.panoramaLayerPanel?.dispose();
     this.panorama?.dispose();
@@ -8243,6 +8347,9 @@ app.registerExtension({
       for (const node of app.graph?._nodes || []) {
         if (node.mode === 2 || node.mode === 4) continue;
         await node.uniCanvasWidget?.preparePanoramaForQueue();
+        // Execution renders the node's project scene: it must hold the latest edits.
+        const session = node.uniCanvasWidget?.projectSession;
+        if (session?.active && await session.flush() === false) throw new Error("UniCanvas project could not be saved; queue stopped to protect the latest edits");
       }
       return queuePrompt.apply(this, arguments);
     };

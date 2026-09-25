@@ -259,6 +259,13 @@ class FlatDocument:
     def missing_pixels(self, layer: dict[str, Any]) -> None:
         """A visible layer has no stored pixels; flat documents skip it."""
 
+    def layer_offset(self, layer: dict[str, Any]) -> tuple[int, int]:
+        """The live scene-state offset (world pixels), applied at render time, never baked in."""
+        offset = layer.get("stateOffset")
+        if not isinstance(offset, dict):
+            return 0, 0
+        return int(round(_number(offset.get("x"), 0))), int(round(_number(offset.get("y"), 0)))
+
     def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
         """Validate a layer's crop rectangle against the output size."""
 
@@ -305,6 +312,9 @@ class EquirectangularPanorama(FlatDocument):
 
     def missing_pixels(self, layer: dict[str, Any]) -> None:
         raise ValueError("Panorama layer pixels are missing")
+
+    def layer_offset(self, layer: dict[str, Any]) -> tuple[int, int]:
+        return 0, 0  # every panorama layer covers the whole document
 
     def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
         if crop != (0, 0, *size):
@@ -378,8 +388,9 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         layer_w = max(1, int(round(_number(crop.get("width"), 1))))
         layer_h = max(1, int(round(_number(crop.get("height"), 1))))
         document.check_layer((layer_x, layer_y, layer_w, layer_h), (width, height))
-        dst_x = int(round(layer_x - bbox_local_x))
-        dst_y = int(round(layer_y - bbox_local_y))
+        offset_x, offset_y = document.layer_offset(layer)
+        dst_x = int(round(layer_x + offset_x - bbox_local_x))
+        dst_y = int(round(layer_y + offset_y - bbox_local_y))
         inter_left = max(0, dst_x)
         inter_top = max(0, dst_y)
         inter_right = min(width, dst_x + layer_w)
