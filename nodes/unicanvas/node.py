@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import logging
+
 from .draw import _run_unicanvas_draw
 from .progress import _store_draw_result
+from .projects import ProjectError, load_project_scene_state
 from .render import _render_unicanvas_state_to_image_tensor
 from .state import _load_unicanvas_state
 
@@ -21,6 +25,31 @@ _QUEUED_DRAW_COMPOSITION_KEYS = (
     "inference_size",
     "output_size",
 )
+
+
+def _resolve_project_state(unicanvas_state: str) -> str:
+    """A widget state attached to a project (``projectId`` + ``sceneId``) renders the stored scene.
+
+    States never attached to a project, or whose project scene is gone, keep the inline /
+    temp-cache path.
+    """
+    try:
+        state = json.loads(unicanvas_state or "{}")
+    except ValueError:
+        return unicanvas_state
+    if not isinstance(state, dict) or not state.get("projectId") or not state.get("sceneId"):
+        return unicanvas_state
+    try:
+        scene = load_project_scene_state(str(state["projectId"]), str(state["sceneId"]), str(state.get("projectUser") or "default"))
+    except ProjectError as exc:
+        if exc.status != 404:
+            raise ValueError(str(exc)) from exc
+        logging.warning("[VNCCS UniCanvas] Project scene not found, rendering the inline state: %s", exc)
+        return unicanvas_state
+    # Generation settings travel with the widget (queued_draw lives there), pixels with the scene.
+    if isinstance(state.get("settings"), dict):
+        scene = {**scene, "settings": state["settings"]}
+    return json.dumps(scene)
 
 
 class VNCCS_UniCanvas:
@@ -55,6 +84,7 @@ class VNCCS_UniCanvas:
         return unicanvas_state
 
     def export_state(self, unicanvas_state: str = "{}", config=None, unique_id: str | None = None):
+        unicanvas_state = _resolve_project_state(unicanvas_state)
         if config is None:
             return (_render_unicanvas_state_to_image_tensor(unicanvas_state),)
         state = _load_unicanvas_state(unicanvas_state)

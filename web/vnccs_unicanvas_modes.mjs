@@ -7,6 +7,7 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -170,6 +171,15 @@ export function handleUniCanvasShortcut(widget, event) {
     exitUniCanvasFullscreen(widget);
     return true;
   }
+  // Layer groups (Plan 05): Ctrl+G groups the selection, Ctrl+Shift+G ungroups. They also work
+  // from the layer list, where the selection is made.
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && key.toLowerCase() === "g"
+    && (isUniCanvasCanvasFocused(widget, event) || widget.layerList?.contains?.(event.target))) {
+    consumeUniCanvasShortcut(event);
+    if (event.shiftKey) widget.ungroupActiveLayer?.();
+    else widget.groupSelectedLayers?.();
+    return true;
+  }
   // The rest of the shortcut map is active only while the canvas has focus
   // (spec 5), fullscreen or not.
   if (!isUniCanvasCanvasFocused(widget, event)) return false;
@@ -183,6 +193,12 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   if (modifier || event.altKey) return false;
+  // P toggles the VN preview overlay.
+  if (lower === "p" && widget.vnPreview) {
+    consumeUniCanvasShortcut(event);
+    widget.vnPreview.toggle();
+    return true;
+  }
   // Tools: B brush, V move, E eraser, M mask, L lasso, S rect.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
     consumeUniCanvasShortcut(event);
@@ -528,7 +544,7 @@ export async function newUniCanvasDocument(widget) {
   widget.activeLayerId = null;
   widget.undoStack = [];
   widget.redoStack = [];
-  widget.addLayer("raster", "Base Layer", false);
+  widget.addLayer("raster", "Base Layer", false, false, createLayerMeta("base"));
   widget.updateHistoryButtons?.();
   widget.renderLayerList();
   widget.syncActiveLayerControls?.();
@@ -862,7 +878,24 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       // and a deep clone of a live pose layer's layer.pose for assertions.
       // No behavior change.
       globalThis.__VNCCS_UC_E2E__ = {
-        listLayers: () => (widget.layers || []).map((l) => ({ id: l.id, type: l.type })),
+        listLayers: () => (widget.layers || []).map((l) => ({ id: l.id, type: l.type, groupId: l.groupId || null, name: l.name })),
+        // Layer groups (Plan 05): stack structure, selection and the export composite.
+        getLayerStack: () => ({
+          activeLayerId: widget.activeLayerId,
+          selectedLayerIds: [...(widget.selectedLayerIds || [])],
+          layers: (widget.layers || []).map((l) => ({
+            id: l.id, type: l.type, name: l.name, groupId: l.groupId || null, visible: l.visible, locked: l.locked,
+            opacity: l.opacity, blendMode: l.blendMode, collapsed: l.collapsed === true,
+          })),
+          undo: widget.undoStack?.length ?? 0,
+        }),
+        getCompositePixels: () => {
+          const out = document.createElement("canvas");
+          out.width = widget.size.width;
+          out.height = widget.size.height;
+          widget.drawFlattenedLayers(out.getContext("2d", { willReadFrequently: true }));
+          return { width: out.width, height: out.height, origin: { ...widget.origin }, dataURL: out.toDataURL("image/png") };
+        },
         getLayerPixels: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           if (!layer?.canvas) return null;
@@ -872,7 +905,17 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: layer.canvas.toDataURL("image/png"),
           };
         },
+        getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
+        // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
+        getLayerMeta: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? JSON.parse(JSON.stringify(normalizeLayerMeta(layer.meta))) : null;
+        },
+        getLayerPixelRevision: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? (layer.pixelRevision ?? 0) : null;
+        },
         getLayerPose: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           // Deep clone: the caller must not be able to mutate layer state.

@@ -25,7 +25,10 @@
 import { clamp } from "./vnccs_unicanvas_input_tools.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs";
+import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
@@ -150,7 +153,7 @@ function createPsdLayer(uc, entry) {
   const worldY = uc.bbox.y + top;
   uc.ensureWorldBounds(worldX + source.width, worldY + source.height, 64);
   uc.ensureWorldBounds(worldX, worldY, 64);
-  const layer = uc.addLayer("raster", entry.name || "PSD Layer", true, true);
+  const layer = uc.addLayer("raster", entry.name || "PSD Layer", true, true, createLayerMeta("psd", { sourceName: entry.name || undefined }));
   layer.visible = entry.hidden ? false : true;
   layer.opacity = normalizePsdOpacity(entry.opacity);
   layer.blendMode = psdBlendModeToComposite(entry.blendMode);
@@ -310,7 +313,9 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
   }
   const before = uc.createLayerPixelSnapshot(layer);
   const source = uc.cloneCanvasCrop(layer.canvas, crop);
-  uc.setStatus(`[VNCCS UniCanvas] ${label} running...`);
+  // Painted Inpaint Mask pixels over the layer stay opaque (keep areas).
+  const keep = buildKeepMask(uc, crop);
+  uc.setStatus(`[VNCCS UniCanvas] ${label} running${keep ? ` (keeping ${keep.painted} px)` : ""}...`);
   try {
     const res = await fetch(REMOVE_BG_ROUTE, {
       method: "POST",
@@ -320,6 +325,7 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
         edit_model: editModel,
         edit_settings: method === "edit" ? removeBgRunSettings(uc.settings, editModel, extraPrompt) : undefined,
         image: source.toDataURL("image/png"),
+        keep: keep?.dataUrl,
       }),
     });
     const data = await res.json();
@@ -351,8 +357,10 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
 
 function buildColorMatchReference(uc, layer, crop) {
   const index = uc.layers.indexOf(layer);
-  const below = uc.layers.slice(index + 1).filter((item) => item.visible);
-  const pool = below.length ? below : uc.layers.filter((item) => item.visible && item.id !== layer.id);
+  // Groups have no pixels; a layer hidden through its group does not count as visible.
+  const visible = (item) => item.canvas && isLayerEffectivelyVisible(uc.layers, item);
+  const below = uc.layers.slice(index + 1).filter(visible);
+  const pool = below.length ? below : uc.layers.filter((item) => visible(item) && item.id !== layer.id);
   if (!pool.length) return null;
   const canvas = document.createElement("canvas");
   canvas.width = crop.width;

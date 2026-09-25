@@ -136,7 +136,7 @@ test("New canvas asks Are you sure? and clears layers and images", () => {
     assert.ok(newDocument.includes("confirmInWidget("), "the confirmation must use the widget modal");
     assert.ok(newDocument.includes("widget.stagingItems = []"), "staged images must be cleared");
     assert.ok(newDocument.includes("widget.layers = []"), "layers must be cleared");
-    assert.ok(newDocument.includes('widget.addLayer("raster", "Base Layer", false)'), "a fresh base layer must be created");
+    assert.ok(newDocument.includes('widget.addLayer("raster", "Base Layer", false, false, createLayerMeta("base"))'), "a fresh base layer must be created");
     assert.ok(modesSource.includes('widget._button("New", "vnccs-uc-btn"'), "standalone output actions must include New");
     assert.ok(modesSource.includes('widget._button("Save to output", "vnccs-uc-btn"'), "Save to output must be a widget button");
 });

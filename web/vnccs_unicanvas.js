@@ -11,9 +11,13 @@ import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaH
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
+import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
+import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
+import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
 import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
+import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs";
 import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs";
 import {
   TRANSFORM_MODE_LABELS,
@@ -926,6 +930,8 @@ class UniCanvasWidget {
     });
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
+    installUniCanvasVnPreview(this);
+    installUniCanvasGroups(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -1281,6 +1287,7 @@ class UniCanvasWidget {
       const side = 1024;
       const destination = this.getImageFitInRect(oldBbox, { x: 0, y: 0, width: side, height: side });
       const views = this.layers.map(layer => {
+        if (!layer.canvas) return null;
         const out = document.createElement("canvas"); out.width = side; out.height = side;
         const ctx = out.getContext("2d");
         if (isImageLayer(layer)) this.drawRasterLayerToWorldRect(ctx, layer, oldBbox, destination);
@@ -1291,7 +1298,9 @@ class UniCanvasWidget {
       this.bbox = { x: 0, y: 0, width: side, height: side };
       this.panorama = next;
       for (let index = 0; index < this.layers.length; index++) {
-        const layer = this.layers[index]; layer.canvas = views[index]; layer.hiresCanvas = null; layer.hiresRect = null;
+        const layer = this.layers[index];
+        if (!views[index]) continue;
+        layer.canvas = views[index]; layer.hiresCanvas = null; layer.hiresRect = null;
         if (layer.pose) {
           const r = layer.pose.rect;
           layer.pose.rect = { x: (r.x - oldBbox.x) * side / oldBbox.width, y: (r.y - oldBbox.y) * side / oldBbox.height,
@@ -1301,7 +1310,7 @@ class UniCanvasWidget {
         }
         this.invalidateLayerCaches(layer); next.commitLayer(layer);
       }
-      const base = this.addLayer("raster", name, false, true);
+      const base = this.addLayer("raster", name, false, true, createLayerMeta("import", { sourceName: name || undefined }));
       base.locked = true; next.settings.baseLayerId = base.id;
       next.ensureLayer(base).getContext("2d").drawImage(img, 0, 0);
       this.normalizeLayerOrder(); next.project();
@@ -1337,7 +1346,7 @@ class UniCanvasWidget {
         { id: uid(), name: "Inpaint Mask", type: "mask" },
         { id: uid(), name: "Base Layer", type: "raster" },
       ].map(layer => ({ ...layer, visible: true, locked: false, opacity: 1, blendMode: "source-over",
-        canvas: this._createCanvas(1024, 1024) }));
+        meta: createLayerMeta("base"), canvas: this._createCanvas(1024, 1024) }));
       const backupKeys = [this.getStateBackupKey(), this.getLegacyStateBackupKey()];
       const clearBackup = () => {
         try { for (const key of backupKeys) window.localStorage?.removeItem(key); }
@@ -1571,8 +1580,8 @@ class UniCanvasWidget {
 
   _createInitialLayers() {
     if (this.layers.length) return;
-    this.addLayer("raster", "Base Layer");
-    this.addLayer("mask", "Inpaint Mask");
+    setLayerOrigin(this.addLayer("raster", "Base Layer"), "base");
+    setLayerOrigin(this.addLayer("mask", "Inpaint Mask"), "base");
     this.activeLayerId = this.layers.find((layer) => layer.type === "raster")?.id || this.layers[0]?.id || null;
   }
 
@@ -1587,17 +1596,15 @@ class UniCanvasWidget {
     this.layers.splice(this.getLayerInsertIndex(layer.type), 0, layer);
   }
 
+  // Masks first, then the root sequence with every group's subtree right after the group
+  // (vnccs_unicanvas_groups.mjs); the panorama base layer stays last.
   normalizeLayerOrder() {
-    const masks = this.layers.filter((layer) => layer.type === "mask");
-    const rasters = this.layers.filter((layer) => layer.type !== "mask");
-    this.layers = [...masks, ...rasters];
-    if (this.panorama) {
-      const base = this.layers.find(layer => layer.id === this.panorama.settings.baseLayerId);
-      if (base) this.layers = [...this.layers.filter(layer => layer !== base), base];
-    }
+    this.layers = normalizeGroupedLayerOrder(this.layers, { pinnedLastId: this.panorama?.settings.baseLayerId || null });
   }
 
-  addLayer(type = "raster", name = null, recordHistory = true, deferRender = false) {
+  // New layers default to origin "paint" (the UI's Add raster / Add mask); other creation sites
+  // pass their own origin or overwrite layer.meta right after (setLayerOrigin).
+  addLayer(type = "raster", name = null, recordHistory = true, deferRender = false, meta = null) {
     if (type !== "pose" && this.tool === "pose") this.setTool("move");
     const previousActiveLayerId = this.activeLayerId;
     const layer = {
@@ -1608,6 +1615,7 @@ class UniCanvasWidget {
       locked: false,
       opacity: 1,
       blendMode: "source-over",
+      meta: meta ? normalizeLayerMeta(meta) : createLayerMeta("paint"),
       canvas: this._createCanvas(),
     };
     this.invalidateLayerCaches(layer);
@@ -1636,6 +1644,7 @@ class UniCanvasWidget {
 
   invalidateLayerCaches(layer) {
     if (!layer) return;
+    bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._boundsCache = undefined;
     layer._thumbCache = undefined;
@@ -1650,6 +1659,7 @@ class UniCanvasWidget {
 
   invalidateLayerRenderCaches(layer) {
     if (!layer) return;
+    bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -1658,6 +1668,7 @@ class UniCanvasWidget {
 
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
     if (!layer) return;
+    bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -1729,7 +1740,7 @@ class UniCanvasWidget {
     if (layer?.type !== "pose") {
       if (!create) { this.poseEditor?.setVisible(false); return; }
       if (!this.ensureWorldRectBounds(this.bbox, 0)) return;
-      layer = this.addLayer("pose", "Pose Studio", true, true);
+      layer = this.addLayer("pose", "Pose Studio", true, true, createLayerMeta("paint"));
       layer.pose = { version: 1, rect: { ...this.bbox }, studio: {}, character: null,
         panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
       this.renderLayerList();
@@ -1854,7 +1865,7 @@ class UniCanvasWidget {
   layerAtWorldPoint(point) {
     if (!point) return null;
     for (const layer of this.layers) {
-      if (!layer.visible || layer.type === "mask") continue;
+      if (layer.type === "mask" || isGroupLayer(layer) || !isLayerEffectivelyVisible(this.layers, layer)) continue;
       if (layer.type === "pose") {
         const rect = layer.pose?.rect;
         if (rect && point.x >= rect.x && point.y >= rect.y && point.x < rect.x + rect.width && point.y < rect.y + rect.height) {
@@ -1885,6 +1896,7 @@ class UniCanvasWidget {
     if (this.poseEditor?.layer === layer) this.poseEditor.release();
     layer.type = "raster";
     delete layer.pose;
+    layer.meta = createLayerMeta("rasterize", { derivedFrom: layer.id, character: layer.meta?.character });
     this.invalidateLayerCaches(layer);
     this.syncPoseToolToActiveLayer();
     this.renderLayerList();
@@ -2133,10 +2145,16 @@ class UniCanvasWidget {
       const target = e.target;
       const layer = this.activeLayer;
       if (!layer || !(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+      // One layerProps entry per gesture: the first input remembers the value it started from.
+      if (!target._vnccsPropsBefore || target._vnccsPropsBefore.layerId !== layer.id) {
+        target._vnccsPropsBefore = { layerId: layer.id, opacity: layer.opacity, blendMode: layer.blendMode };
+      }
       if (target.dataset.layerControl === "blendMode") layer.blendMode = target.value || "source-over";
       if (target.dataset.layerControl === "opacity") {
         layer.opacity = Number(target.value);
         this.invalidateLayerThumbnail(layer);
+        const readout = isGroupLayer(layer) && this.layerList.querySelector(`[data-layer-id="${layer.id}"] .vnccs-uc-folder-opacity`);
+        if (readout) readout.textContent = `${Math.round(layer.opacity * 100)}%`;
       }
       this.syncActiveLayerControls();
       this.requestRender();
@@ -2145,8 +2163,19 @@ class UniCanvasWidget {
     this.layerSubhead.addEventListener("change", (e) => {
       onLayerSubheadChange(e);
       const layer = this.activeLayer;
+      const started = e.target?._vnccsPropsBefore;
+      if (e.target) e.target._vnccsPropsBefore = null;
+      if (layer && started?.layerId === layer.id && (started.opacity !== layer.opacity || started.blendMode !== layer.blendMode)) {
+        this.pushHistoryEntry({
+          kind: "layerProps",
+          layerId: layer.id,
+          before: { opacity: started.opacity, blendMode: started.blendMode },
+          after: { opacity: layer.opacity, blendMode: layer.blendMode },
+        });
+      }
       const row = layer ? this.layerList.querySelector(`[data-layer-id="${layer.id}"]`) : null;
-      if (row) this.updateLayerRow(row, layer);
+      if (row && isGroupLayer(layer)) this.renderLayerList();
+      else if (row) this.updateLayerRow(row, layer);
       this.syncLightStateToWidget();
       this.clearInputHistoryMarker(e.target);
     });
@@ -3251,6 +3280,12 @@ class UniCanvasWidget {
       this.render();
       return;
     }
+    // Groups have no pixels; a layer locked or hidden through its groups refuses pixel tools.
+    if (!(this.pointerMode === "move" && e.altKey) && this.refuseLayerToolTarget(this.pointerMode)) {
+      this.pointerMode = "idle";
+      this.render();
+      return;
+    }
     if (this.pointerMode === "bbox") {
       if (this.isStagingActive()) {
         this.pointerMode = "idle";
@@ -3282,6 +3317,8 @@ class UniCanvasWidget {
       }
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.lassoPoints = [point];
+    } else if (this.pointerMode === "move" && !e.altKey && this.beginMultiLayerMove()) {
+      // A group or a multi-selection moves as one gesture (vnccs_unicanvas_groups.mjs).
     } else if (this.pointerMode === "move" && !e.altKey && this.activeLayer && !this.activeLayer.locked) {
       this.pointerMode = "layer-move";
       this.dragStart.layerId = this.activeLayer.id;
@@ -3390,7 +3427,9 @@ class UniCanvasWidget {
     if (this.pointerMode === "lasso" && this.lassoPoints.length > 2) {
       this.commitLassoShape();
     }
-    if (this.pointerMode === "layer-move" && this.dragStart?.layerCanvas) {
+    if (this.pointerMode === "layer-move" && this.dragStart?.moveTargets) {
+      this.commitMultiLayerMove();
+    } else if (this.pointerMode === "layer-move" && this.dragStart?.layerCanvas) {
       this.moveActiveLayerPixels(this.dragStart.previewDx || 0, this.dragStart.previewDy || 0, true);
     }
     this.isPointerDown = false;
@@ -3838,6 +3877,7 @@ class UniCanvasWidget {
   }
 
   cloneHistoryLayer(layer) {
+    if (isGroupLayer(layer)) return createGroupLayer({ ...layer, meta: cloneLayerMeta(layer.meta) });
     if (this.panorama) this.panorama.commitLayer(layer);
     const clone = {
       id: layer.id,
@@ -3848,6 +3888,9 @@ class UniCanvasWidget {
       locked: layer.locked,
       opacity: layer.opacity,
       blendMode: layer.blendMode || "source-over",
+      groupId: layer.groupId || null,
+      nameSource: layer.nameSource,
+      meta: cloneLayerMeta(layer.meta),
       canvas: this.cloneCanvas(layer.canvas),
       panoramaCanvas: this.panorama ? this.cloneCanvas(layer.panoramaCanvas) : null,
       _panoramaBefore: this.panorama && layer._panoramaBefore ? this.cloneCanvas(layer._panoramaBefore) : null,
@@ -4019,8 +4062,41 @@ class UniCanvasWidget {
 
   applyHistoryEntry(entry, direction) {
     if (!entry?.kind) return;
+    if (entry.kind === "historyGroup") {
+      // One user action, one undo step: children apply in order and undo in reverse.
+      const entries = direction === "undo" ? [...(entry.entries || [])].reverse() : (entry.entries || []);
+      for (const child of entries) this.applyHistoryEntry(child, direction);
+      return;
+    }
     this.cancelDeferredCanvasCommit();
     this.historyRestoring = true;
+    if (entry.kind === "groupStructure") {
+      this.layers = restoreGroupStructure(this.layers, direction === "undo" ? entry.before : entry.after);
+      this.normalizeLayerOrder();
+      const activeId = direction === "undo" ? entry.activeBefore : entry.activeAfter;
+      this.activeLayerId = this.layers.some((layer) => layer.id === activeId) ? activeId : (this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0]?.id || null);
+      this.selectedLayerIds = this.activeLayerId ? [this.activeLayerId] : [];
+    }
+    if (entry.kind === "removeLayer") {
+      if (direction === "undo") {
+        if (!this.layers.includes(entry.layer)) {
+          entry.layer.groupId = entry.groupId || null;
+          this.layers.splice(Math.max(0, Math.min(this.layers.length, entry.index)), 0, entry.layer);
+        }
+        this.activeLayerId = entry.previousActiveLayerId && this.layers.some((layer) => layer.id === entry.previousActiveLayerId) ? entry.previousActiveLayerId : entry.layer.id;
+      } else {
+        this.layers = this.layers.filter((layer) => layer !== entry.layer && layer.id !== entry.layer.id);
+        if (!this.layers.some((layer) => layer.id === this.activeLayerId)) this.activeLayerId = this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0]?.id || null;
+      }
+      this.invalidateLayerCaches(entry.layer);
+    }
+    if (entry.kind === "layerProps") {
+      const layer = this.layers.find((item) => item.id === entry.layerId);
+      if (layer) {
+        Object.assign(layer, direction === "undo" ? entry.before : entry.after);
+        this.invalidateLayerThumbnail(layer);
+      }
+    }
     if (entry.kind === "acceptStaging") {
       if (direction === "undo") {
         this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
@@ -4045,6 +4121,7 @@ class UniCanvasWidget {
       }
       this.invalidateLayerCaches(entry.layer);
     }
+    if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
@@ -4457,7 +4534,8 @@ class UniCanvasWidget {
   }
 
   getLayerMovePreview(layer) {
-    if (this.pointerMode !== "layer-move" || !this.dragStart || layer?.id !== this.dragStart.layerId) return null;
+    if (this.pointerMode !== "layer-move" || !this.dragStart || !layer) return null;
+    if (this.dragStart.moveLayerIds ? !this.dragStart.moveLayerIds.has(layer.id) : layer.id !== this.dragStart.layerId) return null;
     return {
       dx: this.dragStart.previewDx || 0,
       dy: this.dragStart.previewDy || 0,
@@ -4472,6 +4550,15 @@ class UniCanvasWidget {
     if (this.canSnapMovedLayer(layer, crop)) {
       ({ dx, dy } = this.snapMovedLayerDelta(dx, dy, crop, sourceOrigin));
     }
+    this.commitLayerMoveFrom(layer, this.dragStart, dx, dy, allowExpand);
+  }
+
+  // Redraw `layer` from the pixels captured at gesture start (source.layerCanvas / layerBounds /
+  // hiresRect / layerOrigin), offset by dx, dy. Shared by single and group moves.
+  commitLayerMoveFrom(layer, source, dx, dy, allowExpand = true) {
+    if (!layer || !source?.layerCanvas) return;
+    const sourceOrigin = source.layerOrigin || this.origin;
+    const crop = source.layerBounds;
     if (crop) {
       if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + dx, sourceOrigin.y + crop.y + dy, 256, allowExpand)) return;
       if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + crop.width + dx, sourceOrigin.y + crop.y + crop.height + dy, 256, allowExpand)) return;
@@ -4481,15 +4568,15 @@ class UniCanvasWidget {
     const cropX = crop?.x || 0;
     const cropY = crop?.y || 0;
     ctx.drawImage(
-      this.dragStart.layerCanvas,
+      source.layerCanvas,
       Math.round(sourceOrigin.x + cropX - this.origin.x + dx),
       Math.round(sourceOrigin.y + cropY - this.origin.y + dy)
     );
-    if (layer.hiresRect && this.dragStart.hiresRect) {
+    if (layer.hiresRect && source.hiresRect) {
       layer.hiresRect = {
-        ...this.dragStart.hiresRect,
-        x: this.dragStart.hiresRect.x + dx,
-        y: this.dragStart.hiresRect.y + dy,
+        ...source.hiresRect,
+        x: source.hiresRect.x + dx,
+        y: source.hiresRect.y + dy,
       };
     }
     if (layer.pose) { layer.pose.rect.x += dx; layer.pose.rect.y += dy; }
@@ -4677,6 +4764,7 @@ class UniCanvasWidget {
     const nextCanvases = [];
     try {
       for (const layer of this.layers) {
+        if (!layer.canvas) continue; // groups have no pixels
         const next = document.createElement("canvas");
         next.width = newW;
         next.height = newH;
@@ -4788,9 +4876,9 @@ class UniCanvasWidget {
     }
     this._visibleWorldRectForRender = this.visibleWorldRect();
     const hideMaskOverlays = this.hasOpenStagingPanel();
-    for (const layer of [...this.layers].reverse()) {
-      if (!layer.visible) continue;
-      if (hideMaskOverlays && layer.type === "mask") continue;
+    // Groups: pass-through children draw in place, isolated groups through a scratch surface.
+    compositeLayerStack(ctx, this.layers, (ctx, layer) => {
+      if (hideMaskOverlays && layer.type === "mask") return;
       ctx.save();
       if (layer.type === "mask") {
         const transformDraft = this.getLayerTransformDraft(layer);
@@ -4819,7 +4907,7 @@ class UniCanvasWidget {
         if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
       }
       ctx.restore();
-    }
+    }, this._groupScratchPool);
     this._visibleWorldRectForRender = null;
     this.drawStagingOverlay(ctx);
     this.drawShapeDraft(ctx);
@@ -4828,6 +4916,8 @@ class UniCanvasWidget {
     if (this.panorama) ctx.restore();
     this.drawBbox(ctx);
     ctx.restore();
+    // VN preview: screen-space preview pass only (never in drawFlattenedLayers / makeExportCanvas).
+    this.vnPreview?.drawOverlay(ctx, w, h);
     const inferenceSize = this.getInferenceSize();
     this.updateZoomResetButton();
     const hudHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
@@ -5526,11 +5616,17 @@ class UniCanvasWidget {
     this.rasterLayerList.innerHTML = "";
     const masks = this.layers.filter((layer) => layer.type === "mask");
     const rasters = this.layers.filter((layer) => layer.type !== "mask");
+    // Multi-selection follows the active layer; stale ids drop out.
+    const known = new Set(this.layers.map((layer) => layer.id));
+    this.selectedLayerIds = (this.selectedLayerIds || []).filter((id) => known.has(id));
+    if (this.activeLayerId && !this.selectedLayerIds.includes(this.activeLayerId)) this.selectedLayerIds = [this.activeLayerId];
     this.maskLayerList.append(this.createLayerGroupHead("Masks", masks.length, "mask"));
     for (const layer of masks) this.maskLayerList.append(this.createLayerRow(layer));
     if (!masks.length) this.maskLayerList.append(this.createLayerGroupEmpty("No masks"));
-    this.rasterLayerList.append(this.createLayerGroupHead("Image Layers", rasters.length, "raster"));
-    for (const layer of rasters) this.rasterLayerList.append(this.createLayerRow(layer));
+    this.rasterLayerList.append(this.createLayerGroupHead("Image Layers", rasters.filter((layer) => !isGroupLayer(layer)).length, "raster"));
+    for (const layer of visibleLayerRows(this.layers)) {
+      this.rasterLayerList.append(isGroupLayer(layer) ? this.createFolderRow(layer) : this.createLayerRow(layer));
+    }
     if (!rasters.length) this.rasterLayerList.append(this.createLayerGroupEmpty("No raster layers"));
     this.attachLayerGroupDrop(this.maskLayerList, "mask");
     this.attachLayerGroupDrop(this.rasterLayerList, "raster");
@@ -5563,9 +5659,9 @@ class UniCanvasWidget {
       const sourceId = this.dragLayerId || e.dataTransfer.getData("text/plain");
       const source = this.layers.find((layer) => layer.id === sourceId);
       if (!source || (source.type === "mask") !== (type === "mask")) return;
-      if (e.target !== group && e.target.closest?.(".vnccs-uc-layer")) return;
+      if (e.target !== group && e.target.closest?.(".vnccs-uc-layer, .vnccs-uc-folder")) return;
       e.preventDefault();
-      const sameTypeLayers = this.layers.filter((layer) => (layer.type === "mask") === (type === "mask"));
+      const sameTypeLayers = this.layers.filter((layer) => (layer.type === "mask") === (type === "mask") && !layer.groupId && layer.id !== sourceId);
       this.reorderLayer(sourceId, sameTypeLayers[sameTypeLayers.length - 1]?.id, "after");
     };
   }
@@ -5585,6 +5681,8 @@ class UniCanvasWidget {
     this.queueLayerThumbnailRender(thumb, layer);
     const label = document.createElement("div");
     label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
+    label.className = "vnccs-uc-layer-label";
+    label.title = formatProvenanceTooltip(layer.meta, this.layers);
     const lock = this._button(layer.locked ? UI_ICONS.lock : UI_ICONS.unlock, "vnccs-uc-icon", null, layer.locked ? "Unlock layer" : "Lock layer");
     lock.dataset.layerLock = "";
     const del = this._button(UI_ICONS.trash, "vnccs-uc-icon danger", null, "Delete layer");
@@ -5594,37 +5692,8 @@ class UniCanvasWidget {
       edit.addEventListener("dblclick", (e) => e.stopPropagation());
       row.append(thumb, label, edit, lock, del);
     } else row.append(thumb, label, lock, del);
-    row.addEventListener("click", () => this.setActiveLayer(layer.id));
-    row.addEventListener("dragstart", (e) => {
-      this.activeLayerId = layer.id;
-      this.dragLayerId = layer.id;
-      row.classList.add("dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", layer.id);
-    });
-    row.addEventListener("dragend", () => {
-      this.dragLayerId = null;
-      row.classList.remove("dragging", "drop-before", "drop-after");
-      this.clearLayerDropMarkers();
-    });
-    row.addEventListener("dragover", (e) => {
-      const source = this.layers.find((item) => item.id === (this.dragLayerId || e.dataTransfer.getData("text/plain")));
-      if (!source || source.type !== layer.type) {
-        e.dataTransfer.dropEffect = "none";
-        return;
-      }
-      e.preventDefault();
-      const placement = this.getLayerDropPlacement(row, e.clientY);
-      this.markLayerDropTarget(row, placement);
-      e.dataTransfer.dropEffect = "move";
-    });
-    row.addEventListener("dragleave", () => row.classList.remove("drop-before", "drop-after"));
-    row.addEventListener("drop", (e) => {
-      e.preventDefault();
-      const sourceId = this.dragLayerId || e.dataTransfer.getData("text/plain");
-      const placement = this.getLayerDropPlacement(row, e.clientY);
-      this.reorderLayer(sourceId, layer.id, placement);
-    });
+    row.addEventListener("click", (e) => this.onLayerRowClick(layer.id, e));
+    this.attachLayerRowDragHandlers(row, layer);
     label.addEventListener("dblclick", async (e) => {
       e.stopPropagation();
       const next = await this.promptInWidget("Rename Layer", "Layer name", layer.name);
@@ -5663,7 +5732,44 @@ class UniCanvasWidget {
     lock.addEventListener("dblclick", (e) => e.stopPropagation());
     del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
     del.addEventListener("dblclick", (e) => e.stopPropagation());
-    return row;
+    return this.decorateLayerRow(row, layer);
+  }
+
+  // Shared by layer rows and group folder rows: before / after, plus "inside" on folders.
+  attachLayerRowDragHandlers(row, layer) {
+    row.addEventListener("dragstart", (e) => {
+      this.activeLayerId = layer.id;
+      this.dragLayerId = layer.id;
+      row.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", layer.id);
+    });
+    row.addEventListener("dragend", () => {
+      this.dragLayerId = null;
+      row.classList.remove("dragging", "drop-before", "drop-after", "drop-inside");
+      this.clearLayerDropMarkers();
+    });
+    row.addEventListener("dragover", (e) => {
+      const source = this.layers.find((item) => item.id === (this.dragLayerId || e.dataTransfer.getData("text/plain")));
+      if (!source || (source.type === "mask") !== (layer.type === "mask")) {
+        e.dataTransfer.dropEffect = "none";
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      const placement = this.getLayerDropPlacement(row, e.clientY);
+      this.markLayerDropTarget(row, placement);
+      e.dataTransfer.dropEffect = "move";
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("drop-before", "drop-after", "drop-inside"));
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const sourceId = this.dragLayerId || e.dataTransfer.getData("text/plain");
+      const placement = this.getLayerDropPlacement(row, e.clientY);
+      this.clearLayerDropMarkers();
+      this.reorderLayer(sourceId, layer.id, placement);
+    });
   }
 
   updateLayerRow(row, layer) {
@@ -5678,6 +5784,8 @@ class UniCanvasWidget {
     }
     const name = row.querySelector(".vnccs-uc-layer-name");
     if (name) name.textContent = layer.name;
+    const label = row.querySelector(".vnccs-uc-layer-label");
+    if (label) label.title = formatProvenanceTooltip(layer.meta, this.layers);
     const type = row.querySelector(".vnccs-uc-layer-type");
     if (type) type.textContent = `${layer.type}${layer.visible ? "" : " hidden"}`;
     const lock = row.querySelector("[data-layer-lock]") || row.querySelectorAll(".vnccs-uc-icon")[0];
@@ -5742,6 +5850,7 @@ class UniCanvasWidget {
     }
     this.poseEditor?.commit();
     this.activeLayerId = layerId;
+    if (!this.selectedLayerIds?.includes(layerId)) this.selectedLayerIds = [layerId];
     this.syncPoseToolToActiveLayer();
     this.updateLayerListActiveState();
     this.syncActiveLayerControls();
@@ -5749,51 +5858,32 @@ class UniCanvasWidget {
   }
 
   updateLayerListActiveState() {
-    this.layerList.querySelectorAll(".vnccs-uc-layer").forEach((row) => {
+    this.layerList.querySelectorAll(".vnccs-uc-layer, .vnccs-uc-folder").forEach((row) => {
       row.classList.toggle("active", row.dataset.layerId === this.activeLayerId);
       const layer = this.layers.find((item) => item.id === row.dataset.layerId);
       row.classList.toggle("locked", !!layer?.locked);
     });
+    this.syncLayerSelectionClasses();
   }
 
   clearLayerDropMarkers() {
-    this.layerList.querySelectorAll(".drop-before,.drop-after").forEach((el) => {
-      el.classList.remove("drop-before", "drop-after");
+    this.layerList.querySelectorAll(".drop-before,.drop-after,.drop-inside").forEach((el) => {
+      el.classList.remove("drop-before", "drop-after", "drop-inside");
     });
   }
 
   getLayerDropPlacement(row, clientY) {
-    const rect = row.getBoundingClientRect();
-    return clientY < rect.top + rect.height / 2 ? "before" : "after";
+    return layerDropPlacement(row, clientY);
   }
 
   markLayerDropTarget(row, placement) {
     this.clearLayerDropMarkers();
-    row.classList.add(placement === "before" ? "drop-before" : "drop-after");
+    row.classList.add(placement === "before" ? "drop-before" : placement === "inside" ? "drop-inside" : "drop-after");
   }
 
+  // Reorder, reparent and "inside" drops go through the groups module (one groupStructure entry).
   reorderLayer(sourceId, targetId, placement = "before") {
-    if (!sourceId || !targetId || sourceId === targetId) return;
-    if (this.transformDraft) {
-      this.setStatus("Apply or cancel the active transform first", true);
-      return;
-    }
-    const from = this.layers.findIndex((l) => l.id === sourceId);
-    const target = this.layers.findIndex((l) => l.id === targetId);
-    if (from < 0 || target < 0) return;
-    if ((this.layers[from].type === "mask") !== (this.layers[target].type === "mask")) {
-      this.setStatus("Masks and raster layers stay in separate sections", true);
-      return;
-    }
-    const [layer] = this.layers.splice(from, 1);
-    let to = this.layers.findIndex((l) => l.id === targetId);
-    if (placement === "after") to += 1;
-    this.layers.splice(Math.max(0, Math.min(this.layers.length, to)), 0, layer);
-    this.activeLayerId = layer.id;
-    this.syncPoseToolToActiveLayer();
-    this.renderLayerList();
-    this.requestRender();
-    this.syncLightStateToWidget();
+    this.moveLayerInStack(sourceId, targetId, placement);
   }
 
   drawLayerThumbnail(canvas, layer) {
@@ -5874,7 +5964,8 @@ class UniCanvasWidget {
     const blend = this.layerSubhead.querySelector('[data-layer-control="blendMode"]');
     const opacity = this.layerSubhead.querySelector('[data-layer-control="opacity"]');
     const opacityValue = this.layerSubhead.querySelector(".vnccs-uc-layer-opacity-value");
-    if (blend) blend.value = layer.blendMode || "source-over";
+    this.syncGroupSubhead(layer);
+    if (blend && !isGroupLayer(layer)) blend.value = layer.blendMode || "source-over";
     if (opacity) opacity.value = layer.opacity;
     if (opacityValue) opacityValue.textContent = `${Math.round(layer.opacity * 100)}%`;
   }
@@ -5883,6 +5974,8 @@ class UniCanvasWidget {
     if (this.panorama?.settings.baseLayerId === id) {
       return this.deletePanoramaLayer(id);
     }
+    const group = this.layers.find((layer) => layer.id === id);
+    if (isGroupLayer(group)) return this.confirmDeleteGroup(group);
     if (this.layers.length <= 1) return;
     if (this.transformDraft) {
       this.setStatus("Apply or cancel the active transform first", true);
@@ -5911,6 +6004,7 @@ class UniCanvasWidget {
     }
     const layer = this.activeLayer;
     if (!layer) return;
+    if (isGroupLayer(layer)) return this.duplicateGroup(layer);
     this.panorama?.commitLayer(layer);
     const previousActiveLayerId = this.activeLayerId;
     this.poseEditor?.commit();
@@ -5923,6 +6017,8 @@ class UniCanvasWidget {
       locked: false,
       opacity: layer.opacity,
       blendMode: layer.blendMode || "source-over",
+      groupId: layer.groupId || null,
+      meta: createLayerMeta("duplicate", { derivedFrom: layer.id, character: layer.meta?.character }),
       canvas: this._createCanvas(),
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
@@ -5955,6 +6051,10 @@ class UniCanvasWidget {
     const index = this.layers.findIndex((l) => l.id === this.activeLayerId);
     if (index < 0) return;
     const layer = this.layers[index];
+    if (layer.type !== "mask") {
+      this.moveLayerAmongSiblings(direction);
+      return;
+    }
     const sameType = this.layers
       .map((item, itemIndex) => ({ item, itemIndex }))
       .filter((entry) => (entry.item.type === "mask") === (layer.type === "mask"));
@@ -5992,18 +6092,18 @@ class UniCanvasWidget {
     // Save to output composite (hi-res layers included).
     const worldRect = { x: this.origin.x, y: this.origin.y, width: this.size.width, height: this.size.height };
     const destRect = { x: 0, y: 0, width: this.size.width, height: this.size.height };
-    for (const layer of [...layers].reverse()) {
-      if (!layer.visible || !isImageLayer(layer)) continue;
-      ctx.save();
-      ctx.globalAlpha = layer.opacity;
-      ctx.globalCompositeOperation = layer.blendMode || "source-over";
+    compositeLayerStack(ctx, layers, (target, layer) => {
+      if (!isImageLayer(layer)) return;
+      target.save();
+      target.globalAlpha = layer.opacity;
+      target.globalCompositeOperation = layer.blendMode || "source-over";
       if (layer.hiresCanvas && layer.hiresRect) {
-        this.drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, false);
+        this.drawRasterLayerToWorldRect(target, layer, worldRect, destRect, false);
       } else {
-        ctx.drawImage(layer.canvas, 0, 0);
+        target.drawImage(layer.canvas, 0, 0);
       }
-      ctx.restore();
-    }
+      target.restore();
+    }, this._groupScratchPool);
   }
 
   flattenLayersToMaster() {
@@ -6019,6 +6119,7 @@ class UniCanvasWidget {
       locked: false,
       opacity: 1,
       blendMode: "source-over",
+      meta: createLayerMeta("rasterize"),
       canvas: this._createCanvas(),
     };
     const ctx = this.configureImageContext(master.canvas.getContext("2d"), false);
@@ -6064,7 +6165,8 @@ class UniCanvasWidget {
     }
     if (!this.ensureWorldBounds(this.bbox.x + img.width, this.bbox.y + img.height, 128)) return;
     if (!this.ensureWorldBounds(this.bbox.x, this.bbox.y, 128)) return;
-    const layer = this.addLayer("raster", file.name.replace(/\.[^.]+$/, ""), true, true);
+    const sourceName = file.name.replace(/\.[^.]+$/, "");
+    const layer = this.addLayer("raster", sourceName, true, true, createLayerMeta("import", { sourceName: sourceName || undefined }));
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     if (this.panorama) {
       const side = Math.min(4096, this.panorama.settings.width, Math.max(img.width, img.height));
@@ -6156,10 +6258,9 @@ class UniCanvasWidget {
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, out.width, out.height);
     }
-    for (const layer of [...this.layers].reverse()) {
-      if (!layer.visible) continue;
-      if (type === "image" && !isImageLayer(layer)) continue;
-      if (type === "mask" && layer.type !== "mask") continue;
+    compositeLayerStack(ctx, this.layers, (ctx, layer) => {
+      if (type === "image" && !isImageLayer(layer)) return;
+      if (type === "mask" && layer.type !== "mask") return;
       ctx.save();
       ctx.globalAlpha = type === "image" ? layer.opacity : 1;
       ctx.globalCompositeOperation = type === "image" ? (layer.blendMode || "source-over") : "source-over";
@@ -6179,7 +6280,7 @@ class UniCanvasWidget {
         );
       }
       ctx.restore();
-    }
+    }, this._groupScratchPool);
     if (type === "image" && options.forceOpaqueContentAlpha) {
       const imageData = ctx.getImageData(0, 0, out.width, out.height);
       const data = imageData.data;
@@ -6310,7 +6411,7 @@ class UniCanvasWidget {
     out.height = Math.max(64, Math.round(inferenceSize.height));
     const ctx = this.getReadbackContext(out);
     for (const layer of [...this.layers].reverse()) {
-      if (!layer.visible || !isImageLayer(layer)) continue;
+      if (!isImageLayer(layer) || !isLayerEffectivelyVisible(this.layers, layer)) continue;
       ctx.save();
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = "source-over";
@@ -6507,7 +6608,11 @@ class UniCanvasWidget {
     this.settings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
     this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
-    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama };
+    // The provenance snapshot is taken at request time: settings edited while the run is in
+    // flight must not be attributed to its results.
+    const snapshotSettings = poseRequest ? { ...this.settings, positive: poseRequest.positive, denoise: 1 } : this.settings;
+    const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
+    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, snapshot };
     if (configLinked) {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
@@ -6587,7 +6692,7 @@ class UniCanvasWidget {
     const placement = this.normalizeLayerWorldRect(this.getStagingImageRect());
     if (!this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return;
     if (!this.ensureWorldBounds(placement.x, placement.y, 128)) return;
-    const layer = this.addLayer("raster", null, false, true);
+    const layer = this.addLayer("raster", null, false, true, metaFromStagingSnapshot(staging.snapshot));
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     const hiresWidth = Math.max(1, img.naturalWidth || img.width || placement.width);
     const hiresHeight = Math.max(1, img.naturalHeight || img.height || placement.height);
@@ -6660,7 +6765,7 @@ class UniCanvasWidget {
       if (this.panorama) {
         this.panorama.commit();
         const { width, height } = this.panorama.settings;
-        const children = [...this.layers].reverse().filter(layer => isImageLayer(layer) && layer.visible).map(layer => ({
+        const children = [...this.layers].reverse().filter(layer => isImageLayer(layer) && isLayerEffectivelyVisible(this.layers, layer)).map(layer => ({
           name: layer.name, left: 0, top: 0, right: width, bottom: height,
           opacity: Math.round(Math.max(0, Math.min(1, layer.opacity)) * 255),
           blendMode: layer.blendMode === "source-over" ? "normal" : layer.blendMode,
@@ -6670,7 +6775,7 @@ class UniCanvasWidget {
         this.downloadBlob(new Blob([buffer], { type: "application/octet-stream" }), "unicanvas-panorama.psd");
         this.setStatus(`Panorama PSD exported: ${width} × ${height}`); return;
       }
-      const visibleLayers = this.layers.filter((layer) => layer.visible && isImageLayer(layer) && this.getCanvasAlphaBounds(layer.canvas));
+      const visibleLayers = this.layers.filter((layer) => isImageLayer(layer) && isLayerEffectivelyVisible(this.layers, layer) && this.getCanvasAlphaBounds(layer.canvas));
       if (!visibleLayers.length) {
         this.setStatus("No visible raster layers to export", true);
         return;
@@ -6838,6 +6943,8 @@ class UniCanvasWidget {
       });
     }
     const acceptMaskCanvas = resultMaskCanvas || stagingMaskCanvas;
+    // One settings snapshot (and one historyId) per generation run, shared by its staged results.
+    const snapshot = context.snapshot || buildStagingSnapshot(this.settings, { mode, bbox });
     for (const image of resultImages) {
       const url = this.resultImageURL(image);
       const img = await this.loadImage(url);
@@ -6856,6 +6963,7 @@ class UniCanvasWidget {
         maskCanvas: acceptMaskCanvas,
         userMaskCanvas: stagingMaskCanvas,
         resultMaskCanvas,
+        snapshot: { ...snapshot, seed: Number.isFinite(image?.seed) ? image.seed : snapshot.seed },
       });
     }
   }
@@ -7176,11 +7284,14 @@ class UniCanvasWidget {
     const previousById = new Map((Array.isArray(state.layers) ? state.layers : []).map((layer) => [layer?.id, layer]));
     state.layers = this.layers.map((layer) => {
       const previous = previousById.get(layer.id) || {};
+      if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
       return {
         id: layer.id,
         name: layer.name,
         nameSource: layer.nameSource || null,
+        meta: normalizeLayerMeta(layer.meta),
         type: layer.type,
+        groupId: layer.groupId || null,
         pose: serializePose(layer.pose, false),
         visible: layer.visible,
         locked: layer.locked,
@@ -7408,11 +7519,12 @@ class UniCanvasWidget {
   }
 
   serializeLayer(layer, includeData = true) {
+    if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
     if (this.panorama) {
       this.panorama.commitLayer(layer);
       return {
         pose: serializePose(layer.pose, includeData),
-        id: layer.id, name: layer.name, nameSource: layer.nameSource || null, type: layer.type, visible: layer.visible, locked: layer.locked,
+        id: layer.id, name: layer.name, nameSource: layer.nameSource || null, meta: normalizeLayerMeta(layer.meta), type: layer.type, groupId: layer.groupId || null, visible: layer.visible, locked: layer.locked,
         opacity: layer.opacity, blendMode: layer.blendMode || "source-over",
         crop: { x: 0, y: 0, width: this.panorama.settings.width, height: this.panorama.settings.height },
         dataURL: includeData ? layer.panoramaCanvas.toDataURL("image/png") : null,
@@ -7424,7 +7536,9 @@ class UniCanvasWidget {
       id: layer.id,
       name: layer.name,
       nameSource: layer.nameSource || null,
+      meta: normalizeLayerMeta(layer.meta),
       type: layer.type,
+      groupId: layer.groupId || null,
       pose: serializePose(layer.pose, includeData),
       visible: layer.visible,
       locked: layer.locked,
@@ -7446,6 +7560,7 @@ class UniCanvasWidget {
   }
 
   getLayerAlphaBounds(layer) {
+    if (!layer?.canvas) return null;
     if (layer._boundsCache !== undefined) return layer._boundsCache;
     if (layer.hiresCanvas && layer.hiresRect) {
       const rect = this.normalizeLayerWorldRect(layer.hiresRect);
@@ -7581,6 +7696,11 @@ class UniCanvasWidget {
       const nextBbox = panoramaSettings ? { x: 0, y: 0, width: 1024, height: 1024 } : (state.bbox || this.bbox);
       const layers = [];
       for (const item of state.layers) {
+        if (item?.type === "group") {
+          // Groups carry no pixels; older states simply have none.
+          layers.push(createGroupLayer({ ...item, meta: normalizeLayerMeta(item.meta), nameSource: typeof item.nameSource === "string" ? item.nameSource : undefined }));
+          continue;
+        }
         if (restoredPanorama && !item.dataURL) throw new Error("Panorama layer pixels are missing from the saved document");
         const layer = {
           id: item.id || uid(),
@@ -7592,6 +7712,8 @@ class UniCanvasWidget {
           locked: item.locked === true,
           opacity: Number.isFinite(item.opacity) ? item.opacity : 1,
           blendMode: typeof item.blendMode === "string" ? item.blendMode : "source-over",
+          groupId: item.type !== "mask" && typeof item.groupId === "string" && item.groupId ? item.groupId : null,
+          meta: normalizeLayerMeta(item.meta),
           canvas: this._createCanvas(nextSize.width, nextSize.height),
         };
         if (item.dataURL) {
@@ -7616,6 +7738,7 @@ class UniCanvasWidget {
           layer.hiresRect = { ...item.hiresRect };
         }
         if (!restoredPanorama) this.sanitizeMaskLayer(layer);
+        bumpLayerPixelRevision(layer);
         layers.push(layer);
       }
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return;
@@ -7692,8 +7815,8 @@ class UniCanvasWidget {
     composite.width = width;
     composite.height = height;
     const compositeCtx = this.getReadbackContext(composite);
-    for (const layer of [...this.layers].reverse()) {
-      if ((type === "raster" ? !isImageLayer(layer) : layer.type !== type) || !layer.visible) continue;
+    compositeLayerStack(compositeCtx, this.layers, (compositeCtx, layer) => {
+      if (type === "raster" ? !isImageLayer(layer) : layer.type !== type) return;
       compositeCtx.save();
       compositeCtx.globalAlpha = type === "raster" ? layer.opacity : 1;
       compositeCtx.globalCompositeOperation = type === "raster" ? (layer.blendMode || "source-over") : "source-over";
@@ -7708,7 +7831,7 @@ class UniCanvasWidget {
         compositeCtx.drawImage(layer.canvas, sx, sy, width, height, 0, 0, width, height);
       }
       compositeCtx.restore();
-    }
+    }, this._groupScratchPool);
     let minX = width;
     let minY = height;
     let maxX = -1;
@@ -7967,6 +8090,7 @@ class UniCanvasWidget {
       commit,
       assets: this.assets,
       familyDefaults: (mode) => getUniCanvasModelModule(mode).defaults,
+      keepAreas: () => describeKeepAreas(this),
     });
 
     // Content-based layer names. "Auto-name" in the layer menu works either way.
