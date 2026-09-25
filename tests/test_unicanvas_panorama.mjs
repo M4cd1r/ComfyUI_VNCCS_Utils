@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory } from "../web/vnccs_unicanvas_panorama.mjs";
+import * as panoramaModule from "../web/vnccs_unicanvas_panorama.mjs";
 import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
 import * as provenance from "../web/vnccs_unicanvas_provenance.mjs";
 import * as scenePlace from "../web/vnccs_unicanvas_scene_place.mjs";
@@ -62,7 +63,7 @@ class Element {
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
   isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
-  normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, ...provenance, ...groups, ...scenePlace,
+  ...panoramaModule, normalizeTransformMode, ...provenance, ...groups, ...scenePlace,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
   uid: () => "new-layer", HISTORY_LIMIT: 20,
@@ -73,24 +74,18 @@ const widget = (values = {}) => Object.assign(Object.create(prototype), {
   setStatus() {}, requestRender() {}, syncLightStateToWidget() {}, scheduleFullSync() {}, ...values,
 });
 
-test("panorama panel contains only the orbit widget, with no extra buttons or text", () => {
-  let received;
-  context.PanoramaOrbitControl = class {
-    constructor(canvas) { this.canvas = canvas; }
-    update(doc, camera) { received = { doc, camera }; }
-  };
-  const doc = { settings: settings({ roll: 30 }) };
-  const w = widget({ panorama: doc, side: new Element(), tools: new Element() });
+test("the panorama layer settings panel holds the sphere and exact camera, projection and quality controls", () => {
+  const w = widget({ panorama: { settings: settings({ roll: 30, baseLayerId: "base" }) }, side: new Element(), tools: new Element(),
+    layers: [{ id: "base", name: "Sky", type: "panorama" }], activeLayerId: "base" });
+  let built;
+  context.buildPanoramaLayerPanel = host => (built = { host, orbit: {}, element: {}, update(doc, camera) { this.received = { doc, camera }; } });
   w.buildPanoramaControls();
-  assert.equal(w.panoramaPanel.children.length, 1);
-  assert.equal(w.panoramaPanel.children[0], w.panoramaOrbit.canvas);
-  assert.equal(w.panoramaPanel.hidden, false);
-  assert.equal(received.doc, doc); assert.equal(received.camera.roll, 30);
-  const panelSource = source.slice(source.indexOf("  buildPanoramaControls()"), source.indexOf("  choosePanoramaImport("));
-  assert.doesNotMatch(panelSource, /_button|_section|createElement\("(?:button|input|label)"\)|textContent/);
+  assert.equal(built.host, w); assert.equal(w.panoramaPanel, built.element); assert.equal(w.panoramaOrbit, built.orbit);
+  assert.equal(w.side.children[0], built.element);
+  assert.equal(built.received.doc, w.panorama); assert.equal(built.received.camera.roll, 30);
   assert.doesNotMatch(source, /Export panorama PNG|Rotate panorama|Square = editing view/);
   w.panorama = null; w.updatePanoramaControls();
-  assert.equal(w.panoramaPanel.hidden, true); assert.equal(received.doc, null);
+  assert.equal(built.received.doc, null); assert.equal(built.received.camera, undefined);
 });
 
 test("rotation coalesces pointer updates and renders the newest value before release", () => {
@@ -146,11 +141,18 @@ test("pixel undo restores the spherical source at the current camera", () => {
   assert.notEqual(layer.panoramaCanvas, snapshot.panoramaCanvas);
 });
 
-test("serialization contains full panorama pixels and leaves legacy workflows in v2", () => {
-  const layer = { id: "base", type: "raster", panoramaCanvas: { toDataURL: () => "FULL-PANORAMA" } };
-  const w = widget({ panorama: { settings: settings(), commit() {}, commitLayer() {} }, layers: [layer], getStateCacheId: () => "cache", settings: {} });
+test("serialization stores full panorama pixels and the camera on the panorama layer (v4); flat stays v2", () => {
+  const layer = { id: "base", type: "panorama", panoramaCanvas: { toDataURL: () => "FULL-PANORAMA" } };
+  const edit = { id: "edit", type: "raster", panoramaCanvas: { toDataURL: () => "EDIT" } };
+  const w = widget({ panorama: { settings: settings({ baseLayerId: "base", yaw: 33, quality: "sharp" }), commit() {}, commitLayer() {} },
+    layers: [edit, layer], getStateCacheId: () => "cache", settings: {} });
   const state = w.buildSerializedState(true);
-  assert.equal(state.version, 3); assert.equal(state.layers[0].dataURL, "FULL-PANORAMA");
+  assert.equal(state.version, 4); assert.equal("panorama" in state, false);
+  assert.equal(state.layers[1].type, "panorama"); assert.equal(state.layers[1].dataURL, "FULL-PANORAMA");
+  assert.equal(state.layers[1].panorama.yaw, 33); assert.equal(state.layers[1].panorama.quality, "sharp");
+  assert.equal(state.layers[1].panorama.baseLayerId, undefined); assert.equal(state.layers[0].panorama, undefined);
+  assert.deepEqual(panoramaModule.panoramaSettingsFromState(state), settings({ baseLayerId: "base", yaw: 33, quality: "sharp" }));
+  state.layers.reverse();
   assert.equal(state.layers[0].crop.width, 4096); assert.equal(state.layers[0].crop.height, 2048);
   assert.equal(state.bbox.width, 1024);
   w.panorama = null; w.layers = [];
@@ -248,6 +250,7 @@ test("panorama restoration is transactional and rejects incomplete cached pixels
     await w.applySerializedState(state);
     assert.equal(w.panorama.settings.yaw, 45); assert.equal(w.panorama.projected, true);
     assert.equal(w.layers.at(-1).id, "base"); assert.equal(old.disposed, true);
+    assert.equal(w.layers.at(-1).type, "panorama", "a version 3 base layer becomes the panorama layer");
     assert.equal(w.bbox.width, 1024); assert.equal(w.layers[0].panoramaCanvas.width, 4096);
   } finally { context.PanoramaDocument = realDocument; }
 });
@@ -310,7 +313,7 @@ class ExitDocument {
   dispose() { this.disposed = true; }
 }
 function exitWidget(overrides = {}) {
-  const base = { id: "base", type: "raster", locked: true, visible: true, opacity: 1, canvas: pixelCanvas("preview"), panoramaCanvas: pixelCanvas("whole-base") };
+  const base = { id: "base", type: "panorama", locked: true, visible: true, opacity: 1, canvas: pixelCanvas("preview"), panoramaCanvas: pixelCanvas("whole-base") };
   const edit = { id: "edit", type: "raster", locked: false, visible: false, opacity: .5, blendMode: "multiply", canvas: pixelCanvas("preview"), panoramaCanvas: pixelCanvas("whole-edit") };
   const w = widget({ layers: [edit, base], settings: {}, tool: "panorama", activeLayerId: "base",
     undoStack: [], redoStack: [], stagingItems: [], activeStagingIndex: -1,
@@ -350,7 +353,8 @@ test("deleting the base asks before irreversibly clearing the panorama workspace
   w.undo(); w.redo(); assert.equal(w.panorama, null);
   assert.equal(w.samCleared, true);
   const state = w.buildSerializedState(false);
-  assert.equal(state.version, 2); assert.equal(state.panorama, null);
+  assert.equal(state.version, 2); assert.equal(state.panorama, undefined);
+  assert.equal(state.layers.some(layer => layer.type === "panorama"), false);
 });
 
 test("canceling deletion keeps the complete workspace and history unchanged", async () => {
@@ -381,6 +385,7 @@ test("deleting an overlay does not close panorama mode or prompt for workspace d
 test("deletion restores bbox controls and panorama import", async () => {
   const w = exitWidget(), bbox = {};
   w.panoramaPanel = {};
+  w.panoramaLayerPanel = { update(doc, camera) { w.panoramaPanel.hidden = !camera; } };
   w.tools = { querySelector: () => bbox };
   w.updatePanoramaControls();
   assert.equal(bbox.hidden, true);
@@ -473,7 +478,7 @@ test("standard PSD export keeps all spherical pixels regardless of roll or viewp
   let result, downloaded;
   const previousBlob = context.Blob; context.Blob = Blob;
   try {
-    const base = { id: "base", name: "Base", type: "raster", visible: true, opacity: 1, panoramaCanvas: { pixels: "complete base" } };
+    const base = { id: "base", name: "Base", type: "panorama", visible: true, opacity: 1, panoramaCanvas: { pixels: "complete base" } };
     const edit = { id: "edit", name: "Edit", type: "raster", visible: true, opacity: .5, panoramaCanvas: { pixels: "complete edit" } };
     const w = widget({ layers: [edit, base], panorama: { settings: settings({ roll: 75, yaw: 123 }), commit() {} },
       loadAgPsd: async () => ({ writePsd: data => { result = data; return new Uint8Array(); } }),
