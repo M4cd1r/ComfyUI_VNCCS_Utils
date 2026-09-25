@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openUnicanvas } from "./helpers/app.mjs";
+import { importImageLayer, openUnicanvas, setLayerNaming } from "./helpers/app.mjs";
 
 // Issue #13: painted Inpaint Mask pixels are sent as `keep` with Remove background. The route
 // is stubbed (no inference on the CPU lane): it records the request and answers with an
@@ -73,6 +73,7 @@ async function paintMaskStroke(page) {
 test("remove background sends the painted inpaint mask as keep areas", async ({ page }) => {
   const requests = await stubRemoveBg(page);
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // keep imported layers where the spec expects them
   const before = new Set((await listLayers(page)).map((layer) => layer.id));
   await importImageLayer(page, BACKDROP_IMAGE);
   const imported = (await listLayers(page)).find((layer) => layer.type === "raster" && !before.has(layer.id));

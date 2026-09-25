@@ -16,6 +16,15 @@ export const LAYER_ORIGINS = Object.freeze([
 ]);
 const ORIGIN_SET = new Set(LAYER_ORIGINS);
 
+// Folder categories for automatic filing (issue #17). `meta.category` holds the naming model's
+// answer; layers without one are filed by rules.
+export const LAYER_CATEGORIES = Object.freeze(["Background", "Characters", "Props", "Effects", "Lighting", "Overlays", "Other"]);
+
+export function normalizeLayerCategory(value) {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return LAYER_CATEGORIES.find((category) => category.toLowerCase() === text);
+}
+
 const STRING_FIELDS = ["historyId", "prompt", "negative", "mode", "model", "sourceName", "derivedFrom", "assetId"];
 const NUMBER_FIELDS = ["seed", "createdAt", "heightFactor", "steps", "cfg", "denoise"];
 
@@ -70,6 +79,8 @@ export function normalizeLayerMeta(raw) {
     const value = cleanString(raw[key], 200);
     if (value !== undefined) meta[key] = value;
   }
+  const category = normalizeLayerCategory(raw.category);
+  if (category) meta.category = category;
   return meta;
 }
 

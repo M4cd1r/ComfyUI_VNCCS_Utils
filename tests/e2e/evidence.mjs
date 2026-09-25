@@ -139,10 +139,20 @@ const shots = {
   "placement-harmonize": ".vnccs-unicanvas",
   "config-override": "body",
   "icons": "body",
+  "auto-naming": ".vnccs-uc2-standalone-shell",
 };
 // The settings popover exists only once the gear is clicked. The crop still frames
 // the pre-change popover, which the old code parked at the widget's top-left.
 if (topic === "settings-panel") await page.locator('[title="Settings"]').first().click();
+// Automatic naming (issue #17): two painted layers named by rules, then the Organize preview.
+if (topic === "auto-naming") {
+  await page.locator('[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon').first().click();
+  const shell = page.locator(".vnccs-uc2-standalone-shell");
+  await shell.locator(".vnccs-uc-left").waitFor({ timeout: 30_000 });
+  for (let i = 0; i < 2; i += 1) await shell.locator('[title="Add raster"]').first().click();
+  await shell.locator("[data-organize-layers]").click();
+  await shell.locator(".vnccs-uc-organize").waitFor();
+}
 const target = page.locator(shots[topic] || ".vnccs-uc-left").first();
 // Fixed page crops keep both phases aligned where the subject spans several roots.
 const clips = {
@@ -164,6 +174,7 @@ const geometry = await target.evaluate((el, measureSelector) => {
   "settings-panel": ".vnccs-uc-settings-popover",
   "config-override": ".vnccs-config-ui",
   icons: ".vnccs-uc-tools",
+  "auto-naming": ".vnccs-uc-organize",
 }[topic] || null);
 await writeFile(resolve(outDir, `${phase}.geometry.json`), JSON.stringify(geometry, null, 2));
 await browser.close();

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openUnicanvas } from "./helpers/app.mjs";
+import { importImageLayer, openUnicanvas, setLayerNaming } from "./helpers/app.mjs";
 
 // Plan 10.3 (#22): the standalone tab saves into a project (incremental blob uploads, scene tabs),
 // and the document survives reloads, scene switches and large states. No GPU: the draw route is
@@ -86,6 +86,7 @@ function noisePng(size, seed) {
 
 test("projects: create, save a painted and generated scene, restore it after a reload", async ({ page, request }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // keep imported layers where the spec expects them
   const created = await createProject(page, `E2E project ${Date.now()}`);
   expect(created.scenes).toHaveLength(1);
 
@@ -176,6 +177,7 @@ test("projects: a 10 MB standalone document persists across a reload", async ({ 
   const dir = join(tmpdir(), "vnccs-projects-e2e");
   mkdirSync(dir, { recursive: true });
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // keep imported layers where the spec expects them
   const uploaded = [];
   page.on("request", (req) => {
     if (req.method() === "PUT" && req.url().includes("/blobs/")) uploaded.push(req.postDataBuffer()?.length || 0);
@@ -221,6 +223,7 @@ test("projects: an existing standalone document is migrated into a project", asy
     return localStorage.getItem("vnccs-unicanvas-standalone");
   }, FIXTURE_DATA_URL);
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // keep imported layers where the spec expects them
   await expect.poll(async () => (await project(page))?.projectId, { timeout: 30_000 }).toBeTruthy();
   const info = await waitSaved(page, 1);
   expect(info.name).toMatch(/^Untitled - \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);

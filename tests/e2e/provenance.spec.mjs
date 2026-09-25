@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openUnicanvas } from "./helpers/app.mjs";
+import { importImageLayer, openUnicanvas, setLayerNaming } from "./helpers/app.mjs";
 
 // Plan 10 (#12): every layer records where its pixels came from (layer.meta), generated layers
 // carry the settings snapshot of their run, and pixel changes bump a runtime pixel revision.
@@ -23,6 +23,7 @@ async function newLayerAfter(page, action) {
 
 test("layers record their origin, generated layers their run, and meta survives a reload", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // this spec counts and places layers itself
 
   // Paint: a UI-added raster layer, then a brush stroke on it bumps its pixel revision.
   const painted = await newLayerAfter(page, () => page.locator(`${shell} [title="Add raster"]`).first().click());
