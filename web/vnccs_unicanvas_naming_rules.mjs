@@ -16,6 +16,14 @@ export { LAYER_CATEGORIES, normalizeLayerCategory };
 export const NAME_SOURCES = Object.freeze(["auto", "user", "import"]);
 export const CATEGORY_CHARACTERS = "Characters";
 export const CATEGORY_OTHER = "Other";
+export const OCCLUDER_PREFIX = "Occluder - ";
+
+/** The layer name a model answer becomes: occluders keep their "Occluder - " prefix. */
+export function modelLayerName(layer, name) {
+  const text = String(name || "").trim();
+  if (layer?.meta?.origin !== "occluder" || !text) return text;
+  return text.startsWith(OCCLUDER_PREFIX) ? text : `${OCCLUDER_PREFIX}${text}`;
+}
 
 // Pose Studio's default mannequin names; a name the user changed wins over the reference name.
 const DEFAULT_STUDIO_NAME = /^(main character|character \d+)$/i;
@@ -128,6 +136,8 @@ export function rulesLayerName(layer, layers = []) {
     return { name: source ? `${source.name} copy` : null, model: false };
   }
   if (origin === "generate") return { name: character || promptFallbackName(meta.prompt), model: !character };
+  // "Occluder - <object>": the model names the object (vnccs_unicanvas_naming.mjs keeps the prefix).
+  if (origin === "occluder") return { name: String(layer.name || "").startsWith(OCCLUDER_PREFIX) ? layer.name : `${OCCLUDER_PREFIX}foreground`, model: true };
   if (origin === "paint" || origin === "paste" || origin === "unknown") {
     return { name: character || (/^Paint \d+$/.test(layer.name || "") ? layer.name : nextPaintName(layers, layer)), model: !character };
   }

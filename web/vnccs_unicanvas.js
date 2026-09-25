@@ -3,7 +3,7 @@
  */
 
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
-import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId } from "./vnccs_unicanvas_pose_state.mjs";
+import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs";
 import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs";
 import { SPRITE_VARIANT_HISTORY_KIND, installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
 import { app } from "../../scripts/app.js";
@@ -19,7 +19,7 @@ import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
-import { SHADOW_LAYER_HISTORY_KIND, applyShadowLayerHistory, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
+import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, OCCLUDER_LAYER_HISTORY_KIND, SHADOW_LAYER_HISTORY_KIND, applyOccluderLayerHistory, applyShadowLayerHistory, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
 import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs";
 import { HISTORY_SETTINGS_HISTORY_KIND, installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
@@ -1928,6 +1928,7 @@ class UniCanvasWidget {
     layer.type = "raster";
     delete layer.pose;
     delete layer.poseIdCanvas; delete layer.poseIdMeta;
+    delete layer.poseNormalCanvas; delete layer.poseNormalMeta;
     layer.meta = createLayerMeta("rasterize", { derivedFrom: layer.id, character: layer.meta?.character });
     this.invalidateLayerCaches(layer);
     this.syncPoseToolToActiveLayer();
@@ -3007,6 +3008,11 @@ class UniCanvasWidget {
     return getUniCanvasModelModule(this.settings.generation_mode).base;
   }
 
+  // AI harmonize (vnccs_unicanvas_harmonize.mjs) needs an edit model family.
+  isEditModelSelected() {
+    return Boolean(getUniCanvasModelModule(this.settings.generation_mode).isEditModel);
+  }
+
   getGridSize() {
     return 8;
   }
@@ -3865,6 +3871,8 @@ class UniCanvasWidget {
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
       poseIdCanvas: layer.poseIdCanvas || null,
       poseIdMeta: layer.poseIdMeta || null,
+      poseNormalCanvas: layer.poseNormalCanvas || null,
+      poseNormalMeta: layer.poseNormalMeta || null,
       ...this.poseBake?.snapshot(layer),
       ...this.sprites?.snapshot(layer),
     };
@@ -3876,6 +3884,8 @@ class UniCanvasWidget {
     if (snapshot.pose) layer.pose = serializePose(snapshot.pose);
     // The ID canvas is replaced, never drawn into, so snapshots share it; a stale one is ignored.
     if (layer.type === "pose") { layer.poseIdCanvas = snapshot.poseIdCanvas || null; layer.poseIdMeta = snapshot.poseIdMeta || null; }
+    // The normal pass (relight, vnccs_unicanvas_harmonize.mjs) is replaced the same way.
+    if (layer.type === "pose" || snapshot.poseNormalCanvas) { layer.poseNormalCanvas = snapshot.poseNormalCanvas || null; layer.poseNormalMeta = snapshot.poseNormalMeta || null; }
     if (this.panorama && snapshot.panoramaCanvas) {
       layer.panoramaCanvas = this.cloneCanvas(snapshot.panoramaCanvas);
       layer.hiresCanvas = null; layer.hiresRect = null;
@@ -3953,6 +3963,7 @@ class UniCanvasWidget {
       clone.hiresRect = { ...layer.hiresRect };
     }
     if (layer.poseIdCanvas) { clone.poseIdCanvas = layer.poseIdCanvas; clone.poseIdMeta = layer.poseIdMeta; }
+    if (layer.poseNormalCanvas) { clone.poseNormalCanvas = layer.poseNormalCanvas; clone.poseNormalMeta = layer.poseNormalMeta; }
     // Sprite variants are shared by reference (copy on write).
     Object.assign(clone, this.sprites?.cloneLayerFields(layer));
     this.invalidateLayerCaches(clone);
@@ -4200,6 +4211,7 @@ class UniCanvasWidget {
     if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
     if (entry.kind === SCENE_LIGHT_HISTORY_KIND) applySceneLightHistory(this, entry, direction);
     if (entry.kind === SHADOW_LAYER_HISTORY_KIND) applyShadowLayerHistory(this, entry, direction);
+    if (entry.kind === OCCLUDER_LAYER_HISTORY_KIND) applyOccluderLayerHistory(this, entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
@@ -7662,6 +7674,8 @@ class UniCanvasWidget {
     if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
     // Per-character ID pass: state cache only, never workflow metadata.
     const poseId = includeData && layer.type === "pose" ? serializePoseId(layer) : null;
+    // Normal pass for the relight (vnccs_unicanvas_harmonize.mjs): state cache only as well.
+    const poseNormal = includeData && layer.poseNormalCanvas ? serializePoseNormal(layer) : null;
     // Mannequin and baked character pixels (character bake): state cache only as well.
     const bakePixels = includeData && layer.type === "pose" ? this.poseBake?.serialize(layer) : null;
     if (this.panorama) {
@@ -7676,6 +7690,7 @@ class UniCanvasWidget {
         hiresRect: null, hiresDataURL: null,
         shadow: serializeShadow(layer.shadow),
         ...(poseId ? { poseId } : {}),
+        ...(poseNormal ? { poseNormal } : {}),
         ...(bakePixels ? { bakePixels } : {}),
       };
     }
@@ -7700,6 +7715,7 @@ class UniCanvasWidget {
       ...this.serializeStateOffset?.(layer),
     };
     if (poseId) payload.poseId = poseId;
+    if (poseNormal) payload.poseNormal = poseNormal;
     if (bakePixels) payload.bakePixels = bakePixels;
     // Sprite set: metadata always, variant pixels only with layer data.
     if (layer.type === "sprite") payload.sprite = this.sprites?.serialize(layer, includeData);
@@ -7903,6 +7919,7 @@ class UniCanvasWidget {
           layer.hiresRect = { ...item.hiresRect };
         }
         if (layer.type === "pose" && item.poseId?.dataURL) await restorePoseId(layer, item.poseId, (url) => this.loadImage(url));
+        if (item.poseNormal?.dataURL && (layer.type === "pose" || layer.type === "raster")) await restorePoseNormal(layer, item.poseNormal, (url) => this.loadImage(url));
         if (layer.type === "pose" && item.bakePixels) await this.poseBake?.restore(layer, item.bakePixels);
         if (layer.type === "sprite") await this.sprites?.restore(layer, item.sprite);
         if (!restoredPanorama) this.sanitizeMaskLayer(layer);
@@ -8269,6 +8286,18 @@ class UniCanvasWidget {
       familyDefaults: (mode) => getUniCanvasModelModule(mode).defaults,
       keepAreas: () => describeKeepAreas(this),
     });
+
+    // AI harmonize instruction (Harmonize panel, vnccs_unicanvas_harmonize.mjs), sent on every run.
+    section("harmonize", "Harmonize");
+    const harmonizePrompt = document.createElement("textarea");
+    harmonizePrompt.className = "vnccs-uc-textarea";
+    harmonizePrompt.rows = 3;
+    harmonizePrompt.placeholder = HARMONIZE_DEFAULT_PROMPT;
+    harmonizePrompt.value = typeof s[HARMONIZE_PROMPT_SETTING] === "string" ? s[HARMONIZE_PROMPT_SETTING] : "";
+    harmonizePrompt.dataset.harmonizePrompt = "";
+    harmonizePrompt.addEventListener("keydown", (e) => e.stopPropagation());
+    harmonizePrompt.addEventListener("input", () => { s[HARMONIZE_PROMPT_SETTING] = harmonizePrompt.value; commit(); });
+    bind("AI harmonize instruction (empty: the default)", harmonizePrompt);
 
     // Automatic layer names and folders (vnccs_unicanvas_naming.mjs, vnccs_unicanvas_filing.mjs).
     // "Auto-name" in the layer menu works at every level; only "Rules + model" downloads.

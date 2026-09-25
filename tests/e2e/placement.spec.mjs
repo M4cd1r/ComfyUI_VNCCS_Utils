@@ -281,3 +281,200 @@ test("shadow layers follow their character live, obey the light, detach, undo an
   expect((await layers(page)).find((layer) => layer.id === cast.id).type).toBe("raster");
   expect(meanDifference(await croppedPixels(page, cast.id), pixelsBefore)).toBeLessThan(1);
 });
+// Plan 08.3 (#20): Harmonize panel and foreground occluder. No GPU: the draw and depth routes are
+// stubbed, and the character gets a synthetic normal pass (a sphere) through the E2E hook.
+
+async function selectEditFamily(page) {
+  await page.locator(`${shell} [data-model-selection-mode="custom"]`).first().click();
+  for (const [key, value] of [["model_loader", "diffusion_model"], ["generation_mode", "flux_klein"]]) {
+    await page.evaluate(([setting, next]) => {
+      const select = document.querySelector(`.vnccs-uc2-standalone-shell select[data-setting="${setting}"]`);
+      select.value = next;
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+    }, [key, value]);
+  }
+}
+
+/**
+ * A PNG data URL drawn in the page: a background color, then rectangles `[color, x, y, w, h]` in
+ * 0..1 units of the image, or a sphere normal pass (the normal points left on the left half).
+ */
+async function pagePNG(page, width, height, { background = null, rects = [], sphere = false } = {}) {
+  return page.evaluate(([w, h, fill, boxes, normals]) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (fill) { ctx.fillStyle = fill; ctx.fillRect(0, 0, w, h); }
+    for (const [color, x, y, bw, bh] of boxes) { ctx.fillStyle = color; ctx.fillRect(x * w, y * h, bw * w, bh * h); }
+    if (normals) {
+      const image = ctx.createImageData(w, h);
+      for (let y = 0; y < h; y += 1) for (let x = 0; x < w; x += 1) {
+        const nx = (x + 0.5) / w * 2 - 1, nz = Math.sqrt(Math.max(0, 1 - nx * nx)), i = (y * w + x) * 4;
+        image.data[i] = Math.round((nx * 0.5 + 0.5) * 255); image.data[i + 1] = 128;
+        image.data[i + 2] = Math.round((nz * 0.5 + 0.5) * 255); image.data[i + 3] = 255;
+      }
+      ctx.putImageData(image, 0, 0);
+    }
+    return canvas.toDataURL("image/png");
+  }, [width, height, background, rects, sphere]);
+}
+
+/** Mean luminance of the opaque pixels in the left and right halves of a layer's alpha crop. */
+async function halves(page, id) {
+  const crop = await croppedPixels(page, id);
+  let left = 0, right = 0, nl = 0, nr = 0;
+  for (let y = 0; y < crop.height; y += 1) {
+    for (let x = 0; x < crop.width; x += 1) {
+      const i = (y * crop.width + x) * 4;
+      if (crop.data[i + 3] < 200) continue;
+      const lum = 0.2126 * crop.data[i] + 0.7152 * crop.data[i + 1] + 0.0722 * crop.data[i + 2];
+      if (x < crop.width / 2) { left += lum; nl += 1; } else { right += lum; nr += 1; }
+    }
+  }
+  return { left: left / Math.max(1, nl), right: right / Math.max(1, nr) };
+}
+
+async function openHarmonize(page, id) {
+  await layerRow(page, id).click({ button: "right" });
+  await page.locator(menu).getByRole("button", { name: "Harmonize...", exact: true }).click();
+  await expect(page.locator(`${shell} [data-harmonize-panel="${id}"]`)).toBeVisible();
+  return page.locator(`${shell} [data-harmonize-panel="${id}"]`);
+}
+
+test("harmonize relights live, cancels exactly, stages AI results, lifts an occluder and undoes each", async ({ page }) => {
+  await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false });
+  const backdrop = await newLayerAfter(page, () => importImageLayer(page, BACKDROP));
+  const figure = await newLayerAfter(page, () => importImageLayer(page, CHARACTER));
+  const start = await character(page, figure.id);
+  const normals = await pagePNG(page, Math.round(start.rect.width), Math.round(start.rect.height), { sphere: true });
+  expect(await hook(page, "setLayerNormalPass", figure.id, normals, start.rect)).toBe(true);
+  const original = await croppedPixels(page, figure.id);
+  const base = await halves(page, figure.id);
+
+  // Relight: a light from the left brightens the left half more than the right while the
+  // strength slider is still held.
+  const panel = await openHarmonize(page, figure.id);
+  await panel.locator('[data-harmonize-light="azimuth"]').fill("270");
+  await panel.locator('[data-harmonize-light="elevation"]').fill("20");
+  await panel.locator('[data-harmonize="relightStrength"]').fill("0");
+  await panel.locator('[data-harmonize="relight"]').check();
+  const slider = await panel.locator('[data-harmonize="relightStrength"]').boundingBox();
+  await page.mouse.move(slider.x + 2, slider.y + slider.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i += 1) await page.mouse.move(slider.x + 2 + (slider.width - 4) * i / 8, slider.y + slider.height / 2);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const during = await halves(page, figure.id);
+  expect((await hook(page, "getHarmonize")).relight.on).toBe(true);
+  expect(during.left - base.left).toBeGreaterThan(during.right - base.right + 5);
+  await page.mouse.up();
+
+  // Cancel restores the pixels exactly.
+  await panel.locator('[data-harmonize-action="cancel"]').click();
+  await expect(page.locator(`${shell} [data-harmonize-panel]`)).toHaveCount(0);
+  expect(meanDifference(await croppedPixels(page, figure.id), original)).toBe(0);
+
+  // Apply is one undo entry.
+  const again = await openHarmonize(page, figure.id);
+  await again.locator('[data-harmonize="relight"]').check();
+  await again.locator('[data-harmonize-action="apply"]').click();
+  const relit = await croppedPixels(page, figure.id);
+  expect(meanDifference(relit, original)).toBeGreaterThan(1);
+  await page.locator(`${shell} [title="Undo"]`).first().click();
+  await expect.poll(async () => meanDifference(await croppedPixels(page, figure.id), original)).toBe(0);
+  await page.locator(`${shell} [title="Redo"]`).first().click();
+  await expect.poll(async () => meanDifference(await croppedPixels(page, figure.id), relit)).toBeLessThan(1);
+  await page.locator(`${shell} [title="Undo"]`).first().click();
+
+  // AI harmonize: a stubbed edit model answers twice, first with an opaque red image (staged,
+  // silhouette kept), then with a transparent one whose box is far wider (rejected).
+  await selectEditFamily(page);
+  const red = await pagePNG(page, 64, 64, { background: "#ff0000" });
+  const wide = await pagePNG(page, 64, 64, { rects: [["#00ff00", 0, 0, 1, 0.9]] });
+  const answers = [red, wide];
+  let drawCalls = 0;
+  await page.route("**/vnccs/unicanvas/draw", async (route) => {
+    const body = route.request().postDataJSON();
+    expect(body.mode).toBe("inpaint");
+    expect(body.settings.positive).toMatch(/^Relight the character to match the scene lighting/);
+    await route.fulfill({ json: { images: [answers[Math.min(drawCalls, answers.length - 1)]] } });
+    drawCalls += 1;
+  });
+  const ai = await openHarmonize(page, figure.id);
+  await ai.locator('[data-harmonize-action="ai"]').click();
+  await expect.poll(async () => (await hook(page, "getStaging")).length).toBe(1);
+  await page.locator(`${shell} [title="Accept as layer"]`).first().click();
+  await expect.poll(async () => (await hook(page, "getStaging")).length).toBe(0);
+  const harmonized = await croppedPixels(page, figure.id);
+  expect(harmonized.width).toBe(original.width);
+  expect(harmonized.height).toBe(original.height);
+  const opaque = harmonized.data.findIndex((value, index) => index % 4 === 3 && value > 200);
+  expect(harmonized.data[opaque - 3]).toBeGreaterThan(200); // red
+  expect(harmonized.data[opaque - 2]).toBeLessThan(40);
+  await page.locator(`${shell} [title="Undo"]`).first().click();
+  await expect.poll(async () => meanDifference(await croppedPixels(page, figure.id), original)).toBe(0);
+  const retry = await openHarmonize(page, figure.id);
+  await retry.locator('[data-harmonize-action="ai"]').click();
+  await expect.poll(() => drawCalls).toBe(2);
+  await page.waitForTimeout(500);
+  expect((await hook(page, "getStaging")).length).toBe(0);
+  await retry.locator('[data-harmonize-action="cancel"]').click();
+
+  // Occluder: the stubbed depth map is near (bright) over the lower-left part of the character
+  // box and far elsewhere, so the occluder holds exactly those background pixels, above the figure.
+  const back = await character(page, backdrop.id);
+  const near = {
+    x: start.rect.x, y: start.rect.y + start.rect.height * 0.5,
+    width: start.rect.width * 0.4, height: start.rect.height * 0.3,
+  };
+  const depth = await pagePNG(page, Math.round(back.rect.width), Math.round(back.rect.height), {
+    background: "rgb(77,77,77)",
+    rects: [["#ffffff", (near.x - back.rect.x) / back.rect.width, (near.y - back.rect.y) / back.rect.height, near.width / back.rect.width, near.height / back.rect.height]],
+  });
+  await page.route("**/vnccs/unicanvas/depth", (route) => route.fulfill({ json: { depth, horizonY: null } }));
+  const occluder = await newLayerAfter(page, async () => {
+    await layerRow(page, figure.id).click({ button: "right" });
+    await page.locator(menu).getByRole("button", { name: "Create foreground occluder", exact: true }).click();
+  });
+  expect((await hook(page, "getLayerMeta", occluder.id)).origin).toBe("occluder");
+  expect(occluder.name).toMatch(/^Occluder - /);
+  let ids = (await layers(page)).map((layer) => layer.id);
+  expect(ids.indexOf(occluder.id)).toBe(ids.indexOf(figure.id) - 1);
+  const lifted = await character(page, occluder.id);
+  expect(Math.abs(lifted.rect.x - near.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(lifted.rect.y - near.y)).toBeLessThanOrEqual(2);
+  expect(Math.abs(lifted.rect.width - near.width)).toBeLessThanOrEqual(3);
+  expect(Math.abs(lifted.rect.height - near.height)).toBeLessThanOrEqual(3);
+  const occluderPixels = await croppedPixels(page, occluder.id);
+  const background = await hook(page, "getLayerPixels", backdrop.id);
+  const stack = await hook(page, "getCompositePixels");
+  const matches = await page.evaluate(async ([occluderURL, backgroundURL, rect, origin]) => {
+    const load = async (url) => { const image = new Image(); image.src = url; await image.decode(); return image; };
+    const [a, b] = await Promise.all([load(occluderURL), load(backgroundURL)]);
+    const read = (image) => {
+      const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
+      const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0);
+      return ctx.getImageData(Math.round(rect.x - origin.x), Math.round(rect.y - origin.y), Math.round(rect.width), Math.round(rect.height)).data;
+    };
+    const pa = read(a), pb = read(b);
+    let diff = 0, count = 0;
+    for (let i = 0; i < pa.length; i += 4) {
+      if (pa[i + 3] < 250) continue;
+      diff += Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]);
+      count += 1;
+    }
+    return { mean: diff / Math.max(1, count * 3), count };
+  }, [(await hook(page, "getLayerPixels", occluder.id)).dataURL, background.dataURL, lifted.rect, stack.origin]);
+  expect(occluderPixels.width).toBeGreaterThan(0);
+  expect(matches.count).toBeGreaterThan(0);
+  expect(matches.mean).toBeLessThan(1);
+
+  // Undo removes the occluder; redo files it right above the character again.
+  await page.locator(`${shell} [title="Undo"]`).first().click();
+  await expect.poll(async () => (await layers(page)).some((layer) => layer.id === occluder.id)).toBe(false);
+  await page.locator(`${shell} [title="Redo"]`).first().click();
+  await expect.poll(async () => {
+    ids = (await layers(page)).map((layer) => layer.id);
+    return ids.indexOf(occluder.id) === ids.indexOf(figure.id) - 1;
+  }).toBe(true);
+});
