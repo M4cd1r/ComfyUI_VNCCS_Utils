@@ -19,6 +19,7 @@
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 
 export const VN_PREVIEW_PRESETS = Object.freeze([
   { id: "16x9_1080", label: "16:9 - 1920x1080", width: 1920, height: 1080 },
@@ -763,7 +764,8 @@ export class VnPreviewController {
     const state = this.state;
     this.lastLayout = null;
     this.lastFlagged = [];
-    if (!state.enabled) return;
+    // Switched off in Settings > VNCCS > UniCanvas: hidden, the saved overlay state stays.
+    if (!state.enabled || !isUniCanvasEnabled("vnPreview")) return;
     const frameWorld = this.frameRect(state);
     const frame = this.worldToScreen(frameWorld);
     ctx.save();
@@ -838,7 +840,7 @@ export class VnPreviewController {
   }
 
   beginGesture(e) {
-    if (e.button !== 0 || this.uc.isPointerDown) return false;
+    if (e.button !== 0 || this.uc.isPointerDown || !isUniCanvasEnabled("vnPreview")) return false;
     const screen = this.uc.canvasPointFromEvent(e);
     const handle = this.hitFrame(screen);
     if (!handle) return false;

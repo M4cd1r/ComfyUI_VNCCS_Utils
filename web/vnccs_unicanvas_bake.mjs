@@ -26,6 +26,7 @@ import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
 import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { resolveRemoveBgSelection, removeBgEditSettings } from "./vnccs_unicanvas_remove_bg.mjs";
+import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 
 export const BAKE_FAMILIES = Object.freeze([["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"]]);
 export const BAKE_STATUSES = Object.freeze(["none", "baked", "stale", "failed"]);
@@ -848,7 +849,8 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       try { await editor.flush(); } catch (_) { /* The scene pass uses the last committed pixels. */ }
     }
     flushPendingHistory();
-    const candidates = collectBakeCandidates(uc, { includeStale: uc.settings.rebake_stale_on_generate !== false, hasPart });
+    // Scene Generate switched off (Settings > VNCCS > UniCanvas): GENERATE runs the scene only.
+    const candidates = isUniCanvasEnabled("sceneGenerate") ? collectBakeCandidates(uc, { includeStale: uc.settings.rebake_stale_on_generate !== false, hasPart }) : [];
     if (!candidates.length) return true;
     uc.drawInProgress = true;
     if (uc.drawBtn) uc.drawBtn.disabled = true;
@@ -972,7 +974,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const button = uc.drawBtn;
     if (!button || typeof button.appendChild !== "function") return;
     let count = 0;
-    try { count = collectBakeCandidates(uc, { includeStale: uc.settings?.rebake_stale_on_generate !== false, hasPart }).length; }
+    try { count = isUniCanvasEnabled("sceneGenerate") ? collectBakeCandidates(uc, { includeStale: uc.settings?.rebake_stale_on_generate !== false, hasPart }).length : 0; }
     catch (_) { count = 0; }
     let badge = button.querySelector?.(".vnccs-uc-bake-count");
     if (!badge) {
@@ -1082,7 +1084,8 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   function buildSettings(ui) {
     const { bind, makeSelect, checkboxRow, commit } = ui;
     const s = uc.settings;
-    const family = makeSelect(BAKE_FAMILIES, BAKE_FAMILIES.some(([key]) => key === s.bake_model_family) ? s.bake_model_family : BAKE_FAMILIES[0][0]);
+    const familyValue = BAKE_FAMILIES.some(([key]) => key === s.bake_model_family) ? s.bake_model_family : BAKE_FAMILIES[0][0];
+    const family = makeSelect(filterUniCanvasChoices(BAKE_FAMILIES, isUniCanvasFamilyEnabled, familyValue), familyValue);
     const presetSelect = makeSelect([["", "First ready preset"]], "");
     const note = document.createElement("div");
     note.style.cssText = "opacity:.75; line-height:1.35;";

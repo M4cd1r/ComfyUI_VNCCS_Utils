@@ -17,12 +17,13 @@
 
 import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { captureGroupStructure, createGroupLayer, getGroupDescendants, isGroupLayer, normalizeGroupedLayerOrder } from "./vnccs_unicanvas_groups.mjs";
+import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { CATEGORY_CHARACTERS, CATEGORY_OTHER, LAYER_CATEGORIES, layerCategory, layerCharacterName } from "./vnccs_unicanvas_naming_rules.mjs";
 
 export const AUTO_FILE_SETTING = "auto_file_layers";
 export const CANONICAL_FOLDER_ORDER = Object.freeze(["Overlays", "Effects", "Lighting", "Characters", "Props", "Background", "Other"]);
 
-export const resolveAutoFile = (settings) => settings?.[AUTO_FILE_SETTING] !== false;
+export const resolveAutoFile = (settings) => settings?.[AUTO_FILE_SETTING] !== false && isUniCanvasEnabled("autoFiling");
 
 const sameName = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 const rankOf = (name) => CANONICAL_FOLDER_ORDER.findIndex((item) => sameName(item, name));

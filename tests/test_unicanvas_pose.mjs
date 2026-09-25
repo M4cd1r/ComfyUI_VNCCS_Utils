@@ -4,6 +4,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import * as state from "../web/vnccs_unicanvas_pose_state.mjs";
 import * as control from "../web/vnccs_unicanvas_control.mjs";
+import * as toggles from "../web/vnccs_unicanvas_feature_toggles.mjs";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
 
 const noop = () => {};
@@ -36,7 +37,7 @@ const source = fs.readFileSync(new URL("../web/vnccs_unicanvas_pose.mjs", import
 const ucSource = fs.readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 function harness(studioClass = class {}) {
     const document = Object.assign(new Element("document"), { createElement: tag => new Element(tag), head: new Element(), getElementById: () => true });
-    const context = { ...state, ...control, document, AbortController, console, JSON, Option: class extends Element {
+    const context = { ...state, ...control, ...toggles, document, AbortController, console, JSON, Option: class extends Element {
         constructor(name, value) { super("option"); this.textContent = name; this.value = value; }
     }, PoseStudioWidget: studioClass, installCustomSelects: () => ({ disconnect: noop }),
     // The backdrop needs a real three.js viewer; tests/test_unicanvas_pose_backdrop.mjs covers it.

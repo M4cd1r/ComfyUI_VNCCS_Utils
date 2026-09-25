@@ -28,6 +28,7 @@
  */
 
 import { isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
 export const PERSPECTIVE_TOOL = "perspective";
@@ -297,7 +298,7 @@ function perspectiveState(uc) {
 }
 
 function depthScaleActive(uc) {
-  return Boolean(!uc.panorama && perspectiveState(uc).enabled);
+  return Boolean(!uc.panorama && perspectiveState(uc).enabled && isUniCanvasEnabled("groundPlane"));
 }
 
 function beginDepthScale(uc, layer, start) {
@@ -503,7 +504,7 @@ function lightState(uc) {
  * layer) and while the Harmonize panel is open (vnccs_unicanvas_harmonize.mjs).
  */
 export function isLightGizmoVisible(uc) {
-  if (!uc || uc.panorama) return false;
+  if (!uc || uc.panorama || !isUniCanvasEnabled("shadowsLight")) return false;
   if (uc.harmonizeLightTarget?.()) return true;
   return uc.tool === PERSPECTIVE_TOOL || (uc.tool === "move" && Boolean(uc.activeLayer?.shadow));
 }
@@ -628,6 +629,7 @@ function formatLightValue(spec, value) {
 
 /** The scene light section of a tool-settings panel (Perspective tool and shadow controls). */
 export function renderSceneLightControls(uc) {
+  if (!isUniCanvasEnabled("shadowsLight")) return "";
   const light = lightState(uc);
   const state = uc._scenePlace;
   const html = [`<div class="vnccs-uc-tool-settings-title">Scene light</div>`];

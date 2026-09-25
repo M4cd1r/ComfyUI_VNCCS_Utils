@@ -1104,6 +1104,8 @@ export function installUniCanvasGroups(uc) {
     uc._button("Group", "vnccs-uc-btn", () => groupSelectedLayers(uc), "Group selected layers (Ctrl+G)"),
     uc._button("Ungroup", "vnccs-uc-btn", () => ungroupLayer(uc, uc.activeLayer), "Ungroup the selected group (Ctrl+Shift+G)"),
   );
+  // Settings > VNCCS > UniCanvas > Groups hides these (vnccs_unicanvas_feature_toggles.mjs).
+  for (const button of actions.children) button.dataset.groupAction = "";
   uc.layersTopActions?.append(actions);
 
   // Rows are not focusable; the list takes focus so Ctrl+G works right after a selection click.

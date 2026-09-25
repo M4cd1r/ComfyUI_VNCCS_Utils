@@ -34,6 +34,7 @@ import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { canCastShadow, isHarmonizeCharacter } from "./vnccs_unicanvas_harmonize.mjs";
 import { poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
+import { isUniCanvasLayerMenuItemEnabled, isUniCanvasRemoveBgAvailable } from "./vnccs_unicanvas_feature_toggles.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
@@ -681,6 +682,9 @@ function openLayerContextMenu(uc, layer, e) {
   menu.style.cssText = `position:absolute; z-index:40; min-width:230px; padding:6px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.12); display:grid; gap:2px; font:11px sans-serif;`;
   for (const item of LAYER_MENU_ITEMS) {
     if (!layerMenuItemAvailable(uc, layer, item)) continue;
+    // Settings > VNCCS > UniCanvas switches (vnccs_unicanvas_feature_toggles.mjs).
+    if (!isUniCanvasLayerMenuItemEnabled(item.id)) continue;
+    if (item.id.startsWith("remove-bg") && !isUniCanvasRemoveBgAvailable()) continue;
     // Only the Edit model backend reads a prompt.
     if (item.editOnly && resolveRemoveBgSelection(uc.settings).method !== "edit") continue;
     const entry = document.createElement("button");
@@ -698,6 +702,7 @@ function openLayerContextMenu(uc, layer, e) {
   // Feature modules add entries through uc.layerMenuExtensions ({ id, label, visible(layer), run(layer, point) }).
   for (const item of uc.layerMenuExtensions || []) {
     if (item.visible && !item.visible(layer)) continue;
+    if (!isUniCanvasLayerMenuItemEnabled(item.id)) continue;
     const entry = document.createElement("button");
     entry.type = "button";
     entry.textContent = item.label;
@@ -769,6 +774,7 @@ export function installUniCanvasLayerTools(uc) {
     });
     uc.container.appendChild(psdInput);
     const importButton = uc._button("Import PSD", "vnccs-uc-btn", () => psdInput.click(), "Import layers from a PSD file");
+    importButton.dataset.psdAction = "import";
     const exportButton = [...footer.querySelectorAll("button")].find((btn) => btn.textContent.trim() === "Export Layers as PSD") || null;
     // "Import PSD" sits right next to the existing "Export Layers as PSD".
     footer.insertBefore(importButton, exportButton || null);
@@ -776,6 +782,7 @@ export function installUniCanvasLayerTools(uc) {
 
   // The canvas right-click opens the same menu for the layer under the cursor.
   uc.openLayerContextMenu = (layer, e) => openLayerContextMenu(uc, layer, e);
+  uc.closeColorMatchPreview = (commit) => closeColorMatchPreview(uc, commit);
 
   uc.layerList.addEventListener("contextmenu", (e) => {
     const row = e.target.closest?.("[data-layer-id]");

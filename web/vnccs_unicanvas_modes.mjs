@@ -11,6 +11,7 @@ import { renderExportFrame } from "./vnccs_unicanvas_animation_export.mjs";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
+import { isUniCanvasEnabled, isUniCanvasToolEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
@@ -183,7 +184,7 @@ export function handleUniCanvasShortcut(widget, event) {
   }
   // Layer groups (Plan 05): Ctrl+G groups the selection, Ctrl+Shift+G ungroups. They also work
   // from the layer list, where the selection is made.
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && key.toLowerCase() === "g"
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && key.toLowerCase() === "g" && isUniCanvasEnabled("groups")
     && (isUniCanvasCanvasFocused(widget, event) || widget.layerList?.contains?.(event.target))) {
     consumeUniCanvasShortcut(event);
     if (event.shiftKey) widget.ungroupActiveLayer?.();
@@ -205,7 +206,7 @@ export function handleUniCanvasShortcut(widget, event) {
   // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
   // (Alt+digit types other characters on some keyboards).
   const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
-  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex) {
+  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex && isUniCanvasEnabled("sceneStates")) {
     consumeUniCanvasShortcut(event);
     widget.applySceneStateByIndex(Number(stateDigit[1] || stateDigit[0]) - 1);
     return true;
@@ -217,7 +218,7 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   // P toggles the VN preview overlay.
-  if (lower === "p" && widget.vnPreview) {
+  if (lower === "p" && widget.vnPreview && isUniCanvasEnabled("vnPreview")) {
     consumeUniCanvasShortcut(event);
     widget.vnPreview.toggle();
     return true;
@@ -228,7 +229,8 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   // Tools: B brush, V move, E eraser, M mask, L lasso, S rect, G perspective.
-  if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
+  // A tool switched off in Settings > VNCCS > UniCanvas keeps its key free.
+  if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower) && isUniCanvasToolEnabled(TOOL_SHORTCUTS[lower])) {
     consumeUniCanvasShortcut(event);
     widget.setTool(TOOL_SHORTCUTS[lower]);
     return true;
