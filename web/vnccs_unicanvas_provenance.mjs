@@ -12,7 +12,7 @@
 
 export const LAYER_ORIGINS = Object.freeze([
   "base", "paint", "generate", "bake", "sprite", "import", "psd", "paste", "duplicate",
-  "rasterize", "split", "occluder", "shadow", "asset", "unknown",
+  "rasterize", "split", "merge", "occluder", "shadow", "asset", "unknown",
 ]);
 const ORIGIN_SET = new Set(LAYER_ORIGINS);
 
@@ -144,7 +144,7 @@ export function metaFromStagingSnapshot(snapshot) {
 const ORIGIN_LABELS = {
   base: "Base layer", paint: "Painted", generate: "Generated", bake: "Baked character",
   sprite: "Sprite", import: "Imported image", psd: "Imported from PSD", paste: "Pasted",
-  duplicate: "Duplicate", rasterize: "Rasterized", split: "Split", occluder: "Occluder",
+  duplicate: "Duplicate", rasterize: "Rasterized", split: "Split", merge: "Merged pose layers", occluder: "Occluder",
   shadow: "Shadow", asset: "From asset library", unknown: "Unknown origin",
 };
 

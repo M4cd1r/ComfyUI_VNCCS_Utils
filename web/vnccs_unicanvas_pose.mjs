@@ -2,7 +2,7 @@
 import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { composePoseReference, poseAtPanoramaCamera } from "./vnccs_unicanvas_pose_state.mjs";
+import { composePoseReference, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, poseMultiReferences, posePromptMapping, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs";
 import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
@@ -57,6 +57,15 @@ const styles = `
 .vnccs-uc-pose-character-actions { display:flex; align-items:center; gap:8px; }
 .vnccs-uc-pose-character-actions > button { flex:1; min-width:0; }
 .vnccs-uc-pose-character-issue { color:#ffd45c; font-size:11px; }
+.vnccs-uc-pose-character-count { font-size:11px; color:var(--uc-muted); white-space:nowrap; }
+.vnccs-uc-pose-character-count.incomplete { color:#ffd45c; }
+.vnccs-uc-pose-character-list { display:flex; flex-direction:column; gap:6px; }
+.vnccs-uc-pose-character-item { display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid var(--uc-border); border-radius:8px; cursor:pointer; }
+.vnccs-uc-pose-character-item.active { border-color:var(--uc-accent, #ff8fa3); background:rgba(255,143,163,.06); }
+.vnccs-uc-pose-character-item-head { display:flex; align-items:center; gap:6px; min-width:0; font-size:12px; }
+.vnccs-uc-pose-character-item-head span:last-child { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vnccs-uc-pose-character-dot { width:10px; height:10px; flex:none; border-radius:50%; border:1px solid rgba(255,255,255,.35); }
+.vnccs-uc-pose-character-item input[type=text] { width:100%; box-sizing:border-box; min-width:0; }
 .vnccs-uc-pose-root .vnccs-ps-loading-overlay { pointer-events:none; background:transparent; backdrop-filter:none; }
 `;
 
@@ -94,7 +103,12 @@ export class UniCanvasPoseEditor {
                 const meshKey = JSON.stringify(data?.characters?.map?.(item => item?.mesh) ?? data?.mesh ?? null);
                 if (meshKey !== this.meshKey) { this.meshKey = meshKey; this.backdrop?.invalidate(); }
                 const key = JSON.stringify([data, layer.pose.viewport]);
+                // Removed mannequins drop their reference; a replaced scene keeps them by slot.
+                if (Array.isArray(layer.pose.studio?.characters) && Array.isArray(data?.characters)) {
+                    reconcilePoseCharacterRefs(layer.pose, poseStudioCharacters(layer.pose), poseStudioCharacters({ studio: data }));
+                }
                 layer.pose.studio = clone(data);
+                this.refreshCharacterMenu();
                 if (key === this.stateKey) return;
                 this.stateKey = key;
                 this.host.syncLightStateToWidget();
@@ -269,16 +283,20 @@ export class UniCanvasPoseEditor {
         this.characterMenu.classList.toggle("attention", Boolean(open));
         if (!open) return;
         this.characterMenu.scrollIntoView?.({ block: "nearest" });
-        this.characterSelect?.focus({ preventScroll: true });
+        const missing = this.layer ? poseCharacterIssues(this.host, this.layer)[0]?.characterId : null;
+        (this.characterRowSelects?.get(missing) || this.characterSelect)?.focus({ preventScroll: true });
     }
 
+    // With one mannequin the card is a single source picker; with 2+ it lists one row per
+    // mannequin (studio color, name, reference, identity prompt) bound through characterRefs.
     buildCharacterMenu() {
         const menu = document.createElement("div"); menu.className = "vnccs-uc-pose-character";
         menu.id = `uc-pose-character-${this.layer.id}`;
         menu.setAttribute("role", "group"); menu.setAttribute("aria-label", "Character reference");
         const header = document.createElement("div"); header.className = "vnccs-uc-pose-character-header";
         const title = document.createElement("strong"); title.textContent = "Character reference";
-        header.append(title);
+        const count = document.createElement("span"); count.className = "vnccs-uc-pose-character-count"; count.hidden = true;
+        header.append(title, count);
         const select = document.createElement("select"); select.className = "vnccs-uc-select";
         select.id = `${menu.id}-source`;
         select.setAttribute("aria-label", "Character image source");
@@ -287,26 +305,15 @@ export class UniCanvasPoseEditor {
         row.append(image, select);
         const issue = document.createElement("div"); issue.className = "vnccs-uc-pose-character-issue";
         const file = document.createElement("input"); file.type = "file"; file.accept = "image/*"; file.hidden = true;
-        const upload = this.host._button("Upload image", "vnccs-uc-btn", () => file.click());
-        const clear = this.host._button("Clear", "vnccs-uc-btn", () => {
-            this.host.recordHistoryBefore(); this.layer.pose.character = null;
-            this.refreshCharacterMenu(); this.host.syncToNode();
-        });
+        this.uploadTarget = null;
+        const upload = this.host._button("Upload image", "vnccs-uc-btn", () => { this.uploadTarget = null; file.click(); });
+        const clear = this.host._button("Clear", "vnccs-uc-btn", () => this.setCharacterReference(null, null, { keepOpen: true }));
         const actions = document.createElement("div"); actions.className = "vnccs-uc-pose-character-actions";
         actions.append(upload, clear);
-        select.addEventListener("change", async () => {
-            if (select.value === "__uploaded__") return;
-            if (select.value.startsWith("vnccs:")) {
-                await this.pickVnccsCharacter(select.value.slice(6));
-                return;
-            }
-            this.host.recordHistoryBefore();
-            this.layer.pose.character = select.value ? { source: "layer", layerId: select.value } : null;
-            this.setCharacterOpen(false);
-            this.refreshCharacterMenu(); this.host.syncToNode();
-        });
+        select.addEventListener("change", () => this.onCharacterSourceChange(select, null));
         file.addEventListener("change", async () => {
             const chosen = file.files?.[0]; file.value = "";
+            const characterId = this.uploadTarget;
             if (!chosen) return;
             const token = this.token, layer = this.layer;
             try {
@@ -317,18 +324,40 @@ export class UniCanvasPoseEditor {
                 const scale = Math.min(1, 2048 / Math.max(loaded.width, loaded.height));
                 const surface = this.host._createCanvas(Math.max(1, Math.round(loaded.width * scale)), Math.max(1, Math.round(loaded.height * scale)));
                 surface.getContext("2d").drawImage(loaded, 0, 0, surface.width, surface.height);
-                this.host.recordHistoryBefore();
-                layer.pose.character = { source: "upload", name: chosen.name, dataURL: surface.toDataURL("image/png") };
-                this.characterMenuKey = null;
-                this.setCharacterOpen(false);
-                this.refreshCharacterMenu(); this.host.syncToNode();
+                this.setCharacterReference(characterId, { source: "upload", name: chosen.name, dataURL: surface.toDataURL("image/png") });
             } catch (error) { this.host.setStatus(`Character image: ${error.message || error}`, true); }
         });
-        menu.append(header, row, issue, actions, file);
+        const list = document.createElement("div"); list.className = "vnccs-uc-pose-character-list"; list.hidden = true;
+        menu.append(header, row, issue, actions, list, file);
         this.characterMenu = menu; this.characterClear = clear; this.characterIssue = issue;
         this.characterSelect = select; this.characterPreview = image;
+        this.characterCount = count; this.characterList = list; this.characterFile = file;
+        this.characterSingleParts = [row, issue, actions];
         this.refreshCharacterMenu();
         return menu;
+    }
+
+    firstCharacterId() {
+        return poseStudioCharacters(this.layer?.pose)[0].id;
+    }
+
+    // One history entry per reference change; the first mannequin also writes pose.character.
+    setCharacterReference(characterId, ref, { keepOpen = false } = {}) {
+        if (!this.layer) return;
+        this.host.recordHistoryBefore();
+        setPoseCharacterRef(this.layer.pose, characterId ?? this.firstCharacterId(), ref);
+        this.characterMenuKey = null;
+        if (!keepOpen) this.setCharacterOpen(false);
+        this.refreshCharacterMenu(); this.host.syncToNode();
+    }
+
+    async onCharacterSourceChange(select, characterId) {
+        if (select.value === "__uploaded__") return;
+        if (select.value.startsWith("vnccs:")) {
+            await this.pickVnccsCharacter(select.value.slice(6), characterId);
+            return;
+        }
+        this.setCharacterReference(characterId, select.value ? { source: "layer", layerId: select.value } : null);
     }
 
     // Characters made with ComfyUI_VNCCS (Character Creator / Cloner), listed by its own
@@ -345,7 +374,7 @@ export class UniCanvasPoseEditor {
         return list;
     }
 
-    async pickVnccsCharacter(name) {
+    async pickVnccsCharacter(name, characterId = null) {
         const token = this.token, layer = this.layer;
         try {
             const query = `character=${encodeURIComponent(name)}`;
@@ -359,11 +388,7 @@ export class UniCanvasPoseEditor {
                 reader.readAsDataURL(blob);
             });
             if (token !== this.token || !this.host.layers.includes(layer)) return;
-            this.host.recordHistoryBefore();
-            layer.pose.character = { source: "upload", name, vnccsCharacter: name, dataURL };
-            this.characterMenuKey = null;
-            this.setCharacterOpen(false);
-            this.refreshCharacterMenu(); this.host.syncToNode();
+            this.setCharacterReference(characterId, { source: "upload", name, vnccsCharacter: name, dataURL });
         } catch (error) {
             this.host.setStatus(`Character reference: ${error.message || error}`, true);
             this.characterMenuKey = null;
@@ -371,20 +396,9 @@ export class UniCanvasPoseEditor {
         }
     }
 
-    refreshCharacterMenu() {
-        if (!this.characterSelect) return;
-        const select = this.characterSelect, character = this.layer.pose.character;
+    // Options of a source picker: VNCCS characters, the uploaded image, a legacy layer reference.
+    fillCharacterSource(select, character) {
         const characters = this.host._vnccsCharacterList || [];
-        const key = JSON.stringify([character?.source, character?.layerId, character?.name, characters]);
-        if (key === this.characterMenuKey) return;
-        this.characterMenuKey = key;
-        if (!this.host._vnccsCharacterList) {
-            void this.loadVnccsCharacters().then(list => {
-                this.host._vnccsCharacterList = list;
-                this.characterMenuKey = null;
-                this.refreshCharacterMenu();
-            });
-        }
         select.replaceChildren(new Option(characters.length ? "Choose a character" : "No VNCCS characters - upload an image", ""));
         for (const name of characters) {
             if (character?.vnccsCharacter !== name) select.add(new Option(name, `vnccs:${name}`));
@@ -394,14 +408,103 @@ export class UniCanvasPoseEditor {
         const legacy = character?.source === "layer" ? this.host.layers.find(item => item.id === character.layerId) : null;
         if (legacy) select.add(new Option(`Layer: ${legacy.name}`, legacy.id));
         select.value = character?.source === "layer" ? character.layerId : character?.source === "upload" ? "__uploaded__" : "";
+    }
+
+    characterThumbnail(character) {
         const selected = character?.source === "layer" ? this.host.layers.find(item => item.id === character.layerId) : null;
-        const src = character?.source === "upload" ? character.dataURL
+        return character?.source === "upload" ? character.dataURL
             : selected ? this.host.getLayerThumbnailCanvas(selected, 256)?.toDataURL("image/png") : null;
+    }
+
+    refreshCharacterMenu() {
+        if (!this.characterSelect || !this.layer) return;
+        const pose = this.layer.pose;
+        const mannequins = poseStudioCharacters(pose);
+        const multi = mannequins.length > 1;
+        const refs = mannequins.map(item => poseCharacterRef(this.layer, item.id));
+        const characters = this.host._vnccsCharacterList || [];
+        const key = JSON.stringify([refs.map(ref => [ref?.source, ref?.layerId, ref?.name]), characters,
+            multi && [mannequins, pose.studio?.active_character_id ?? null]]);
+        if (key === this.characterMenuKey) return;
+        this.characterMenuKey = key;
+        if (!this.host._vnccsCharacterList) {
+            void this.loadVnccsCharacters().then(list => {
+                this.host._vnccsCharacterList = list;
+                this.characterMenuKey = null;
+                this.refreshCharacterMenu();
+            });
+        }
+        this.characterSingleParts.forEach(part => { part.hidden = multi; });
+        this.characterList.hidden = !multi;
+        this.characterCount.hidden = !multi;
+        if (multi) { this.renderCharacterRows(mannequins, refs); return; }
+        this.characterList.replaceChildren();
+        const character = refs[0];
+        this.fillCharacterSource(this.characterSelect, character);
+        const src = this.characterThumbnail(character);
         this.characterPreview.hidden = !src;
         if (src) this.characterPreview.src = src;
         else this.characterPreview.removeAttribute("src");
         this.characterClear.disabled = !character;
         this.characterIssue.textContent = character ? "" : "Needed to generate: pick a VNCCS character or upload an image.";
+    }
+
+    renderCharacterRows(mannequins, refs) {
+        const issues = new Map(poseCharacterIssues(this.host, this.layer).map(item => [item.characterId, item.issue]));
+        const bound = mannequins.length - issues.size;
+        this.characterCount.textContent = `${bound}/${mannequins.length} characters bound`;
+        this.characterCount.classList.toggle("incomplete", bound < mannequins.length);
+        const activeId = String(this.layer.pose.studio?.active_character_id ?? mannequins[0].id);
+        const selects = new Map();
+        const rows = mannequins.map((mannequin, index) => {
+            const id = mannequin.id, ref = refs[index];
+            const item = document.createElement("div"); item.className = "vnccs-uc-pose-character-item";
+            item.classList.toggle("active", id === activeId);
+            item.setAttribute("data-character-id", id);
+            item.setAttribute("aria-label", `${mannequin.name} reference`);
+            const head = document.createElement("div"); head.className = "vnccs-uc-pose-character-item-head";
+            const dot = document.createElement("span"); dot.className = "vnccs-uc-pose-character-dot";
+            dot.style.background = mannequin.color;
+            const name = document.createElement("span"); name.textContent = mannequin.name;
+            head.append(dot, name);
+            const image = document.createElement("img"); image.alt = `${mannequin.name} reference`;
+            const src = this.characterThumbnail(ref);
+            image.hidden = !src; if (src) image.src = src;
+            const select = document.createElement("select"); select.className = "vnccs-uc-select";
+            select.setAttribute("aria-label", `${mannequin.name} image source`);
+            this.fillCharacterSource(select, ref);
+            selects.set(id, select);
+            select.addEventListener("change", () => this.onCharacterSourceChange(select, id));
+            const line = document.createElement("div"); line.className = "vnccs-uc-pose-character-row";
+            line.append(image, select);
+            const upload = this.host._button("Upload image", "vnccs-uc-btn", () => { this.uploadTarget = id; this.characterFile.click(); });
+            const clear = this.host._button("Clear", "vnccs-uc-btn", () => this.setCharacterReference(id, null, { keepOpen: true }));
+            clear.disabled = !ref;
+            const actions = document.createElement("div"); actions.className = "vnccs-uc-pose-character-actions";
+            actions.append(upload, clear);
+            const prompt = document.createElement("input"); prompt.type = "text"; prompt.className = "vnccs-uc-input";
+            prompt.placeholder = "Identity prompt (optional)"; prompt.value = poseCharacterPrompt(this.layer, id);
+            prompt.setAttribute("aria-label", `${mannequin.name} identity prompt`);
+            // One undo step per edit: history is recorded on the first keystroke after focus.
+            let recorded = false;
+            prompt.addEventListener("focus", () => { recorded = false; });
+            prompt.addEventListener("input", () => {
+                if (!recorded) { this.host.recordHistoryBefore(); recorded = true; }
+                setPoseCharacterPrompt(this.layer.pose, id, prompt.value);
+            });
+            prompt.addEventListener("change", () => { recorded = false; this.host.syncToNode(); });
+            const issue = document.createElement("div"); issue.className = "vnccs-uc-pose-character-issue";
+            issue.textContent = issues.get(id) || "";
+            item.append(head, line, actions, prompt, issue);
+            // Selecting a row selects that mannequin in the embedded studio.
+            item.addEventListener("click", event => {
+                if (event.target?.closest?.("button, select, input")) return;
+                if (String(this.studio?.activeCharacterId) !== id) void this.studio?.selectCharacter?.(id);
+            });
+            return item;
+        });
+        this.characterRowSelects = selects;
+        this.characterList.replaceChildren(...rows);
     }
 
     // Pose Studio's own history (mannequin edits; the animation timeline in animation mode),
@@ -474,17 +577,98 @@ export class UniCanvasPoseEditor {
         this.refreshCharacterMenu();
     }
 
-    captureSurface(size, transparent = true) {
+    captureSurface(size, transparent = true, targetCanvas = null) {
         if (!this.initialized) return null;
-        const target = transparent
+        const target = targetCanvas || (transparent
             ? (this.previewSurface ||= this.host._createCanvas(size.width, size.height))
-            : this.host._createCanvas(size.width, size.height);
+            : this.host._createCanvas(size.width, size.height));
         const w = this.studio, v = w.viewer;
         const result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
             w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
             { targetCanvas: target, transparent, hideReference: true, viewport: true });
         if (this.visible) v.renderInteractionOverlay();
         return result;
+    }
+
+    // Every mannequin with its viewer mesh: the active one is the studio's skinned mesh, the
+    // others are Pose Studio's passive rigs keyed by character id.
+    characterMeshes() {
+        const v = this.studio?.viewer;
+        if (!v) return [];
+        const meshes = [];
+        const activeId = String(this.studio.activeCharacterId ?? poseStudioCharacters(this.layer?.pose)[0].id);
+        if (v.skinnedMesh) meshes.push([activeId, v.skinnedMesh]);
+        for (const [id, entry] of v.passiveCharacters?.entries?.() || []) {
+            if (entry?.mesh && String(id) !== activeId) meshes.push([String(id), entry.mesh]);
+        }
+        return meshes;
+    }
+
+    /**
+     * Exact visible-pixel map per mannequin: each one unlit in its POSE_ID_COLORS entry (by slot
+     * order), everything else hidden, through the same viewer.capture call as the layer pixels,
+     * so depth resolves occlusion. Materials and visibility are restored afterwards.
+     */
+    captureIdPass(size) {
+        if (!this.initialized) return null;
+        const w = this.studio, v = w.viewer, THREE = v.THREE;
+        if (!THREE?.MeshBasicMaterial || !v.scene) return null;
+        const ids = poseStudioCharacters(this.layer.pose).map(item => item.id).slice(0, POSE_ID_COLORS.length);
+        const meshes = this.characterMeshes().filter(([id]) => ids.includes(id));
+        const characterMeshes = new Set(meshes.map(([, mesh]) => mesh));
+        const hidden = [], swapped = [], materials = [];
+        v.scene.traverse(object => {
+            if (characterMeshes.has(object) || !(object.isMesh || object.isLine || object.isPoints || object.isSprite)) return;
+            if (object.visible) { hidden.push(object); object.visible = false; }
+        });
+        for (const [id, mesh] of meshes) {
+            const [r, g, b] = POSE_ID_COLORS[ids.indexOf(id)];
+            const material = new THREE.MeshBasicMaterial({ color: new THREE.Color(r / 255, g / 255, b / 255), toneMapped: false });
+            materials.push(material);
+            swapped.push([mesh, mesh.material, mesh.visible]);
+            mesh.material = Array.isArray(mesh.material) ? mesh.material.map(() => material) : material;
+            mesh.visible = true;
+        }
+        const target = this.host._createCanvas(size.width, size.height);
+        let result = null;
+        try {
+            result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                { targetCanvas: target, transparent: true, hideReference: true, viewport: true });
+        } finally {
+            for (const [mesh, material, visible] of swapped) { mesh.material = material; mesh.visible = visible; }
+            hidden.forEach(object => { object.visible = true; });
+            materials.forEach(material => material.dispose?.());
+            if (this.visible) v.renderInteractionOverlay?.();
+        }
+        return result ? { canvas: result, ids } : null;
+    }
+
+    /** One mannequin alone with the normal transparent capture, including parts others occlude. */
+    captureSoloPass(size, characterId) {
+        if (!this.initialized) return null;
+        const others = this.characterMeshes().filter(([id]) => id !== String(characterId)).map(([, mesh]) => mesh);
+        const visibility = others.map(mesh => mesh.visible);
+        others.forEach(mesh => { mesh.visible = false; });
+        try {
+            return this.captureSurface(size, true, this.host._createCanvas(size.width, size.height));
+        } finally {
+            others.forEach((mesh, index) => { mesh.visible = visibility[index]; });
+        }
+    }
+
+    // After every commit the layer carries a current ID canvas (runtime only; the state cache
+    // stores it as a PNG, workflow metadata never does). Unchanged scenes are not re-rendered.
+    updateIdPass() {
+        const layer = this.layer, rect = layer?.pose?.rect;
+        if (!rect) return;
+        const key = poseIdKey(layer.pose);
+        if (layer.poseIdCanvas && layer.poseIdMeta?.key === key) return;
+        const scale = Math.min(1, 1024 / Math.max(rect.width, rect.height));
+        const pass = this.captureIdPass({ width: Math.max(1, Math.round(rect.width * scale)), height: Math.max(1, Math.round(rect.height * scale)) });
+        if (!pass) return;
+        layer.poseIdCanvas = pass.canvas;
+        layer.poseIdMeta = { key, ids: pass.ids, rect: { ...rect } };
     }
 
     capturePreview(final = false) {
@@ -553,6 +737,7 @@ export class UniCanvasPoseEditor {
         this.saveViewport();
         this.host.panorama?.commitLayer(this.layer);
         this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
+        this.updateIdPass();
     }
 
     // A depth clamp moved a character: persist it once per frame, like any other studio edit.
@@ -601,7 +786,10 @@ export class UniCanvasPoseEditor {
         if (token !== this.token || !this.host.layers.includes(layer)) throw new Error("The pose layer changed. Generate again.");
         const index = state.activeTab || 0;
         const posePrompt = state.pose_prompts?.[index] ?? state.poses?.[index]?.prompt ?? params.user_prompt ?? "";
-        const userPrompt = [posePrompt, this.host.settings.positive].filter(Boolean).join("\n");
+        // Several bound references share image2 in columns: say which one is which.
+        const multi = poseMultiReferences(layer);
+        const mapping = multi ? posePromptMapping(multi.entries, multi.total) : "";
+        const userPrompt = [posePrompt, this.host.settings.positive, mapping].filter(Boolean).join("\n");
         const positive = PoseStudioWidget.prototype.generatePromptFromLights.call(
             { exportParams: params }, state.lights || [], userPrompt,
         );
@@ -626,7 +814,7 @@ export class UniCanvasPoseEditor {
         this.studio?.dispose();
         this.studio?.container.remove();
         this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null;
-        this.characterSelect = null; this.characterMenuKey = null; this.stateKey = null; this.pages = null;
+        this.characterSelect = null; this.characterMenuKey = null; this.characterList = null; this.characterRowSelects = null; this.stateKey = null; this.pages = null;
         this.sidePanel?.remove();
         this.controls = null; this.characterMenu = null; this.sidePanel = null; this.editBar = null;
         this.host.container.classList.remove("vnccs-uc-pose-active", "vnccs-uc-pose-editing");
