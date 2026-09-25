@@ -14,6 +14,7 @@ from .animation_export import animation_export_routes
 from .assets import _get_checkpoint_names, _get_unicanvas_assets
 from .color_match import _run_unicanvas_color_match
 from .constants import _MAX_UPLOAD_BYTES
+from .control_preprocess import _run_unicanvas_control_preprocess
 from .debug import debug_enabled, debug_event, set_unicanvas_debug
 from .depth import _run_unicanvas_depth
 from .describe_layers import _run_unicanvas_describe_layers
@@ -270,6 +271,20 @@ def register_unicanvas_layer_routes() -> None:
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         except Exception as exc:
+            return web.json_response({"error": str(exc) or type(exc).__name__}, status=500)
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/control_preprocess")
+    async def vnccs_unicanvas_control_preprocess(request):
+        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+            return web.json_response({"error": "[VNCCS UniCanvas] Control preprocess payload is too large."}, status=413)
+        try:
+            payload = await request.json()
+            result = await _run_logged("control_preprocess", _run_unicanvas_control_preprocess, payload)
+            return web.json_response(result)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logging.error("[VNCCS UniCanvas] Control preprocess failed: %s", traceback.format_exc())
             return web.json_response({"error": str(exc) or type(exc).__name__}, status=500)
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas/debug")

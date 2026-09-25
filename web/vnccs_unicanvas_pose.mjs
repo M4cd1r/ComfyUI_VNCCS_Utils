@@ -4,6 +4,7 @@ import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { composePoseReference, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, poseMultiReferences, posePromptMapping, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs";
 import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
+import { openPoseFromRig } from "./vnccs_unicanvas_control_scene.mjs";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 const styles = `
@@ -747,6 +748,7 @@ export class UniCanvasPoseEditor {
                 this.layer.hiresRect = { ...rect };
                 this.layer._bakeViewBaked = false;
             }
+            this.updateOpenPose();
             this.host.markLayerPixelsChanged(this.layer);
             this.host.requestRender();
             if (final) this.host.refreshLayerRow?.(this.layer.id);
@@ -889,6 +891,37 @@ export class UniCanvasPoseEditor {
         const userPrompt = [posePrompt, poseCharacterPrompt(layer, characterId)].filter(Boolean).join("\n");
         const positive = PoseStudioWidget.prototype.generatePromptFromLights.call({ exportParams: params }, state.lights || [], userPrompt);
         return { image1: image1.toDataURL("image/png"), image2: image2.toDataURL("image/png"), positive, solo };
+    }
+
+    /**
+     * OpenPose COCO-18 joints of every mannequin, normalized to `pose.rect`, kept on
+     * `layer.pose.openpose` (serialized with the pose) for pose ControlNet layers
+     * (vnccs_unicanvas_control_scene.mjs). Refreshed with every capture, so a linked control
+     * layer follows the mannequin while it is dragged.
+     */
+    updateOpenPose() {
+        const v = this.studio?.viewer, THREE = v?.THREE, camera = v?.camera, layer = this.layer;
+        if (!THREE?.Vector3 || !camera || !layer?.pose) return;
+        const people = [];
+        try {
+            for (const [id, mesh] of this.characterMeshes()) {
+                if (mesh.visible === false) continue;
+                mesh.updateMatrixWorld?.(true);
+                const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
+                const worldOf = (name, offset) => {
+                    const object = bone(name);
+                    if (!object) return null;
+                    return offset ? object.localToWorld(new THREE.Vector3(...offset)) : object.getWorldPosition(new THREE.Vector3());
+                };
+                const project = point => {
+                    const projected = new THREE.Vector3(point.x, point.y, point.z).project(camera);
+                    if (projected.z > 1 || projected.z < -1) return null;
+                    return { x: Math.round((projected.x + 1) / 2 * 1e4) / 1e4, y: Math.round((1 - projected.y) / 2 * 1e4) / 1e4 };
+                };
+                people.push({ id, points: openPoseFromRig(worldOf, project) });
+            }
+        } catch (_) { return; }
+        layer.pose.openpose = { key: poseIdKey(layer.pose), people };
     }
 
     /** Projected head box and feet contact point of one character, normalized to `pose.rect`. */

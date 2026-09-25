@@ -270,6 +270,17 @@ section, never image content), its panel, and the `control` part of the draw pay
 topmost active control layer, cropped to the bbox and scaled to the inference size like the
 mask).
 
+**From scene** (`web/vnccs_unicanvas_control_scene.mjs`, issue #46): a control layer can be made
+from the flattened visible image layers inside the bbox. The layer keeps that source
+(`layer.controlSource`) and the result is drawn at the source bbox. The type menu lists the scene
+types the family accepts (depth, canny, lineart, pose). Depth and lineart run once on the server
+(`POST /vnccs/unicanvas/control_preprocess`, `nodes/unicanvas/control_preprocess.py`, a
+`register_control_preprocessor` registry; lineart is the MIT Informative Drawings annotator,
+pinned in `helper_models`). Canny runs in the browser. Pose draws an OpenPose COCO-18 skeleton
+from the mannequins' joints, which the pose editor projects into `layer.pose.openpose`. All
+sliders render live from the cached raw output. A pose control stays linked to its pose layers
+until it is painted on, and Relink restores the link.
+
 ## Frontend Registration
 
 The frontend registry in `web/vnccs_unicanvas.js` must include the mode label,
