@@ -252,6 +252,28 @@ test("panorama restoration is transactional and rejects incomplete cached pixels
   } finally { context.PanoramaDocument = realDocument; }
 });
 
+test("a workflow copy whose cache holds the other document mode never overwrites that cache", async () => {
+  const realFetch = context.fetch;
+  try {
+    for (const [workflow, cached] of [
+      [{ version: 2, panorama: null }, { version: 3, panorama: settings({ baseLayerId: "base" }) }],
+      [{ version: 3, panorama: settings({ baseLayerId: "base" }) }, { version: 2, panorama: null }],
+    ]) {
+      context.fetch = async () => ({ ok: true, json: async () => ({ state: { ...cached, layers: [{ id: "base", type: "raster", dataURL: "pixels" }] } }) });
+      let applied = false;
+      const w = widget({
+        node: { widgets: [{ name: "unicanvas_state", value: JSON.stringify({ ...workflow, storage: "server_cache", state_id: "shared", layers: [{ id: "base", type: "raster" }] }) }] },
+        createStateCacheId: () => "fresh", stateHasLayerPixels: () => false, loadLocalStateBackup: () => null,
+        applySerializedSettings() {}, applySerializedState: async () => { applied = true; },
+      });
+      const warn = console.warn; console.warn = () => {};
+      try { await w._loadFromNode(); } finally { console.warn = warn; }
+      assert.equal(applied, false);
+      assert.equal(w.stateCacheId, "fresh", "later uploads must go to a new cache entry");
+    }
+  } finally { context.fetch = realFetch; }
+});
+
 test("an older asynchronous panorama restore cannot replace a newer document", async () => {
   const realDocument = context.PanoramaDocument;
   const created = [];

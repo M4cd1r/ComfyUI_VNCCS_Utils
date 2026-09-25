@@ -315,16 +315,21 @@ export function enterUniCanvasFullscreen(widget) {
   // Escape contract, and the UniCanvas shortcut map runs first so the canvas
   // keeps its own keys.
   const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape");
+  // The focused panorama sphere rotates with the keyboard; this shield would otherwise stop its
+  // keys before they reach it, so it gets them first.
+  const orbitTarget = (event) => (widget.panoramaOrbit && event.target === widget.panoramaOrbit.canvas ? widget.panoramaOrbit : null);
   const onKeyDown = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
-    handleUniCanvasShortcut(widget, event);
+    orbitTarget(event)?.keyDown(event);
+    if (!event.defaultPrevented) handleUniCanvasShortcut(widget, event);
     event.stopImmediatePropagation();
     event.preventDefault();
   };
   const onKeyUp = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
+    orbitTarget(event)?.keyUp(event);
     event.stopImmediatePropagation();
     event.preventDefault();
   };
