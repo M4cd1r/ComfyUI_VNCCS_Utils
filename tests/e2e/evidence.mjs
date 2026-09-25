@@ -103,6 +103,19 @@ if (topic === "multi-character") {
   await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
   await page.waitForTimeout(5_000);
 }
+if (topic === "character-bake") {
+  // A pose layer with a bound character: the reference card shows the bake chip and Bake button,
+  // and GENERATE announces the pending bake ("+1 bake").
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=";
+  await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
+  await page.waitForTimeout(25_000);
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator(".vnccs-uc-pose-side .vnccs-uc-pose-character").getByRole("button", { name: "Upload image" }).first().click(),
+  ]);
+  await chooser.setFiles({ name: "alice.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+  await page.waitForTimeout(1_500);
+}
 if (topic === "vn-preview") {
   // A scene (image layer + pose layer) with the Clean dark overlay on and the pose moved down so
   // its face sits under the textbox: the occlusion warning shows.
@@ -197,6 +210,7 @@ const shots = {
   "settings-panel": ".vnccs-unicanvas",
   "pose-editor": ".vnccs-unicanvas",
   "multi-character": ".vnccs-unicanvas",
+  "character-bake": ".vnccs-unicanvas",
   "vn-preview": ".vnccs-unicanvas",
   "placement-harmonize": ".vnccs-unicanvas",
   library: ".vnccs-unicanvas",
