@@ -26,7 +26,7 @@ A family is extended in three ways, from the lightest to the heaviest:
    `bind_draw_assets`, `encode_draw_prompts`, `on_mask_prepared`,
    `on_masked_mode_dropped`, `prepare_masked_inputs`, `prepare_generation_latent`,
    `prepare_masked_latent`, `after_latent_prepared`, `prepare_model_for_sampling`,
-   `normalize_settings`), plus the model primitives (`encode_prompt`,
+   `apply_control`, `normalize_settings`), plus the model primitives (`encode_prompt`,
    `prepare_reference_conditioning`, `create_empty_latent`, `sample_latent`,
    `decode_samples`, ...). Every hook has a generic default.
 3. **A whole draw path** - `draw_pipeline_class` names a subclass of
@@ -228,6 +228,47 @@ workflow's `ConditioningZeroOut` negative conditioning. Turbo mode is selected
 when the diffusion/GGUF model filename contains `turbo`, or when the user sets
 `cfg` to `1`. Otherwise, the negative prompt remains the full `CLIPTextEncode`
 conditioning so non-turbo Z-image models can use negative prompts normally.
+
+## ControlNet
+
+A family with a ControlNet (Union) declares it as data and applies it in one hook; the
+shared code, the ControlNet layer in the widget and the request validation need no change.
+
+1. **Declare** `capabilities.control_net = ControlNetSupport(...)` (`models/capabilities.py`):
+   - `types` - the `ControlType` values the weights accept (`depth`, `canny`, `lineart`,
+     `pose`, `mlsd`, `scribble`, `gray`; add a member to the enum for a new kind). The widget's
+     type menu lists exactly these.
+   - `weights = ControlNetWeights(hf_repo, hf_path, revision, folder="model_patches",
+     setting=...)` - the pinned file, downloaded lazily into ComfyUI's `folder` on first use by
+     `control_net.ensure_control_net_weights` (`huggingface_hub`, `token=False`); `setting` names
+     a settings key that may point at a user-installed file instead.
+   - `default_strength`, `max_strength`, `combines_with_inpaint` (may a control image and an
+     Inpaint Mask share one draw?), `supports_range` (does the apply node take
+     `start_percent` / `end_percent`?), `prompt_note`.
+2. **Apply** in `apply_control(self, ctx) -> model`. The pipeline calls it right after
+   `prepare_model_for_sampling`, inside the model lock, only when the request carries a
+   control image. `ctx.control_tensor` is the control image as an IMAGE tensor at the working
+   size (already cropped with the source for inpaint crop-to-mask), `ctx.request.control`
+   holds `type`, `strength`, `start_percent`, `end_percent`. Load the weights with
+   `control_net.load_control_net_patch(weights, ctx.settings, ctx.draw_id)` and call the
+   ComfyUI core apply node through `_call_comfy_node` / `_call_node_method`.
+3. **Mirror** `controlNet: { types, defaultStrength, maxStrength, supportsRange }` in the family's
+   entry of the frontend registry (`web/vnccs_unicanvas.js`); the `/assets` descriptor wins,
+   the mirror only covers the time before it arrives.
+4. **Prompt guide** - add a short ControlNet paragraph (`CONTROL_NET_PROMPT_NOTE`: describe the
+   content, the control carries the shape).
+
+`validate_request` rejects a control image for a family without `control_net`, a type the
+family does not list, a strength above `max_strength`, and a control plus Inpaint Mask when
+`combines_with_inpaint=False`, before any model loads. Today: Z-Image Turbo
+(`ZImageFunControlnet`, one patch for control plus the inpaint inputs) and MiniMax H3
+(`MiniMaxH3FunControlNetApply` with the control image as a one-frame video). Qwen-Image 2.1's
+Fun ControlNet Union has no ComfyUI core loader yet, so it is not declared.
+
+The frontend side lives in `web/vnccs_unicanvas_control.mjs`: the `control` layer type (mask
+section, never image content), its panel, and the `control` part of the draw payload (the
+topmost active control layer, cropped to the bbox and scaled to the inference size like the
+mask).
 
 ## Frontend Registration
 

@@ -25,6 +25,7 @@
  * `uc.layerMenuExtensions` / `uc.library`.
  */
 
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { expectedHeightAt, isPerspectiveCalibrated, layerHeightFactor, normalizeScenePerspective, editScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { serializePose } from "./vnccs_unicanvas_pose_state.mjs";
@@ -71,7 +72,7 @@ const KIND_CATEGORIES = Object.freeze({ character: "Characters", background: "Ba
 
 /** The kinds a layer can be saved as (the first one is the suggestion). */
 export function saveableKinds(layer) {
-  if (!layer || layer.type === "mask" || layer.type === "group" || layer.type === "panorama") return [];
+  if (!layer || isMaskSectionLayer(layer) || layer.type === "group" || layer.type === "panorama") return [];
   if (layer.type === "pose") return ["pose"];
   const meta = normalizeLayerMeta(layer.meta);
   const raster = ["character", "prop", "background"];

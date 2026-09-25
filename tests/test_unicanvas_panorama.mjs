@@ -1,4 +1,5 @@
 import { isImageLayer, serializePose, poseGenerationLayer, mergePoseCache } from "../web/vnccs_unicanvas_pose_state.mjs";
+import * as control from "../web/vnccs_unicanvas_control.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -65,7 +66,7 @@ class Element {
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
   isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
-  ...panoramaModule, normalizeTransformMode, ...provenance, ...groups, ...scenePlace, ...sceneStates, ...harmonize,
+  ...panoramaModule, normalizeTransformMode, ...provenance, ...control, ...groups, ...scenePlace, ...sceneStates, ...harmonize,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
   uid: () => "new-layer", HISTORY_LIMIT: 20,

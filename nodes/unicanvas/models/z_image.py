@@ -1,27 +1,50 @@
-"""Z-Image Turbo model family, including the Fun ControlNet inpaint patch."""
+"""Z-Image Turbo model family, including the Fun ControlNet Union patch (inpaint and control images)."""
 
 from __future__ import annotations
 
 import contextlib
 import gc
-import os
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import torch
 
 from ..comfy_bridge import _call_node_method
+from ..control_net import ensure_control_net_weights
 from ..debug import _conditioning_debug, _latent_debug, _tensor_debug, _uc_log
 from ..latents import _encode_source_latent
 from ..loras import _clone_model_clip, _load_model_patch
-from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
 from ..sampling import _preload_vae_for_direct_decode, _unload_vae_after_direct_decode
 from .base import UniCanvasModelModule
-from .capabilities import ModelCapabilities, PromptGuide
+from .capabilities import CONTROL_NET_PROMPT_NOTE, ControlNetSupport, ControlNetWeights, ControlType, ModelCapabilities, PromptGuide
 
 
 Z_IMAGE_FUN_CONTROLNET_REPO_ID = "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1"
 Z_IMAGE_FUN_CONTROLNET_FILENAME = "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors"
+
+Z_IMAGE_CONTROL_NET = ControlNetSupport(
+    label="Z-Image Turbo Fun ControlNet Union 2.1",
+    # Model card: Canny, Depth, Pose, MLSD "and more"; the Z-Image Fun 2.1 line adds Scribble and
+    # Gray. Lineart is fed like canny/scribble (white lines on black).
+    types=(
+        ControlType.CANNY,
+        ControlType.DEPTH,
+        ControlType.POSE,
+        ControlType.LINEART,
+        ControlType.MLSD,
+        ControlType.SCRIBBLE,
+        ControlType.GRAY,
+    ),
+    weights=ControlNetWeights(
+        hf_repo=Z_IMAGE_FUN_CONTROLNET_REPO_ID,
+        hf_path=Z_IMAGE_FUN_CONTROLNET_FILENAME,
+        setting="fun_controlnet_patch_name",
+    ),
+    default_strength=1.0,
+    max_strength=2.0,
+    combines_with_inpaint=True,
+    supports_range=False,
+)
 
 Z_IMAGE_DEFAULTS = {
     "generation_mode": "z_image",
@@ -49,11 +72,13 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         "_z_image_fun_controlnet_mask",
         "_z_image_fun_controlnet_vae",
         "_z_image_fun_controlnet_patch_model",
+        "_z_image_fun_controlnet_applied",
     )
     decode_tile_size: ClassVar[int] = 256
     capabilities: ModelCapabilities = ModelCapabilities(
         label="Z-image",
         default_loader="diffusion_model",
+        control_net=Z_IMAGE_CONTROL_NET,
         prompt_guide=PromptGuide(
             hint="80-250 words of plain description: shot and subject, look, clothes, place, light, mood, style",
             guide=(
@@ -66,7 +91,9 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
                 "constraint positively in the prompt (\"no watermark\" belongs there). Text to render "
                 "goes in quotes with its placement (\"large white title at the top\"); English and "
                 "Chinese both work. Non-turbo checkpoints at CFG above 1 do use the negative prompt. "
-                "Inpaint and outpaint run through the Fun ControlNet inpaint patch."
+                "Inpaint and outpaint run through the Fun ControlNet inpaint patch.\n\n"
+                "ControlNet layer: " + CONTROL_NET_PROMPT_NOTE + " Around 0.6-1.0 strength keeps the "
+                "structure without copying the control image's look."
             ),
             examples=("Close-up portrait of a young knight in dented steel armor resting against a mossy stone wall, auburn hair tied back, soft morning fog, cool diffuse light, calm tired mood, cinematic photograph, shallow depth of field.",),
             sources=(
@@ -234,32 +261,64 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         )
 
     def _apply_fun_controlnet_if_needed(self, model: Any, gen_settings: dict[str, Any], draw_id: str) -> Any:
+        if gen_settings.pop("_z_image_fun_controlnet_applied", False):
+            return model  # apply_control already patched the model (control image, plus the inpaint inputs)
         draw_mode = str(gen_settings.get("draw_mode") or "")
         if draw_mode not in {"inpaint", "outpaint"}:
             return model
         if not bool(gen_settings.get("fun_controlnet_inpaint", True)):
             _uc_log(draw_id, "Z-image Fun ControlNet skipped", {"reason": "fun_controlnet_inpaint is disabled"})
             return model
-        patch_name = str(gen_settings.get("fun_controlnet_patch_name") or "").strip()
-        if not patch_name:
+        if not str(gen_settings.get("fun_controlnet_patch_name") or "").strip():
             _uc_log(draw_id, "Z-image Fun ControlNet skipped", {"reason": "no fun_controlnet_patch_name"})
             return model
-        inpaint_image = gen_settings.get("_z_image_fun_controlnet_image")
-        mask = gen_settings.get("_z_image_fun_controlnet_mask")
-        vae = gen_settings.get("_z_image_fun_controlnet_vae")
-        if not torch.is_tensor(inpaint_image) or not torch.is_tensor(mask) or vae is None:
+        inpaint_image, mask, vae = self._fun_controlnet_inpaint_inputs(gen_settings)
+        if inpaint_image is None or vae is None:
             _uc_log(
                 draw_id,
                 "Z-image Fun ControlNet skipped",
                 {
                     "reason": "missing inpaint image, mask, or VAE",
-                    "image": _tensor_debug(inpaint_image) if torch.is_tensor(inpaint_image) else None,
-                    "mask": _tensor_debug(mask) if torch.is_tensor(mask) else None,
+                    "image": _tensor_debug(gen_settings.get("_z_image_fun_controlnet_image")) if torch.is_tensor(gen_settings.get("_z_image_fun_controlnet_image")) else None,
+                    "mask": _tensor_debug(gen_settings.get("_z_image_fun_controlnet_mask")) if torch.is_tensor(gen_settings.get("_z_image_fun_controlnet_mask")) else None,
                     "has_vae": vae is not None,
                 },
             )
             return model
+        return self._apply_fun_controlnet(
+            model, gen_settings, draw_id, vae=vae, strength=float(gen_settings.get("fun_controlnet_strength", 1.0)),
+            inpaint_image=inpaint_image, mask=mask,
+        )
 
+    @staticmethod
+    def _fun_controlnet_inpaint_inputs(gen_settings: dict[str, Any]) -> tuple[Any, Any, Any]:
+        """The masked-draw inputs stashed by prepare_masked_inputs, or (None, None, vae)."""
+        vae = gen_settings.get("_z_image_fun_controlnet_vae")
+        inpaint_image = gen_settings.get("_z_image_fun_controlnet_image")
+        mask = gen_settings.get("_z_image_fun_controlnet_mask")
+        if (
+            str(gen_settings.get("draw_mode") or "") in {"inpaint", "outpaint"}
+            and bool(gen_settings.get("fun_controlnet_inpaint", True))
+            and torch.is_tensor(inpaint_image)
+            and torch.is_tensor(mask)
+        ):
+            return inpaint_image, mask, vae
+        return None, None, vae
+
+    def _apply_fun_controlnet(
+        self,
+        model: Any,
+        gen_settings: dict[str, Any],
+        draw_id: str,
+        *,
+        vae: Any,
+        strength: float,
+        image: Any = None,
+        inpaint_image: Any = None,
+        mask: Any = None,
+    ) -> Any:
+        """One ZImageFunControlnet patch: the control image and/or the inpaint image and mask."""
+        patch_name = str(gen_settings.get("fun_controlnet_patch_name") or "").strip() or Z_IMAGE_FUN_CONTROLNET_FILENAME
         model_patch = gen_settings.pop("_z_image_fun_controlnet_patch_model", None)
         if model_patch is None:
             _uc_log(
@@ -278,7 +337,8 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
             model=model,
             model_patch=model_patch,
             vae=vae,
-            strength=float(gen_settings.get("fun_controlnet_strength", 1.0)),
+            strength=float(strength),
+            image=image,
             inpaint_image=inpaint_image,
             mask=mask,
         )
@@ -289,13 +349,26 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
             draw_id,
             "Z-image Fun ControlNet applied",
             {
-                "mode": draw_mode,
+                "mode": str(gen_settings.get("draw_mode") or ""),
                 "patch": patch_name,
-                "strength": float(gen_settings.get("fun_controlnet_strength", 1.0)),
-                "image": _tensor_debug(inpaint_image),
-                "mask": _tensor_debug(mask),
+                "strength": float(strength),
+                "control": _tensor_debug(image) if torch.is_tensor(image) else None,
+                "image": _tensor_debug(inpaint_image) if torch.is_tensor(inpaint_image) else None,
+                "mask": _tensor_debug(mask) if torch.is_tensor(mask) else None,
             },
         )
+        return patched
+
+    def apply_control(self, ctx) -> Any:
+        """Control image through the same Fun ControlNet Union patch; a masked draw adds its inpaint inputs."""
+        settings = ctx.settings
+        inpaint_image, mask, vae = self._fun_controlnet_inpaint_inputs(settings)
+        patched = self._apply_fun_controlnet(
+            ctx.model, settings, ctx.draw_id, vae=vae if vae is not None else ctx.vae,
+            strength=ctx.request.control.strength, image=ctx.control_tensor,
+            inpaint_image=inpaint_image, mask=mask,
+        )
+        settings["_z_image_fun_controlnet_applied"] = True
         return patched
 
     def _apply_aura_flow_sampling(self, model: Any, gen_settings: dict[str, Any], draw_id: str) -> Any:
@@ -319,17 +392,19 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
     # -- draw hooks -----------------------------------------------------------------------
 
     def prepare_draw_assets(self, ctx) -> None:
-        _preload_z_image_fun_controlnet_patch(ctx.settings, ctx.mode, ctx.draw_id)
+        _preload_z_image_fun_controlnet_patch(ctx.settings, ctx.mode, ctx.draw_id, control=ctx.request.control is not None)
 
     def preload_vae(self, ctx) -> None:
-        if _masked_draw(ctx.settings):
+        if _masked_draw(ctx.settings) or ctx.request.control is not None:
             _preload_vae_for_direct_decode(ctx.vae, ctx.settings, ctx.draw_id)
 
     def release_vae(self, ctx) -> None:
-        if _masked_draw(ctx.settings):
+        if _masked_draw(ctx.settings) or ctx.request.control is not None:
             _unload_vae_after_direct_decode(ctx.vae, ctx.settings, ctx.draw_id)
 
     def on_masked_mode_dropped(self, ctx) -> None:
+        if ctx.request.control is not None:
+            return  # the control image still needs the preloaded patch
         if ctx.settings.pop("_z_image_fun_controlnet_patch_model", None) is None:
             return
         gc.collect()
@@ -370,14 +445,17 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         return ctx.positive, ctx.negative, latent
 
 
-def _preload_z_image_fun_controlnet_patch(gen_settings: dict[str, Any], mode: str, draw_id: str = "unknown") -> None:
+def _preload_z_image_fun_controlnet_patch(gen_settings: dict[str, Any], mode: str, draw_id: str = "unknown", control: bool = False) -> None:
     if str(gen_settings.get("generation_mode") or "").lower() != "z_image":
         return
-    if mode not in {"inpaint", "outpaint"}:
-        return
-    if not bool(gen_settings.get("fun_controlnet_inpaint", True)):
-        return
+    if not control:
+        if mode not in {"inpaint", "outpaint"}:
+            return
+        if not bool(gen_settings.get("fun_controlnet_inpaint", True)):
+            return
     patch_name = str(gen_settings.get("fun_controlnet_patch_name") or "").strip()
+    if not patch_name and control:
+        patch_name = Z_IMAGE_FUN_CONTROLNET_FILENAME
     if not patch_name:
         return
     patch_name = _ensure_z_image_fun_controlnet_model(patch_name, draw_id)
@@ -388,6 +466,7 @@ def _preload_z_image_fun_controlnet_patch(gen_settings: dict[str, Any], mode: st
         "Z-image Fun ControlNet patch preloaded",
         {
             "mode": mode,
+            "control": control,
             "patch": patch_name,
             "reason": "load before prompt/VAE/latent preparation to avoid late high-memory patch allocation",
         },
@@ -395,63 +474,8 @@ def _preload_z_image_fun_controlnet_patch(gen_settings: dict[str, Any], mode: st
 
 
 def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknown") -> str:
-    import folder_paths
-
-    requested = str(patch_name or Z_IMAGE_FUN_CONTROLNET_FILENAME).replace("\\", "/").strip()
-    basename = os.path.basename(requested) or Z_IMAGE_FUN_CONTROLNET_FILENAME
-    if basename != Z_IMAGE_FUN_CONTROLNET_FILENAME:
-        return patch_name
-
-    found = _get_full_path_agnostic(folder_paths, "model_patches", requested, require_exists=True)
-    if found:
-        return patch_name
-    found = _get_full_path_agnostic(folder_paths, "model_patches", basename, require_exists=True)
-    if found:
-        return basename
-
-    folders = _safe_get_folder_paths(folder_paths, "model_patches")
-    if folders:
-        target_dir = folders[0]
-    else:
-        models_dir = os.path.abspath(getattr(folder_paths, "models_dir", os.path.join(os.getcwd(), "models")))
-        target_dir = os.path.join(models_dir, "model_patches")
-    os.makedirs(target_dir, exist_ok=True)
-    target_path = os.path.join(target_dir, basename)
-    if os.path.isfile(target_path):
-        return basename
-
-    _uc_log(
-        draw_id,
-        "Z-image Fun ControlNet model download started",
-        {
-            "repo": Z_IMAGE_FUN_CONTROLNET_REPO_ID,
-            "filename": Z_IMAGE_FUN_CONTROLNET_FILENAME,
-            "target": target_path,
-        },
-    )
-    try:
-        import shutil
-        from huggingface_hub import hf_hub_download
-
-        cached_path = hf_hub_download(
-            repo_id=Z_IMAGE_FUN_CONTROLNET_REPO_ID,
-            filename=Z_IMAGE_FUN_CONTROLNET_FILENAME,
-            repo_type="model",
-            local_files_only=False,
-            token=False,
-        )
-        tmp_path = target_path + ".tmp"
-        shutil.copy2(cached_path, tmp_path)
-        os.replace(tmp_path, target_path)
-    except Exception as exc:
-        with contextlib.suppress(Exception):
-            os.remove(target_path + ".tmp")
-        raise RuntimeError(
-            f"Failed to download Z-image Fun ControlNet model from {Z_IMAGE_FUN_CONTROLNET_REPO_ID}: {exc}"
-        ) from exc
-
-    _uc_log(draw_id, "Z-image Fun ControlNet model downloaded", {"path": target_path})
-    return basename
+    """The pinned Fun ControlNet Union file, downloaded on first use; other names pass through."""
+    return ensure_control_net_weights(Z_IMAGE_CONTROL_NET.weights, patch_name or Z_IMAGE_FUN_CONTROLNET_FILENAME, draw_id)
 
 
 def _masked_draw(settings: dict[str, Any]) -> bool:

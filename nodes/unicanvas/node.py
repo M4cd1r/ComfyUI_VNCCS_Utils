@@ -24,6 +24,7 @@ _QUEUED_DRAW_COMPOSITION_KEYS = (
     "bbox",
     "inference_size",
     "output_size",
+    "control",
 )
 
 
