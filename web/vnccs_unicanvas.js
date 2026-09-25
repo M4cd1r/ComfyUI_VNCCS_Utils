@@ -14,6 +14,7 @@ import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
 import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
+import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs";
 import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs";
 import {
   TRANSFORM_MODE_LABELS,
@@ -1301,7 +1302,7 @@ class UniCanvasWidget {
         }
         this.invalidateLayerCaches(layer); next.commitLayer(layer);
       }
-      const base = this.addLayer("raster", name, false, true);
+      const base = this.addLayer("raster", name, false, true, createLayerMeta("import", { sourceName: name || undefined }));
       base.locked = true; next.settings.baseLayerId = base.id;
       next.ensureLayer(base).getContext("2d").drawImage(img, 0, 0);
       this.normalizeLayerOrder(); next.project();
@@ -1337,7 +1338,7 @@ class UniCanvasWidget {
         { id: uid(), name: "Inpaint Mask", type: "mask" },
         { id: uid(), name: "Base Layer", type: "raster" },
       ].map(layer => ({ ...layer, visible: true, locked: false, opacity: 1, blendMode: "source-over",
-        canvas: this._createCanvas(1024, 1024) }));
+        meta: createLayerMeta("base"), canvas: this._createCanvas(1024, 1024) }));
       const backupKeys = [this.getStateBackupKey(), this.getLegacyStateBackupKey()];
       const clearBackup = () => {
         try { for (const key of backupKeys) window.localStorage?.removeItem(key); }
@@ -1571,8 +1572,8 @@ class UniCanvasWidget {
 
   _createInitialLayers() {
     if (this.layers.length) return;
-    this.addLayer("raster", "Base Layer");
-    this.addLayer("mask", "Inpaint Mask");
+    setLayerOrigin(this.addLayer("raster", "Base Layer"), "base");
+    setLayerOrigin(this.addLayer("mask", "Inpaint Mask"), "base");
     this.activeLayerId = this.layers.find((layer) => layer.type === "raster")?.id || this.layers[0]?.id || null;
   }
 
@@ -1597,7 +1598,9 @@ class UniCanvasWidget {
     }
   }
 
-  addLayer(type = "raster", name = null, recordHistory = true, deferRender = false) {
+  // New layers default to origin "paint" (the UI's Add raster / Add mask); other creation sites
+  // pass their own origin or overwrite layer.meta right after (setLayerOrigin).
+  addLayer(type = "raster", name = null, recordHistory = true, deferRender = false, meta = null) {
     if (type !== "pose" && this.tool === "pose") this.setTool("move");
     const previousActiveLayerId = this.activeLayerId;
     const layer = {
@@ -1608,6 +1611,7 @@ class UniCanvasWidget {
       locked: false,
       opacity: 1,
       blendMode: "source-over",
+      meta: meta ? normalizeLayerMeta(meta) : createLayerMeta("paint"),
       canvas: this._createCanvas(),
     };
     this.invalidateLayerCaches(layer);
@@ -1636,6 +1640,7 @@ class UniCanvasWidget {
 
   invalidateLayerCaches(layer) {
     if (!layer) return;
+    bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._boundsCache = undefined;
     layer._thumbCache = undefined;
@@ -1650,6 +1655,7 @@ class UniCanvasWidget {
 
   invalidateLayerRenderCaches(layer) {
     if (!layer) return;
+    bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -1658,6 +1664,7 @@ class UniCanvasWidget {
 
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
     if (!layer) return;
+    bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -1729,7 +1736,7 @@ class UniCanvasWidget {
     if (layer?.type !== "pose") {
       if (!create) { this.poseEditor?.setVisible(false); return; }
       if (!this.ensureWorldRectBounds(this.bbox, 0)) return;
-      layer = this.addLayer("pose", "Pose Studio", true, true);
+      layer = this.addLayer("pose", "Pose Studio", true, true, createLayerMeta("paint"));
       layer.pose = { version: 1, rect: { ...this.bbox }, studio: {}, character: null,
         panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
       this.renderLayerList();
@@ -1885,6 +1892,7 @@ class UniCanvasWidget {
     if (this.poseEditor?.layer === layer) this.poseEditor.release();
     layer.type = "raster";
     delete layer.pose;
+    layer.meta = createLayerMeta("rasterize", { derivedFrom: layer.id, character: layer.meta?.character });
     this.invalidateLayerCaches(layer);
     this.syncPoseToolToActiveLayer();
     this.renderLayerList();
@@ -3848,6 +3856,7 @@ class UniCanvasWidget {
       locked: layer.locked,
       opacity: layer.opacity,
       blendMode: layer.blendMode || "source-over",
+      meta: cloneLayerMeta(layer.meta),
       canvas: this.cloneCanvas(layer.canvas),
       panoramaCanvas: this.panorama ? this.cloneCanvas(layer.panoramaCanvas) : null,
       _panoramaBefore: this.panorama && layer._panoramaBefore ? this.cloneCanvas(layer._panoramaBefore) : null,
@@ -5585,6 +5594,8 @@ class UniCanvasWidget {
     this.queueLayerThumbnailRender(thumb, layer);
     const label = document.createElement("div");
     label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
+    label.className = "vnccs-uc-layer-label";
+    label.title = formatProvenanceTooltip(layer.meta, this.layers);
     const lock = this._button(layer.locked ? UI_ICONS.lock : UI_ICONS.unlock, "vnccs-uc-icon", null, layer.locked ? "Unlock layer" : "Lock layer");
     lock.dataset.layerLock = "";
     const del = this._button(UI_ICONS.trash, "vnccs-uc-icon danger", null, "Delete layer");
@@ -5678,6 +5689,8 @@ class UniCanvasWidget {
     }
     const name = row.querySelector(".vnccs-uc-layer-name");
     if (name) name.textContent = layer.name;
+    const label = row.querySelector(".vnccs-uc-layer-label");
+    if (label) label.title = formatProvenanceTooltip(layer.meta, this.layers);
     const type = row.querySelector(".vnccs-uc-layer-type");
     if (type) type.textContent = `${layer.type}${layer.visible ? "" : " hidden"}`;
     const lock = row.querySelector("[data-layer-lock]") || row.querySelectorAll(".vnccs-uc-icon")[0];
@@ -5923,6 +5936,7 @@ class UniCanvasWidget {
       locked: false,
       opacity: layer.opacity,
       blendMode: layer.blendMode || "source-over",
+      meta: createLayerMeta("duplicate", { derivedFrom: layer.id, character: layer.meta?.character }),
       canvas: this._createCanvas(),
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
@@ -6019,6 +6033,7 @@ class UniCanvasWidget {
       locked: false,
       opacity: 1,
       blendMode: "source-over",
+      meta: createLayerMeta("rasterize"),
       canvas: this._createCanvas(),
     };
     const ctx = this.configureImageContext(master.canvas.getContext("2d"), false);
@@ -6064,7 +6079,8 @@ class UniCanvasWidget {
     }
     if (!this.ensureWorldBounds(this.bbox.x + img.width, this.bbox.y + img.height, 128)) return;
     if (!this.ensureWorldBounds(this.bbox.x, this.bbox.y, 128)) return;
-    const layer = this.addLayer("raster", file.name.replace(/\.[^.]+$/, ""), true, true);
+    const sourceName = file.name.replace(/\.[^.]+$/, "");
+    const layer = this.addLayer("raster", sourceName, true, true, createLayerMeta("import", { sourceName: sourceName || undefined }));
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     if (this.panorama) {
       const side = Math.min(4096, this.panorama.settings.width, Math.max(img.width, img.height));
@@ -6507,7 +6523,11 @@ class UniCanvasWidget {
     this.settings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
     this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
-    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama };
+    // The provenance snapshot is taken at request time: settings edited while the run is in
+    // flight must not be attributed to its results.
+    const snapshotSettings = poseRequest ? { ...this.settings, positive: poseRequest.positive, denoise: 1 } : this.settings;
+    const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
+    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, snapshot };
     if (configLinked) {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
@@ -6587,7 +6607,7 @@ class UniCanvasWidget {
     const placement = this.normalizeLayerWorldRect(this.getStagingImageRect());
     if (!this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return;
     if (!this.ensureWorldBounds(placement.x, placement.y, 128)) return;
-    const layer = this.addLayer("raster", null, false, true);
+    const layer = this.addLayer("raster", null, false, true, metaFromStagingSnapshot(staging.snapshot));
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     const hiresWidth = Math.max(1, img.naturalWidth || img.width || placement.width);
     const hiresHeight = Math.max(1, img.naturalHeight || img.height || placement.height);
@@ -6838,6 +6858,8 @@ class UniCanvasWidget {
       });
     }
     const acceptMaskCanvas = resultMaskCanvas || stagingMaskCanvas;
+    // One settings snapshot (and one historyId) per generation run, shared by its staged results.
+    const snapshot = context.snapshot || buildStagingSnapshot(this.settings, { mode, bbox });
     for (const image of resultImages) {
       const url = this.resultImageURL(image);
       const img = await this.loadImage(url);
@@ -6856,6 +6878,7 @@ class UniCanvasWidget {
         maskCanvas: acceptMaskCanvas,
         userMaskCanvas: stagingMaskCanvas,
         resultMaskCanvas,
+        snapshot: { ...snapshot, seed: Number.isFinite(image?.seed) ? image.seed : snapshot.seed },
       });
     }
   }
@@ -7180,6 +7203,7 @@ class UniCanvasWidget {
         id: layer.id,
         name: layer.name,
         nameSource: layer.nameSource || null,
+        meta: normalizeLayerMeta(layer.meta),
         type: layer.type,
         pose: serializePose(layer.pose, false),
         visible: layer.visible,
@@ -7412,7 +7436,7 @@ class UniCanvasWidget {
       this.panorama.commitLayer(layer);
       return {
         pose: serializePose(layer.pose, includeData),
-        id: layer.id, name: layer.name, nameSource: layer.nameSource || null, type: layer.type, visible: layer.visible, locked: layer.locked,
+        id: layer.id, name: layer.name, nameSource: layer.nameSource || null, meta: normalizeLayerMeta(layer.meta), type: layer.type, visible: layer.visible, locked: layer.locked,
         opacity: layer.opacity, blendMode: layer.blendMode || "source-over",
         crop: { x: 0, y: 0, width: this.panorama.settings.width, height: this.panorama.settings.height },
         dataURL: includeData ? layer.panoramaCanvas.toDataURL("image/png") : null,
@@ -7424,6 +7448,7 @@ class UniCanvasWidget {
       id: layer.id,
       name: layer.name,
       nameSource: layer.nameSource || null,
+      meta: normalizeLayerMeta(layer.meta),
       type: layer.type,
       pose: serializePose(layer.pose, includeData),
       visible: layer.visible,
@@ -7586,6 +7611,7 @@ class UniCanvasWidget {
           locked: item.locked === true,
           opacity: Number.isFinite(item.opacity) ? item.opacity : 1,
           blendMode: typeof item.blendMode === "string" ? item.blendMode : "source-over",
+          meta: normalizeLayerMeta(item.meta),
           canvas: this._createCanvas(nextSize.width, nextSize.height),
         };
         if (item.dataURL) {
@@ -7610,6 +7636,7 @@ class UniCanvasWidget {
           layer.hiresRect = { ...item.hiresRect };
         }
         if (!restoredPanorama) this.sanitizeMaskLayer(layer);
+        bumpLayerPixelRevision(layer);
         layers.push(layer);
       }
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return;
