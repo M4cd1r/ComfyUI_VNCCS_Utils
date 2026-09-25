@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory } from "../web/vnccs_unicanvas_panorama.mjs";
 import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
 import * as provenance from "../web/vnccs_unicanvas_provenance.mjs";
+import * as scenePlace from "../web/vnccs_unicanvas_scene_place.mjs";
 import * as groups from "../web/vnccs_unicanvas_groups.mjs";
 
 const settings = (extra = {}) => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
@@ -61,7 +62,7 @@ class Element {
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
   isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
-  normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, ...provenance, ...groups,
+  normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, ...provenance, ...groups, ...scenePlace,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
   uid: () => "new-layer", HISTORY_LIMIT: 20,

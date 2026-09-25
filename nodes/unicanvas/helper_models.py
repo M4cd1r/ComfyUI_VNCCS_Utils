@@ -1,4 +1,4 @@
-"""Lazy downloads of small helper models (SAM 3, rembg ONNX, layer-naming VLMs) into ComfyUI's models dir.
+"""Lazy downloads of small helper models (SAM 3, rembg ONNX, layer-naming VLMs, depth) into ComfyUI's models dir.
 
 Every helper is a pinned public Hugging Face file set (repo, revision, files), fetched with
 ``token=False`` on first use into ``<models>/<folder>/``. Nothing is downloaded at import time.
@@ -69,6 +69,14 @@ HELPER_MODELS: dict[str, HelperModel] = {
             "video_preprocessor_config.json", "vocab.json",
         ),
         folder=os.path.join("LLM", "Qwen3-VL-2B-Instruct"),
+    ),
+    "depth_anything_v2_small": HelperModel(
+        key="depth_anything_v2_small",
+        label="Depth Anything V2 Small",
+        repo_id="depth-anything/Depth-Anything-V2-Small-hf",  # Apache-2.0
+        revision="5426e4f0f36572d16453bbda7a8389317b1bef99",
+        files=("config.json", "model.safetensors", "preprocessor_config.json"),
+        folder=os.path.join("depth", "Depth-Anything-V2-Small-hf"),
     ),
 }
 

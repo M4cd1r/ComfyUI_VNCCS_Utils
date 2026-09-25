@@ -111,6 +111,22 @@ if (topic === "vn-preview") {
   }
   await page.waitForTimeout(800);
 }
+if (topic === "placement-harmonize") {
+  // Plan 08 (#11): a background and a character, the Perspective tool calibrated from the
+  // character (horizon at its eye level), so the horizon, ground grid and figure show.
+  for (const name of ["backdrop.png", "character.png"]) {
+    const [chooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.locator('button[title="Import image"]').first().click(),
+    ]);
+    await chooser.setFiles(resolve(import.meta.dirname, "fixtures", name));
+    await page.waitForTimeout(1_500);
+  }
+  await page.locator('.vnccs-uc-tool[data-tool="perspective"]').click();
+  await page.locator('[data-scene-action="calibrate"]').click();
+  await page.locator("[data-scene-depth-scale]").click();
+  await page.waitForTimeout(800);
+}
 // Scenario per topic keeps crops identical between before/after (same locator).
 const shots = {
   "mannequin-options": ".vnccs-uc-left",
@@ -120,6 +136,7 @@ const shots = {
   "settings-panel": ".vnccs-unicanvas",
   "pose-editor": ".vnccs-unicanvas",
   "vn-preview": ".vnccs-unicanvas",
+  "placement-harmonize": ".vnccs-unicanvas",
   "config-override": "body",
   "icons": "body",
 };
