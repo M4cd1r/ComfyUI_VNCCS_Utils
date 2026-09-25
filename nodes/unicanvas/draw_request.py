@@ -25,6 +25,53 @@ from .progress import _set_draw_progress
 MAX_UPLOADED_REFERENCES = 10  # the popover allows 4; VNCSS Config LoadImage references up to 10
 
 
+@dataclass(frozen=True)
+class ControlRequest:
+    """The ControlNet part of a draw: a control image (data URL, cropped to the bbox and scaled
+    to the inference size like the mask), its type and how strongly it steers the draw."""
+
+    image: str
+    type: str
+    strength: float = 1.0
+    start_percent: float = 0.0
+    end_percent: float = 1.0
+
+    @classmethod
+    def from_payload(cls, value: Any) -> ControlRequest | None:
+        if value is None or value is False:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("control must be an object with image and type")
+        image = str(value.get("image") or "")
+        if not image:
+            raise ValueError("control.image is required")
+        control_type = str(value.get("type") or "").strip().lower()
+        if not control_type:
+            raise ValueError("control.type is required")
+        start = min(1.0, max(0.0, float(value.get("start_percent", 0.0) or 0.0)))
+        end_value = value.get("end_percent", 1.0)
+        end = min(1.0, max(0.0, float(1.0 if end_value is None else end_value)))
+        if end < start:
+            raise ValueError("control.end_percent must not be below control.start_percent")
+        strength_value = value.get("strength", 1.0)
+        return cls(
+            image=image,
+            type=control_type,
+            strength=float(1.0 if strength_value is None else strength_value),
+            start_percent=start,
+            end_percent=end,
+        )
+
+    def describe(self) -> dict[str, Any]:
+        """What the result (and the provenance of the produced layer) records about the control."""
+        return {
+            "type": self.type,
+            "strength": self.strength,
+            "start_percent": self.start_percent,
+            "end_percent": self.end_percent,
+        }
+
+
 @dataclass
 class DrawRequest:
     payload: dict[str, Any]
@@ -47,6 +94,7 @@ class DrawRequest:
     positive_text: str
     negative_text: str
     outpaint_prompt_suffix: str
+    control: ControlRequest | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> DrawRequest:
@@ -92,6 +140,7 @@ class DrawRequest:
             positive_text=_append_prompt_suffix(str(settings.get("positive", "")), outpaint_suffix),
             negative_text=str(settings.get("negative", "")),
             outpaint_prompt_suffix=outpaint_suffix,
+            control=ControlRequest.from_payload(payload.get("control")),
         )
         request.log()
         return request
@@ -132,6 +181,7 @@ class DrawRequest:
                 "outpaint_prompt_suffix": self.outpaint_prompt_suffix or None,
                 "positive_len": len(self.positive_text),
                 "negative_len": len(self.negative_text),
+                "control": self.control.describe() if self.control is not None else None,
             },
         )
 

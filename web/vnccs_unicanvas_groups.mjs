@@ -22,6 +22,7 @@
  * onto the widget like installUniCanvasLayerTools.
  */
 
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 
 export const GROUP_LAYER_TYPE = "group";
@@ -66,7 +67,7 @@ function layerIndex(layers) {
 
 // The group a layer belongs to, or null (missing parent, non-group parent, masks).
 export function parentGroupOf(layers, layer, byId = layerIndex(layers)) {
-  if (!layer || layer.type === "mask" || !layer.groupId) return null;
+  if (!layer || isMaskSectionLayer(layer) || !layer.groupId) return null;
   const parent = byId.get(layer.groupId);
   return isGroupLayer(parent) && parent !== layer ? parent : null;
 }
@@ -127,7 +128,7 @@ export function groupSubtreeHeight(layers, layer) {
 
 // Whether `layer` (with its subtree) may live inside `parentId` (null = root).
 export function canPlaceInGroup(layers, layer, parentId) {
-  if (!layer || layer.type === "mask") return !parentId;
+  if (!layer || isMaskSectionLayer(layer)) return !parentId;
   if (!parentId) return true;
   const byId = layerIndex(layers);
   const parent = byId.get(parentId);
@@ -164,7 +165,7 @@ export function normalizeGroupedLayerOrder(layers, { pinnedLastId = null } = {})
   const others = [];
   let pinned = null;
   for (const layer of layers) {
-    if (layer.type === "mask") {
+    if (isMaskSectionLayer(layer)) {
       if (layer.groupId) layer.groupId = null;
       masks.push(layer);
     } else if (pinnedLastId && layer.id === pinnedLastId) {
@@ -186,7 +187,7 @@ export function normalizeGroupedLayerOrder(layers, { pinnedLastId = null } = {})
 
 /** Snapshot of the stack structure for a `groupStructure` history entry. */
 export function captureGroupStructure(layers) {
-  const others = layers.filter((layer) => layer.type !== "mask");
+  const others = layers.filter((layer) => !isMaskSectionLayer(layer));
   return {
     order: others.map((layer) => ({ id: layer.id, groupId: layer.groupId || null })),
     layers: others,
@@ -202,11 +203,11 @@ export function restoreGroupStructure(layers, snapshot) {
   if (!snapshot?.order) return layers;
   const current = layerIndex(layers);
   const stored = layerIndex(snapshot.layers || []);
-  const masks = layers.filter((layer) => layer.type === "mask");
+  const masks = layers.filter((layer) => isMaskSectionLayer(layer));
   const rest = [];
   for (const { id, groupId } of snapshot.order) {
     const layer = current.get(id) || stored.get(id);
-    if (!layer || layer.type === "mask") continue;
+    if (!layer || isMaskSectionLayer(layer)) continue;
     layer.groupId = groupId || null;
     rest.push(layer);
   }
@@ -298,7 +299,7 @@ export function serializeGroupLayer(layer) {
 
 // Shift+click range over the rows the panel shows (non-mask stack order).
 export function selectionRange(layers, anchorId, targetId) {
-  const rows = layers.filter((layer) => layer.type !== "mask");
+  const rows = layers.filter((layer) => !isMaskSectionLayer(layer));
   const a = rows.findIndex((layer) => layer.id === anchorId);
   const b = rows.findIndex((layer) => layer.id === targetId);
   if (a < 0 || b < 0) return [targetId];
@@ -310,7 +311,7 @@ export function selectionRange(layers, anchorId, targetId) {
 export function topLevelSelection(layers, ids) {
   const set = new Set(ids);
   const byId = layerIndex(layers);
-  return layers.filter((layer) => set.has(layer.id) && layer.type !== "mask"
+  return layers.filter((layer) => set.has(layer.id) && !isMaskSectionLayer(layer)
     && !groupChainOf(layers, layer, byId).some((group) => set.has(group.id)));
 }
 
@@ -421,11 +422,11 @@ export function moveLayerInStack(uc, sourceId, targetId, placement = "before") {
   const source = uc.layers.find((layer) => layer.id === sourceId);
   const target = uc.layers.find((layer) => layer.id === targetId);
   if (!source || !target) return false;
-  if ((source.type === "mask") !== (target.type === "mask")) {
+  if ((isMaskSectionLayer(source)) !== (isMaskSectionLayer(target))) {
     uc.setStatus("Masks and raster layers stay in separate sections", true);
     return false;
   }
-  if (source.type === "mask") {
+  if (isMaskSectionLayer(source)) {
     const before = uc.layers.slice();
     const rest = uc.layers.filter((layer) => layer !== source);
     let to = rest.indexOf(target) + (placement === "after" ? 1 : 0);
@@ -477,10 +478,10 @@ export function moveLayerInStack(uc, sourceId, targetId, placement = "before") {
 /** Up/down buttons: swap with the neighbouring sibling inside the same container. */
 function moveLayerAmongSiblings(uc, direction) {
   const layer = uc.activeLayer;
-  if (!layer || layer.type === "mask") return false;
+  if (!layer || isMaskSectionLayer(layer)) return false;
   if (transformBusy(uc)) return true;
   uc.normalizeLayerOrder();
-  const siblings = uc.layers.filter((item) => item.type !== "mask" && (item.groupId || null) === (layer.groupId || null)
+  const siblings = uc.layers.filter((item) => !isMaskSectionLayer(item) && (item.groupId || null) === (layer.groupId || null)
     && item.id !== uc.panorama?.settings?.baseLayerId);
   const index = siblings.indexOf(layer);
   const neighbour = siblings[index + direction];
@@ -537,11 +538,11 @@ export function addEmptyGroup(uc) {
   uc.normalizeLayerOrder();
   const active = uc.activeLayer;
   // As in Photoshop, a new folder opens right above the active item, in the same container.
-  const anchor = active && active.type !== "mask" && active.id !== uc.panorama?.settings?.baseLayerId ? active : null;
+  const anchor = active && !isMaskSectionLayer(active) && active.id !== uc.panorama?.settings?.baseLayerId ? active : null;
   const group = createGroupLayer({ name: nextGroupName(uc.layers), groupId: anchor?.groupId || null, nameSource: "auto" });
   const before = captureGroupStructure(uc.layers);
   const activeBefore = uc.activeLayerId;
-  let index = anchor ? uc.layers.indexOf(anchor) : uc.layers.findIndex((layer) => layer.type !== "mask");
+  let index = anchor ? uc.layers.indexOf(anchor) : uc.layers.findIndex((layer) => !isMaskSectionLayer(layer));
   if (index < 0) index = uc.layers.length;
   uc.layers.splice(index, 0, group);
   uc.activeLayerId = group.id;
@@ -562,7 +563,7 @@ export function ungroupLayer(uc, group = uc.activeLayer) {
   const children = uc.layers.filter((layer) => layer.groupId === group.id);
   for (const child of children) child.groupId = group.groupId || null;
   uc.layers = uc.layers.filter((layer) => layer !== group);
-  uc.activeLayerId = children[0]?.id || uc.layers.find((layer) => layer.type !== "mask")?.id || uc.layers[0]?.id || null;
+  uc.activeLayerId = children[0]?.id || uc.layers.find((layer) => !isMaskSectionLayer(layer))?.id || uc.layers[0]?.id || null;
   setSelection(uc, children.map((layer) => layer.id), uc.activeLayerId);
   finishStructureChange(uc, before, activeBefore);
   uc.setStatus(`${group.name} ungrouped`);
@@ -591,7 +592,7 @@ export function deleteGroup(uc, group, mode = "keep") {
     const activeBefore = uc.activeLayerId;
     for (const child of uc.layers.filter((layer) => layer.groupId === group.id)) child.groupId = group.groupId || null;
     uc.layers = uc.layers.filter((layer) => layer !== group);
-    if (uc.activeLayerId === group.id) uc.activeLayerId = uc.layers.find((layer) => layer.type !== "mask")?.id || uc.layers[0]?.id || null;
+    if (uc.activeLayerId === group.id) uc.activeLayerId = uc.layers.find((layer) => !isMaskSectionLayer(layer))?.id || uc.layers[0]?.id || null;
     setSelection(uc, [uc.activeLayerId]);
     finishStructureChange(uc, before, activeBefore);
     uc.setStatus(`${group.name} deleted, contents kept`);
@@ -609,7 +610,7 @@ export function deleteGroup(uc, group, mode = "keep") {
   if (doomed.some((layer) => layer === uc.poseEditor?.layer)) uc.poseEditor.release();
   const entries = removeEntriesFor(uc, doomed);
   if (doomed.some((layer) => layer.id === uc.activeLayerId)) {
-    uc.activeLayerId = uc.layers.find((layer) => layer.type !== "mask")?.id || uc.layers[0]?.id || null;
+    uc.activeLayerId = uc.layers.find((layer) => !isMaskSectionLayer(layer))?.id || uc.layers[0]?.id || null;
   }
   setSelection(uc, [uc.activeLayerId]);
   uc.pushHistoryEntry({ kind: "historyGroup", entries });
@@ -799,8 +800,8 @@ export function handleLayerRowClick(uc, layerId, event) {
   const layer = uc.layers.find((item) => item.id === layerId);
   if (!layer) return;
   const current = uc.selectedLayerIds?.length ? uc.selectedLayerIds : [uc.activeLayerId].filter(Boolean);
-  if ((event?.ctrlKey || event?.metaKey) && layer.type !== "mask") {
-    const set = new Set(current.filter((id) => uc.layers.find((item) => item.id === id)?.type !== "mask"));
+  if ((event?.ctrlKey || event?.metaKey) && !isMaskSectionLayer(layer)) {
+    const set = new Set(current.filter((id) => !isMaskSectionLayer(uc.layers.find((item) => item.id === id))));
     if (set.has(layerId) && set.size > 1) {
       set.delete(layerId);
       uc.selectedLayerIds = [...set];
@@ -814,7 +815,7 @@ export function handleLayerRowClick(uc, layerId, event) {
     uc.setActiveLayer(layerId);
     return;
   }
-  if (event?.shiftKey && layer.type !== "mask" && uc._selectionAnchorId) {
+  if (event?.shiftKey && !isMaskSectionLayer(layer) && uc._selectionAnchorId) {
     uc.selectedLayerIds = selectionRange(uc.layers, uc._selectionAnchorId, layerId);
     uc.setActiveLayer(layerId);
     return;
@@ -826,7 +827,7 @@ export function handleLayerRowClick(uc, layerId, event) {
 
 // Indent, selection state and the "inside" drop zone shared by layer and folder rows.
 export function decorateLayerRow(uc, row, layer) {
-  if (layer.type === "mask") return row;
+  if (isMaskSectionLayer(layer)) return row;
   const depth = groupChainOf(uc.layers, layer).length;
   row.dataset.groupDepth = String(depth);
   if (depth) row.style.marginLeft = `${depth * GROUP_INDENT_PX}px`;
@@ -901,7 +902,7 @@ export function createFolderRow(uc, layer) {
 // The rows the raster section shows: children of collapsed folders are hidden.
 export function visibleLayerRows(layers) {
   const byId = layerIndex(layers);
-  return layers.filter((layer) => layer.type !== "mask"
+  return layers.filter((layer) => !isMaskSectionLayer(layer)
     && !groupChainOf(layers, layer, byId).some((group) => group.collapsed));
 }
 
@@ -957,7 +958,7 @@ export function refuseLayerToolTarget(uc, mode) {
     uc.setStatus(mode === "resize" ? "Groups cannot be transformed; select a layer inside it" : `${layer.name} is a group; select a layer to paint`, true);
     return true;
   }
-  if (layer.type === "mask") return false;
+  if (isMaskSectionLayer(layer)) return false;
   if (isLayerEffectivelyLocked(uc.layers, layer)) {
     uc.setStatus(layer.locked ? `${layer.name} is locked` : `${layer.name} is locked by its group`, true);
     return true;
@@ -971,7 +972,7 @@ export function refuseLayerToolTarget(uc, mode) {
 
 function moveTargetsFor(uc) {
   const active = uc.activeLayer;
-  if (!active || active.type === "mask") return null;
+  if (!active || isMaskSectionLayer(active)) return null;
   const selection = (uc.selectedLayerIds || []).filter((id) => id !== active.id);
   if (!isGroupLayer(active) && !selection.length) return null;
   const picks = topLevelSelection(uc.layers, isGroupLayer(active) && !selection.length ? [active.id] : [active.id, ...selection]);

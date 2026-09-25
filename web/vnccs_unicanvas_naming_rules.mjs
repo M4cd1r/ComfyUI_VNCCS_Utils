@@ -9,6 +9,7 @@
  * automatically) or "import" (file stem or PSD layer name, never replaced by the model).
  */
 
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { LAYER_CATEGORIES, normalizeLayerCategory } from "./vnccs_unicanvas_provenance.mjs";
 
 export { LAYER_CATEGORIES, normalizeLayerCategory };
@@ -120,7 +121,7 @@ export function nextPaintName(layers = [], exclude = null) {
 export function rulesLayerName(layer, layers = []) {
   const meta = layer?.meta || {};
   const origin = meta.origin || "unknown";
-  if (layer?.type === "mask") return { name: null, model: false };
+  if (isMaskSectionLayer(layer)) return { name: null, model: false };
   if (layer?.type === "pose") return { name: layerCharacterName(layer, layers) || "Pose", model: false };
   if (IMPORT_ORIGINS.has(origin)) return { name: cleanName(meta.sourceName) || null, model: false };
   const character = layerCharacterName(layer, layers);
@@ -146,7 +147,7 @@ export function rulesLayerName(layer, layers = []) {
 
 /** Category from rules alone (character link, base layer, keywords in the name), or null. */
 export function rulesCategory(layer) {
-  if (!layer || layer.type === "mask" || layer.type === "group") return null;
+  if (!layer || isMaskSectionLayer(layer) || layer.type === "group") return null;
   if (isCharacterLinked(layer)) return CATEGORY_CHARACTERS;
   if (layer.meta?.origin === "base") return "Background";
   // Name and file stem only: a prompt usually describes the whole scene, not this layer.
@@ -157,7 +158,7 @@ export function rulesCategory(layer) {
 
 /** The category a layer is filed under: character link, then the model's answer, then keywords. */
 export function layerCategory(layer) {
-  if (!layer || layer.type === "mask" || layer.type === "group") return null;
+  if (!layer || isMaskSectionLayer(layer) || layer.type === "group") return null;
   if (isCharacterLinked(layer)) return CATEGORY_CHARACTERS;
   return normalizeLayerCategory(layer.meta?.category) || rulesCategory(layer);
 }

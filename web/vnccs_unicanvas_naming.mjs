@@ -17,6 +17,7 @@
  * Off / Rules only / Rules + model; nothing is downloaded unless the level needs the model.
  */
 
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { autoFileLayer } from "./vnccs_unicanvas_filing.mjs";
 import { isGroupLayer } from "./vnccs_unicanvas_groups.mjs";
 import { groupCharacterName, modelLayerName, nameSourceForOrigin, normalizeLayerCategory, rulesCategory, rulesLayerName } from "./vnccs_unicanvas_naming_rules.mjs";
@@ -210,7 +211,7 @@ export function scheduleGroupNaming(uc, group) {
  * name, auto-filing into the creation entry, and a background model request when useful.
  */
 export function onLayerCreated(uc, layer) {
-  if (!layer || layer.type === "mask" || isGroupLayer(layer)) return;
+  if (!layer || isMaskSectionLayer(layer) || isGroupLayer(layer)) return;
   const level = resolveAutoNamingLevel(uc.settings);
   if (layer.nameSource !== "user") layer.nameSource = nameSourceForOrigin(layer.meta?.origin);
   newToken(layer);
@@ -231,7 +232,7 @@ export function onLayerCreated(uc, layer) {
  * follow their rules; other layers still carrying their rules name ask the model once.
  */
 export function onLayerPixelsCommitted(uc, layer) {
-  if (!layer || layer.type === "mask" || isGroupLayer(layer)) return;
+  if (!layer || isMaskSectionLayer(layer) || isGroupLayer(layer)) return;
   const level = resolveAutoNamingLevel(uc.settings);
   if (level === "off" || layer.nameSource !== "auto") return;
   if (layer.type === "pose") {
@@ -265,7 +266,7 @@ export function onLayerRenamedByUser(uc, layer) {
 export async function categorizeUnfiled(uc) {
   if (resolveAutoNamingLevel(uc.settings) !== "model") return;
   const pinnedId = uc.panorama?.settings?.baseLayerId || null;
-  const layers = uc.layers.filter((layer) => layer.type !== "mask" && !isGroupLayer(layer) && !layer.groupId && layer.id !== pinnedId
+  const layers = uc.layers.filter((layer) => !isMaskSectionLayer(layer) && !isGroupLayer(layer) && !layer.groupId && layer.id !== pinnedId
     && !normalizeLayerCategory(layer.meta?.category) && !rulesCategory(layer));
   for (let index = 0; index < layers.length; index += MAX_NAMING_BATCH) {
     await requestNames(uc, layers.slice(index, index + MAX_NAMING_BATCH));
@@ -274,7 +275,7 @@ export async function categorizeUnfiled(uc) {
 
 /** "Auto-name" (layer context menu): back to "auto", rules name, then the model right away. */
 export async function autoNameLayers(uc, layers) {
-  const targets = layers.filter((layer) => layer && layer.type !== "mask");
+  const targets = layers.filter((layer) => layer && !isMaskSectionLayer(layer));
   for (const layer of targets) {
     if (isGroupLayer(layer)) {
       layer.nameSource = "auto";

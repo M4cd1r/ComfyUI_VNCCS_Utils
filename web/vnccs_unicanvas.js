@@ -74,6 +74,7 @@ import {
   UNICANVAS_STANDALONE_SETTING_ID,
 } from "./vnccs_unicanvas_modes.mjs";
 import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
+import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -609,6 +610,8 @@ const UNICANVAS_MODEL_MODULES = {
       fun_controlnet_strength: 1,
       fun_controlnet_inpaint: true,
     },
+    // Mirrors capabilities.control_net (models/z_image.py); the /assets descriptor wins.
+    controlNet: { types: ["canny", "depth", "pose", "lineart", "mlsd", "scribble", "gray"], defaultStrength: 1, maxStrength: 2, supportsRange: false },
   },
   krea2_edit: {
     key: "krea2_edit",
@@ -674,6 +677,8 @@ const UNICANVAS_MODEL_MODULES = {
       cfg: 1,
       denoise: 1,
     },
+    // Mirrors capabilities.control_net (models/minimax_h3.py); the /assets descriptor wins.
+    controlNet: { types: ["depth", "canny", "pose", "mlsd"], defaultStrength: 1, maxStrength: 2, supportsRange: true },
   },
   ...UNICANVAS_QWEN21_MODULE,
 };
@@ -942,6 +947,7 @@ class UniCanvasWidget {
     });
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
+    installUniCanvasControl(this, { modelModule: getUniCanvasModelModule });
     installUniCanvasVnPreview(this);
     installUniCanvasGroups(this);
     installUniCanvasSceneStates(this);
@@ -1617,8 +1623,8 @@ class UniCanvasWidget {
   }
 
   getLayerInsertIndex(type = "raster") {
-    if (type === "mask") return 0;
-    const firstRaster = this.layers.findIndex((layer) => layer.type !== "mask");
+    if (isMaskSectionLayer({ type })) return 0;
+    const firstRaster = this.layers.findIndex((layer) => !isMaskSectionLayer(layer));
     return firstRaster < 0 ? this.layers.length : firstRaster;
   }
 
@@ -1899,7 +1905,7 @@ class UniCanvasWidget {
   layerAtWorldPoint(point) {
     if (!point) return null;
     for (const layer of this.layers) {
-      if (layer.type === "mask" || isGroupLayer(layer) || !isLayerEffectivelyVisible(this.layers, layer)) continue;
+      if (isMaskSectionLayer(layer) || isGroupLayer(layer) || !isLayerEffectivelyVisible(this.layers, layer)) continue;
       if (layer.type === "pose") {
         const rect = layer.pose?.rect;
         if (rect && point.x >= rect.x && point.y >= rect.y && point.x < rect.x + rect.width && point.y < rect.y + rect.height) {
@@ -4180,7 +4186,7 @@ class UniCanvasWidget {
       this.layers = restoreGroupStructure(this.layers, direction === "undo" ? entry.before : entry.after);
       this.normalizeLayerOrder();
       const activeId = direction === "undo" ? entry.activeBefore : entry.activeAfter;
-      this.activeLayerId = this.layers.some((layer) => layer.id === activeId) ? activeId : (this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0]?.id || null);
+      this.activeLayerId = this.layers.some((layer) => layer.id === activeId) ? activeId : (this.layers.find((layer) => !isMaskSectionLayer(layer))?.id || this.layers[0]?.id || null);
       this.selectedLayerIds = this.activeLayerId ? [this.activeLayerId] : [];
     }
     if (entry.kind === "removeLayer") {
@@ -4192,7 +4198,7 @@ class UniCanvasWidget {
         this.activeLayerId = entry.previousActiveLayerId && this.layers.some((layer) => layer.id === entry.previousActiveLayerId) ? entry.previousActiveLayerId : entry.layer.id;
       } else {
         this.layers = this.layers.filter((layer) => layer !== entry.layer && layer.id !== entry.layer.id);
-        if (!this.layers.some((layer) => layer.id === this.activeLayerId)) this.activeLayerId = this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0]?.id || null;
+        if (!this.layers.some((layer) => layer.id === this.activeLayerId)) this.activeLayerId = this.layers.find((layer) => !isMaskSectionLayer(layer))?.id || this.layers[0]?.id || null;
       }
       this.invalidateLayerCaches(entry.layer);
     }
@@ -4295,7 +4301,7 @@ class UniCanvasWidget {
 
   // The live scene-state offset (world pixels) of a layer; render time only, never baked in.
   getLayerStateOffset(layer) {
-    if (this.panorama || !layer || layer.type === "mask" || isGroupLayer(layer)) return { x: 0, y: 0 };
+    if (this.panorama || !layer || isMaskSectionLayer(layer) || isGroupLayer(layer)) return { x: 0, y: 0 };
     return normalizeStateOffset(layer.stateOffset);
   }
 
@@ -5036,7 +5042,11 @@ class UniCanvasWidget {
     const hideMaskOverlays = this.hasOpenStagingPanel();
     // Groups: pass-through children draw in place, isolated groups through a scratch surface.
     compositeLayerStack(ctx, this.layers, (ctx, layer) => {
-      if (hideMaskOverlays && layer.type === "mask") return;
+      if (hideMaskOverlays && isMaskSectionLayer(layer)) return;
+      if (isControlLayer(layer)) {
+        this.controlLayers?.drawControlOverlay(ctx, layer);
+        return;
+      }
       ctx.save();
       if (layer.type === "mask") {
         const transformDraft = this.getLayerTransformDraft(layer);
@@ -5842,13 +5852,13 @@ class UniCanvasWidget {
     }
     this.maskLayerList.innerHTML = "";
     this.rasterLayerList.innerHTML = "";
-    const masks = this.layers.filter((layer) => layer.type === "mask");
-    const rasters = this.layers.filter((layer) => layer.type !== "mask");
+    const masks = this.layers.filter((layer) => isMaskSectionLayer(layer));
+    const rasters = this.layers.filter((layer) => !isMaskSectionLayer(layer));
     // Multi-selection follows the active layer; stale ids drop out.
     const known = new Set(this.layers.map((layer) => layer.id));
     this.selectedLayerIds = (this.selectedLayerIds || []).filter((id) => known.has(id));
     if (this.activeLayerId && !this.selectedLayerIds.includes(this.activeLayerId)) this.selectedLayerIds = [this.activeLayerId];
-    this.maskLayerList.append(this.createLayerGroupHead("Masks", masks.length, "mask"));
+    this.maskLayerList.append(this.createLayerGroupHead(masks.some(isControlLayer) ? "Masks & ControlNet" : "Masks", masks.length, "mask"));
     for (const layer of masks) this.maskLayerList.append(this.createLayerRow(layer));
     if (!masks.length) this.maskLayerList.append(this.createLayerGroupEmpty("No masks"));
     this.rasterLayerList.append(this.createLayerGroupHead("Image Layers", rasters.filter((layer) => !isGroupLayer(layer)).length, "raster"));
@@ -5879,17 +5889,17 @@ class UniCanvasWidget {
   attachLayerGroupDrop(group, type) {
     group.ondragover = (e) => {
       const source = this.layers.find((layer) => layer.id === (this.dragLayerId || e.dataTransfer.getData("text/plain")));
-      if (!source || (source.type === "mask") !== (type === "mask")) return;
+      if (!source || isMaskSectionLayer(source) !== (type === "mask")) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
     };
     group.ondrop = (e) => {
       const sourceId = this.dragLayerId || e.dataTransfer.getData("text/plain");
       const source = this.layers.find((layer) => layer.id === sourceId);
-      if (!source || (source.type === "mask") !== (type === "mask")) return;
+      if (!source || isMaskSectionLayer(source) !== (type === "mask")) return;
       if (e.target !== group && e.target.closest?.(".vnccs-uc-layer, .vnccs-uc-folder")) return;
       e.preventDefault();
-      const sameTypeLayers = this.layers.filter((layer) => (layer.type === "mask") === (type === "mask") && !layer.groupId && layer.id !== sourceId);
+      const sameTypeLayers = this.layers.filter((layer) => isMaskSectionLayer(layer) === (type === "mask") && !layer.groupId && layer.id !== sourceId);
       this.reorderLayer(sourceId, sameTypeLayers[sameTypeLayers.length - 1]?.id, "after");
     };
   }
@@ -5967,6 +5977,7 @@ class UniCanvasWidget {
     lock.addEventListener("dblclick", (e) => e.stopPropagation());
     del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
     del.addEventListener("dblclick", (e) => e.stopPropagation());
+    if (isControlLayer(layer)) this.controlLayers?.decorateRow(row);
     return this.decorateLayerRow(row, layer);
   }
 
@@ -5986,7 +5997,7 @@ class UniCanvasWidget {
     });
     row.addEventListener("dragover", (e) => {
       const source = this.layers.find((item) => item.id === (this.dragLayerId || e.dataTransfer.getData("text/plain")));
-      if (!source || (source.type === "mask") !== (layer.type === "mask")) {
+      if (!source || isMaskSectionLayer(source) !== isMaskSectionLayer(layer)) {
         e.dataTransfer.dropEffect = "none";
         return;
       }
@@ -6023,6 +6034,7 @@ class UniCanvasWidget {
     if (label) label.title = formatProvenanceTooltip(layer.meta, this.layers);
     const type = row.querySelector(".vnccs-uc-layer-type");
     if (type) type.textContent = `${layer.type}${layer.visible ? "" : " hidden"}`;
+    if (isControlLayer(layer)) this.controlLayers?.decorateRow(row);
     const lock = row.querySelector("[data-layer-lock]") || row.querySelectorAll(".vnccs-uc-icon")[0];
     if (lock) {
       lock.innerHTML = layer.locked ? UI_ICONS.lock : UI_ICONS.unlock;
@@ -6043,7 +6055,7 @@ class UniCanvasWidget {
     const size = canvas.width;
     ctx.clearRect(0, 0, size, size);
     this.drawCheckerboard(ctx, size, 5);
-    ctx.fillStyle = layer.type === "mask" ? "rgba(255,143,163,.28)" : "rgba(255,255,255,.12)";
+    ctx.fillStyle = layer.type === "mask" ? "rgba(255,143,163,.28)" : isControlLayer(layer) ? "rgba(72,196,255,.3)" : "rgba(255,255,255,.12)";
     ctx.beginPath();
     ctx.arc(size / 2, size / 2, size * 0.16, 0, Math.PI * 2);
     ctx.fill();
@@ -6141,7 +6153,7 @@ class UniCanvasWidget {
     this.drawCheckerboard(ctx, size, 5);
     const crop = this.getLayerAlphaBounds(layer);
     if (!crop) {
-      ctx.fillStyle = layer.type === "mask" ? "rgba(255,143,163,.38)" : "rgba(255,255,255,.18)";
+      ctx.fillStyle = layer.type === "mask" ? "rgba(255,143,163,.38)" : isControlLayer(layer) ? "rgba(72,196,255,.38)" : "rgba(255,255,255,.18)";
       ctx.beginPath();
       ctx.arc(size / 2, size / 2, size * 0.17, 0, Math.PI * 2);
       ctx.fill();
@@ -6196,6 +6208,7 @@ class UniCanvasWidget {
     this.renderToolSettings();
     this.updatePanoramaControls();
     this.sprites?.renderPanel();
+    this.controlLayers?.renderPanel();
     const layer = this.activeLayer;
     if (!this.layerSubhead || !layer) return;
     const blend = this.layerSubhead.querySelector('[data-layer-control="blendMode"]');
@@ -6260,6 +6273,7 @@ class UniCanvasWidget {
       stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this._createCanvas(),
       ...this.sprites?.cloneLayerFields(layer),
+      ...(isControlLayer(layer) ? { control: normalizeControlState(layer.control) } : {}),
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
     if (this.panorama) {
@@ -6292,13 +6306,13 @@ class UniCanvasWidget {
     const index = this.layers.findIndex((l) => l.id === this.activeLayerId);
     if (index < 0) return;
     const layer = this.layers[index];
-    if (layer.type !== "mask") {
+    if (!isMaskSectionLayer(layer)) {
       this.moveLayerAmongSiblings(direction);
       return;
     }
     const sameType = this.layers
       .map((item, itemIndex) => ({ item, itemIndex }))
-      .filter((entry) => (entry.item.type === "mask") === (layer.type === "mask"));
+      .filter((entry) => isMaskSectionLayer(entry.item));
     const localIndex = sameType.findIndex((entry) => entry.itemIndex === index);
     const nextLocalIndex = Math.max(0, Math.min(sameType.length - 1, localIndex + direction));
     const nextIndex = sameType[nextLocalIndex]?.itemIndex ?? index;
@@ -6828,7 +6842,19 @@ class UniCanvasWidget {
     // flight must not be attributed to its results.
     const snapshotSettings = this.settings;
     const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
-    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, panoramaCamera, requestPanorama, snapshot };
+    // ControlNet layer (vnccs_unicanvas_control.mjs): the topmost active one, cropped like the mask.
+    const control = requestPanorama ? null : this.controlLayers?.collectForDraw(inferenceSize, { masked: maskStats.nonzeroAlphaPixels > 0 });
+    if (control?.error) {
+      this.drawInProgress = false;
+      this.setStatus(control.error, true);
+      this.generationProgress?.classList.remove("visible");
+      return;
+    }
+    if (control) {
+      snapshot.control = control.provenance;
+      this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""} - ${control.note}...`);
+    }
+    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, panoramaCamera, requestPanorama, snapshot, control: control?.payload || null };
     const historyRun = this.generationHistory?.beginRun("generate", {
       settings: snapshotSettings, snapshot, bbox: requestBbox, mode, inferenceSize, outputSize,
       configLinked: this._isConfigLinked(), imageCanvas, maskCanvas: userMaskCanvas,
@@ -7125,7 +7151,7 @@ class UniCanvasWidget {
 
   // The HTTP path consumes this payload as the POST body; the queued path stores it in
   // settings.queued_draw, where the node forwards exactly the composition keys to _run_unicanvas_draw.
-  _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize, poseRequest = null, configOverrides = null }) {
+  _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize, poseRequest = null, configOverrides = null, control = null }) {
     const payload = {
       mode,
       image: poseRequest ? undefined : imageCanvas.toDataURL("image/png"),
@@ -7136,6 +7162,7 @@ class UniCanvasWidget {
       inference_size: inferenceSize,
       output_size: outputSize,
     };
+    if (control && !poseRequest) payload.control = control;
     if (includeDebugId) {
       payload.debug_id = debugId;
       payload.settings = { ...this.makeSettingsPayload(), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1 } : {}) };
@@ -7420,6 +7447,7 @@ class UniCanvasWidget {
 
   // Prompt help comes from the active family's backend descriptor (capabilities.prompt_guide).
   syncPromptGuide() {
+    this.controlLayers?.refresh();
     const guide = resolvePromptGuide(this.modelDescriptors, this.settings.generation_mode);
     const positive = this.container.querySelector('[data-setting="positive"]');
     if (positive) positive.placeholder = guide?.hint || "positive prompt";
@@ -7819,6 +7847,7 @@ class UniCanvasWidget {
     if (bakePixels) payload.bakePixels = bakePixels;
     // Sprite set: metadata always, variant pixels only with layer data.
     if (layer.type === "sprite") payload.sprite = this.sprites?.serialize(layer, includeData);
+    if (isControlLayer(layer)) payload.control = normalizeControlState(layer.control);
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -7982,20 +8011,22 @@ class UniCanvasWidget {
           id: item.id || uid(),
           name: item.name || "Layer",
           nameSource: typeof item.nameSource === "string" ? item.nameSource : undefined,
-          type: item.type === "mask" ? "mask" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite && !restoredPanorama ? "sprite"
+          type: item.type === "mask" ? "mask" : isControlLayer(item) && !restoredPanorama ? "control" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite && !restoredPanorama ? "sprite"
             : isPanoramaLayer(item) && panoramaSettings?.baseLayerId === item.id ? "panorama" : "raster",
           pose: item.type === "pose" ? serializePose(item.pose) : undefined,
           visible: item.visible !== false,
           locked: item.locked === true,
           opacity: Number.isFinite(item.opacity) ? item.opacity : 1,
           blendMode: typeof item.blendMode === "string" ? item.blendMode : "source-over",
-          groupId: item.type !== "mask" && !isPanoramaLayer(item) && typeof item.groupId === "string" && item.groupId ? item.groupId : null,
+          groupId: !isMaskSectionLayer(item) && !isPanoramaLayer(item) && typeof item.groupId === "string" && item.groupId ? item.groupId : null,
           meta: normalizeLayerMeta(item.meta),
           canvas: this._createCanvas(nextSize.width, nextSize.height),
         };
         // Shadow layers (vnccs_unicanvas_harmonize.mjs); older states have none.
         if (layer.type === "raster") layer.shadow = normalizeShadow(item.shadow);
-        const stateOffset = item.type !== "mask" ? normalizeStateOffset(item.stateOffset) : null;
+        // ControlNet layers (vnccs_unicanvas_control.mjs); older states have none.
+        if (layer.type === "control") layer.control = normalizeControlState(item.control);
+        const stateOffset = !isMaskSectionLayer(item) ? normalizeStateOffset(item.stateOffset) : null;
         if (stateOffset && (stateOffset.x || stateOffset.y)) layer.stateOffset = stateOffset;
         if (item.dataURL) {
           const img = await this.loadImage(item.dataURL);
@@ -8042,7 +8073,7 @@ class UniCanvasWidget {
         this.panorama?.project();
         this.activeLayerId = state.activeLayerId && this.layers.some((layer) => layer.id === state.activeLayerId)
           ? state.activeLayerId
-          : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0].id;
+          : this.layers.find((layer) => !isMaskSectionLayer(layer))?.id || this.layers[0].id;
         if (!exact) this.saveLocalStateBackup(state);
       }
       this.poseBake?.afterStateRestore();

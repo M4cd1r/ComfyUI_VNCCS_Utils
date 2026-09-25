@@ -15,6 +15,7 @@
  * planFiling / applyFilingPlan are pure (Node tests); the rest binds onto the widget.
  */
 
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { captureGroupStructure, createGroupLayer, getGroupDescendants, isGroupLayer, normalizeGroupedLayerOrder } from "./vnccs_unicanvas_groups.mjs";
 import { CATEGORY_CHARACTERS, CATEGORY_OTHER, LAYER_CATEGORIES, layerCategory, layerCharacterName } from "./vnccs_unicanvas_naming_rules.mjs";
 
@@ -36,7 +37,7 @@ export function filingTarget(layer, layers = [], { fallbackOther = false } = {})
 
 /** Root-level leaf layers that no folder holds yet (masks and the pinned panorama base excluded). */
 export function isUnfiledLayer(layer, { pinnedId = null } = {}) {
-  return Boolean(layer) && layer.type !== "mask" && !isGroupLayer(layer) && !layer.groupId && layer.id !== pinnedId;
+  return Boolean(layer) && !isMaskSectionLayer(layer) && !isGroupLayer(layer) && !layer.groupId && layer.id !== pinnedId;
 }
 
 /** The Organize plan: every unfiled root-level layer with its target folder path. */
@@ -73,7 +74,7 @@ function newRootFolderIndex(layers, category, anchor) {
   const above = present.filter((layer) => rankOf(layer.name) < rank).pop();
   if (above) return indexAfterSubtree(layers, above);
   const at = layers.indexOf(anchor);
-  return at >= 0 ? at : layers.findIndex((layer) => layer.type !== "mask");
+  return at >= 0 ? at : layers.findIndex((layer) => !isMaskSectionLayer(layer));
 }
 
 /**

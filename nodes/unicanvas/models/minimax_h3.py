@@ -9,9 +9,40 @@ from typing import Any
 import torch
 
 from ..comfy_bridge import _call_comfy_node
+from ..control_net import load_control_net_patch
 from ..debug import _uc_log
 from .base import UniCanvasModelModule, _reference_image_slots
-from .capabilities import CANVAS_TASKS, STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
+from .capabilities import (
+    CANVAS_TASKS,
+    CONTROL_NET_PROMPT_NOTE,
+    STANDARD_TASKS,
+    ControlNetSupport,
+    ControlNetWeights,
+    ControlType,
+    ModelCapabilities,
+    PromptGuide,
+    ReferenceInputs,
+)
+
+
+# MiniMax-H3 Fun ControlNet Union (alibaba-pai), in the ComfyUI-native repack that ComfyUI's
+# "MiniMax H3 Fun ControlNet Union" workflow template loads with ModelPatchLoader and applies
+# with the core MiniMaxH3FunControlNetApply node. The control image is the still's single frame.
+MINIMAX_H3_CONTROL_NET = ControlNetSupport(
+    label="MiniMax-H3 Fun ControlNet Union",
+    types=(ControlType.DEPTH, ControlType.CANNY, ControlType.POSE, ControlType.MLSD),
+    weights=ControlNetWeights(
+        hf_repo="Comfy-Org/MiniMax-H3",
+        hf_path="model_patches/minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors",
+        setting="minimax_h3_control_patch_name",
+    ),
+    default_strength=1.0,
+    max_strength=2.0,
+    # UniCanvas H3 inpaint regenerates the working area and pastes the mask, so a control image
+    # combines with an Inpaint Mask; the patch itself only receives the control image.
+    combines_with_inpaint=True,
+    supports_range=True,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +67,7 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
             ),
         ),
         references=ReferenceInputs(max_images=10, slot_label="<Picture {n}>"),
+        control_net=MINIMAX_H3_CONTROL_NET,
         prompt_guide=PromptGuide(
             hint="Keep the identity from <Picture 2>. Use the pose from <Picture 3>.",
             guide=(
@@ -48,7 +80,8 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
                 "result must visibly show it.\n\n"
                 "Load the MiniMax H3 diffusion model, its Qwen3-VL text encoder (CLIP type minimax) "
                 "and the video VAE in the loader, or link a VNCSS Config node. No mask is required: "
-                "the bbox is the working area. There is no negative prompt."
+                "the bbox is the working area. There is no negative prompt.\n\n"
+                "ControlNet layer: " + CONTROL_NET_PROMPT_NOTE
             ),
             examples=(
                 "Keep the identity, face, hair, clothing, camera and environment from <Picture 1>. "
@@ -170,6 +203,24 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
             "refs": sorted(refs), "seed": seed,
         })
         return sampled
+
+    def apply_control(self, ctx) -> Any:
+        """The core MiniMaxH3FunControlNetApply patch with the control image as a one-frame video."""
+        control = ctx.request.control
+        vae = (ctx.settings.get("_external") or {}).get("vae") or ctx.vae
+        patch = load_control_net_patch(MINIMAX_H3_CONTROL_NET.weights, ctx.settings, ctx.draw_id)
+        patched = _call_comfy_node(
+            "MiniMaxH3FunControlNetApply",
+            model=ctx.model,
+            model_patch=patch,
+            vae=vae,
+            strength=float(control.strength),
+            start_percent=float(control.start_percent),
+            end_percent=float(control.end_percent),
+            control_video=ctx.control_tensor,
+        )[0]
+        _uc_log(ctx.draw_id, "MiniMax H3 Fun ControlNet applied", control.describe())
+        return patched
 
     def decode_samples(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
         # The tiling widgets are passed explicitly because _call_comfy_node cannot fill in
