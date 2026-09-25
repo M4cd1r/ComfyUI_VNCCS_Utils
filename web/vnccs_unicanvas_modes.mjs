@@ -567,7 +567,7 @@ function installUniCanvasOutputActions(widget) {
   const saveRow = document.createElement("div");
   saveRow.className = "vnccs-uc2-save-actions";
   saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"));
-  widget.side.insertBefore(saveRow, widget.side.firstChild);
+  widget.side.insertBefore(saveRow, widget._vnccsProjectBar?.nextSibling || widget.side.firstChild);
   widget._vnccsSaveActions = saveRow;
 }
 
@@ -627,11 +627,18 @@ function writeStandaloneState(widget, state) {
 const standalonePersistState = new WeakMap();
 
 function installStandalonePersistence(widget) {
-  // Standalone mode has no workflow widget and no server state cache: the
-  // localStorage key "vnccs-unicanvas-standalone" holds the document instead.
+  // Standalone mode has no workflow widget and no server state cache: the document lives in a
+  // project (web/vnccs_unicanvas_project.mjs), and localStorage only keeps the project pointer.
+  // The old localStorage document ("vnccs-unicanvas-standalone") is read once for migration and
+  // is only written again when the project store is unavailable.
   const entry = { timer: null };
   standalonePersistState.set(widget, entry);
+  const projectActive = () => Boolean(widget.projectSession?.active);
   const schedulePersist = () => {
+    if (projectActive()) {
+      widget.scheduleStateUpload();
+      return;
+    }
     if (entry.timer !== null) window.clearTimeout(entry.timer);
     entry.timer = window.setTimeout(() => {
       entry.timer = null;
@@ -640,7 +647,9 @@ function installStandalonePersistence(widget) {
   };
   widget.getStateBackupKey = () => UNICANVAS_STANDALONE_STORAGE_KEY;
   widget.uploadStatePayload = async (state) => {
+    if (projectActive()) return widget.projectSession.flush();
     writeStandaloneState(widget, state);
+    return true;
   };
   const originalWriteLightStateToWidget = widget.writeLightStateToWidget;
   widget.writeLightStateToWidget = (...args) => {
@@ -659,7 +668,12 @@ export function flushStandalonePersistence(widget) {
   }
   // Write even for a disposed widget: the localStorage write is safe after
   // disposal and preserves the last pending document (symmetry with the
-  // dispose()-time flushStateUpload path).
+  // dispose()-time flushStateUpload path). With a project, dispose() already
+  // flushed the project save.
+  if (widget.projectSession?.enabled) {
+    if (!widget._disposed) void widget.projectSession.flush();
+    return;
+  }
   writeStandaloneState(widget, widget.buildSerializedState(true));
 }
 
@@ -917,6 +931,16 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         getLayerPixelRevision: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           return layer ? (layer.pixelRevision ?? 0) : null;
+        },
+        // Projects (Plan 10.3): the attached project/scene, save status and upload counters.
+        getProjectInfo: () => {
+          const session = widget.projectSession;
+          if (!session) return null;
+          return JSON.parse(JSON.stringify({
+            enabled: session.enabled, projectId: session.projectId, sceneId: session.sceneId, rev: session.rev,
+            status: session.status, name: session.project?.name ?? null, stats: session.stats,
+            scenes: (session.project?.scenes || []).map((scene) => ({ id: scene.id, name: scene.name, order: scene.order })),
+          }));
         },
         // Scene placement (Plan 08): perspective, a character's alpha rect and feet, a running
         // depth-scaled drag, and the view transform to aim pointer events at world points.
