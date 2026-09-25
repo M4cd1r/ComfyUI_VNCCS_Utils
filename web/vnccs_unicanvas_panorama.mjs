@@ -1,4 +1,5 @@
 // Equirectangular document storage and a perspective editing window.
+import { compositeLayerStack } from "./vnccs_unicanvas_groups.mjs";
 export const PANORAMA_MAX_PIXELS = 8192 * 4096;
 export const isPanoramaCandidate = (width, height) => height > 0 && width / height >= 1.9;
 
@@ -253,7 +254,7 @@ export class PanoramaDocument {
 
   commit() {
     this.flushCamera();
-    for (const layer of this.widget.layers) this.commitLayer(layer);
+    for (const layer of this.widget.layers) if (layer.canvas) this.commitLayer(layer);
     this.pruneTextures();
   }
 
@@ -271,7 +272,7 @@ export class PanoramaDocument {
   }
 
   project(preview = false) {
-    for (const layer of this.widget.layers) this.projectLayer(layer, preview);
+    for (const layer of this.widget.layers) if (layer.canvas) this.projectLayer(layer, preview);
     this.pruneTextures();
   }
 
@@ -343,12 +344,14 @@ export class PanoramaDocument {
   composite(type = "raster") {
     this.commit();
     const out = canvas(this.settings.width, this.settings.height), ctx = out.getContext("2d");
-    for (const layer of [...this.widget.layers].reverse()) {
-      if (!layer.visible || (type === "raster" ? !["raster", "pose"].includes(layer.type) : layer.type !== type)) continue;
-      ctx.globalAlpha = layer.opacity;
-      ctx.globalCompositeOperation = layer.blendMode || "source-over";
-      ctx.drawImage(this.ensureLayer(layer), 0, 0);
-    }
+    compositeLayerStack(ctx, this.widget.layers, (target, layer) => {
+      if (type === "raster" ? !["raster", "pose"].includes(layer.type) : layer.type !== type) return;
+      target.save();
+      target.globalAlpha = layer.opacity;
+      target.globalCompositeOperation = layer.blendMode || "source-over";
+      target.drawImage(this.ensureLayer(layer), 0, 0);
+      target.restore();
+    }, this.widget._groupScratchPool);
     return out;
   }
 

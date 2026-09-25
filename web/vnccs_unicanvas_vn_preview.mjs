@@ -18,6 +18,7 @@
  */
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 
 export const VN_PREVIEW_PRESETS = Object.freeze([
   { id: "16x9_1080", label: "16:9 - 1920x1080", width: 1920, height: 1080 },
@@ -745,7 +746,7 @@ export class VnPreviewController {
     if (!covers.length) return [];
     const flagged = [];
     for (const layer of this.uc.layers || []) {
-      if (!layer.visible || !isCharacterLayer(this.uc, layer)) continue;
+      if (!isLayerEffectivelyVisible(this.uc.layers || [], layer) || !isCharacterLayer(this.uc, layer)) continue;
       const face = faceRegionForLayer(this.uc, layer);
       if (face && covers.some((cover) => rectsIntersect(face, cover))) flagged.push({ layer, face });
     }
@@ -992,7 +993,7 @@ export class VnPreviewController {
       speaker: last.layout.nameplate?.name ?? null,
       choices: last.layout.choices.length,
       flaggedLayerIds: this.lastFlagged.map(({ layer }) => layer.id),
-      characters: (this.uc.layers || []).filter((layer) => layer.visible && isCharacterLayer(this.uc, layer)).map((layer) => {
+      characters: (this.uc.layers || []).filter((layer) => isLayerEffectivelyVisible(this.uc.layers || [], layer) && isCharacterLayer(this.uc, layer)).map((layer) => {
         const face = faceRegionForLayer(this.uc, layer);
         return { id: layer.id, face: face ? this.worldToScreen(face) : null };
       }),
