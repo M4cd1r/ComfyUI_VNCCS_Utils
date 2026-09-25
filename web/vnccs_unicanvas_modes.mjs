@@ -7,6 +7,7 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -523,7 +524,7 @@ export async function newUniCanvasDocument(widget) {
   widget.activeLayerId = null;
   widget.undoStack = [];
   widget.redoStack = [];
-  widget.addLayer("raster", "Base Layer", false);
+  widget.addLayer("raster", "Base Layer", false, false, createLayerMeta("base"));
   widget.updateHistoryButtons?.();
   widget.renderLayerList();
   widget.syncActiveLayerControls?.();
@@ -868,6 +869,15 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           };
         },
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
+        // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
+        getLayerMeta: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? JSON.parse(JSON.stringify(normalizeLayerMeta(layer.meta))) : null;
+        },
+        getLayerPixelRevision: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? (layer.pixelRevision ?? 0) : null;
+        },
         getLayerPose: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           // Deep clone: the caller must not be able to mutate layer state.
