@@ -16,7 +16,7 @@ export const LAYER_ORIGINS = Object.freeze([
 ]);
 const ORIGIN_SET = new Set(LAYER_ORIGINS);
 
-const STRING_FIELDS = ["historyId", "prompt", "negative", "mode", "model", "sourceName", "derivedFrom", "assetId"];
+const STRING_FIELDS = ["historyId", "prompt", "negative", "mode", "model", "sourceName", "derivedFrom", "assetId", "assetScope", "assetKind"];
 const NUMBER_FIELDS = ["seed", "createdAt", "heightFactor", "steps", "cfg", "denoise"];
 
 let revisionCounter = 0;

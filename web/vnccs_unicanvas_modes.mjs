@@ -921,6 +921,16 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: layer.canvas.toDataURL("image/png"),
           };
         },
+        // Asset library (Plan 10.4): a layer's visible pixels (alpha crop) with their world rect.
+        getLayerCrop: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          const crop = layer?.canvas ? widget.getLayerAlphaBounds(layer) : null;
+          if (!crop) return null;
+          return {
+            rect: { x: widget.origin.x + crop.x, y: widget.origin.y + crop.y, width: crop.width, height: crop.height },
+            dataURL: widget.cloneCanvasCrop(layer.canvas, crop).toDataURL("image/png"),
+          };
+        },
         getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
         // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.

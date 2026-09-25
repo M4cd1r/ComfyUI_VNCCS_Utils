@@ -15,6 +15,7 @@ import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { SCENE_PERSPECTIVE_HISTORY_KIND, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreScenePerspective, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
+import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
@@ -936,6 +937,7 @@ class UniCanvasWidget {
     installUniCanvasGroups(this);
     installUniCanvasScenePlace(this);
     installUniCanvasProjects(this);
+    installUniCanvasLibrary(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -7985,6 +7987,9 @@ class UniCanvasWidget {
       });
     });
     const addBtn = this._button("Add image", "vnccs-uc-btn", () => fileInput.click(), "Add a reference image");
+    // Asset library (vnccs_unicanvas_library.mjs): save the generation settings as a preset.
+    if (this.library) this.library.buildSettingsSection(section("library", "Asset library"));
+
     const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
       panel.remove();
       this._vnccsRefsPopover = null;
@@ -8143,6 +8148,9 @@ class UniCanvasWidget {
       this.applyDebugMode();
       commit();
     }, "Logs every UniCanvas request (draw, remove bg, SAM, naming, color match) with sizes and timings, plus draw tensors and Spectrum forecasts.");
+
+    // Asset library (vnccs_unicanvas_library.mjs): save the generation settings as a preset.
+    if (this.library) this.library.buildSettingsSection(section("library", "Asset library"));
 
     const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
       panel.remove();
