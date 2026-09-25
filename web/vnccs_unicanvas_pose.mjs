@@ -954,6 +954,50 @@ export class UniCanvasPoseEditor {
         } catch (_) { return null; }
     }
 
+    /**
+     * Scene timeline (issue #18): renders studio animation frames of a pose layer without showing
+     * the editor. The editor is activated hidden, each frame is applied transiently and captured
+     * at the layer rect size, and the editor is released without a commit, so the layer keeps its
+     * pose, pixels and history. `onFrame(frame, canvas)` receives every capture; `cancelled()`
+     * stops between frames.
+     */
+    async captureAnimationFrames(layer, frames, { onFrame, cancelled } = {}) {
+        const savedStudio = layer.pose.studio, savedViewport = layer.pose.viewport;
+        await this.activate(layer, { show: false });
+        const token = this.token, studio = this.studio;
+        const editorMode = studio.exportParams.editor_mode;
+        try {
+            // Inline tracks load with the scene; a compact cache reference restores asynchronously
+            // (started by loadFromNode in animation mode, deferred until requested in image mode).
+            if (!studio._animationInitialized) studio.ensureAnimationInitialized();
+            if (studio._animationCacheRestorePending && studio._animationCacheRestorePromise) await studio._animationCacheRestorePromise;
+            if (token !== this.token) throw new Error("The pose layer changed while preparing its frames.");
+            if (!studio._animationInitialized || !studio.animationState) throw new Error("The pose animation data is not available.");
+            // applyAnimationFrame only steps in animation mode; the editor is discarded afterwards.
+            studio.exportParams.editor_mode = "animation";
+            const rect = layer.pose.rect;
+            const size = { width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) };
+            let done = 0;
+            for (const frame of frames) {
+                if (cancelled?.() || token !== this.token) break;
+                studio.applyAnimationFrame(frame, { transient: true, updateTimeline: false });
+                const canvas = this.captureSurface(size, true, this.host._createCanvas(size.width, size.height));
+                if (canvas) onFrame?.(frame, canvas);
+                // Yield now and then so the page stays responsive during long preparations.
+                if (++done % 4 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+            }
+        } finally {
+            if (this.studio === studio) {
+                studio.exportParams.editor_mode = editorMode;
+                // No commit: the stepped frame must not become the layer's still.
+                this.initialized = false;
+                this.release();
+            }
+            layer.pose.studio = savedStudio;
+            layer.pose.viewport = savedViewport;
+        }
+    }
+
     release() {
         this.saveUI();
         this.commit();

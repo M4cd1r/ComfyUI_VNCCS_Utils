@@ -963,7 +963,7 @@ class UniCanvasWidget {
     installUniCanvasAutoNaming(this);
     installUniCanvasFiling(this);
     installUniCanvasHistory(this);
-    installUniCanvasTimeline(this);
+    installUniCanvasTimeline(this, { createPoseEditor: () => new UniCanvasPoseEditor(this) });
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
