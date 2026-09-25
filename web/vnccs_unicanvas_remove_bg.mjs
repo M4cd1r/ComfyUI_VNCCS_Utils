@@ -56,13 +56,23 @@ export function removeBgEditSettings(settings, editModel) {
 
 /**
  * Builds the Remove background rows of the settings popover.
- * `ui` = { bind(label, control) -> row, makeSelect(pairs, value), commit(), assets, familyDefaults(mode) }.
+ * `ui` = { bind(label, control) -> row, makeSelect(pairs, value), commit(), assets, familyDefaults(mode),
+ *   keepAreas?() -> the "Keep areas: ..." line (vnccs_unicanvas_remove_bg_keep.mjs) }.
  */
 export function buildRemoveBgSettings(settings, ui) {
-  const { bind, makeSelect, commit, assets, familyDefaults } = ui;
+  const { bind, makeSelect, commit, assets, familyDefaults, keepAreas } = ui;
   const selection = resolveRemoveBgSelection(settings);
   const method = makeSelect(REMOVE_BG_METHODS, selection.method);
-  bind("Remove background", method);
+  const methodRow = bind("Remove background", method);
+  // Keep areas: painted Inpaint Mask pixels stay opaque whatever the backend.
+  if (keepAreas) {
+    const keepLine = document.createElement("div");
+    keepLine.className = "vnccs-uc-remove-bg-keep";
+    keepLine.style.cssText = "opacity:.8; font-size:11px;";
+    keepLine.title = "Paint the Inpaint Mask layer over what Remove background must keep.";
+    keepLine.textContent = keepAreas();
+    methodRow.after(keepLine);
+  }
 
   const editRows = [];
   const editRow = (label, control) => {

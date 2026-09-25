@@ -107,9 +107,7 @@ export class PanoramaOrbitControl {
     });
     on("wheel", event => this.wheel(event), { passive: false });
     on("keydown", event => this.keyDown(event));
-    on("keyup", event => {
-      if (this.gesture?.kind === "keyboard") { event.stopPropagation(); this.finish(); }
-    });
+    on("keyup", event => this.keyUp(event));
     on("blur", () => this.finish());
     if (typeof ResizeObserver !== "undefined") {
       this.observer = new ResizeObserver(() => this.render());
@@ -194,6 +192,10 @@ export class PanoramaOrbitControl {
     if (!delta || !this.begin("keyboard")) return;
     event.preventDefault(); event.stopPropagation();
     this.change({ [delta[0]]: this.settings[delta[0]] + delta[1] });
+  }
+
+  keyUp(event) {
+    if (this.gesture?.kind === "keyboard") { event.stopPropagation(); this.finish(); }
   }
 
   cancel() {
