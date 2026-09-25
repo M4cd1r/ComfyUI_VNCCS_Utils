@@ -12,9 +12,18 @@
 
 export const LAYER_ORIGINS = Object.freeze([
   "base", "paint", "generate", "bake", "sprite", "import", "psd", "paste", "duplicate",
-  "rasterize", "split", "occluder", "shadow", "asset", "unknown",
+  "rasterize", "split", "merge", "occluder", "shadow", "asset", "unknown",
 ]);
 const ORIGIN_SET = new Set(LAYER_ORIGINS);
+
+// Folder categories for automatic filing (issue #17). `meta.category` holds the naming model's
+// answer; layers without one are filed by rules.
+export const LAYER_CATEGORIES = Object.freeze(["Background", "Characters", "Props", "Effects", "Lighting", "Overlays", "Other"]);
+
+export function normalizeLayerCategory(value) {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return LAYER_CATEGORIES.find((category) => category.toLowerCase() === text);
+}
 
 const STRING_FIELDS = ["historyId", "prompt", "negative", "mode", "model", "sourceName", "derivedFrom", "assetId", "assetScope", "assetKind"];
 const NUMBER_FIELDS = ["seed", "createdAt", "heightFactor", "steps", "cfg", "denoise"];
@@ -70,6 +79,8 @@ export function normalizeLayerMeta(raw) {
     const value = cleanString(raw[key], 200);
     if (value !== undefined) meta[key] = value;
   }
+  const category = normalizeLayerCategory(raw.category);
+  if (category) meta.category = category;
   return meta;
 }
 
@@ -144,7 +155,7 @@ export function metaFromStagingSnapshot(snapshot) {
 const ORIGIN_LABELS = {
   base: "Base layer", paint: "Painted", generate: "Generated", bake: "Baked character",
   sprite: "Sprite", import: "Imported image", psd: "Imported from PSD", paste: "Pasted",
-  duplicate: "Duplicate", rasterize: "Rasterized", split: "Split", occluder: "Occluder",
+  duplicate: "Duplicate", rasterize: "Rasterized", split: "Split", merge: "Merged pose layers", occluder: "Occluder",
   shadow: "Shadow", asset: "From asset library", unknown: "Unknown origin",
 };
 

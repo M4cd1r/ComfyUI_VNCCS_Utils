@@ -3,6 +3,16 @@ import { compositeLayerStack } from "./vnccs_unicanvas_groups.mjs";
 export const PANORAMA_MAX_PIXELS = 8192 * 4096;
 export const isPanoramaCandidate = (width, height) => height > 0 && width / height >= 1.9;
 
+// The panorama is a layer type: the layer holds the equirectangular pixels and its own
+// settings (projection, camera, navigation quality). Workflows saved as unicanvas_state
+// version 3 kept those settings on the document and are migrated on load.
+export const PANORAMA_LAYER_TYPE = "panorama";
+export const PANORAMA_STATE_VERSION = 4;
+export const PANORAMA_PROJECTIONS = [{ value: "equirectangular", label: "Equirectangular 360 × 180°" }];
+// Resolution of the lightweight preview shown while the camera moves.
+export const PANORAMA_NAVIGATION_QUALITY = { fast: 256, balanced: 384, sharp: 768 };
+export const isPanoramaLayer = layer => layer?.type === PANORAMA_LAYER_TYPE;
+
 export function normalizePanorama(value) {
   if (!value) return null;
   if (value.projection !== "equirectangular") throw new Error("Unsupported panorama projection");
@@ -18,6 +28,49 @@ export function normalizePanorama(value) {
     pitch: Math.max(-90, Math.min(90, finite(value.pitch, 0))),
     roll: ((finite(value.roll, 0) + 180) % 360 + 360) % 360 - 180,
     fov: Math.max(25, Math.min(120, finite(value.fov, 90))),
+    quality: Object.hasOwn(PANORAMA_NAVIGATION_QUALITY, value.quality) ? value.quality : "balanced",
+  };
+}
+
+const LAYER_SETTING_KEYS = ["projection", "width", "height", "contentRevision", "yaw", "pitch", "roll", "fov", "quality"];
+
+/** The settings stored on a serialized panorama layer (the document settings minus the layer id). */
+export function panoramaLayerSettings(settings) {
+  const normalized = normalizePanorama(settings);
+  return normalized && Object.fromEntries(LAYER_SETTING_KEYS.map(key => [key, normalized[key]]));
+}
+
+/** Whether a serialized state is a panorama document (version 4 layer or version 3 entry). */
+export const stateHasPanorama = state => Boolean(state?.panorama) || (Array.isArray(state?.layers) && state.layers.some(isPanoramaLayer));
+
+/** Document settings of a serialized state, from its panorama layer or a version 3 document entry. */
+export function panoramaSettingsFromState(state) {
+  const layer = Array.isArray(state?.layers) ? state.layers.find(isPanoramaLayer) : null;
+  if (layer) return normalizePanorama({ ...(layer.panorama || {}), baseLayerId: layer.id });
+  return state?.panorama ? normalizePanorama(state.panorama) : null;
+}
+
+/**
+ * Upgrade a version 3 panorama state: the base raster layer becomes the panorama layer and
+ * takes over the document-level camera. Returns a new object; other states pass through.
+ */
+export function migratePanoramaState(state) {
+  if (!state || typeof state !== "object" || !state.panorama || !Array.isArray(state.layers)) return state;
+  if (state.layers.some(isPanoramaLayer)) {
+    const { panorama, ...rest } = state;
+    return { ...rest, version: PANORAMA_STATE_VERSION };
+  }
+  const settings = normalizePanorama(state.panorama);
+  if (!state.layers.some(layer => layer?.id === settings.baseLayerId && layer.type === "raster")) {
+    throw new Error("The panorama base layer is missing");
+  }
+  const { panorama, ...rest } = state;
+  return {
+    ...rest,
+    version: PANORAMA_STATE_VERSION,
+    layers: state.layers.map(layer => layer?.id === settings.baseLayerId
+      ? { ...layer, type: PANORAMA_LAYER_TYPE, groupId: null, panorama: panoramaLayerSettings(settings) }
+      : layer),
   };
 }
 
@@ -261,7 +314,7 @@ export class PanoramaDocument {
   projectLayer(layer, preview = false) {
     const w = this.widget;
     this.ensureLayer(layer);
-    const side = preview ? Math.min(384, w.bbox.width) : w.bbox.width;
+    const side = preview ? Math.min(PANORAMA_NAVIGATION_QUALITY[this.settings.quality] || 384, w.bbox.width) : w.bbox.width;
     const projected = this.renderer.render(layer.panoramaCanvas, this.settings, side, side);
     const ctx = layer.canvas.getContext("2d");
     ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
@@ -345,7 +398,7 @@ export class PanoramaDocument {
     this.commit();
     const out = canvas(this.settings.width, this.settings.height), ctx = out.getContext("2d");
     compositeLayerStack(ctx, this.widget.layers, (target, layer) => {
-      if (type === "raster" ? !["raster", "pose"].includes(layer.type) : layer.type !== type) return;
+      if (type === "raster" ? !["raster", "pose", PANORAMA_LAYER_TYPE].includes(layer.type) : layer.type !== type) return;
       target.save();
       target.globalAlpha = layer.opacity;
       target.globalCompositeOperation = layer.blendMode || "source-over";

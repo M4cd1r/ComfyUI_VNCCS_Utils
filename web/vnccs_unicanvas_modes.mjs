@@ -8,6 +8,7 @@
 
 import { app } from "../../scripts/app.js";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { describeDepthScaleDrag, measureLayerCharacter, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
@@ -192,6 +193,14 @@ export function handleUniCanvasShortcut(widget, event) {
     consumeUniCanvasShortcut(event);
     if (lower === "y" || event.shiftKey) widget.redo();
     else widget.undo();
+    return true;
+  }
+  // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
+  // (Alt+digit types other characters on some keyboards).
+  const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
+  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex) {
+    consumeUniCanvasShortcut(event);
+    widget.applySceneStateByIndex(Number(stateDigit[1] || stateDigit[0]) - 1);
     return true;
   }
   if (modifier || event.altKey) return false;
@@ -546,6 +555,7 @@ export async function newUniCanvasDocument(widget) {
   widget.activeLayerId = null;
   widget.undoStack = [];
   widget.redoStack = [];
+  widget.restoreSceneStates?.(null); // scene states belong to the old document
   widget.addLayer("raster", "Base Layer", false, false, createLayerMeta("base"));
   widget.updateHistoryButtons?.();
   widget.renderLayerList();
@@ -931,6 +941,19 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
             dataURL: widget.cloneCanvasCrop(layer.canvas, crop).toDataURL("image/png"),
           };
         },
+        // Scene states (issue #7): the state list without thumbnails, and each layer's live offset.
+        getSceneStates: () => {
+          const scene = widget.serializeSceneStates?.() || null;
+          if (!scene) return null;
+          return {
+            ...scene,
+            states: scene.states.map(({ thumbnailDataURL, ...state }) => ({ ...state, hasThumbnail: Boolean(thumbnailDataURL) })),
+            moveScope: widget.getSceneStateMoveScope?.() ?? null,
+            differs: widget.sceneStateDiffers?.() ?? false,
+            view: { ...widget.view },
+            offsets: Object.fromEntries((widget.layers || []).map((l) => [l.id, widget.getLayerStateOffset?.(l) || { x: 0, y: 0 }])),
+          };
+        },
         getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
         getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
         // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
@@ -941,6 +964,41 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
         getLayerPixelRevision: (layerId) => {
           const layer = (widget.layers || []).find((l) => l.id === layerId);
           return layer ? (layer.pixelRevision ?? 0) : null;
+        },
+        // Multi-character pose scenes (Plan 01): mannequins, bound references and ID pass stats.
+        getPoseScene: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          if (!layer?.pose) return null;
+          const characters = poseStudioCharacters(layer.pose).map((item) => {
+            const ref = poseCharacterRef(layer, item.id);
+            return { ...item, ref: ref ? { source: ref.source, name: ref.name || null, layerId: ref.layerId || null } : null,
+              prompt: poseCharacterPrompt(layer, item.id) };
+          });
+          const current = currentPoseId(layer);
+          let idPass = null;
+          if (current) {
+            const { width, height } = current.canvas;
+            // Layer alpha at ID pass resolution, to check that every mask lies inside it.
+            const alphaCanvas = document.createElement("canvas");
+            alphaCanvas.width = width; alphaCanvas.height = height;
+            const actx = alphaCanvas.getContext("2d", { willReadFrequently: true });
+            if (layer.hiresCanvas) actx.drawImage(layer.hiresCanvas, 0, 0, width, height);
+            const alpha = actx.getImageData(0, 0, width, height).data;
+            const masks = characters.map((item) => getPoseCharacterMask(layer, item.id)?.alpha || null);
+            let overlap = 0, outside = 0;
+            for (let pixel = 0; pixel < width * height; pixel += 1) {
+              const owners = masks.filter((mask) => mask?.[pixel]).length;
+              if (owners > 1) overlap += 1;
+              if (owners && alpha[pixel * 4 + 3] === 0) outside += 1;
+            }
+            idPass = { width, height, ids: [...current.meta.ids], counts: masks.map((mask) => (mask ? mask.reduce((sum, value) => sum + (value ? 1 : 0), 0) : 0)), overlap, outside };
+          }
+          return { characters, idPass, hasCharacterRefs: Boolean(layer.pose.characterRefs) };
+        },
+        // Automatic naming (issue #17): name, nameSource and the category the model answered.
+        getLayerNaming: (layerId) => {
+          const layer = (widget.layers || []).find((l) => l.id === layerId);
+          return layer ? { name: layer.name, nameSource: layer.nameSource || null, category: layer.meta?.category || null, groupId: layer.groupId || null } : null;
         },
         // Projects (Plan 10.3): the attached project/scene, save status and upload counters.
         getProjectInfo: () => {

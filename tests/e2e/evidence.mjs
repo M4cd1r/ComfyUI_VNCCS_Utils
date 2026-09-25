@@ -83,6 +83,26 @@ if (topic === "pose-editor") {
   else await page.locator('[title="Add pose layer"]').first().click();
   await page.waitForTimeout(25_000);
 }
+if (topic === "scene-states") {
+  // Scene states (#7): an imported image, two states with the second one hiding the image.
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.locator('button[title="Import image"]').first().click(),
+  ]);
+  await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "backdrop.png"));
+  await page.waitForTimeout(2_500);
+  await page.locator('[data-scene-states] [data-state-action="new"]').first().click();
+  await page.locator('[data-scene-states] [data-state-action="new"]').first().click();
+  await page.locator(".vnccs-uc-layer .vnccs-uc-thumb").first().click();
+  await page.waitForTimeout(500);
+}
+if (topic === "multi-character") {
+  // A pose layer with two mannequins: the Character reference card lists one row per mannequin.
+  await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
+  await page.waitForTimeout(25_000);
+  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await page.waitForTimeout(5_000);
+}
 if (topic === "vn-preview") {
   // A scene (image layer + pose layer) with the Clean dark overlay on and the pose moved down so
   // its face sits under the textbox: the occlusion warning shows.
@@ -154,15 +174,27 @@ const shots = {
   // phases, which keeps the before/after crops aligned.
   "settings-panel": ".vnccs-unicanvas",
   "pose-editor": ".vnccs-unicanvas",
+  "multi-character": ".vnccs-unicanvas",
   "vn-preview": ".vnccs-unicanvas",
   "placement-harmonize": ".vnccs-unicanvas",
   library: ".vnccs-unicanvas",
+  "scene-states": ".vnccs-unicanvas",
   "config-override": "body",
   "icons": "body",
+  "auto-naming": ".vnccs-uc2-standalone-shell",
 };
 // The settings popover exists only once the gear is clicked. The crop still frames
 // the pre-change popover, which the old code parked at the widget's top-left.
 if (topic === "settings-panel") await page.locator('[title="Settings"]').first().click();
+// Automatic naming (issue #17): two painted layers named by rules, then the Organize preview.
+if (topic === "auto-naming") {
+  await page.locator('[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon').first().click();
+  const shell = page.locator(".vnccs-uc2-standalone-shell");
+  await shell.locator(".vnccs-uc-left").waitFor({ timeout: 30_000 });
+  for (let i = 0; i < 2; i += 1) await shell.locator('[title="Add raster"]').first().click();
+  await shell.locator("[data-organize-layers]").click();
+  await shell.locator(".vnccs-uc-organize").waitFor();
+}
 const target = page.locator(shots[topic] || ".vnccs-uc-left").first();
 // Fixed page crops keep both phases aligned where the subject spans several roots.
 const clips = {
@@ -184,6 +216,7 @@ const geometry = await target.evaluate((el, measureSelector) => {
   "settings-panel": ".vnccs-uc-settings-popover",
   "config-override": ".vnccs-config-ui",
   icons: ".vnccs-uc-tools",
+  "auto-naming": ".vnccs-uc-organize",
 }[topic] || null);
 await writeFile(resolve(outDir, `${phase}.geometry.json`), JSON.stringify(geometry, null, 2));
 await browser.close();

@@ -47,6 +47,11 @@ test("saveable kinds follow the layer type and provenance", () => {
   assert.equal(saveableKinds({ type: "raster", meta: { origin: "paint" } })[0], "prop");
   assert.equal(saveableKinds({ type: "raster", meta: { origin: "generate", heightFactor: 1.1 } })[0], "character");
   assert.equal(saveableKinds({ type: "raster", meta: { origin: "asset", assetKind: "background" } })[0], "background");
+  assert.deepEqual(saveableKinds({ type: "panorama" }), []);
+  // Folder categories (issue #17) decide the kind when present.
+  assert.equal(saveableKinds({ type: "raster", name: "x", meta: { origin: "import", category: "Background" } })[0], "background");
+  assert.equal(saveableKinds({ type: "raster", name: "x", meta: { origin: "import", category: "Props" } })[0], "prop");
+  assert.equal(saveableKinds({ type: "raster", name: "x", meta: { origin: "generate", character: { name: "Alice" } } })[0], "character");
 });
 
 test("filter and tags", () => {
@@ -131,6 +136,8 @@ function fakeWidget({ projectId = "prj_1", perspective = null } = {}) {
       return layer;
     },
     recordHistoryBefore() { history.push({ kind: "snapshot" }); },
+    filed: [],
+    autoFileLayer(layer) { this.filed.push(layer.id); },
     pushHistoryEntry(entry) { history.push(entry); },
     normalizeLayerOrder() {},
     ensureWorldRectBounds: () => true,
@@ -189,7 +196,8 @@ test("a character inserts as an asset layer with its feet on the drop point", as
     data: { imageDataURL: { blob: `${SHA}.png` }, size: { width: 40, height: 100 }, anchor: { x: 0.5, y: 1 }, heightFactor: 1.1, identityPrompt: "red hair" } };
   const layer = await insertAsset(uc, asset, { x: 300, y: 400 });
   assert.equal(layer.type, "raster");
-  assert.deepEqual(normalizeLayerMeta(layer.meta), { origin: "asset", assetId: "ast_1", assetScope: "global", assetKind: "character", sourceName: "Alice", prompt: "red hair", heightFactor: 1.1, createdAt: layer.meta.createdAt });
+  assert.deepEqual(normalizeLayerMeta(layer.meta), { origin: "asset", assetId: "ast_1", assetScope: "global", assetKind: "character", sourceName: "Alice", prompt: "red hair", heightFactor: 1.1, createdAt: layer.meta.createdAt, category: "Characters", character: { id: "ast_1", name: "Alice" } });
+  assert.deepEqual(uc.filed, [layer.id]);
   const draw = layer.canvas.ops.find((op) => op[0] === "draw");
   assert.deepEqual(draw, ["draw", `/vnccs/unicanvas/library/blobs/${SHA}`, 280, 300, 40, 100]);
   assert.equal(layer.hiresCanvas, null);
@@ -219,6 +227,7 @@ test("backgrounds go to the bottom of the stack in one undo step; presets apply 
     data: { imageDataURL: { blob: `${SHA}.png` }, size: { width: 40, height: 100 }, anchor: { x: 0.5, y: 0.5 } } }, { x: 20, y: 50 });
   assert.equal(uc.layers.at(-1), background);
   assert.deepEqual(uc.history.map((entry) => entry.kind), ["snapshot"]);
+  assert.deepEqual(uc.filed, []); // backgrounds stay at the bottom, outside the folders
   assert.equal(background.canvas.ops.find((op) => op[0] === "draw")[1], `/vnccs/unicanvas/projects/prj_1/blobs/${SHA}`);
   const result = await insertAsset(uc, { id: "ast_3", kind: "preset", name: "Style", data: { settings: { steps: 30, cfg: 4 } } }, { x: 0, y: 0 });
   assert.equal(result, null);

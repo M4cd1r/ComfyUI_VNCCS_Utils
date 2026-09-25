@@ -7,6 +7,27 @@ button. Aspect ratio is only
 a hint: an ordinary wide photo does not contain a complete spherical scene.
 Cubemaps and partial/cylindrical panoramas require conversion before import.
 
+## The panorama layer
+
+Importing as **Panorama** creates a layer of type `panorama`, shown at the bottom of
+**Image Layers** with a globe button. It holds the complete equirectangular pixels and
+its own settings:
+
+- **Camera**: yaw, pitch, roll and field of view.
+- **Projection**: equirectangular (the only projection available today).
+- **Navigation quality**: the size of the lightweight preview rendered while the camera
+  moves (Fast 256 px, Balanced 384 px, Sharp 768 px). The full editing-window quality
+  returns when the gesture ends.
+
+The panorama layer's settings panel sits at the top of the side panel whenever the
+document has a panorama layer. It contains the sphere control and, under
+**Panorama layer**, exact yaw/pitch/roll/FOV sliders with numeric fields plus the
+projection and navigation-quality selectors. Selecting the panorama layer (or its globe
+button) unfolds these settings, the way the pose layer opens its editor. Sliders and
+fields move the view on every input event; the view is committed when the slider is
+released or the field is confirmed. A document has one panorama layer: duplicating it
+creates an ordinary layer holding a copy of the spherical pixels.
+
 ## Editing and navigation
 
 - The square bbox is a 1024 × 1024 perspective editing window. The document
@@ -22,10 +43,10 @@ Cubemaps and partial/cylindrical panoramas require conversion before import.
   tools to edit the visible part of a layer. Edits are transferred to spherical
   coordinates, including across the left/right seam and around the poles.
   Finish an edit or apply/cancel a transform before changing the camera.
-- The original panorama remains at the bottom, initially locked. Select an
-  editable layer above it, or unlock the base to edit its visible region. The
-  base cannot be placed above other layers while panorama mode is active.
-- Delete the original panorama layer to exit panorama mode. A confirmation warns
+- The panorama layer remains at the bottom, initially locked. Select an
+  editable layer above it, or unlock it to edit its visible region. It cannot be
+  placed above other layers or into a group.
+- Delete the panorama layer to exit panorama mode. A confirmation warns
   that the entire panorama workspace will be permanently discarded, including
   all layers, staged results, and undo/redo history. Cancel keeps it intact;
   **Delete panorama** opens an empty regular canvas. There is no separate exit
@@ -47,9 +68,14 @@ always use the complete equirectangular document. The camera and square bbox do
 not crop the output. No additional panorama export button is added. Masks remain editing aids and are not included in the
 composite image. PSD keeps visible raster layers in full panorama coordinates.
 
-Panoramas use version 3 of `unicanvas_state`, with spherical layer pixels stored
-through the existing ComfyUI state cache. Older versions 1 and 2 retain flat
-canvas behavior. Before queue execution, the latest panorama pixels are committed
+Panoramas use version 4 of `unicanvas_state`: the layer of type `panorama` carries
+its settings in a `panorama` object (`projection`, `width`, `height`, `yaw`, `pitch`,
+`roll`, `fov`, `quality`, `contentRevision`), and spherical layer pixels are stored
+through the existing ComfyUI state cache. Workflows saved in version 3 (settings in a
+document-level `panorama` entry with a raster base layer) open unchanged: the base
+layer becomes the panorama layer and takes over the saved camera and pixels, and the
+next save writes version 4. The node output accepts both versions. Older versions 1 and
+2 retain flat canvas behavior. Before queue execution, the latest panorama pixels are committed
 and their upload is awaited; a failed upload stops queueing to prevent exporting
 stale content. Workflows continue to depend on their ComfyUI host's state cache.
 
@@ -58,7 +84,8 @@ stale content. Workflows continue to depend on their ComfyUI host's state cache.
 - WebGL 2 is required. Images are limited to 8192 pixels per side and
   33,554,432 pixels total (including a standard 8192 × 4096 panorama), subject to
   the GPU's texture limit. Existing upload/cache size limits also apply.
-- Navigation uses a reduced-resolution preview during a gesture and restores
+- Navigation uses a reduced-resolution preview during a gesture (see navigation
+  quality above) and restores
   full editing-window quality on completion. It never resamples the stored
   panorama. Imported overlays and generated patches use up to a 4096-pixel
   square when transferred to the sphere; brush edits use the editing window.
@@ -71,7 +98,10 @@ stale content. Workflows continue to depend on their ComfyUI host's state cache.
   browser (only its GLSL version/precision declarations are adapted).
 - `tests/e2e/panorama.spec.mjs` drives the real UI with a 2048 × 1024 fixture:
   panorama import, seam editing with undo/redo, save/reopen, PNG (node IMAGE)
-  and PSD export size, and the captured generation camera (draw route stubbed).
+  and PSD export size, the captured generation camera (draw route stubbed), the
+  panorama layer settings panel, and opening a version 3 workflow.
+  `tests/test_unicanvas_panorama_layer.mjs` covers the version 3 migration and the
+  settings panel without a browser.
 - Final layout, pen/mouse interaction, actual model generation, and WebGL
   behavior must be checked in the real ComfyUI installation. A useful acceptance
   check is to paint across the seam, turn through 360°, undo/redo, generate while

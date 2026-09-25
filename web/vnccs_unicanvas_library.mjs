@@ -30,6 +30,7 @@ import { expectedHeightAt, isPerspectiveCalibrated, layerHeightFactor, normalize
 import { serializePose } from "./vnccs_unicanvas_pose_state.mjs";
 import { PROJECTS_BASE } from "./vnccs_unicanvas_project.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { layerCategory } from "./vnccs_unicanvas_naming_rules.mjs";
 
 export const LIBRARY_BASE = "/vnccs/unicanvas/library";
 export const ASSET_KINDS = Object.freeze(["character", "background", "prop", "pose", "preset"]);
@@ -64,16 +65,20 @@ export function assetBlobUrl(scope, projectId, ref) {
   return `${PROJECTS_BASE}/${encodeURIComponent(projectId)}/blobs/${name}`;
 }
 
+// Folder categories (issue #17) that decide the kind; other layers leave the choice to the user.
+const CATEGORY_KINDS = Object.freeze({ Characters: "character", Background: "background", Props: "prop" });
+const KIND_CATEGORIES = Object.freeze({ character: "Characters", background: "Background", prop: "Props" });
+
 /** The kinds a layer can be saved as (the first one is the suggestion). */
 export function saveableKinds(layer) {
-  if (!layer || layer.type === "mask" || layer.type === "group") return [];
+  if (!layer || layer.type === "mask" || layer.type === "group" || layer.type === "panorama") return [];
   if (layer.type === "pose") return ["pose"];
   const meta = normalizeLayerMeta(layer.meta);
-  const characterLike = Boolean(meta.character || meta.heightFactor);
-  if (meta.origin === "asset" && meta.assetKind && ["character", "prop", "background"].includes(meta.assetKind)) {
-    return [meta.assetKind, ...["character", "prop", "background"].filter((kind) => kind !== meta.assetKind)];
-  }
-  return characterLike ? ["character", "prop", "background"] : ["prop", "character", "background"];
+  const raster = ["character", "prop", "background"];
+  const suggested = (meta.origin === "asset" && raster.includes(meta.assetKind) && meta.assetKind)
+    || CATEGORY_KINDS[layerCategory(layer)]
+    || (meta.heightFactor ? "character" : "prop");
+  return [suggested, ...raster.filter((kind) => kind !== suggested)];
 }
 
 export function filterAssets(assets, { kind = "", query = "" } = {}) {
@@ -343,9 +348,11 @@ export async function insertAsset(uc, asset, point) {
   const size = data.size?.width > 0 && data.size?.height > 0 ? data.size : naturalSize;
   if (!size) throw new Error("the asset has no image");
   const meta = { assetId: asset.id, assetScope: scope, assetKind: kind, sourceName: asset.name };
+  if (KIND_CATEGORIES[kind]) meta.category = KIND_CATEGORIES[kind];
   if (kind === "character") {
     if (Number(data.heightFactor) > 0) meta.heightFactor = Number(data.heightFactor);
     if (data.identityPrompt) meta.prompt = data.identityPrompt;
+    meta.character = { id: asset.id, name: asset.name };
   }
   const scale = dropScale(uc.scenePerspective, kind, point.y, size.height, Number(data.heightFactor) || 1);
   let rect = anchoredRect(size, anchor, point, scale);
@@ -364,6 +371,7 @@ export async function insertAsset(uc, asset, point) {
     layer.pose.panoramaCamera = null;
     paintLayer(uc, layer, image, imageRect);
     uc.invalidateLayerCaches(layer);
+    uc.autoFileLayer?.(layer);
     refreshWidget(uc);
     uc.setStatus(`Inserted pose "${asset.name}"`);
     return layer;
@@ -383,6 +391,8 @@ export async function insertAsset(uc, asset, point) {
   }
   paintLayer(uc, layer, image, rect);
   uc.invalidateLayerCaches(layer);
+  // Category folders (issue #17): the move joins the add's undo entry when auto-file is on.
+  if (kind !== "background") uc.autoFileLayer?.(layer);
   refreshWidget(uc);
   if (kind === "background" && data.perspective && !isPerspectiveCalibrated(uc.scenePerspective)) {
     const absolute = absolutePerspective(data.perspective, rect);
