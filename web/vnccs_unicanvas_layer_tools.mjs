@@ -6,7 +6,8 @@
  *    its background (QI2.1 or BiRefNet), color-match it to the composite below,
  *    plus the pose-layer entries Rasterize / Edit pose (pose layers only), Split characters
  *    to layers (2+ mannequins), Merge pose layers (multi-selection of pose layers), and
- *    Add contact / cast shadow, Detach shadow (vnccs_unicanvas_harmonize.mjs).
+ *    Add contact / cast shadow, Detach shadow, Harmonize... and Create foreground occluder
+ *    (vnccs_unicanvas_harmonize.mjs).
  *  - 10.2 "Import PSD" sits next to "Export Layers as PSD" and maps raster
  *    layers (name, visibility, opacity, blend mode) from the vendored ag-psd
  *    bundle, preserving order; anything UniCanvas cannot represent is skipped
@@ -31,7 +32,7 @@ import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { canCastShadow } from "./vnccs_unicanvas_harmonize.mjs";
+import { canCastShadow, isHarmonizeCharacter } from "./vnccs_unicanvas_harmonize.mjs";
 import { poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 
 export const LAYER_MENU_ITEMS = Object.freeze([
@@ -49,6 +50,9 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "add-contact-shadow", label: "Add contact shadow", shadowSourceOnly: true },
   { id: "add-cast-shadow", label: "Add cast shadow", shadowSourceOnly: true },
   { id: "detach-shadow", label: "Detach shadow", shadowOnly: true },
+  // Harmonize panel and foreground occluder (vnccs_unicanvas_harmonize.mjs, Plan 08.3).
+  { id: "harmonize", label: "Harmonize...", characterOnly: true },
+  { id: "create-occluder", label: "Create foreground occluder", characterOnly: true },
 ]);
 
 // Split needs 2+ mannequins; merge needs this layer inside a multi-selection of 2+ pose layers.
@@ -56,6 +60,7 @@ export function layerMenuItemAvailable(uc, layer, item) {
   if (item.poseOnly && layer?.type !== "pose") return false;
   if (item.shadowSourceOnly && !canCastShadow(layer)) return false;
   if (item.shadowOnly && !layer?.shadow) return false;
+  if (item.characterOnly && !isHarmonizeCharacter(uc, layer)) return false;
   if (item.multiCharacter && poseStudioCharacters(layer.pose).length < 2) return false;
   if (item.poseSelection) {
     const selected = new Set(uc.selectedLayerIds || []);
@@ -705,6 +710,8 @@ function runLayerMenuAction(uc, layer, item, point = null) {
     return uc.addShadowLayer?.(layer, item.id === "add-cast-shadow" ? "cast" : "contact");
   }
   if (item.id === "detach-shadow") return uc.detachShadowLayer?.(layer);
+  if (item.id === "harmonize") return uc.openHarmonizePanel?.(layer, point);
+  if (item.id === "create-occluder") return uc.createForegroundOccluder?.(layer);
   if (item.id === "rasterize") {
     if (typeof uc.rasterizePoseLayer === "function") return uc.rasterizePoseLayer(layer);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE);

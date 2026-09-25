@@ -25,6 +25,7 @@ import {
     promptFallbackName,
     rulesCategory,
     rulesLayerName,
+    modelLayerName,
 } from "../web/vnccs_unicanvas_naming_rules.mjs";
 import { createLayerMeta, normalizeLayerMeta } from "../web/vnccs_unicanvas_provenance.mjs";
 
@@ -356,4 +357,14 @@ test("a stroke never reverts a model name; painted layers with their rules name 
     } finally {
         stub.restore();
     }
+});
+
+test("occluders are named \"Occluder - <object>\" and the model only names the object", () => {
+    const occluder = raster("occ", "occluder", { name: "Layer 7" });
+    assert.deepEqual(rulesLayerName(occluder, [occluder]), { name: "Occluder - foreground", model: true });
+    occluder.name = "Occluder - table";
+    assert.equal(rulesLayerName(occluder, [occluder]).name, "Occluder - table");
+    assert.equal(modelLayerName(occluder, " wooden table "), "Occluder - wooden table");
+    assert.equal(modelLayerName(occluder, "Occluder - fence"), "Occluder - fence");
+    assert.equal(modelLayerName(raster("p"), "Cat"), "Cat");
 });

@@ -498,14 +498,20 @@ function lightState(uc) {
   return uc.sceneLight;
 }
 
-/** The light gizmo shows in the Perspective tool and with the shadow controls (move tool on a shadow layer). */
+/**
+ * The light gizmo shows in the Perspective tool, with the shadow controls (move tool on a shadow
+ * layer) and while the Harmonize panel is open (vnccs_unicanvas_harmonize.mjs).
+ */
 export function isLightGizmoVisible(uc) {
   if (!uc || uc.panorama) return false;
+  if (uc.harmonizeLightTarget?.()) return true;
   return uc.tool === PERSPECTIVE_TOOL || (uc.tool === "move" && Boolean(uc.activeLayer?.shadow));
 }
 
-/** The character the gizmo orbits: the active layer, or the source of an active shadow layer. */
+/** The character the gizmo orbits: the Harmonize panel's layer, the active layer, or the source of an active shadow layer. */
 function lightTargetLayer(uc) {
+  const harmonized = uc.harmonizeLightTarget?.();
+  if (harmonized) return harmonized;
   const active = uc.activeLayer;
   if (!active || active.type === "mask" || active.type === "group") return null;
   if (active.shadow?.sourceLayerId) return uc.layers.find((layer) => layer.id === active.shadow.sourceLayerId) || null;

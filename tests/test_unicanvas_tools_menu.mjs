@@ -23,6 +23,8 @@ const MENU_LABELS = [
   "Add contact shadow",
   "Add cast shadow",
   "Detach shadow",
+  "Harmonize...",
+  "Create foreground occluder",
 ];
 
 test("widget source installs both tool packs", () => {
@@ -54,11 +56,11 @@ test("brushHardness is a brush-engine setting with radial-gradient stamps", () =
   assert.match(inputTools, /addEventListener\("input"/, "the hardness slider must update continuously from input events");
 });
 
-test("layer context menu defines all thirteen entries", () => {
+test("layer context menu defines all fifteen entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 13, "the shipped menu must define exactly thirteen entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 15, "the shipped menu must define exactly fifteen entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
 });
 
