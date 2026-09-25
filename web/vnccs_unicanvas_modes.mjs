@@ -1020,6 +1020,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
           // Deep clone: the caller must not be able to mutate layer state.
           return layer?.pose ? JSON.parse(JSON.stringify(layer.pose)) : null;
         },
+        // Generation history (Plan 10.5): the settings the panel shows and the staged results.
+        getSettings: () => JSON.parse(JSON.stringify(widget.settings || {})),
+        getStaging: () => (widget.stagingItems || []).map((item) => ({ historyId: item.historyId ?? null, historyIndex: item.historyIndex ?? null })),
       };
       if (!tabWatcher) tabWatcher = watchUniCanvasStandaloneTab(setActive);
       if (!containerObserver && typeof IntersectionObserver === "function") {

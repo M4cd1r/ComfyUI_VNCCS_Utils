@@ -8,7 +8,8 @@ directory the state cache uses (ComfyUI wipes that on startup)::
         scenes/<sceneId>/scene.json  the buildSerializedState shape, pixel fields replaced by blob refs
         blobs/<sha256>.png           content-addressed pixels shared by every scene of the project
         thumbs/<sceneId>.png         512 px scene thumbnail
-        assets/, history/            reserved for Plans 10.4 and 10.5
+        assets/                      reserved for Plan 10.4
+        history/<historyId>.json     generation history records (Plan 10.5, history.py)
     <user dir>/<comfy user>/vnccs_unicanvas/trash/<projectId>-<timestamp>/   deleted projects, purged after 30 days
 
 ``ProjectStore`` holds the file logic and is what the tests exercise; ``project_routes`` wraps it
@@ -678,4 +679,12 @@ def project_routes(web, content_length_ok: Callable[[Any, int], bool],
         ("GET", f"{base}/{{id}}/thumbs/{{scene}}", handler(small, get_thumb)),
         ("PUT", f"{base}/{{id}}/blobs/{{sha}}", handler(_MAX_UPLOAD_BYTES, put_blob)),
         ("GET", f"{base}/{{id}}/blobs/{{sha}}", handler(small, get_blob)),
+        # Generation history (Plan 10.5) lives under .../{id}/history; history.py builds on this module.
+        *_history_routes(web, content_length_ok, store_factory),
     ]
+
+
+def _history_routes(web, content_length_ok, store_factory):
+    from .history import history_routes  # deferred: history.py imports this module
+
+    return history_routes(web, content_length_ok, store_factory)

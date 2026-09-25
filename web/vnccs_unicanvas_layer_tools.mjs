@@ -340,6 +340,10 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
   // Painted Inpaint Mask pixels over the layer stay opaque (keep areas).
   const keep = buildKeepMask(uc, crop);
   uc.setStatus(`[VNCCS UniCanvas] ${label} running${keep ? ` (keeping ${keep.painted} px)` : ""}...`);
+  const historyRun = uc.generationHistory?.beginRun("remove_bg", {
+    targetLayerId: layer.id, imageCanvas: source,
+    params: { method, editModel, extraPrompt: String(extraPrompt || ""), keepPixels: keep?.painted || 0 },
+  });
   try {
     const res = await fetch(REMOVE_BG_ROUTE, {
       method: "POST",
@@ -373,8 +377,10 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
     uc.requestRender();
     uc.syncLightStateToWidget();
     uc.scheduleFullSync();
+    historyRun?.finishLayer(layer, crop);
     uc.setStatus(`[VNCCS UniCanvas] ${label} complete.`);
   } catch (err) {
+    historyRun?.fail(err);
     uc.setStatus(`[VNCCS UniCanvas] ${label} failed: ${err.message || err}`, true);
   }
 }
@@ -538,6 +544,13 @@ function closeColorMatchPreview(uc, commit) {
     uc.syncLightStateToWidget();
     uc.scheduleFullSync();
   } else {
+    if (preview.commits) {
+      // One history record per applied color match: the final method and strength.
+      uc.generationHistory?.beginRun("color_match", {
+        targetLayerId: preview.layer.id, imageCanvas: preview.targetBase,
+        params: { method: preview.method, strength: preview.strength },
+      })?.finishLayer(preview.layer, preview.crop);
+    }
     uc.setStatus("[VNCCS UniCanvas] Color match applied.");
   }
   preview.element?.remove();
