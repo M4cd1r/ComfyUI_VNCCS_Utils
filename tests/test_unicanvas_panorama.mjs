@@ -8,6 +8,7 @@ import * as panoramaModule from "../web/vnccs_unicanvas_panorama.mjs";
 import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
 import * as provenance from "../web/vnccs_unicanvas_provenance.mjs";
 import * as scenePlace from "../web/vnccs_unicanvas_scene_place.mjs";
+import * as harmonize from "../web/vnccs_unicanvas_harmonize.mjs";
 import * as groups from "../web/vnccs_unicanvas_groups.mjs";
 import * as sceneStates from "../web/vnccs_unicanvas_states.mjs";
 
@@ -64,7 +65,7 @@ class Element {
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
   isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
-  ...panoramaModule, normalizeTransformMode, ...provenance, ...groups, ...scenePlace, ...sceneStates,
+  ...panoramaModule, normalizeTransformMode, ...provenance, ...groups, ...scenePlace, ...sceneStates, ...harmonize,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
   uid: () => "new-layer", HISTORY_LIMIT: 20,

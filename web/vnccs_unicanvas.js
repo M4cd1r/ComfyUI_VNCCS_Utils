@@ -16,7 +16,8 @@ import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_
 import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
-import { SCENE_PERSPECTIVE_HISTORY_KIND, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreScenePerspective, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { SHADOW_LAYER_HISTORY_KIND, applyShadowLayerHistory, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
 import { HISTORY_SETTINGS_HISTORY_KIND, installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
@@ -941,6 +942,7 @@ class UniCanvasWidget {
     installUniCanvasSceneStates(this);
     installUniCanvasPoseScene(this, { createEditor: () => new UniCanvasPoseEditor(this) });
     installUniCanvasScenePlace(this);
+    installUniCanvasHarmonize(this);
     installUniCanvasProjects(this);
     installUniCanvasAutoNaming(this);
     installUniCanvasFiling(this);
@@ -3924,6 +3926,7 @@ class UniCanvasWidget {
       groupId: layer.groupId || null,
       nameSource: layer.nameSource,
       meta: cloneLayerMeta(layer.meta),
+      shadow: normalizeShadow(layer.shadow),
       stateOffset: layer.stateOffset ? { ...layer.stateOffset } : undefined,
       canvas: this.cloneCanvas(layer.canvas),
       panoramaCanvas: this.panorama ? this.cloneCanvas(layer.panoramaCanvas) : null,
@@ -4172,6 +4175,8 @@ class UniCanvasWidget {
     }
     if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
     if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
+    if (entry.kind === SCENE_LIGHT_HISTORY_KIND) applySceneLightHistory(this, entry, direction);
+    if (entry.kind === SHADOW_LAYER_HISTORY_KIND) applyShadowLayerHistory(this, entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
@@ -7389,6 +7394,7 @@ class UniCanvasWidget {
     state.snapToGrid = this.snapToGrid;
     state.resizeTransformMode = this.resizeTransformMode;
     state.scenePerspective = serializeScenePerspective(this.scenePerspective);
+    state.sceneLight = serializeSceneLight(this.sceneLight);
     this.normalizeLoraStack();
     state.settings = { ...this.settings };
     state.activeLayerId = this.activeLayerId;
@@ -7414,6 +7420,7 @@ class UniCanvasWidget {
         cached: previous.cached ?? true,
         hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
         hiresDataURL: null,
+        shadow: serializeShadow(layer.shadow),
         ...this.serializeStateOffset?.(layer),
       };
     });
@@ -7456,6 +7463,7 @@ class UniCanvasWidget {
       snapToGrid: this.snapToGrid,
       resizeTransformMode: this.resizeTransformMode,
       scenePerspective: serializeScenePerspective(this.scenePerspective),
+      sceneLight: serializeSceneLight(this.sceneLight),
       settings: this.settings,
       layers: this.layers.map((l) => this.serializeLayer(l, includeLayerData)),
       activeLayerId: this.activeLayerId,
@@ -7656,6 +7664,7 @@ class UniCanvasWidget {
         crop: { x: 0, y: 0, width: this.panorama.settings.width, height: this.panorama.settings.height },
         dataURL: includeData ? layer.panoramaCanvas.toDataURL("image/png") : null,
         hiresRect: null, hiresDataURL: null,
+        shadow: serializeShadow(layer.shadow),
         ...(poseId ? { poseId } : {}),
       };
     }
@@ -7676,6 +7685,7 @@ class UniCanvasWidget {
       dataURL: null,
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
       hiresDataURL: null,
+      shadow: serializeShadow(layer.shadow),
       ...this.serializeStateOffset?.(layer),
     };
     if (poseId) payload.poseId = poseId;
@@ -7853,6 +7863,8 @@ class UniCanvasWidget {
           meta: normalizeLayerMeta(item.meta),
           canvas: this._createCanvas(nextSize.width, nextSize.height),
         };
+        // Shadow layers (vnccs_unicanvas_harmonize.mjs); older states have none.
+        if (layer.type === "raster") layer.shadow = normalizeShadow(item.shadow);
         const stateOffset = item.type !== "mask" ? normalizeStateOffset(item.stateOffset) : null;
         if (stateOffset && (stateOffset.x || stateOffset.y)) layer.stateOffset = stateOffset;
         if (item.dataURL) {
@@ -7883,12 +7895,13 @@ class UniCanvasWidget {
       }
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return false;
       if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && isPanoramaLayer(layer))) throw new Error("The panorama base layer is missing");
-      previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
+      previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "sceneLight", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
       this.snapToGrid = state.snapToGrid === true;
       this.resizeTransformMode = normalizeTransformMode(state.resizeTransformMode);
       restoreScenePerspective(this, state.scenePerspective);
+      restoreSceneLight(this, state.sceneLight);
       this.settings = { ...this.settings, ...(state.settings || {}) };
       if (layers.length) {
         this.layers = layers;
