@@ -493,3 +493,43 @@ test("standard PSD export keeps all spherical pixels regardless of roll or viewp
     assert.equal(downloaded, "unicanvas-panorama.psd");
   } finally { context.Blob = previousBlob; }
 });
+
+// --- #33: panorama view session, ControlNet, History results and sprite sets ------------------
+
+// History kinds of modules this harness does not load: distinct placeholders never match.
+for (const name of ["TIMELINE_HISTORY_KIND", "HISTORY_SETTINGS_HISTORY_KIND", "SPRITE_VARIANT_HISTORY_KIND"]) context[name] ??= `test:${name}`;
+const historyHost = (values = {}) => widget({
+  undoStack: [], redoStack: [], tool: "move", statuses: [],
+  setStatus(message, error) { this.statuses.push([message, Boolean(error)]); },
+  updateHistoryButtons() {}, cancelDeferredCanvasCommit() {}, syncPoseToolToActiveLayer() {}, syncActiveLayerControls() {},
+  renderLayerList() {}, updatePanoramaControls() {}, clearSamPrompt() {},
+  ...values,
+});
+
+test("undo waits for an open panorama view session; a saved view undoes and redoes as one camera step", () => {
+  const projected = [];
+  const doc = { settings: settings({ yaw: 35, fov: 60 }), revision: 0, commit() {}, project() { projected.push(doc.settings.yaw); } };
+  const entry = { kind: panoramaModule.PANORAMA_VIEW_HISTORY_KIND,
+    before: { yaw: 10, pitch: 0, roll: 0, fov: 90, quality: "balanced" }, after: { yaw: 35, pitch: 0, roll: 0, fov: 60, quality: "balanced" } };
+  let open = true;
+  const w = historyHost({ panorama: doc, panoramaLayerPanel: { session: { isFor: target => open && target === doc } }, undoStack: [entry] });
+  w.undo();
+  assert.equal(w.undoStack.length, 1, "the view session must be saved or canceled first");
+  assert.deepEqual(w.statuses.at(-1), ["Save or cancel the panorama view first", true]);
+  w.redo();
+  assert.equal(doc.settings.yaw, 35);
+  open = false;
+  w.undo();
+  assert.equal(doc.settings.yaw, 10); assert.equal(doc.settings.fov, 90);
+  assert.deepEqual(projected, [10], "the layers are projected once at the restored camera");
+  w.redo();
+  assert.equal(doc.settings.yaw, 35); assert.equal(w.undoStack.length, 1); assert.equal(w.redoStack.length, 0);
+});
+
+test("the canvas turns the camera during the view session whatever tool is selected", () => {
+  const doc = { settings: settings(), commit() {}, flushCamera() {}, beginCamera: () => true };
+  const w = widget({ panorama: doc, tool: "brush", panoramaLayerPanel: { session: { isFor: target => target === doc }, finishCamera() {} },
+    canvas: { setPointerCapture() {} }, canvasPointFromEvent: () => ({ x: 1, y: 2 }), worldFromEvent: () => ({ x: 1, y: 2 }) });
+  w.onPointerDown({ button: 0, pointerId: 1, preventDefault() {}, stopPropagation() {} });
+  assert.equal(w.pointerMode, "panorama"); assert.equal(w.isPointerDown, true);
+});

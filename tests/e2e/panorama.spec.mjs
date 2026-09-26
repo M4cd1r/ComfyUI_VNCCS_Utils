@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { test, expect } from "@playwright/test";
 import {
   addUniCanvasNode, camera, importPanorama, installPageHelpers, layers, openFullscreen, panoAlpha,
-  root, rotate, selectLayer, selectTool, stroke,
+  openPanoramaView, panoramaViewAction, root, rotate, selectLayer, selectTool, stroke, viewPanel,
 } from "./helpers/panorama.mjs";
 
 // 2048x1024 equirectangular fixture from issue #15, re-encoded (WebP q60) to keep the repo small.
@@ -43,7 +43,8 @@ test("import as Panorama keeps the full 2048x1024 document behind a square editi
   const panoramaLayer = (await layers(page)).find((l) => l.type === "panorama");
   expect(panoramaLayer?.id).toBe(state.settings.baseLayerId);
   expect((await layers(page)).filter((l) => l.type === "panorama")).toHaveLength(1);
-  await expect(root(page).locator("[data-panorama-panel]")).toBeVisible();
+  // #33: the view settings stay hidden until the globe button opens the view mode.
+  await expect(viewPanel(page)).toBeHidden();
   // The whole source survives: every pixel of the base surface is opaque.
   const baseId = await page.evaluate(() => ucWidget().panorama.settings.baseLayerId);
   expect(await panoAlpha(page, baseId, { x: 0, y: 0, width: 2048, height: 1024 })).toBe(2048 * 1024);
@@ -188,9 +189,8 @@ test("a generation result stays at the camera captured for its request", async (
 
 test("the panorama layer settings panel moves the camera live and saves its settings on the layer", async ({ page }) => {
   await openPanorama(page);
-  const panoramaId = (await layers(page)).find((l) => l.type === "panorama").id;
-  await root(page).locator(`[data-layer-id="${panoramaId}"] button[title="Panorama settings"]`).click();
-  const panel = root(page).locator("[data-panorama-panel]");
+  await openPanoramaView(page);
+  const panel = viewPanel(page);
   await expect(panel.locator("details")).toHaveAttribute("open", "");
   // Realtime: the camera follows each input event, before the change (release) event.
   const yaw = panel.locator('input[type="range"][data-panorama-setting="yaw"]');
@@ -206,6 +206,59 @@ test("the panorama layer settings panel moves the camera live and saves its sett
   expect(saved.panorama).toBeUndefined();
   const layer = saved.layers.find((l) => l.type === "panorama");
   expect(layer.panorama).toMatchObject({ projection: "equirectangular", width: 2048, height: 1024, yaw: 60, quality: "sharp" });
+  await panoramaViewAction(page, "save");
+  await expect(panel).toBeHidden();
+});
+
+test("the globe button opens a view mode: live sliders, Reset, Cancel restores, Save is one undo step", async ({ page }) => {
+  await openPanorama(page);
+  const history = () => page.evaluate(() => ucWidget().undoStack.length);
+  const start = await camera(page);
+  const undoBefore = await history();
+  await openPanoramaView(page);
+  const panel = viewPanel(page);
+  const slide = (key, value, commit = true) => panel.locator(`input[type="range"][data-panorama-setting="${key}"]`).evaluate((input, [v, c]) => {
+    input.value = String(v); input.dispatchEvent(new Event("input", { bubbles: true }));
+    if (c) input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, [value, commit]);
+
+  // Realtime: the view follows the input event before the release.
+  await slide("yaw", 45, false);
+  await expect.poll(async () => (await camera(page)).yaw).toBe(45);
+  await slide("yaw", 45);
+  await slide("pitch", 20);
+  // Cancel returns to the view from before the mode and records nothing.
+  await panoramaViewAction(page, "cancel");
+  await expect(panel).toBeHidden();
+  expect(await camera(page)).toEqual(start);
+  expect(await history()).toBe(undoBefore);
+
+  // Reset returns to the initial view position and keeps the mode open.
+  await openPanoramaView(page);
+  await slide("yaw", -90);
+  await slide("fov", 60);
+  await panoramaViewAction(page, "reset");
+  await expect(panel).toBeVisible();
+  expect(await camera(page)).toEqual({ yaw: 0, pitch: 0, roll: 0, fov: 90 });
+  await expect(panel.locator('input[type="number"][data-panorama-setting="fov"]')).toHaveValue("90");
+
+  // Dragging the canvas turns the view inside the mode, whatever tool is selected.
+  await selectTool(page, "brush");
+  await stroke(page, [[0.5, 0.5], [0.3, 0.5]]);
+  const turned = await camera(page);
+  expect(turned.yaw).not.toBe(0);
+  expect(await history()).toBe(undoBefore); // the drag painted nothing
+
+  // Undo waits for Save or Cancel; Save adds exactly one history entry for the whole session.
+  await root(page).locator('button[title="Undo"]').click();
+  expect(await camera(page)).toEqual(turned);
+  await panoramaViewAction(page, "save");
+  await expect(panel).toBeHidden();
+  expect(await history()).toBe(undoBefore + 1);
+  await root(page).locator('button[title="Undo"]').click();
+  expect(await camera(page)).toEqual(start);
+  await root(page).locator('button[title="Redo"]').click();
+  expect(await camera(page)).toEqual(turned);
 });
 
 test("a version 3 panorama workflow opens as a panorama layer with its pixels and camera", async ({ page }) => {

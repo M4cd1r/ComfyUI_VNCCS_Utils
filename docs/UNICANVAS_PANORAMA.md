@@ -19,14 +19,21 @@ its own settings:
   moves (Fast 256 px, Balanced 384 px, Sharp 768 px). The full editing-window quality
   returns when the gesture ends.
 
-The panorama layer's settings panel sits at the top of the side panel whenever the
-document has a panorama layer. It contains the sphere control and, under
-**Panorama layer**, exact yaw/pitch/roll/FOV sliders with numeric fields plus the
-projection and navigation-quality selectors. Selecting the panorama layer (or its globe
-button) unfolds these settings, the way the pose layer opens its editor. Sliders and
-fields move the view on every input event; the view is committed when the slider is
-released or the field is confirmed. A document has one panorama layer: duplicating it
-creates an ordinary layer holding a copy of the spherical pixels.
+The view is set in a **panorama view mode**. The globe button of the panorama layer opens
+it; outside the mode the view settings are hidden. The mode shows, at the top of the side
+panel, the sphere control and, under **Panorama view**, exact yaw/pitch/roll/FOV sliders
+with numeric fields plus the projection and navigation-quality selectors. Dragging the
+canvas with the left button also turns the view while the mode is open, whatever tool is
+selected. Sliders and fields move the view on every input event; each gesture ends with a
+full-quality view when it is released or the field is confirmed. The mode ends with:
+
+- **Save**: keeps the view; the whole session is one Undo step.
+- **Cancel**: restores the view from before the mode was opened; nothing is recorded.
+- **Reset** (stays in the mode): returns to the initial view position (yaw, pitch and roll
+  0, FOV 90).
+
+Undo and Redo wait until the mode is saved or canceled. A document has one panorama layer:
+duplicating it creates an ordinary layer holding a copy of the spherical pixels.
 
 ## Editing and navigation
 

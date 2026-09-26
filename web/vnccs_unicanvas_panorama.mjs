@@ -12,6 +12,8 @@ export const PANORAMA_PROJECTIONS = [{ value: "equirectangular", label: "Equirec
 // Resolution of the lightweight preview shown while the camera moves.
 export const PANORAMA_NAVIGATION_QUALITY = { fast: 256, balanced: 384, sharp: 768 };
 export const isPanoramaLayer = layer => layer?.type === PANORAMA_LAYER_TYPE;
+// Layer types that make up the panorama image (sprite sets included, #6).
+export const PANORAMA_IMAGE_TYPES = Object.freeze(["raster", "pose", "sprite", PANORAMA_LAYER_TYPE]);
 
 export function normalizePanorama(value) {
   if (!value) return null;
@@ -30,6 +32,30 @@ export function normalizePanorama(value) {
     fov: Math.max(25, Math.min(120, finite(value.fov, 90))),
     quality: Object.hasOwn(PANORAMA_NAVIGATION_QUALITY, value.quality) ? value.quality : "balanced",
   };
+}
+
+// The view of a panorama (#33): the camera plus navigation quality. The globe button opens a
+// view session; Save records one history entry of this kind, Cancel restores the starting view.
+export const PANORAMA_VIEW_KEYS = ["yaw", "pitch", "roll", "fov", "quality"];
+// Reset returns to the initial view position of an imported panorama.
+export const PANORAMA_DEFAULT_CAMERA = Object.freeze({ yaw: 0, pitch: 0, roll: 0, fov: 90 });
+export const PANORAMA_VIEW_HISTORY_KIND = "panoramaView";
+export const panoramaView = settings => Object.fromEntries(PANORAMA_VIEW_KEYS.map(key => [key, settings?.[key]]));
+export const samePanoramaView = (a, b) => PANORAMA_VIEW_KEYS.every(key => key === "quality"
+  ? a?.[key] === b?.[key] : Math.abs(Number(a?.[key]) - Number(b?.[key])) < 1e-6);
+
+/** Undo/redo of a saved panorama view; the caller re-projects the layers afterwards. */
+export function applyPanoramaViewHistory(widget, entry, direction) {
+  const doc = widget.panorama;
+  if (!doc || entry?.kind !== PANORAMA_VIEW_HISTORY_KIND) return false;
+  doc.commit();
+  // As after a camera gesture: SAM prompts and stroke anchors belong to the previous view.
+  doc.revision++;
+  widget.clearSamPrompt?.();
+  widget.lastDrawPointByTool = { brush: null, eraser: null, mask: null };
+  doc.settings = normalizePanorama({ ...doc.settings, ...(direction === "undo" ? entry.before : entry.after) });
+  widget.updatePanoramaControls?.();
+  return true;
 }
 
 const LAYER_SETTING_KEYS = ["projection", "width", "height", "contentRevision", "yaw", "pitch", "roll", "fov", "quality"];
@@ -302,6 +328,8 @@ export class PanoramaDocument {
     layer._panoramaBefore = after;
     layer._panoramaDirty = false;
     layer.hiresCanvas = null; layer.hiresRect = null;
+    // Counts edits that reached this layer's sphere (a projection alone never does).
+    layer.panoramaRevision = (layer.panoramaRevision || 0) + 1;
     this.settings.contentRevision++;
   }
 
@@ -385,6 +413,46 @@ export class PanoramaDocument {
     this.widget.scheduleFullSync();
   }
 
+  /** Pixels of `layer` as seen from `camera`, in layer-canvas (world) coordinates. */
+  viewOfLayer(layer, camera = this.settings) {
+    const w = this.widget;
+    this.commitLayer(layer);
+    const out = canvas(layer.canvas.width, layer.canvas.height);
+    const rendered = this.renderer.render(layer.panoramaCanvas, normalizePanorama({ ...this.settings, ...camera }), w.bbox.width, w.bbox.height);
+    out.getContext("2d").drawImage(rendered, w.bbox.x - w.origin.x, w.bbox.y - w.origin.y);
+    return out;
+  }
+
+  /** Replace the whole sphere of `layer` with `view` (layer-canvas sized) seen from `camera`. */
+  replaceLayerFromView(layer, view, camera = this.settings) {
+    const w = this.widget;
+    const patch = w.cloneCanvasCrop(view, { x: w.bbox.x - w.origin.x, y: w.bbox.y - w.origin.y, width: w.bbox.width, height: w.bbox.height });
+    layer.panoramaCanvas = this.surfaceFromView(patch, normalizePanorama({ ...this.settings, ...camera }));
+    layer.hiresCanvas = null; layer.hiresRect = null;
+    layer.panoramaRevision = (layer.panoramaRevision || 0) + 1;
+    this.settings.contentRevision++;
+    this.projectLayer(layer);
+  }
+
+  /**
+   * Put an image on `layer` inside the current view: at `rect` (world) when it overlaps the
+   * editing window, otherwise fitted into it. Used by imports and History results.
+   */
+  placeImage(layer, img, rect = null) {
+    const w = this.widget, bbox = w.bbox;
+    const imageWidth = img.naturalWidth || img.width, imageHeight = img.naturalHeight || img.height;
+    const side = Math.max(1, Math.min(4096, this.settings.width, Math.max(imageWidth, imageHeight)));
+    const overlaps = rect && rect.width > 0 && rect.height > 0 && rect.x < bbox.x + bbox.width && rect.x + rect.width > bbox.x
+      && rect.y < bbox.y + bbox.height && rect.y + rect.height > bbox.y;
+    const target = overlaps ? rect : w.getImageFitInRect(img, bbox);
+    const sx = side / bbox.width, sy = side / bbox.height;
+    const patch = canvas(side, side);
+    patch.getContext("2d").drawImage(img, (target.x - bbox.x) * sx, (target.y - bbox.y) * sy, target.width * sx, target.height * sy);
+    layer.panoramaCanvas = this.surfaceFromView(patch);
+    layer.hiresCanvas = null; layer.hiresRect = null;
+    this.projectLayer(layer);
+  }
+
   surfaceFromView(view, camera = this.settings) {
     const out = canvas(this.settings.width, this.settings.height);
     const blank = canvas(view.width, view.height);
@@ -398,7 +466,7 @@ export class PanoramaDocument {
     this.commit();
     const out = canvas(this.settings.width, this.settings.height), ctx = out.getContext("2d");
     compositeLayerStack(ctx, this.widget.layers, (target, layer) => {
-      if (type === "raster" ? !["raster", "pose", PANORAMA_LAYER_TYPE].includes(layer.type) : layer.type !== type) return;
+      if (type === "raster" ? !PANORAMA_IMAGE_TYPES.includes(layer.type) : layer.type !== type) return;
       target.save();
       target.globalAlpha = layer.opacity;
       target.globalCompositeOperation = layer.blendMode || "source-over";

@@ -9,7 +9,8 @@ import { SPRITE_VARIANT_HISTORY_KIND, installUniCanvasSprites } from "./vnccs_un
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
-  panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION } from "./vnccs_unicanvas_panorama.mjs";
+  panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION,
+  PANORAMA_VIEW_HISTORY_KIND, applyPanoramaViewHistory } from "./vnccs_unicanvas_panorama.mjs";
 import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vnccs_unicanvas_panorama_panel.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
@@ -1274,8 +1275,8 @@ class UniCanvasWidget {
     this.container.append(this.left, this.stageWrap, this.side, this.bottom);
   }
 
-  // The panorama layer's settings panel (vnccs_unicanvas_panorama_panel.mjs): sphere, camera,
-  // projection and navigation quality. Shown while the document has a panorama layer.
+  // The panorama view panel (vnccs_unicanvas_panorama_panel.mjs): sphere, camera, projection,
+  // navigation quality and Reset / Cancel / Save. Shown only during a panorama view session.
   buildPanoramaControls() {
     this.panoramaLayerPanel = buildPanoramaLayerPanel(this);
     this.panoramaOrbit = this.panoramaLayerPanel.orbit;
@@ -1292,14 +1293,16 @@ class UniCanvasWidget {
   }
 
 
-  // Layer row button: select the panorama layer and bring its settings panel into view.
+  // Layer row globe button: select the panorama layer and open its view session.
   showPanoramaLayerSettings(layer) {
     if (!isPanoramaLayer(layer)) return;
     if (this.activeLayerId !== layer.id) this.onLayerRowClick(layer.id, {});
     this.updatePanoramaControls();
-    this.panoramaLayerPanel.details.open = true;
-    this.panoramaPanel.scrollIntoView?.({ block: "nearest" });
+    if (this.panoramaLayerPanel.enter()) this.panoramaPanel.scrollIntoView?.({ block: "nearest" });
   }
+
+  // While the view session is open the canvas turns the camera and history waits for Save/Cancel.
+  get panoramaViewActive() { return Boolean(this.panorama && this.panoramaLayerPanel?.session.isFor(this.panorama)); }
 
   choosePanoramaImport(img) {
     return new Promise((resolve) => {
@@ -3326,7 +3329,7 @@ class UniCanvasWidget {
       if (this.panoramaOrbit?.gesture) this.panoramaOrbit.finish();
       this.panoramaLayerPanel?.finishCamera();
       this.panorama.flushCamera();
-      if (e.button === 0 && this.tool === "panorama") {
+      if (e.button === 0 && (this.tool === "panorama" || this.panoramaViewActive)) {
         if (!this.panorama.beginCamera()) return;
         e.preventDefault(); e.stopPropagation(); this.canvas.setPointerCapture?.(e.pointerId);
         this.isPointerDown = true; this.pointerMode = "panorama";
@@ -4134,6 +4137,7 @@ class UniCanvasWidget {
       this.updateHistoryButtons();
       return;
     }
+    if (this.panoramaViewActive) { this.setStatus("Save or cancel the panorama view first", true); return; }
     this.panorama?.commit();
     this.poseBake?.flushPendingHistory();
     if (!this.undoStack.length) return;
@@ -4167,6 +4171,7 @@ class UniCanvasWidget {
       this.updateHistoryButtons();
       return;
     }
+    if (this.panoramaViewActive) { this.setStatus("Save or cancel the panorama view first", true); return; }
     this.panorama?.commit();
     if (!this.redoStack.length) return;
     if (this.transformDraft) {
@@ -4271,6 +4276,7 @@ class UniCanvasWidget {
       }
       this.invalidateLayerCaches(entry.layer);
     }
+    if (entry.kind === PANORAMA_VIEW_HISTORY_KIND) applyPanoramaViewHistory(this, entry, direction);
     if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
     if (entry.kind === SPRITE_VARIANT_HISTORY_KIND) this.sprites?.applyVariantHistory(entry, direction);
     if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
@@ -5967,7 +5973,7 @@ class UniCanvasWidget {
       row.append(thumb, label, edit, lock, del);
       this.poseBake?.decorateLayerRow(row, layer);
     } else if (isPanoramaLayer(layer)) {
-      const settings = this._button(PANORAMA_ICON, "vnccs-uc-icon vnccs-uc-layer-panorama-settings", null, "Panorama settings");
+      const settings = this._button(PANORAMA_ICON, "vnccs-uc-icon vnccs-uc-layer-panorama-settings", null, "Edit panorama view");
       settings.addEventListener("click", (e) => { e.stopPropagation(); this.showPanoramaLayerSettings(layer); });
       settings.addEventListener("dblclick", (e) => e.stopPropagation());
       row.append(thumb, label, settings, lock, del);
