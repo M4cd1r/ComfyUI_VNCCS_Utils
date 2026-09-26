@@ -279,3 +279,44 @@ export function shapedRestOffsets(unshaped, lengthParams, { scaleFor, childrenFo
     }
     return shaped;
 }
+
+/**
+ * The bone-length slider values of a body (`mesh` params, `<group>_length` keys) by slider group,
+ * with the legacy shared arm / leg sliders as fallbacks; unset groups are 0.5 (unscaled).
+ */
+export function boneLengthParamsFromMesh(mesh) {
+    const value = (key, fallback) => {
+        const number = Number(mesh?.[key]);
+        return Number.isFinite(number) ? number : fallback;
+    };
+    const arm = value("arm_length", 0.5), leg = value("leg_length", 0.5);
+    const upperArm = value("upper_arm_length", arm), forearm = value("forearm_length", arm);
+    const thigh = value("thigh_length", leg), shin = value("shin_length", leg);
+    return {
+        shoulder_l: value("shoulder_l_length", 0.5),
+        shoulder_r: value("shoulder_r_length", 0.5),
+        hip_l: value("hip_l_length", 0.5),
+        hip_r: value("hip_r_length", 0.5),
+        upper_arm_l: value("upper_arm_l_length", upperArm),
+        upper_arm_r: value("upper_arm_r_length", upperArm),
+        forearm_l: value("forearm_l_length", forearm),
+        forearm_r: value("forearm_r_length", forearm),
+        thigh_l: value("thigh_l_length", thigh),
+        thigh_r: value("thigh_r_length", thigh),
+        shin_l: value("shin_l_length", shin),
+        shin_r: value("shin_r_length", shin),
+        spine: value("spine_length", 0.5),
+    };
+}
+
+/** A loaded rig's rest skeleton in the `{ name, parent, position, tail }` form of restSkeletonHeight. */
+export function restSkeletonFromBones(boneList, restPositions = {}) {
+    return (boneList || []).map(bone => {
+        const data = bone.userData || {};
+        const rest = restPositions[bone.name] || bone.position;
+        const tail = Array.isArray(data.tailPos) && Array.isArray(data.headPos)
+            ? data.tailPos.map((component, index) => component - data.headPos[index])
+            : data.tailLocal?.toArray?.() || [0, 0, 0];
+        return { name: bone.name, parent: data.parentName ?? (bone.parent?.isBone ? bone.parent.name : null), position: rest.toArray ? rest.toArray() : [...rest], tail };
+    });
+}

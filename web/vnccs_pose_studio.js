@@ -36,10 +36,21 @@ import {
     serializePoseStudioCharacter,
 } from "./vnccs_pose_characters.mjs?v=20260908.14";
 import {
+    bodyMorphSignature,
     inheritSlotIdentity,
+    isMultiCharacterScenePose,
     meshVerticalExtent,
+    planScenePoseApplication,
     scaleInteractionTransforms,
-} from "./vnccs_pose_interactions.mjs?v=20260925.1";
+} from "./vnccs_pose_interactions.mjs?v=20260926.1";
+import {
+    boneLengthParamsFromMesh,
+    fitInteractionContacts,
+    proportionedHeight,
+    readBoneRotations,
+    restSkeletonFromBones,
+    shapedRestOffsets,
+} from "./vnccs_pose_contacts.mjs?v=20260926.1";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -6158,7 +6169,8 @@ class PoseStudioWidget {
                     { reveal: true },
                 );
             },
-            captureHistoryContext: () => ({
+            captureHistoryContext: (options = {}) => ({
+                ...(options.scene ? { scene: this.captureSceneHistory() } : {}),
                 mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
                 cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
             }),
@@ -6433,14 +6445,9 @@ class PoseStudioWidget {
         this.updateRotationSliders();
     }
 
-    async addCharacter(requestedSlot = null) {
-        if (this.characters.length >= MAX_POSE_STUDIO_CHARACTERS || this._switchingCharacter) return false;
-        this.captureActiveCharacterRuntime();
-        const slot = nextCharacterSlot(this.characters, requestedSlot);
-        if (slot < 0) return false;
+    /** A new mannequin in `slot` with the active body, placed at `initialTransform` on every pose tab. */
+    createSceneCharacter(slot, initialTransform) {
         const id = nextCharacterId(this.characters);
-        const spread = [0, 3, -3, 6][slot] ?? slot * 3;
-        const initialTransform = { x: spread, y: 0, z: 0, zoom: 1 };
         const poses = Array.from({ length: Math.max(1, this.poses.length) }, (_, index) => {
             const sceneCamera = this.cameraParamsForPose(this.poses[index]);
             return {
@@ -6476,6 +6483,16 @@ class PoseStudioWidget {
             poseCount: poses.length,
         });
         character.animationState = animationState;
+        return character;
+    }
+
+    async addCharacter(requestedSlot = null) {
+        if (this.characters.length >= MAX_POSE_STUDIO_CHARACTERS || this._switchingCharacter) return false;
+        this.captureActiveCharacterRuntime();
+        const slot = nextCharacterSlot(this.characters, requestedSlot);
+        if (slot < 0) return false;
+        const spread = [0, 3, -3, 6][slot] ?? slot * 3;
+        const character = this.createSceneCharacter(slot, { x: spread, y: 0, z: 0, zoom: 1 });
         this.characters.push(character);
         this.characters.sort((left, right) => left.slot - right.slot);
         if (this.viewer?.isInitialized?.()) {
@@ -9152,6 +9169,7 @@ class PoseStudioWidget {
     restoreImageHistory(pose) {
         this.pendingAgeCameraFit = false;
         const context = pose.editorState;
+        if (context?.scene) this.restoreSceneHistory(context.scene);
         const character = this.getActiveCharacter();
         if (context?.mesh) {
             this.restoreMeshHistory(context.mesh);
@@ -9169,6 +9187,10 @@ class PoseStudioWidget {
             this.applyCameraToViewer(false);
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
+        if (context?.scene) {
+            this.updateCharacterScene({ poseIndex: this.activeTab });
+            this.renderCharactersUI();
+        }
         this.syncCharacterEditorControls();
         this.syncPromptFieldToActiveTab();
     }
@@ -12888,40 +12910,165 @@ class PoseStudioWidget {
     }
 
     /**
-     * Interaction presets are authored at the default proportions. Once every
-     * mannequin's body is loaded, spread or tighten the placement by each
-     * body's height ratio so contact points still meet.
+     * Interaction presets are authored at the default proportions. Once every mannequin's body
+     * is loaded, spread or tighten the placement by each body's standing height (bone-length
+     * sliders included), then re-fit the hand contacts on the loaded rigs so hands still meet on
+     * bodies of different heights. `entries` pairs scene characters with the asset index
+     * (`slot`) the preset's interaction data uses for them.
      */
-    applyInteractionHeightScaling(asset) {
+    applyInteractionHeightScaling(asset, entries = this.characters.map(character => ({ character, slot: character.slot }))) {
         const interaction = asset?.interaction;
-        if (!Array.isArray(interaction?.reference_heights) || !this.characters?.length) return false;
-        const transforms = this.characters.map(character => this.characterTransformForScene(character));
-        const heights = this.characters.map(character => (
-            this._meshHeights?.get(JSON.stringify(character.mesh || {})) || 0
-        ));
+        if (!Array.isArray(interaction?.reference_heights) || !entries.length) return false;
+        const heights = entries.map(({ character }) => this.characterStandingHeight(character));
         const scaled = scaleInteractionTransforms(
-            transforms,
+            entries.map(({ character }) => this.characterTransformForScene(character)),
             heights,
             interaction,
-            this.characters.map(character => character.slot),
+            entries.map(entry => entry.slot),
         );
-        this.characters.forEach((character, index) => {
-            const transform = normalizeCharacterTransform(scaled[index]);
-            character.transform = transform;
-            if (character.animationState) character.animationState.baseTransform = { ...transform };
-            const pose = character.poses?.[this.activeTab];
-            if (pose && typeof pose === "object") {
-                pose.cameraParams = {
-                    ...(pose.cameraParams || {}),
-                    offset_x: transform.x,
-                    offset_y: transform.y,
-                    zoom: transform.zoom,
-                };
-            }
-        });
+        entries.forEach(({ character }, index) => this.setCharacterSceneTransform(character, scaled[index]));
+        this.updateCharacterScene();
+        this.fitInteractionContactsOnScene(interaction, entries, heights);
         this.restoreActivePoseCameraParams({ updateViewer: false });
         this.updateCharacterScene();
         return true;
+    }
+
+    /** Standing height of a character's body: its morph's extent plus its bone-length sliders. */
+    characterStandingHeight(character) {
+        const signature = bodyMorphSignature(character?.mesh);
+        const extent = this._meshHeights?.get(signature) || 0;
+        const skeleton = this._meshSkeletons?.get(signature);
+        const viewer = this.viewer;
+        if (!extent || !skeleton || !viewer?._lengthSliderToScale) return extent;
+        const unshaped = Object.fromEntries(skeleton.map(bone => [bone.name, bone.position]));
+        const shaped = shapedRestOffsets(unshaped, boneLengthParamsFromMesh(character.mesh), {
+            scaleFor: value => viewer._lengthSliderToScale(value),
+            childrenFor: group => viewer._boneLengthChildrenForGroup(group),
+        });
+        return proportionedHeight(extent, skeleton, shaped, unshaped);
+    }
+
+    /** Place a character on the active pose tab (image mode keeps placement in the pose too). */
+    setCharacterSceneTransform(character, source) {
+        const transform = normalizeCharacterTransform(source);
+        character.transform = transform;
+        if (character.animationState) character.animationState.baseTransform = { ...transform };
+        const pose = character.poses?.[this.activeTab];
+        if (pose && typeof pose === "object") {
+            pose.cameraParams = {
+                ...(pose.cameraParams || {}),
+                offset_x: transform.x,
+                offset_y: transform.y,
+                zoom: transform.zoom,
+            };
+        }
+    }
+
+    /** The viewer rig showing a character: the active skinned mesh or its passive clone. */
+    characterRig(character) {
+        const viewer = this.viewer;
+        if (!character || !viewer?.isInitialized?.()) return null;
+        if (character.id === this.activeCharacterId) {
+            return viewer.skinnedMesh && viewer.bones ? { root: viewer.skinnedMesh, bones: viewer.bones } : null;
+        }
+        const entry = viewer.passiveCharacters?.get?.(String(character.id));
+        return entry ? { root: entry.mesh, bones: entry.bones } : null;
+    }
+
+    /**
+     * Move the hands of an interaction preset back onto their contacts on the loaded bodies
+     * (vnccs_pose_contacts.mjs) and keep the result in each character's pose and placement.
+     */
+    fitInteractionContactsOnScene(interaction, entries, heights) {
+        const THREE = this.viewer?.THREE;
+        if (!THREE || !Array.isArray(interaction?.contacts) || !interaction.contacts.length) return;
+        this.viewer.setPose(this.poses[this.activeTab] || {}, true);
+        this.updateCharacterScene();
+        const rigs = [];
+        const ratios = [];
+        entries.forEach(({ character, slot }, index) => {
+            const rig = this.characterRig(character);
+            if (!rig) return;
+            const reference = Number(interaction.reference_heights?.[slot]) || 0;
+            rigs[slot] = rig;
+            ratios[slot] = reference > 0 && heights[index] > 0 ? heights[index] / reference : 1;
+        });
+        const fitted = fitInteractionContacts(THREE, rigs, interaction, { ratios });
+        for (const { character, slot } of entries) {
+            const result = fitted[slot];
+            const pose = character.poses?.[this.activeTab];
+            if (!result || !pose) continue;
+            if (result.bones.length) pose.bones = { ...(pose.bones || {}), ...readBoneRotations(rigs[slot], result.bones) };
+            if (result.move.x || result.move.z) {
+                const transform = this.characterTransformForScene(character);
+                this.setCharacterSceneTransform(character, { ...transform, x: transform.x + result.move.x, z: transform.z + result.move.z });
+            }
+        }
+        this.viewer.setPose(this.poses[this.activeTab] || {}, true);
+    }
+
+    /**
+     * Load a multi-character library pose into the current scene instead of replacing it: the
+     * mannequins already here are matched in slot order and take the asset's poses and
+     * placement, keeping their id, name, color and body (and so the references and bakes a host
+     * binds to that id); missing ones are added as new mannequins with the active body, extra
+     * ones stay as they are. The caller records one history step before this.
+     */
+    applyScenePoseToCharacters(asset) {
+        this.captureActiveCharacterRuntime();
+        const tab = this.activeTab;
+        const entries = planScenePoseApplication(this.characters, asset, { max: MAX_POSE_STUDIO_CHARACTERS }).map(item => {
+            let character = item.target;
+            if (!character) {
+                const slot = nextCharacterSlot(this.characters, item.sourceIndex);
+                if (slot < 0) return null;
+                character = this.createSceneCharacter(slot, item.transform);
+                this.characters.push(character);
+                this.characters.sort((left, right) => left.slot - right.slot);
+            }
+            const sceneCamera = this.cameraParamsForPose(character.poses[tab] || {}, character);
+            character.poses[tab] = { ...item.pose, cameraParams: { ...sceneCamera } };
+            this.setCharacterSceneTransform(character, { ...character.transform, ...item.transform });
+            return { character, slot: item.sourceIndex };
+        }).filter(Boolean);
+        if (!entries.length) return false;
+        const prompt = Array.isArray(asset.pose_prompts) ? asset.pose_prompts[Number(asset.activeTab) || 0] : asset.prompt;
+        this.setPosePrompt(tab, String(prompt ?? asset.prompt ?? ""));
+        this.restoreActivePoseCameraParams({ updateViewer: false });
+        this.viewer?.setPose?.(this.poses[tab] || {}, true);
+        this.updateCharacterScene({ poseIndex: tab });
+        this.applyInteractionHeightScaling(asset, entries);
+        this.syncPromptFieldToActiveTab();
+        this.updateRotationSliders();
+        this.renderCharactersUI();
+        this.syncToNode(false, { skipCapture: true });
+        return true;
+    }
+
+    /** Scene part of a history step that changed more than the active mannequin. */
+    captureSceneHistory() {
+        this.captureActiveCharacterRuntime();
+        return {
+            characters: this.characters.map(character => ({
+                ...serializePoseStudioCharacter(character, null),
+                transform: { ...character.transform },
+            })),
+        };
+    }
+
+    restoreSceneHistory(scene) {
+        if (!Array.isArray(scene?.characters) || !scene.characters.some(item => item?.id === this.activeCharacterId)) return;
+        const current = new Map(this.characters.map(character => [character.id, character]));
+        this.characters = scene.characters.map(saved => {
+            const character = current.get(saved.id) || createPoseStudioCharacter(saved);
+            character.poses = JSON.parse(JSON.stringify(saved.poses || [{}]));
+            this.ensureCharacterRuntime(character);
+            character.transform = normalizeCharacterTransform(saved.transform);
+            if (character.animationState) character.animationState.baseTransform = { ...character.transform };
+            return character;
+        }).sort((left, right) => left.slot - right.slot);
+        this.poses = this.getActiveCharacter().poses;
     }
 
     loadPoseSetAsset(asset) {
@@ -13033,7 +13180,10 @@ class PoseStudioWidget {
             const data = await res.json();
             if (token !== this._libraryLoadToken || characterId !== this.activeCharacterId || tab !== this.activeTab) return;
             if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-            if (!this.isAnimationMode()) this.viewer?.recordState?.();
+            // Loading into the current mannequins changes the whole scene: one history step for all.
+            const posesSceneCharacters = this.host?.keepCharactersOnScenePose === true
+                && !this.isAnimationMode() && isMultiCharacterScenePose(data);
+            if (!this.isAnimationMode()) this.viewer?.recordState?.({ scene: posesSceneCharacters });
 
             if (data.pose && this.viewer) {
                 const isPoseSet = data.pose?.type === "pose_set"
@@ -13049,13 +13199,11 @@ class PoseStudioWidget {
                     : null;
                 // Multi-character pose scenes (interaction presets included)
                 // replace the whole scene; mannequins keep bodies by slot.
-                const multiCharacterPose = assetType === "pose"
-                    && !isPoseSet
-                    && !this.isAnimationMode()
-                    && Array.isArray(data.pose.characters)
-                    && data.pose.characters.length > 1;
+                const multiCharacterPose = !this.isAnimationMode() && isMultiCharacterScenePose(data);
                 if (isPoseSet) {
                     this.loadPoseSetAsset(data.pose);
+                } else if (multiCharacterPose && posesSceneCharacters) {
+                    this.applyScenePoseToCharacters(data.pose);
                 } else if (multiCharacterPose) {
                     await this.loadCharacterSceneLibraryAsset(data.pose, { animation: false });
                 } else if (
@@ -13856,27 +14004,7 @@ class PoseStudioWidget {
         this.viewer.armScale = value("arm_size", 1);
         this.viewer.handScale = value("hand_size", 1);
         this.viewer.footScale = value("foot_size", 1);
-        const legacyArm = value("arm_length", 0.5);
-        const legacyUpperArm = value("upper_arm_length", legacyArm);
-        const legacyForearm = value("forearm_length", legacyArm);
-        const legacyLeg = value("leg_length", 0.5);
-        const legacyThigh = value("thigh_length", legacyLeg);
-        const legacyShin = value("shin_length", legacyLeg);
-        this.viewer.boneLengthParams = {
-            shoulder_l: value("shoulder_l_length", 0.5),
-            shoulder_r: value("shoulder_r_length", 0.5),
-            hip_l: value("hip_l_length", 0.5),
-            hip_r: value("hip_r_length", 0.5),
-            upper_arm_l: value("upper_arm_l_length", legacyUpperArm),
-            upper_arm_r: value("upper_arm_r_length", legacyUpperArm),
-            forearm_l: value("forearm_l_length", legacyForearm),
-            forearm_r: value("forearm_r_length", legacyForearm),
-            thigh_l: value("thigh_l_length", legacyThigh),
-            thigh_r: value("thigh_r_length", legacyThigh),
-            shin_l: value("shin_l_length", legacyShin),
-            shin_r: value("shin_r_length", legacyShin),
-            spine: value("spine_length", 0.5),
-        };
+        this.viewer.boneLengthParams = boneLengthParamsFromMesh(mesh);
     }
 
     loadModel(showOverlay = true, recenterViewport = true) {
@@ -13911,13 +14039,20 @@ class PoseStudioWidget {
             const currentKey = `${String(this.activeCharacterId || "")}\u0000${JSON.stringify(this.meshParams || {})}`;
             if (currentKey !== requestKey) return false;
             const d = this.modelDataFromMorphMessage(message);
-            // Interaction presets scale placement by each body's standing height.
+            // Interaction presets scale placement by each body's standing height (the morph's
+            // extent and rest skeleton; bone-scale sliders apply on top without a new morph).
+            const bodySignature = bodyMorphSignature(JSON.parse(requestedMeshSignature));
             if (!this._meshHeights) this._meshHeights = new Map();
-            this._meshHeights.set(requestedMeshSignature, meshVerticalExtent(d.vertices));
+            this._meshHeights.set(bodySignature, meshVerticalExtent(d.vertices));
             if (this.viewer) {
                 // Reload mesh data without implicit camera math; if we need a reset,
                 // do the same explicit snap the Preview button uses.
                 this.viewer.loadData(d, true);
+                if (!this._meshSkeletons) this._meshSkeletons = new Map();
+                this._meshSkeletons.set(bodySignature, restSkeletonFromBones(
+                    this.viewer.boneList,
+                    Object.fromEntries(Object.entries(this.viewer.initialBoneStates || {}).map(([name, state]) => [name, state.position])),
+                ));
                 this.updateAnimationTimelineBones();
 
                 // Apply lighting configuration

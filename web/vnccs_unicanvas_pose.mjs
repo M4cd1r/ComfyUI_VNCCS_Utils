@@ -98,6 +98,9 @@ export class UniCanvasPoseEditor {
         const node = { id: `${this.host.node.id}_pose_${layer.id}`, widgets: [value], size: this.host.node.size };
         this.studio = new PoseStudioWidget(node, {
             embedded: true,
+            // A multi-character library pose poses this layer's mannequins (ids, references and
+            // bakes stay) instead of replacing the scene.
+            keepCharactersOnScenePose: true,
             onStateChange: data => {
                 if (this.token !== token || !this.host.layers.includes(layer)) return;
                 if (this.initialized) { this.applyDimensions(data.export); this.saveViewport(); }

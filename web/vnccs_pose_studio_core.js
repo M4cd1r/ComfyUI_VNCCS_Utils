@@ -3770,14 +3770,17 @@ export class PoseViewerCore {
         };
     }
 
-    getHistoryPose() {
+    // `{ scene: true }` also captures every character of the scene (a step that changes more
+    // than the active mannequin, like applying a multi-character pose); undo and redo then
+    // capture the opposite side the same way.
+    getHistoryPose(options = {}) {
         const pose = this.getPose();
-        const editorState = this.options?.captureHistoryContext?.();
+        const editorState = this.options?.captureHistoryContext?.(options);
         return editorState ? { ...pose, editorState } : pose;
     }
 
-    recordState() {
-        const state = this.getHistoryPose();
+    recordState(options = {}) {
+        const state = this.getHistoryPose(options);
         // Avoid duplicate states if possible, but for drag start it's fine
         this.history.push(JSON.stringify(state));
         if (this.history.length > this.maxHistory) {
@@ -3789,10 +3792,10 @@ export class PoseViewerCore {
     undo() {
         if (this.history.length === 0) return;
 
-        const current = JSON.stringify(this.getHistoryPose());
+        const prev = JSON.parse(this.history.pop());
+        const current = JSON.stringify(this.getHistoryPose({ scene: !!prev.editorState?.scene }));
         this.future.push(current);
 
-        const prev = JSON.parse(this.history.pop());
         this.setPose(prev);
         this.options?.onHistoryRestore?.(prev);
 
@@ -3804,10 +3807,10 @@ export class PoseViewerCore {
     redo() {
         if (this.future.length === 0) return;
 
-        const current = JSON.stringify(this.getHistoryPose());
+        const next = JSON.parse(this.future.pop());
+        const current = JSON.stringify(this.getHistoryPose({ scene: !!next.editorState?.scene }));
         this.history.push(current);
 
-        const next = JSON.parse(this.future.pop());
         this.setPose(next);
         this.options?.onHistoryRestore?.(next);
 
