@@ -4,7 +4,7 @@ import fs from "node:fs";
 import {
   alphaBounds, bakePoseHash, bakeRefHash, bakeRemoveBgRequest, bakeSettingsPayload, bakeStatus, bakeWorkingRect, boxWithin,
   collectBakeCandidates, dilateAlpha, expandBox, extentBeyond, generateBakeLabel, installUniCanvasCharacterBake,
-  keepOverlappingComponents, normalizePoseBake, orderBakeParts, refreshBakeStatuses, resolveBakeModel, subtractAlpha,
+  keepOverlappingComponents, normalizePoseBake, orderBakeParts, refreshBakeStatuses, resolveBakeModel, scaleBakeWithPlacement, subtractAlpha,
 } from "../web/vnccs_unicanvas_bake.mjs";
 
 const widget = fs.readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
@@ -19,6 +19,33 @@ function poseLayer(id, characters, refs = {}, extra = {}) {
     ...extra,
   };
 }
+
+test("a depth-scaled move scales the baked parts and anchors and keeps a matching bake baked", () => {
+  const layer = poseLayer("p", [character("a", 0)]);
+  const previousRect = { ...layer.pose.rect };
+  const part = { surface: {}, rect: { x: -40, y: -60, width: 480, height: 720 }, anchor: { x: 0, y: 0 } };
+  layer.bakeParts = { a: part };
+  layer.pose.bake = { characters: { a: { status: "baked", poseHash: bakePoseHash(layer.pose, "a"), refHash: "r", headRect: { x: 150, y: 0, width: 100, height: 100 }, feetPoint: { x: 200, y: 600 } } }, showMannequin: false };
+  // Scale 0.5 around the feet (200, 600), then move right by 100.
+  const scale = 0.5, anchor = { x: 200, y: 600 };
+  const point = (p) => ({ x: anchor.x + 100 + (p.x - anchor.x) * scale, y: anchor.y + (p.y - anchor.y) * scale });
+  const map = { point, rect: (r) => ({ ...point(r), width: r.width * scale, height: r.height * scale }), scale };
+  layer.pose.rect = map.rect(previousRect);
+  scaleBakeWithPlacement(layer, map, previousRect);
+  assert.notEqual(layer.bakeParts.a, part, "parts are replaced, never mutated (history shares them)");
+  assert.deepEqual(layer.bakeParts.a.rect, { x: 180, y: 270, width: 240, height: 360 });
+  assert.deepEqual(layer.bakeParts.a.anchor, { x: layer.pose.rect.x, y: layer.pose.rect.y });
+  assert.deepEqual(layer.pose.bake.characters.a.feetPoint, { x: 300, y: 600 }, "the feet stay under the cursor");
+  assert.deepEqual(layer.pose.bake.characters.a.headRect, { x: 275, y: 300, width: 50, height: 50 });
+  assert.equal(bakeStatus([layer], layer, "a"), "stale", "the ref hash of this fixture never matched");
+  assert.equal(layer.pose.bake.characters.a.poseHash, bakePoseHash(layer.pose, "a"), "the pose hash follows the new rect");
+  // A bake that was already stale for the pose stays stale.
+  layer.pose.bake.characters.a.poseHash = "old";
+  const before = { ...layer.pose.rect };
+  layer.pose.rect = map.rect(before);
+  scaleBakeWithPlacement(layer, map, before);
+  assert.equal(layer.pose.bake.characters.a.poseHash, "old");
+});
 
 test("bake state is additive: old layers read as nothing baked and bad entries are dropped", () => {
   assert.deepEqual(normalizePoseBake(undefined), { characters: {}, showMannequin: false });

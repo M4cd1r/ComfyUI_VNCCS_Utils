@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
+  backgroundLayer,
+  isDepthScaleLayer,
+  isInCharactersFolder,
+  placementMap,
   defaultScenePerspective,
   depthScalePlacement,
   expectedHeightAt,
@@ -53,6 +57,35 @@ test("a depth-scaled drag puts the feet on the cursor line and never above the h
   const above = depthScalePlacement(calibrated, drag, { x: 50, y: 20 }, { x: 50, y: 400 });
   assert.ok(above.feet.y > calibrated.horizonY);
   assert.ok(above.height >= 4);
+});
+
+test("depth scale covers pose, sprite and Characters-folder layers, never the background or groups", () => {
+  const bounds = { x: 0, y: 0, width: 10, height: 10 };
+  const layer = (id, type, extra = {}) => ({ id, name: id, type, visible: true, locked: false, groupId: null, ...extra });
+  const characters = layer("chars", "group", { name: "Characters" });
+  const hero = layer("hero-folder", "group", { name: "Hero", groupId: "chars" });
+  const uc = {
+    layers: [
+      layer("pose", "pose"), layer("sprite", "sprite"), layer("baked-copy", "raster", { groupId: "hero-folder" }),
+      hero, characters, layer("mask", "mask"), layer("bg", "raster"),
+    ],
+    getLayerAlphaBounds: () => bounds,
+  };
+  const byId = (id) => uc.layers.find((item) => item.id === id);
+  assert.equal(isInCharactersFolder(uc.layers, byId("baked-copy")), true, "a character subfolder counts");
+  assert.equal(backgroundLayer(uc)?.id, "bg");
+  for (const id of ["pose", "sprite", "baked-copy"]) assert.equal(isDepthScaleLayer(uc, byId(id)), true, id);
+  for (const id of ["bg", "mask", "chars"]) assert.equal(isDepthScaleLayer(uc, byId(id)), false, id);
+  // A character raster is never the background, even as the lowest raster layer.
+  uc.layers = uc.layers.filter((item) => item.id !== "bg");
+  assert.equal(backgroundLayer(uc), null);
+  assert.equal(isDepthScaleLayer(uc, byId("baked-copy")), true);
+  byId("sprite").locked = true;
+  assert.equal(isDepthScaleLayer(uc, byId("sprite")), false, "locked layers never scale");
+
+  const map = placementMap({ anchor: { x: 50, y: 100 }, dx: 10, dy: 20, scale: 2 });
+  assert.deepEqual(map.point({ x: 50, y: 100 }), { x: 60, y: 120 }, "the feet follow the drag");
+  assert.deepEqual(map.rect({ x: 40, y: 0, width: 20, height: 100 }), { x: 40, y: -80, width: 40, height: 200 });
 });
 
 test("the widget only hooks scene placement in", () => {

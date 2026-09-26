@@ -400,6 +400,43 @@ export function orderBakeParts(entries) {
   return [...entries].sort((a, b) => (a.feetY ?? 0) - (b.feetY ?? 0));
 }
 
+/**
+ * A depth-scaled move of a baked pose layer: `layer.pose.rect` already holds the placed rect,
+ * `previousRect` the rect before. Every baked part and the head / feet anchors follow `map` (a
+ * scale around the feet plus a move), and a bake that matched the scene before the move stays
+ * baked: a placement is not a pose edit. Part and entry objects are replaced, never mutated,
+ * because history snapshots share them.
+ */
+export function scaleBakeWithPlacement(layer, map, previousRect) {
+  const pose = layer?.pose;
+  if (!pose?.rect || !previousRect || !map) return;
+  const anchor = { x: pose.rect.x, y: pose.rect.y };
+  const parts = {};
+  const shifts = {};
+  for (const [id, part] of Object.entries(layer.bakeParts || {})) {
+    if (!part?.rect || !part.anchor) { parts[id] = part; continue; }
+    const dx = previousRect.x - part.anchor.x, dy = previousRect.y - part.anchor.y;
+    shifts[id] = { dx, dy };
+    parts[id] = { ...part, rect: map.rect({ ...part.rect, x: part.rect.x + dx, y: part.rect.y + dy }), anchor: { ...anchor } };
+  }
+  if (layer.bakeParts) layer.bakeParts = parts;
+  const bake = pose.bake;
+  if (!bake?.characters) return;
+  const before = { ...pose, rect: { ...previousRect } };
+  const characters = {};
+  for (const [id, entry] of Object.entries(bake.characters)) {
+    const next = { ...entry };
+    const shift = shifts[id] || { dx: 0, dy: 0 };
+    if (entry.headRect) next.headRect = map.rect({ ...entry.headRect, x: entry.headRect.x + shift.dx, y: entry.headRect.y + shift.dy });
+    if (entry.feetPoint) next.feetPoint = map.point({ x: entry.feetPoint.x + shift.dx, y: entry.feetPoint.y + shift.dy });
+    if ((entry.status === "baked" || entry.status === "stale") && entry.poseHash && entry.poseHash === bakePoseHash(before, id)) {
+      next.poseHash = bakePoseHash(pose, id);
+    }
+    characters[id] = next;
+  }
+  pose.bake = { ...bake, characters };
+}
+
 /* ----------------------------------------------------------------------------------------------
  * Browser controller
  * -------------------------------------------------------------------------------------------- */
@@ -1045,6 +1082,13 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     editor.characterBakeSlot.replaceChildren(bakeRow(layer, mannequins[0].id));
   }
 
+  /** A depth-scaled move (vnccs_unicanvas_scene_place.mjs): the baked characters scale along. */
+  function onDepthScale(layer, map, previousRect) {
+    if (layer?.type !== "pose" || !layer.pose?.rect || !previousRect) return;
+    scaleBakeWithPlacement(layer, map, previousRect);
+    rebuildView(layer);
+  }
+
   function setShowMannequin(layer, show) {
     if (layer?.type !== "pose") return;
     // A view toggle, not an edit: no history entry.
@@ -1128,7 +1172,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   const api = {
     showsBakedView, rebuildView, afterCommit, beforeScenePass, stageBake, bakeLayer, acceptStaged,
     wrapHistoryEntry, flushPendingHistory, snapshot, restoreSnapshot, serialize, restore, afterStateRestore,
-    renderCardChips, decorateLayerRow, setShowMannequin, onToolChanged, buildSettings, scheduleGenerateLabel,
+    renderCardChips, decorateLayerRow, setShowMannequin, onDepthScale, onToolChanged, buildSettings, scheduleGenerateLabel,
     updateGenerateLabel, candidates: () => collectBakeCandidates(uc, { includeStale: uc.settings?.rebake_stale_on_generate !== false, hasPart }),
     status: (layer, id) => statusOf(layer, id),
     get pending() { return pending; },

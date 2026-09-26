@@ -13,7 +13,8 @@
  * - Depth-scale (corner bar, next to Snap to grid) makes the move tool rescale a character layer
  *   around its feet during the drag. Pixels are always resampled from the layer's source
  *   (`hiresCanvas` when present), so repeated moves never degrade; the drag stays one history
- *   entry of the move tool.
+ *   entry of the move tool. It covers pose layers (baked characters scale with them), sprite
+ *   sets, raster layers in a `Characters` folder and raster layers above the background.
  * - Scene light (Plan 08.2, #19): `widget.sceneLight = { azimuth, elevation, color, intensity,
  *   ambientColor, ambientIntensity }` is serialized with the state and drives the shadow layers
  *   (vnccs_unicanvas_harmonize.mjs). Azimuth is measured around the vertical axis: 0 is a light on
@@ -27,7 +28,7 @@
  * serialize / history hooks exported here.
  */
 
-import { isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { groupChainOf, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
@@ -259,16 +260,31 @@ export function measureLayerCharacter(uc, layer) {
 export function backgroundLayer(uc) {
   for (let index = uc.layers.length - 1; index >= 0; index -= 1) {
     const layer = uc.layers[index];
-    if ((layer.type === "raster" || layer.type === "panorama") && isLayerEffectivelyVisible(uc.layers, layer) && uc.getLayerAlphaBounds(layer)) return layer;
+    if (layer.type !== "raster" && layer.type !== "panorama") continue;
+    if (isLayerEffectivelyVisible(uc.layers, layer) && !isInCharactersFolder(uc.layers, layer) && uc.getLayerAlphaBounds(layer)) return layer;
   }
   return null;
 }
 
-/** Layers the depth scale applies to: pose layers and raster layers above the background. */
+/** The auto-filing folder of character layers (vnccs_unicanvas_filing.mjs), matched case-insensitively. */
+export const CHARACTERS_FOLDER = "Characters";
+
+/** True when the layer sits in a `Characters` folder, directly or in a character subfolder. */
+export function isInCharactersFolder(layers, layer) {
+  const name = CHARACTERS_FOLDER.toLowerCase();
+  return groupChainOf(layers, layer).some((group) => String(group.name || "").trim().toLowerCase() === name);
+}
+
+/**
+ * Layers the depth scale applies to: pose layers (baked or not), sprite sets, anything in a
+ * `Characters` folder, and raster layers above the background.
+ */
 export function isDepthScaleLayer(uc, layer) {
-  if (!layer || layer.type === "mask" || isLayerEffectivelyLocked(uc.layers, layer)) return false;
-  if (layer.type === "pose") return true;
-  return layer.type === "raster" && layer !== backgroundLayer(uc);
+  if (!layer || layer.type === "mask" || isGroupLayer(layer) || isLayerEffectivelyLocked(uc.layers, layer)) return false;
+  if (layer.type === "pose" || layer.type === "sprite") return true;
+  if (layer.type !== "raster") return false;
+  // A character raster is never "the background", even when it is the lowest raster layer.
+  return isInCharactersFolder(uc.layers, layer) || layer !== backgroundLayer(uc);
 }
 
 function scaleAround(rect, from, to, scale) {
@@ -352,9 +368,22 @@ function commitDepthScale(uc, layer, drag, placement, allowExpand) {
     layer.hiresRect = { ...rect };
   }
   if (layer.pose && drag.poseRect) layer.pose.rect = placedRect(drag.poseRect, placement, null);
+  // Layer kinds with their own geometry follow the same placement: baked characters
+  // (vnccs_unicanvas_bake.mjs) and sprite sets (vnccs_unicanvas_sprites.mjs).
+  const map = placementMap(placement);
+  uc.poseBake?.onDepthScale?.(layer, map, drag.poseRect);
+  uc.sprites?.onDepthScale?.(layer, map);
   uc.invalidateLayerRenderCaches(layer);
   layer._boundsCache = undefined;
   return true;
+}
+
+/** A depth-scale placement as world-point and world-rect maps (scale around the feet, then move). */
+export function placementMap(placement) {
+  const { anchor, dx, dy, scale } = placement;
+  const point = (p) => ({ x: anchor.x + dx + (p.x - anchor.x) * scale, y: anchor.y + dy + (p.y - anchor.y) * scale });
+  const rect = (r) => ({ ...point(r), width: r.width * scale, height: r.height * scale });
+  return { point, rect, scale };
 }
 
 // ---------------------------------------------------------------------------
