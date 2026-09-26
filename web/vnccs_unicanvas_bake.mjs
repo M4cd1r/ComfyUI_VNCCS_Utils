@@ -26,6 +26,7 @@ import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
 import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { resolveRemoveBgSelection, removeBgEditSettings } from "./vnccs_unicanvas_remove_bg.mjs";
+import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 
 export const BAKE_FAMILIES = Object.freeze([["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"]]);
@@ -665,6 +666,21 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const defaults = model.useCurrent ? {} : (modelModule(model.family)?.defaults || {});
     const settings = bakeSettingsPayload(uc.makeSettingsPayload(), { model, defaults, positive: inputs.positive, seed, batch });
     const debugId = `bake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // History (vnccs_unicanvas_history_gallery.mjs): the caller finishes the run with its results.
+    const historyRun = uc.generationHistory?.beginRun("bake", {
+      settings, bbox: work, mode: "bake", inferenceSize: size, outputSize: output, targetLayerId: layer.id,
+      params: { characterId: String(characterId), batch },
+    }) || null;
+    try {
+      return { ...(await requestBake({ layer, characterId, settings, inputs, work, size, output, rect, anchors, model, seed, debugId, poseHash, refHash })), historyRun };
+    } catch (error) {
+      historyRun?.fail(error);
+      throw error;
+    }
+  }
+
+  /** The bake request and the extraction of each returned image. */
+  async function requestBake({ layer, characterId, settings, inputs, work, size, output, rect, anchors, model, seed, debugId, poseHash, refHash }) {
     const res = await fetch(BAKE_DRAW_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -743,15 +759,15 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     uc.setStatus(`Baking ${character?.name || "character"}...`);
     try {
       const out = await api.runBake(layer, characterId, { seed, batch });
-      for (const result of out.results) {
-        uc.addStagingItem({
-          url: result.surface.toDataURL("image/png"), img: result.surface, bbox: { ...out.work },
-          displaySize: { width: out.work.width, height: out.work.height }, inferenceSize: out.size,
-          visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
-          panoramaCamera: null, snapshot: { seed: result.seed, mode: "bake" },
-          bake: { layerId: layer.id, characterId: String(characterId), result, meta: out.meta },
-        });
-      }
+      const staged = out.results.map((result) => ({
+        url: result.surface.toDataURL("image/png"), img: result.surface, bbox: { ...out.work },
+        displaySize: { width: out.work.width, height: out.work.height }, inferenceSize: out.size,
+        visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
+        panoramaCamera: null, snapshot: { seed: result.seed, mode: "bake" },
+        bake: { layerId: layer.id, characterId: String(characterId), result, meta: out.meta },
+      }));
+      for (const item of staged) uc.addStagingItem(item);
+      out.historyRun?.finish(staged);
       uc.render?.();
       uc.setStatus(`Bake of ${character?.name || "character"} staged: accept, discard or pick another variant.`);
     } catch (error) {
@@ -775,7 +791,8 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     }
     const before = uc.createLayerPixelSnapshot(layer);
     api.applyBake(layer, info.characterId, info.result, info.meta);
-    uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+    const entry = { kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) };
+    uc.pushHistoryEntry(uc.generationHistory?.acceptIntoLayer(entry, staging, layer) ?? entry);
     uc.syncToNode?.();
     uc.renderLayerList();
     uc.setStatus("Bake accepted.");
@@ -794,6 +811,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       try {
         const out = await api.runBake(layer, characterId, { seed: newSeed(), batch: 1 });
         api.applyBake(layer, characterId, out.results[0], out.meta);
+        out.historyRun?.finish([autoAcceptedHistoryItem({ img: out.results[0].surface, seed: out.results[0].seed, rect: out.work, layerId: layer.id })]);
       } catch (failure) {
         markFailed(layer, characterId, failure);
         error = new Error(`${name}: ${failure.message || failure}`);

@@ -255,6 +255,48 @@ async function saveLayerAsImage(uc, layer) {
 // Backend selection mirrors the UniCanvas settings popover (vnccs_unicanvas_remove_bg.mjs).
 export { resolveRemoveBgSelection };
 
+/**
+ * A SAM 3 Remove background session. It starts when the layer menu hands a layer to the SAM tool
+ * and is recorded in History (kind remove_bg, like the other backends) when a SAM 3 mask is
+ * applied to that layer. Leaving the SAM tool, switching the SAM model away from SAM 3, applying to
+ * another layer or starting another session ends it without a record.
+ */
+export class SamRemoveBgSession {
+  constructor(uc) {
+    this.uc = uc;
+    this.active = null;
+  }
+
+  start(layer) {
+    const uc = this.uc;
+    let source = null;
+    try {
+      const crop = uc.getLayerAlphaBounds?.(layer);
+      source = crop && uc.cloneCanvasCrop ? uc.cloneCanvasCrop(layer.canvas, crop) : null;
+    } catch (_) {
+      source = null; // the record just has no input thumbnail
+    }
+    const run = uc.generationHistory?.beginRun("remove_bg", {
+      targetLayerId: layer.id, imageCanvas: source, params: { method: "sam3", extraPrompt: "", keepPixels: 0 },
+    }) || null;
+    this.active = { layerId: layer.id, run };
+    return this.active;
+  }
+
+  /** Hook from setTool. */
+  onToolChanged(tool) {
+    if (tool !== "sam") this.active = null;
+  }
+
+  /** Hook from applySamMask: `crop` is the applied region in layer canvas pixels. */
+  onApplied(layer, crop) {
+    const session = this.active;
+    if (!session || session.layerId !== layer?.id || this.uc.sam?.model !== "sam3") return null;
+    this.active = null;
+    return session.run?.finishLayer(layer, crop) ?? null;
+  }
+}
+
 // SAM 3: the user picks what to keep. The SAM tool opens on this layer with SAM 3 selected:
 // clicks mark the subject (Alt/right click marks background), Segment builds the mask and
 // Apply removes everything else from the layer.
@@ -263,6 +305,7 @@ function startSamRemoveBackground(uc, layer) {
   uc.sam.model = "sam3";
   uc.clearSamPrompt?.();
   uc.setTool("sam");
+  uc.samRemoveBg?.start(layer);
   uc.sam.status = "Click what to keep, then Segment and Apply";
   uc.renderSamPanel?.();
   uc.setStatus("[VNCCS UniCanvas] Remove bg – SAM 3: click what to keep (Alt/right click: remove), then Segment and Apply.");
@@ -783,6 +826,7 @@ export function installUniCanvasLayerTools(uc) {
   // The canvas right-click opens the same menu for the layer under the cursor.
   uc.openLayerContextMenu = (layer, e) => openLayerContextMenu(uc, layer, e);
   uc.closeColorMatchPreview = (commit) => closeColorMatchPreview(uc, commit);
+  uc.samRemoveBg = new SamRemoveBgSession(uc);
 
   uc.layerList.addEventListener("contextmenu", (e) => {
     const row = e.target.closest?.("[data-layer-id]");

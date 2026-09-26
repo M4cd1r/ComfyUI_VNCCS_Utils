@@ -976,7 +976,7 @@ class UniCanvasWidget {
     installUniCanvasLibrary(this);
     installUniCanvasAutoNaming(this);
     installUniCanvasFiling(this);
-    installUniCanvasHistory(this);
+    installUniCanvasHistory(this, { modelModule: getUniCanvasModelModule });
     installUniCanvasTimeline(this, { createPoseEditor: () => new UniCanvasPoseEditor(this) });
     // Settings > VNCCS > UniCanvas switches (issue #50): applied live to this widget.
     installUniCanvasFeatureToggles(this);
@@ -1779,6 +1779,7 @@ class UniCanvasWidget {
     }
     this.tool = tool;
     this.poseBake?.onToolChanged(previousTool, tool);
+    this.samRemoveBg?.onToolChanged(tool);
     if (tool === "pose") void this.activatePoseTool(!force);
     this.container.querySelectorAll("[data-tool]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.tool === tool);
@@ -3871,6 +3872,7 @@ class UniCanvasWidget {
       before,
       after: this.createLayerPixelSnapshot(layer),
     });
+    this.samRemoveBg?.onApplied(layer, crop); // SAM 3 Remove background: one History record
     this.clearSamMask(false);
     this.sam.status = "Mask applied";
     this.renderSamPanel();
@@ -4258,8 +4260,9 @@ class UniCanvasWidget {
         this.activeLayerId = entry.layer.id;
       }
       this.invalidateLayerCaches(entry.layer);
-      void this.generationHistory?.onAcceptHistory(entry, direction);
     }
+    // A staged result accepted into a new layer or into its own layer (bake, sprite, harmonize).
+    if (entry.acceptedItem) void this.generationHistory?.onAcceptHistory(entry, direction);
     if (entry.kind === HISTORY_SETTINGS_HISTORY_KIND) this.generationHistory?.applySettingsHistory(entry, direction);
     if (entry.kind === "addLayer") {
       if (direction === "undo") {

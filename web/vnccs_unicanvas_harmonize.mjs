@@ -1191,6 +1191,12 @@ export async function runAiHarmonize(uc, layer) {
   if (uc.drawBtn) uc.drawBtn.disabled = true;
   uc.startDrawProgressPolling?.(debugId);
   uc.setStatus(`${label} running on ${layer.name}...`);
+  const snapshot = buildStagingSnapshot(settings, { mode: "harmonize", bbox: region });
+  // History (vnccs_unicanvas_history_gallery.mjs): one record per run with every staged result.
+  const historyRun = uc.generationHistory?.beginRun("harmonize", {
+    settings, snapshot, bbox: region, mode: "harmonize", inferenceSize: size, outputSize: { width: region.width, height: region.height },
+    targetLayerId: layer.id, imageCanvas, maskCanvas,
+  }) || null;
   try {
     const res = await fetch(DRAW_ROUTE, {
       method: "POST",
@@ -1204,11 +1210,11 @@ export async function runAiHarmonize(uc, layer) {
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
     const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
     if (!images.length) throw new Error("the model returned no image");
-    const snapshot = buildStagingSnapshot(settings, { mode: "harmonize", bbox: region });
-    let staged = 0, rejected = 0;
+    const stagedItems = [];
+    let rejected = 0;
     for (const image of images) {
       const img = await uc.loadImage(uc.resultImageURL(image));
-      if (uc._disposed || !uc.layers.includes(layer)) return undefined;
+      if (uc._disposed || !uc.layers.includes(layer)) throw new Error(`${layer.name} was removed while harmonizing`);
       const result = makeCanvas(region.width, region.height);
       const resultCtx = result.getContext("2d", { willReadFrequently: true });
       resultCtx.drawImage(img, 0, 0, result.width, result.height);
@@ -1217,20 +1223,24 @@ export async function runAiHarmonize(uc, layer) {
       if (!harmonizeKeepsSilhouette(original, box)) { rejected += 1; continue; }
       const candidate = makeCanvas(region.width, region.height);
       candidate.getContext("2d").putImageData(new ImageData(pixels, region.width, region.height), 0, 0);
-      uc.addStagingItem({
+      const item = {
         url: candidate.toDataURL("image/png"), img: candidate, bbox: { ...region },
         displaySize: { width: region.width, height: region.height }, inferenceSize: size, image: null,
         visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
         snapshot: { ...snapshot, seed: Number.isFinite(image?.seed) ? image.seed : snapshot.seed },
         harmonize: { layerId: layer.id, region: { ...region }, box },
-      });
-      staged += 1;
+      };
+      uc.addStagingItem(item);
+      stagedItems.push(item);
     }
+    historyRun?.finish(stagedItems);
+    const staged = stagedItems.length;
     uc.requestRender();
     const rejectedText = rejected ? ` ${rejected} result${rejected === 1 ? "" : "s"} rejected: the silhouette moved more than ${Math.round(AI_BBOX_TOLERANCE * 100)}%.` : "";
     uc.setStatus(staged ? `${label}: ${staged} result${staged === 1 ? "" : "s"} staged; accept replaces ${layer.name}'s pixels.${rejectedText}` : `${label}:${rejectedText || " no usable result."}`, !staged);
   } catch (err) {
-    uc.setStatus(`${label} failed: ${err.message || err}`, true);
+    historyRun?.fail(err);
+    if (!uc._disposed) uc.setStatus(`${label} failed: ${err.message || err}`, true);
   } finally {
     uc.stopDrawProgressPolling?.();
     uc.drawInProgress = false;
@@ -1264,7 +1274,8 @@ export function acceptHarmonizeStaging(uc, staging) {
   ctx.drawImage(staging.img, target.x, target.y, target.width, target.height);
   ctx.restore();
   uc.markLayerPixelsChanged(layer, uc.clampCanvasBounds ? uc.clampCanvasBounds(target, layer.canvas) : target, false);
-  uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+  const entry = { kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) };
+  uc.pushHistoryEntry(uc.generationHistory?.acceptIntoLayer(entry, staging, layer) ?? entry);
   uc.stagingItems = [];
   uc.activeStagingIndex = -1;
   uc.refreshLayerRow?.(layer.id);
