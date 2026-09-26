@@ -962,6 +962,7 @@ export function installUniCanvasHistory(widget, options = {}) {
   if (!widget || widget.generationHistory) return widget?.generationHistory;
   const history = new UniCanvasHistory(widget, options);
   widget.generationHistory = history;
+  widget.registerHistoryKind?.(HISTORY_SETTINGS_HISTORY_KIND, (entry, direction) => widget.generationHistory?.applySettingsHistory(entry, direction));
   const slot = typeof document === "undefined" ? null : historyButtonSlot(widget);
   if (slot) {
     ensureStyles();

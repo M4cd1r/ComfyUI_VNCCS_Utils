@@ -1097,6 +1097,8 @@ function updatePanoramaAvailability(uc) {
 
 export function installUniCanvasScenePlace(uc) {
   if (!uc || uc._scenePlace) return uc;
+  uc.registerHistoryKind?.(SCENE_PERSPECTIVE_HISTORY_KIND, (entry, direction) => applyScenePerspectiveHistory(uc, entry, direction));
+  uc.registerHistoryKind?.(SCENE_LIGHT_HISTORY_KIND, (entry, direction) => applySceneLightHistory(uc, entry, direction));
   uc.scenePerspective = normalizeScenePerspective(uc.scenePerspective);
   uc.sceneLight = normalizeSceneLight(uc.sceneLight);
   uc._scenePlace = {

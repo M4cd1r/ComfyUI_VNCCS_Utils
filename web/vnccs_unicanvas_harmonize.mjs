@@ -1681,6 +1681,8 @@ export function harmonizeLightTarget(uc) {
 export function installUniCanvasHarmonize(uc) {
   if (!uc || uc._harmonize) return uc;
   uc._harmonize = { paramGesture: null, occluderBusy: false, forceCpuRelight: false };
+  uc.registerHistoryKind?.(SHADOW_LAYER_HISTORY_KIND, (entry, direction) => applyShadowLayerHistory(uc, entry, direction));
+  uc.registerHistoryKind?.(OCCLUDER_LAYER_HISTORY_KIND, (entry, direction) => applyOccluderLayerHistory(uc, entry, direction));
   uc.addShadowLayer = (source, kind) => addShadowLayer(uc, source, kind);
   uc.detachShadowLayer = (layer) => detachShadowLayer(uc, layer);
   uc.openHarmonizePanel = (layer, point) => openHarmonizePanel(uc, layer, point);

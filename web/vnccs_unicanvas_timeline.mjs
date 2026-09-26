@@ -1623,6 +1623,7 @@ export function installUniCanvasTimeline(uc, { createPoseEditor } = {}) {
   controller.createPoseEditor = createPoseEditor || null;
   uc.timelinePanel = controller;
   if (uc.timeline === undefined) uc.timeline = null;
+  uc.registerHistoryKind?.(TIMELINE_HISTORY_KIND, (entry, direction) => uc.timelinePanel?.applyHistory(entry, direction), { isolated: true });
 
   if (uc.settingsBar && typeof uc._button === "function") {
     controller.button = uc._button(TIMELINE_ICON, "vnccs-uc-icon vnccs-uc-timeline-toggle", () => controller.toggle(), "Timeline (standalone)");

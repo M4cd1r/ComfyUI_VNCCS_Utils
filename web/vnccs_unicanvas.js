@@ -5,7 +5,7 @@
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
 import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs";
 import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs";
-import { SPRITE_VARIANT_HISTORY_KIND, installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
+import { installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
@@ -15,18 +15,18 @@ import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vn
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
-import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs";
+import { installUniCanvasSceneStates, normalizeStateOffset, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs";
 import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs";
 import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs";
-import { TIMELINE_HISTORY_KIND, applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
+import { applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
-import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
-import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, OCCLUDER_LAYER_HISTORY_KIND, SHADOW_LAYER_HISTORY_KIND, applyOccluderLayerHistory, applyShadowLayerHistory, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
+import { installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
 import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs";
-import { HISTORY_SETTINGS_HISTORY_KIND, installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
+import { installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
@@ -947,6 +947,8 @@ class UniCanvasWidget {
     this._disposed = false;
     // Feature cleanups registered with onDispose(), run by dispose() (last registered first).
     this._disposers = [];
+    // History kinds owned by feature modules (registerHistoryKind), applied by applyHistoryEntry.
+    this.historyHandlers = new Map();
     this._eventAbortController = null;
     this.settings = makeDefaultUniCanvasSettings();
     if (!this.settings.preset_runtime_settings || typeof this.settings.preset_runtime_settings !== "object") {
@@ -4211,6 +4213,14 @@ class UniCanvasWidget {
     this.setStatus("Redo");
   }
 
+  // A feature module owns its history kinds: `apply(entry, direction)` restores one entry
+  // ("undo" or "redo"). By default the widget then refreshes layers, panels and sync as after any
+  // layer change; `isolated` kinds (timeline, scene states) refresh what they changed themselves.
+  registerHistoryKind(kind, apply, { isolated = false } = {}) {
+    if (!kind || typeof apply !== "function") return;
+    (this.historyHandlers ||= new Map()).set(kind, { apply, isolated });
+  }
+
   applyHistoryEntry(entry, direction) {
     if (!entry?.kind) return;
     if (entry.kind === "historyGroup") {
@@ -4219,20 +4229,11 @@ class UniCanvasWidget {
       for (const child of entries) this.applyHistoryEntry(child, direction);
       return;
     }
-    if (entry.kind === TIMELINE_HISTORY_KIND) {
+    const handler = this.historyHandlers?.get(entry.kind);
+    if (handler?.isolated) {
       this.historyRestoring = true;
       try {
-        this.timelinePanel?.applyHistory(entry, direction);
-      } finally {
-        this.historyRestoring = false;
-      }
-      return;
-    }
-    if (SCENE_STATE_HISTORY_KINDS.has(entry.kind)) {
-      // Scene states (vnccs_unicanvas_states.mjs): layer properties and the state list.
-      this.historyRestoring = true;
-      try {
-        this.applySceneStateHistory?.(entry, direction);
+        handler.apply(entry, direction);
       } finally {
         this.historyRestoring = false;
       }
@@ -4283,7 +4284,6 @@ class UniCanvasWidget {
     }
     // A staged result accepted into a new layer or into its own layer (bake, sprite, harmonize).
     if (entry.acceptedItem) void this.generationHistory?.onAcceptHistory(entry, direction);
-    if (entry.kind === HISTORY_SETTINGS_HISTORY_KIND) this.generationHistory?.applySettingsHistory(entry, direction);
     if (entry.kind === "addLayer") {
       if (direction === "undo") {
         this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
@@ -4295,12 +4295,9 @@ class UniCanvasWidget {
       this.invalidateLayerCaches(entry.layer);
     }
     if (entry.kind === PANORAMA_VIEW_HISTORY_KIND) applyPanoramaViewHistory(this, entry, direction);
-    if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
-    if (entry.kind === SPRITE_VARIANT_HISTORY_KIND) this.sprites?.applyVariantHistory(entry, direction);
-    if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
-    if (entry.kind === SCENE_LIGHT_HISTORY_KIND) applySceneLightHistory(this, entry, direction);
-    if (entry.kind === SHADOW_LAYER_HISTORY_KIND) applyShadowLayerHistory(this, entry, direction);
-    if (entry.kind === OCCLUDER_LAYER_HISTORY_KIND) applyOccluderLayerHistory(this, entry, direction);
+    // Feature kinds (VN preview frame, sprite variants, scene perspective / light, shadow and
+    // occluder layers, history settings) are registered by their installers.
+    handler?.apply(entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);

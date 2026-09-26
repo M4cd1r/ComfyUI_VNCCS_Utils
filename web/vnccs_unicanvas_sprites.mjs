@@ -506,6 +506,7 @@ const SPRITE_PANEL_CSS = `
 
 export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   if (!uc || uc.sprites) return uc;
+  uc.registerHistoryKind?.(SPRITE_VARIANT_HISTORY_KIND, (entry, direction) => uc.sprites?.applyVariantHistory(entry, direction));
   let gestureToken = 0;
   let selectedVariantId = null;
   let panel = null;

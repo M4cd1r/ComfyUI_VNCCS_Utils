@@ -1093,6 +1093,7 @@ export function installUniCanvasVnPreview(uc) {
   const controller = new VnPreviewController(uc);
   uc.vnPreview = controller;
   uc.onDispose?.(() => controller.closePopover());
+  uc.registerHistoryKind?.("vnPreviewFrame", (entry, direction) => uc.vnPreview?.applyFrameHistory(entry, direction));
 
   if (uc.settingsBar && typeof uc._button === "function") {
     controller.button = uc._button(SPEECH_ICON, "vnccs-uc-icon vnccs-uc-vnp-toggle", () => controller.onButtonClick(), "VN preview (P)");

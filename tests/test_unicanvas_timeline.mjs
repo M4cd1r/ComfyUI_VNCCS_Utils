@@ -346,13 +346,15 @@ test("the widget routes render, bounds, paint, history and persistence through t
     /installUniCanvasTimeline\(this, \{ createPoseEditor: /,
     /getLayerRenderTransform\(layer\) \{/,
     /const start = this\.alignCoordForTool\(this\.layerPointFromWorld\(layer, a\), this\.brushSize\);/,
-    /entry\.kind === TIMELINE_HISTORY_KIND/,
+    /if \(handler\?\.isolated\)/,
     /this\.timelinePanel\?\.restore\(state\.timeline\)/,
     /this\.timelinePanel\?\.beginMove\(\)/,
     /this\.timelinePanel\?\.commitMove\(this\.dragStart\)/,
     /this\.timelinePanel\?\.keyOpacity\(layer, target\.value, e\.type === "change"\)/,
     /this\.timelinePanel\?\.blocksPixelTransform\(layer\)/,
   ]) assert.match(widget, pattern);
+  const timeline = readFileSync(new URL("../web/vnccs_unicanvas_timeline.mjs", import.meta.url), "utf8");
+  assert.match(timeline, /uc\.registerHistoryKind\?\.\(TIMELINE_HISTORY_KIND, \(entry, direction\) => uc\.timelinePanel\?\.applyHistory\(entry, direction\), \{ isolated: true \}\)/);
   const modes = readFileSync(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
   assert.match(modes, /key === " " && widget\.timelinePanel\?\.togglePlay\(\)/);
   assert.match(modes, /getTimeline:/);

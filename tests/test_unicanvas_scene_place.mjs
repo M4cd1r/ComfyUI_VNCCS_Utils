@@ -92,7 +92,8 @@ test("the widget only hooks scene placement in", () => {
   const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
   assert.match(source, /installUniCanvasScenePlace\(this\)/);
   assert.match(source, /scenePerspective: serializeScenePerspective\(this\.scenePerspective\)/);
-  assert.match(source, /entry\.kind === SCENE_PERSPECTIVE_HISTORY_KIND/);
+  const scenePlace = readFileSync(new URL("../web/vnccs_unicanvas_scene_place.mjs", import.meta.url), "utf8");
+  assert.match(scenePlace, /uc\.registerHistoryKind\?\.\(SCENE_PERSPECTIVE_HISTORY_KIND, \(entry, direction\) => applyScenePerspectiveHistory\(uc, entry, direction\)\)/);
   const modes = readFileSync(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
   assert.match(modes, /g: "perspective"/);
 });
@@ -147,5 +148,6 @@ test("the light has its own history kind and is serialized", () => {
   const source = readFileSync(new URL("../web/vnccs_unicanvas_scene_place.mjs", import.meta.url), "utf8");
   assert.match(source, /kind: SCENE_LIGHT_HISTORY_KIND, before, after/);
   assert.match(source, /Object\.assign\(uc\.sceneLight, lightFromHandle/, "the gizmo updates the light on pointermove");
-  assert.match(widget, /applySceneLightHistory\(this, entry, direction\)/);
+  assert.match(source, /uc\.registerHistoryKind\?\.\(SCENE_LIGHT_HISTORY_KIND, \(entry, direction\) => applySceneLightHistory\(uc, entry, direction\)\)/);
+  assert.match(widget, /handler\?\.apply\(entry, direction\);/, "the widget applies registered history kinds");
 });

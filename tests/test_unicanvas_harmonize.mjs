@@ -191,8 +191,8 @@ test("a shadow follows its source's live Free Transform preview, before Apply (#
 
 test("the widget wires shadows through hooks, serialization and history", () => {
   assert.match(widget, /installUniCanvasHarmonize\(this\);/);
-  assert.match(widget, /entry\.kind === SHADOW_LAYER_HISTORY_KIND/);
-  assert.match(widget, /entry\.kind === SCENE_LIGHT_HISTORY_KIND/);
+  assert.match(harmonize, /uc\.registerHistoryKind\?\.\(SHADOW_LAYER_HISTORY_KIND, \(entry, direction\) => applyShadowLayerHistory\(uc, entry, direction\)\)/);
+  assert.match(scenePlace, /uc\.registerHistoryKind\?\.\(SCENE_LIGHT_HISTORY_KIND, /);
   assert.equal((widget.match(/shadow: serializeShadow\(layer\.shadow\)/g) || []).length, 3, "both serializeLayer paths and the light sync carry the shadow");
   assert.match(widget, /sceneLight: serializeSceneLight\(this\.sceneLight\)/);
   assert.match(widget, /state\.sceneLight = serializeSceneLight\(this\.sceneLight\)/);
@@ -368,7 +368,7 @@ test("occluder history re-files the layer above its character on redo", () => {
 });
 
 test("the widget, pose editor and light gizmo are wired for harmonize", () => {
-  assert.match(widget, /entry\.kind === OCCLUDER_LAYER_HISTORY_KIND\) applyOccluderLayerHistory\(this, entry, direction\)/);
+  assert.match(harmonize, /uc\.registerHistoryKind\?\.\(OCCLUDER_LAYER_HISTORY_KIND, \(entry, direction\) => applyOccluderLayerHistory\(uc, entry, direction\)\)/);
   assert.match(widget, /isEditModelSelected\(\) \{/);
   assert.match(widget, /section\("harmonize", "Harmonize"\)/);
   assert.match(widget, /payload\.poseNormal = poseNormal/);
