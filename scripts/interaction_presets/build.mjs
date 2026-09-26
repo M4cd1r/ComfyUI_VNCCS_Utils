@@ -1,7 +1,7 @@
 /**
  * Writes the bundled Interactions presets (pose_presets/Interactions/*.json)
- * from presets.mjs. Previews (*.webp next to each JSON) are rendered
- * separately from the same scenes in Pose Studio's viewer.
+ * from presets.mjs. Previews (*.webp next to each JSON) are rendered from
+ * these JSONs by render_previews.mjs in Pose Studio's viewer.
  *
  *   node scripts/interaction_presets/build.mjs
  */
