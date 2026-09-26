@@ -29,7 +29,7 @@
 
 import { alphaBounds, dilateAlpha } from "./vnccs_unicanvas_bake.mjs";
 import { poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
-import { resolveRemoveBgSelection, removeBgEditSettings } from "./vnccs_unicanvas_remove_bg.mjs";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
@@ -847,13 +847,14 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     return null;
   }
 
+  /** The cut-out alpha of an outfit result, or null when Remove background is switched off. */
   async function removeBackground(canvas) {
-    const { method, editModel } = resolveRemoveBgSelection(uc.settings);
-    const resolved = method === "sam3" ? "birefnet" : method;
+    const request = automaticRemoveBgRequest(uc.settings);
+    if (!request) return null;
     const res = await fetch(SPRITE_REMOVE_BG_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ method: resolved, edit_model: editModel, edit_settings: resolved === "edit" ? removeBgEditSettings(uc.settings, editModel) : undefined, image: canvas.toDataURL("image/png") }),
+      body: JSON.stringify({ ...request, image: canvas.toDataURL("image/png") }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `Remove background HTTP ${res.status}`);

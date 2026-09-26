@@ -25,8 +25,11 @@ import {
   uniCanvasToggleCss,
   uniCanvasToggleRefusal,
   uniCanvasToggleSettingId,
+  uniCanvasRequestOverrides,
+  uniCanvasRequestSettings,
 } from "../web/vnccs_unicanvas_feature_toggles.mjs";
-import { REMOVE_BG_METHODS, resolveRemoveBgSelection } from "../web/vnccs_unicanvas_remove_bg.mjs";
+import { REMOVE_BG_METHODS, automaticRemoveBgRequest, removeBgEditLoader, resolveRemoveBgSelection } from "../web/vnccs_unicanvas_remove_bg.mjs";
+import { bakeRemoveBgRequest } from "../web/vnccs_unicanvas_bake.mjs";
 import { AUTO_NAME_MODELS, resolveAutoNameModel, resolveAutoNamingLevel } from "../web/vnccs_unicanvas_naming.mjs";
 import { resolveAutoFile } from "../web/vnccs_unicanvas_filing.mjs";
 import { PERSPECTIVE_TOOL } from "../web/vnccs_unicanvas_scene_place.mjs";
@@ -37,6 +40,9 @@ const widgetSource = await read("vnccs_unicanvas.js");
 const qwen21Source = await read("vnccs_unicanvas_qwen21.mjs");
 const modesSource = await read("vnccs_unicanvas_modes.mjs");
 const timelineSource = await read("vnccs_unicanvas_timeline.mjs");
+const bakeSource = await read("vnccs_unicanvas_bake.mjs");
+const spritesSource = await read("vnccs_unicanvas_sprites.mjs");
+const removeBgSource = await read("vnccs_unicanvas_remove_bg.mjs");
 const extensionMenuSources = await Promise.all(["vnccs_unicanvas_sprites.mjs", "vnccs_unicanvas_library.mjs", "vnccs_unicanvas_control_scene.mjs"].map(read));
 
 const between = (source, start, end) => {
@@ -244,9 +250,11 @@ test("Remove background and naming never pick a switched-off method or model", (
   assert.equal(isUniCanvasRemoveBgAvailable(), false);
   assert.equal(isUniCanvasLayerMenuItemEnabled("remove-bg"), false);
   assert.equal(isUniCanvasSettingsSectionEnabled("remove_bg"), false);
-  assert.equal(resolveRemoveBgSelection({ remove_bg_model: "rembg" }).method, "rembg", "bakes keep the saved method");
+  assert.equal(resolveRemoveBgSelection({ remove_bg_model: "rembg" }).method, "rembg", "the panel keeps showing the saved method");
+  assert.equal(automaticRemoveBgRequest({ remove_bg_model: "rembg" }), null, "bakes and sprites do not cut out with it");
   offOnly("removebg_edit", "removebg_birefnet", "removebg_rembg", "removebg_sam3");
   assert.equal(isUniCanvasRemoveBgAvailable(), false);
+  assert.equal(automaticRemoveBgRequest({ remove_bg_model: "birefnet" }), null);
 
   offOnly("naming_qwen3vl_2b");
   assert.equal(resolveAutoNameModel({ auto_name_model: "qwen3vl_2b" }), "smolvlm_256m");
@@ -257,6 +265,50 @@ test("Remove background and naming never pick a switched-off method or model", (
   offOnly("autoLayerNames");
   assert.equal(resolveAutoNamingLevel({ auto_naming: "model" }), "off");
   assert.equal(isUniCanvasLayerMenuItemEnabled("auto-name"), false);
+});
+
+test("bakes and sprites cut out only with an enabled automatic method (#33)", () => {
+  resetUniCanvasToggles();
+  assert.equal(automaticRemoveBgRequest({ remove_bg_model: "rembg" }).method, "rembg");
+  assert.equal(automaticRemoveBgRequest({ remove_bg_model: "sam3" }).method, "birefnet", "interactive SAM 3 falls back");
+  assert.equal(bakeRemoveBgRequest({ remove_bg_model: "sam3" }).method, "birefnet");
+  offOnly("removebg_birefnet");
+  assert.equal(automaticRemoveBgRequest({ remove_bg_model: "sam3" }).method, "rembg", "the next enabled automatic backend");
+  offOnly("removeBackground");
+  assert.equal(bakeRemoveBgRequest({ remove_bg_model: "birefnet" }), null, "Remove background off: no backend call");
+  offOnly("removebg_birefnet", "removebg_rembg", "removebg_edit");
+  assert.equal(automaticRemoveBgRequest({ remove_bg_model: "sam3" }), null, "only the interactive method is left");
+  const sources = [widgetSource, bakeSource, spritesSource];
+  assert.match(bakeSource, /\(await removeBackground\(crop\)\) \?\? silCrop/, "a bake cuts along the mannequin silhouette instead");
+  assert.match(spritesSource, /\(await removeBackground\(full\)\) \?\? mask/, "an outfit sprite cuts along its outfit mask instead");
+  assert.ok(sources.every((source) => !source.includes("resolveRemoveBgSelection(uc.settings)")));
+});
+
+test("the Edit-model loader list follows the loader toggles (#33)", () => {
+  resetUniCanvasToggles();
+  assert.equal(removeBgEditLoader(undefined, undefined), "diffusion_model");
+  assert.equal(removeBgEditLoader("gguf", "diffusion_model"), "gguf", "a saved loader stays");
+  offOnly("loader_diffusion_model");
+  assert.equal(removeBgEditLoader(undefined, "diffusion_model"), "gguf", "the default gives way to an enabled loader");
+  assert.equal(removeBgEditLoader("diffusion_model", undefined), "diffusion_model", "the saved loader stays visible");
+  assert.match(removeBgSource, /syncUniCanvasSelectOptions\(loader, isUniCanvasLoaderEnabled, loader\.value\)/);
+});
+
+test("a switched-off Spectrum never runs, the saved scene keeps it (#33)", () => {
+  const saved = { spectrum: { enabled: true, chebyshev_degree: 4 }, steps: 20 };
+  resetUniCanvasToggles();
+  assert.deepEqual(uniCanvasRequestOverrides(saved), {});
+  assert.equal(uniCanvasRequestSettings(structuredClone(saved)).spectrum.enabled, true);
+  offOnly("qwen21Spectrum");
+  const request = uniCanvasRequestSettings(structuredClone(saved));
+  assert.equal(request.spectrum.enabled, false);
+  assert.equal(request.spectrum.chebyshev_degree, 4);
+  assert.equal(saved.spectrum.enabled, true, "the saved settings are untouched");
+  assert.deepEqual(uniCanvasRequestOverrides(saved), { spectrum: { enabled: false, chebyshev_degree: 4 } });
+  offOnly("family_qwen_image21");
+  assert.equal(uniCanvasRequestSettings(structuredClone(saved)).spectrum.enabled, false, "its requirement off turns it off too");
+  assert.match(widgetSource, /return uniCanvasRequestSettings\(settings\);/, "every request goes through makeSettingsPayload");
+  assert.match(widgetSource, /queued_draw\.settings_overrides = uniCanvasRequestOverrides\(this\.settings\)/, "the queued node path too");
 });
 
 test("the widget, shortcuts and timeline read the toggles", async () => {

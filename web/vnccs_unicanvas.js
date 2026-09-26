@@ -89,6 +89,8 @@ import {
   isUniCanvasSettingsSectionEnabled,
   isUniCanvasToolEnabled,
   syncUniCanvasSelectOptions,
+  uniCanvasRequestOverrides,
+  uniCanvasRequestSettings,
 } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
@@ -2471,7 +2473,8 @@ class UniCanvasWidget {
     this.forceSelectedPresetModelSettings();
     const settings = JSON.parse(JSON.stringify(this.settings));
     settings.lora_stack = this.filteredLoraStack();
-    return settings;
+    // Features switched off in Settings > VNCCS > UniCanvas do not run (the saved settings keep them).
+    return uniCanvasRequestSettings(settings);
   }
 
   renderLoraStackControls() {
@@ -6903,6 +6906,8 @@ class UniCanvasWidget {
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
       this.settings.draw_id = `uc_${Date.now().toString(36)}`;
       this.settings.queued_draw = this._buildDrawPayload(drawContext);
+      // The node runs with the saved settings; switched-off features travel as overrides.
+      this.settings.queued_draw.settings_overrides = uniCanvasRequestOverrides(this.settings);
       // The widget value has to be current before queuePrompt serializes the graph, so the
       // debounced settings sync is flushed synchronously here.
       this.flushSettingsToWidget();

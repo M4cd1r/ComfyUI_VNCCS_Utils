@@ -25,7 +25,7 @@ import { getPoseCharacterMask, poseAtPanoramaCamera, poseCharacterIssues, poseCh
 import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
 import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { resolveRemoveBgSelection, removeBgEditSettings } from "./vnccs_unicanvas_remove_bg.mjs";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 
@@ -389,11 +389,13 @@ export function bakeSettingsPayload(base, { model, defaults = {}, positive, seed
   return settings;
 }
 
-/** Remove-background method for bakes: SAM 3 is interactive, so it falls back to BiRefNet. */
+/**
+ * Remove-background method for bakes: SAM 3 is interactive, so it falls back to BiRefNet (or the
+ * next enabled backend). Null when Remove background is switched off: the bake then cuts the
+ * character out along its mannequin silhouette.
+ */
 export function bakeRemoveBgRequest(settings) {
-  const { method, editModel } = resolveRemoveBgSelection(settings);
-  const resolved = method === "sam3" ? "birefnet" : method;
-  return { method: resolved, edit_model: editModel, edit_settings: resolved === "edit" ? removeBgEditSettings(settings, editModel) : undefined };
+  return automaticRemoveBgRequest(settings);
 }
 
 /** Parts drawn back to front: farther characters (feet higher on screen) first. */
@@ -573,11 +575,14 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     return resolveBakeModel(uc.settings, { currentBase: uc.getModelBase(), presets: uc.presets || [], presetReady, baseOf });
   }
 
+  /** The cut-out alpha of `crop`, or null when Remove background is switched off. */
   async function removeBackground(crop) {
+    const request = bakeRemoveBgRequest(uc.settings);
+    if (!request) return null;
     const res = await fetch(BAKE_REMOVE_BG_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...bakeRemoveBgRequest(uc.settings), image: crop.toDataURL("image/png") }),
+      body: JSON.stringify({ ...request, image: crop.toDataURL("image/png") }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `Remove background HTTP ${res.status}`);
@@ -621,9 +626,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const cropBox = expandBox(silBox, BAKE_CROP_MARGIN, size.width, size.height);
     const crop = uc._createCanvas(cropBox.width, cropBox.height);
     crop.getContext("2d").drawImage(generated, cropBox.x, cropBox.y, cropBox.width, cropBox.height, 0, 0, cropBox.width, cropBox.height);
-    const alpha = await removeBackground(crop);
     const silCrop = dilateAlpha(subAlpha(silAlpha, size.width, cropBox), cropBox.width, cropBox.height,
       Math.max(1, Math.round(0.01 * Math.max(cropBox.width, cropBox.height))));
+    // Remove background switched off (Settings > VNCCS > UniCanvas): the mannequin silhouette cuts.
+    const alpha = (await removeBackground(crop)) ?? silCrop;
     const kept = keepOverlappingComponents(alpha, silCrop, cropBox.width, cropBox.height);
     const keptBox = alphaBounds(kept, cropBox.width, cropBox.height);
     if (!keptBox) throw new Error("The bake produced no character pixels over the mannequin.");

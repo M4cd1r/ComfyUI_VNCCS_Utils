@@ -97,9 +97,13 @@ class VNCCS_UniCanvas:
             # queued_draw as soon as a queued draw settles, so the node renders the canvas state
             # rather than failing the whole prompt.
             return (_render_unicanvas_state_to_image_tensor(unicanvas_state),)
+        # Features switched off in the UniCanvas settings (e.g. Spectrum) do not run: the widget sends
+        # the keys that turn them off, the saved settings keep them.
+        overrides = queued_draw.get("settings_overrides")
+        gen_settings = {**settings, **overrides} if isinstance(overrides, dict) and overrides else settings
         payload = {
             "state": state,
-            "gen_settings": settings,
+            "gen_settings": gen_settings,
             "debug_id": draw_id,
             "external": {
                 "model": config.get("model"),
