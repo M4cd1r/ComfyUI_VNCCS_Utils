@@ -45,6 +45,12 @@ export function historySettingsSnapshot(settings = {}) {
   return out;
 }
 
+/** Whether `rect` lies entirely inside `frame` (world rects). */
+export function rectInside(rect, frame) {
+  return Boolean(rect && frame) && rect.x >= frame.x && rect.y >= frame.y
+    && rect.x + rect.width <= frame.x + frame.width && rect.y + rect.height <= frame.y + frame.height;
+}
+
 function rectOf(value) {
   if (!value || typeof value !== "object") return null;
   const rect = { x: Number(value.x) || 0, y: Number(value.y) || 0, width: Number(value.width) || 0, height: Number(value.height) || 0 };
@@ -430,28 +436,35 @@ export class UniCanvasHistory {
     const widget = this.widget;
     const result = record?.results?.[index];
     if (!result) throw new Error("No such result");
-    if (widget.panorama) throw new Error("History results cannot be placed into a panorama");
+    const panorama = widget.panorama;
     const img = await widget.loadImage(this.resultUrl(result));
+    if (widget.panorama !== panorama) throw new Error("The document changed while the result was loading");
     const rect = result.rect || record.bbox || {
       x: widget.bbox.x, y: widget.bbox.y, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height,
     };
     const placement = widget.normalizeLayerWorldRect ? widget.normalizeLayerWorldRect(rect) : rect;
-    if (!widget.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return null;
-    if (!widget.ensureWorldBounds(placement.x, placement.y, 128)) return null;
+    if (!panorama && !widget.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return null;
+    if (!panorama && !widget.ensureWorldBounds(placement.x, placement.y, 128)) return null;
     const previousActiveLayerId = widget.activeLayerId;
     const meta = record.kind === "generate" && record.snapshot
       ? metaFromStagingSnapshot({ ...record.snapshot, seed: result.seed ?? record.snapshot.seed })
       : createLayerMeta("import", { sourceName: `History: ${HISTORY_KIND_LABELS[record.kind] || record.kind}`, historyId: record.id });
     const layer = widget.addLayer("raster", null, false, true, meta);
-    const hires = document.createElement("canvas");
-    hires.width = Math.max(1, img.naturalWidth || img.width);
-    hires.height = Math.max(1, img.naturalHeight || img.height);
-    widget.configureImageContext(hires.getContext("2d")).drawImage(img, 0, 0);
-    layer.hiresCanvas = hires;
-    layer.hiresRect = { ...placement };
-    widget.configureImageContext(layer.canvas.getContext("2d"))
-      .drawImage(hires, placement.x - widget.origin.x, placement.y - widget.origin.y, placement.width, placement.height);
-    widget.invalidateLayerCaches(layer);
+    if (panorama) {
+      // A panorama takes the result into the current view: at its rect when that lies inside
+      // the view (results generated in a panorama), otherwise fitted into it (#24).
+      panorama.placeImage(layer, img, rectInside(placement, widget.bbox) ? placement : null);
+    } else {
+      const hires = document.createElement("canvas");
+      hires.width = Math.max(1, img.naturalWidth || img.width);
+      hires.height = Math.max(1, img.naturalHeight || img.height);
+      widget.configureImageContext(hires.getContext("2d")).drawImage(img, 0, 0);
+      layer.hiresCanvas = hires;
+      layer.hiresRect = { ...placement };
+      widget.configureImageContext(layer.canvas.getContext("2d"))
+        .drawImage(hires, placement.x - widget.origin.x, placement.y - widget.origin.y, placement.width, placement.height);
+      widget.invalidateLayerCaches(layer);
+    }
     widget.pushHistoryEntry({ kind: "addLayer", layer, previousActiveLayerId });
     widget.renderLayerList();
     widget.requestRender();

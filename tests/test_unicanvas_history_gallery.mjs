@@ -12,6 +12,7 @@ import {
   historySettingsSnapshot,
   installUniCanvasHistory,
   recordSeed,
+  rectInside,
   restoredSettings,
 } from "../web/vnccs_unicanvas_history_gallery.mjs";
 
@@ -200,6 +201,30 @@ test("Re-run uses the recorded or a new seed and keeps the recorded seed mode", 
   assert.deepEqual(draws[0].bbox, record.bbox);
   assert.equal(widget.settings.seed_mode, "randomize");
   await assert.rejects(history.rerun({ kind: "remove_bg" }));
+});
+
+test("a History result goes into a panorama as a layer in the current view (#24)", async () => {
+  const session = fakeSession();
+  const widget = fakeWidget(session);
+  const image = { width: 512, height: 256 };
+  const placed = [];
+  widget.bbox = { x: 0, y: 0, width: 1024, height: 1024 };
+  widget.panorama = { placeImage: (layer, img, rect) => placed.push({ layer: layer.id, img, rect }) };
+  widget.loadImage = async () => image;
+  widget.normalizeLayerWorldRect = (rect) => ({ ...rect });
+  widget.ensureWorldBounds = () => { throw new Error("a panorama has no world bounds to grow"); };
+  widget.addLayer = (type, name, record, defer, meta) => { const layer = { id: `layer_${placed.length}`, type, meta }; widget.layers.unshift(layer); return layer; };
+  Object.assign(widget, { renderLayerList() {}, requestRender() {}, syncLightStateToWidget() {} });
+  const history = new UniCanvasHistory(widget);
+  const inView = { id: "gen_a", kind: "generate", sceneId: "other", bbox: { x: 0, y: 0, width: 1024, height: 1024 }, results: [{ imageDataURL: null }] };
+  const layer = await history.placeResult(inView, 0);
+  assert.deepEqual(placed[0], { layer: layer.id, img: image, rect: { x: 0, y: 0, width: 1024, height: 1024 } });
+  assert.deepEqual(widget.undoStack.at(-1), { kind: "addLayer", layer, previousActiveLayerId: "layer_base" }, "one undo step");
+  const flat = { id: "gen_b", kind: "remove_bg", sceneId: "other", bbox: { x: 2000, y: -40, width: 300, height: 300 }, results: [{ imageDataURL: null }] };
+  await history.placeResult(flat, 0);
+  assert.equal(placed[1].rect, null, "a rect outside the view is fitted into it");
+  assert.equal(rectInside({ x: 10, y: 10, width: 5, height: 5 }, { x: 0, y: 0, width: 20, height: 20 }), true);
+  assert.equal(rectInside({ x: 10, y: 10, width: 15, height: 5 }, { x: 0, y: 0, width: 20, height: 20 }), false);
 });
 
 test("Show layer switches to the record's scene and selects the layer", async () => {
