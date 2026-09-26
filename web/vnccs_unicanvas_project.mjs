@@ -221,6 +221,7 @@ export class UniCanvasProjectSession {
     this.blocked = false;
     this.lastThumbnailAt = 0;
     this.thumbnailDirty = true;
+    this.thumbnailTimer = null;
     this.status = "idle";
     this.listeners = new Set();
     this.stats = { blobUploads: 0, sceneSaves: 0 };
@@ -395,6 +396,23 @@ export class UniCanvasProjectSession {
     return { state, blobs, cacheUpdates, pixelsChanged };
   }
 
+  thumbnailDue() {
+    return this.thumbnailDirty && this.now() - this.lastThumbnailAt >= THUMBNAIL_MIN_INTERVAL_MS;
+  }
+
+  /**
+   * A thumbnail that was throttled is sent by a trailing save once the interval has passed, so
+   * the last edit of a session always reaches the project list.
+   */
+  scheduleThumbnail() {
+    if (!this.thumbnailDirty || this.thumbnailTimer || typeof document === "undefined") return;
+    const delay = Math.max(0, THUMBNAIL_MIN_INTERVAL_MS - (this.now() - this.lastThumbnailAt));
+    this.thumbnailTimer = setTimeout(() => {
+      this.thumbnailTimer = null;
+      if (this.active && this.attached && this.thumbnailDirty) void this.save();
+    }, delay);
+  }
+
   buildThumbnail() {
     const widget = this.widget;
     if (typeof document === "undefined" || typeof widget.drawFlattenedLayers !== "function") return null;
@@ -478,7 +496,14 @@ export class UniCanvasProjectSession {
     const sceneId = this.sceneId;
     const { state, blobs, cacheUpdates, pixelsChanged } = await this.buildSceneState();
     const json = JSON.stringify(state);
-    if (json === this.lastSavedJSON) return true;
+    if (pixelsChanged) this.thumbnailDirty = true;
+    // A scene the store has no thumbnail for (a new or migrated scene, one saved while the
+    // thumbnail was throttled) still gets one, even when nothing else changed.
+    const thumbnail = this.thumbnailDue() ? this.buildThumbnail() : null;
+    if (json === this.lastSavedJSON && !thumbnail) {
+      this.scheduleThumbnail();
+      return true;
+    }
     this.setStatus("saving", "Saving...");
     for (const [sha, bytes] of blobs) {
       if (this.knownBlobs.has(sha)) continue;
@@ -486,16 +511,12 @@ export class UniCanvasProjectSession {
       this.stats.blobUploads += 1;
       this.knownBlobs.add(sha);
     }
-    if (pixelsChanged) this.thumbnailDirty = true;
     const payload = { state, ifRev: this.rev };
-    if (this.thumbnailDirty && this.now() - this.lastThumbnailAt >= THUMBNAIL_MIN_INTERVAL_MS) {
-      const thumbnail = this.buildThumbnail();
-      if (thumbnail) {
-        payload.thumbnail = thumbnail;
-        this.lastThumbnailAt = this.now();
-        this.thumbnailDirty = false;
-      }
-    }
+    if (thumbnail) {
+      payload.thumbnail = thumbnail;
+      this.lastThumbnailAt = this.now();
+      this.thumbnailDirty = false;
+    } else this.scheduleThumbnail();
     let entry;
     try {
       entry = await this.request("PUT", `${this.projectPath(projectId)}/scenes/${encodeURIComponent(sceneId)}`, { json: payload });
@@ -591,6 +612,7 @@ export class UniCanvasProjectSession {
         this.lastSavedJSON = "";
       }
       this.thumbnailDirty = !entry.thumbnail;
+      this.scheduleThumbnail();
       this.setStatus("saved", "Saved");
       return true;
     } finally {
@@ -853,6 +875,8 @@ export class UniCanvasProjectSession {
   dispose() {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    if (this.thumbnailTimer) clearTimeout(this.thumbnailTimer);
+    this.thumbnailTimer = null;
     this.releaseLiveScene();
     this.listeners.clear();
   }
