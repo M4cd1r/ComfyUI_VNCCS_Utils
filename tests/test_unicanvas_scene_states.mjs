@@ -140,6 +140,43 @@ test("normalizeSceneStates is additive and tolerant", () => {
   assert.deepEqual(scene.states[1].layers.a, { visible: false, offset: { x: 2, y: 0 } });
 });
 
+test("states capture showMannequin and the sprite variant, and old entries without them still apply", () => {
+  const pose = layer("p", { type: "pose", pose: { rect: { x: 0, y: 0, width: 10, height: 10 }, bake: { characters: {}, showMannequin: false } } });
+  const sprite = layer("s", { type: "sprite", sprite: { activeVariantId: "v1", variants: [
+    { id: "v1", status: "ready" }, { id: "v2", status: "ready" }, { id: "v3", status: "empty" }] } });
+  const captured = captureSceneLayers([pose, sprite]);
+  assert.equal(captured.p.showMannequin, false);
+  assert.equal(captured.s.spriteVariantId, "v1");
+  assert.equal("spriteVariantId" in captured.p, false);
+
+  const rebuilt = [];
+  const synced = [];
+  const view = { before: (item) => synced.push(item.id), after: (item) => rebuilt.push(item.id) };
+  const previous = applySceneLayers([pose, sprite], { p: { showMannequin: true }, s: { spriteVariantId: "v2" } }, view);
+  assert.equal(pose.pose.bake.showMannequin, true);
+  assert.equal(sprite.sprite.activeVariantId, "v2");
+  assert.deepEqual(rebuilt, ["p", "s"]);
+  assert.deepEqual(synced, ["p", "s"]);
+  assert.equal(sceneLayersDiffer([pose, sprite], { layers: captured }), true);
+  applySceneLayers([pose, sprite], previous, view);
+  assert.equal(pose.pose.bake.showMannequin, false);
+  assert.equal(sprite.sprite.activeVariantId, "v1");
+  assert.equal(sceneLayersDiffer([pose, sprite], { layers: captured }), false);
+
+  // An empty or deleted variant never becomes active; unchanged parts rebuild nothing.
+  rebuilt.length = 0;
+  applySceneLayers([pose, sprite], { s: { spriteVariantId: "v3" }, p: { showMannequin: false } }, view);
+  assert.equal(sprite.sprite.activeVariantId, "v1");
+  assert.deepEqual(rebuilt, []);
+  // Old entries (before #5 / #6) lack the keys and leave the view as it is.
+  const legacy = normalizeSceneStates({ states: [{ id: "old", layers: { s: { visible: true, blendMode: "normal", offset: { x: 0, y: 0 } } } }] });
+  applySceneLayers([sprite], legacy.states[0].layers, view);
+  assert.equal(sprite.sprite.activeVariantId, "v1");
+  const restored = normalizeSceneStates({ states: [{ id: "n", layers: { s: { visible: true, blendMode: "normal", spriteVariantId: "v2" }, p: { visible: true, blendMode: "normal", showMannequin: true } } }] });
+  assert.equal(restored.states[0].layers.s.spriteVariantId, "v2");
+  assert.equal(restored.states[0].layers.p.showMannequin, true);
+});
+
 test("export names are safe and unique", () => {
   assert.deepEqual(exportFileNames(["Day", "day", "a/b:c", "..", ""]), ["Day", "day-2", "a_b_c", "state-4", "state-5"]);
 });

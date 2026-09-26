@@ -1316,6 +1316,13 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     isSprite, syncFromCanvas, snapshot, restoreSnapshot, cloneLayerFields, serialize, restore, onMove, onTransform, onStroke,
     setActiveVariant, applyVariantHistory, cycleActive, preview, endPreview, createFromLayer, splitVariantToLayer,
     addPresets, addCustom, removeVariant, setPaintAll, stageVariant, generateMissing, acceptStaged, renderPanel,
+    /** Shows the active variant again after something else (a scene state) switched it. */
+    redraw(layer) {
+      if (!isSprite(layer)) return;
+      layer.sprite._previewId = null;
+      drawActive(layer);
+      if (uc.activeLayerId === layer.id) renderPanel();
+    },
     describe(layerId) {
       const layer = findLayer(layerId);
       if (!isSprite(layer)) return null;
