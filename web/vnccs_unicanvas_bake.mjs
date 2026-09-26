@@ -29,13 +29,14 @@ import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs";
+import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs";
 
 // Offline fallback for the bake families (the families whose backend descriptor sets
 // capabilities.supports_pose_edit) until /assets has loaded; it also gives the known families
 // their short display names and their order.
 export const BAKE_FAMILIES = Object.freeze([["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"]]);
 export const BAKE_STATUSES = Object.freeze(["none", "baked", "stale", "failed"]);
-export const BAKE_DRAW_ROUTE = "/vnccs/unicanvas/draw";
+export const BAKE_DRAW_ROUTE = UNICANVAS_DRAW_ROUTE;
 export const BAKE_REMOVE_BG_ROUTE = "/vnccs/unicanvas/remove_bg";
 // Working rect margin around the pose rect, and crop margin around the solo silhouette.
 export const BAKE_WORK_MARGIN = 0.1;
@@ -784,7 +785,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const anchors = editor.characterAnchors?.(characterId) || null;
     const defaults = model.useCurrent ? {} : (modelModule(model.family)?.defaults || {});
     const settings = bakeSettingsPayload(uc.makeSettingsPayload(), { model, defaults, positive: inputs.positive, seed, batch });
-    const debugId = `bake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const debugId = drawDebugId("bake");
     // History (vnccs_unicanvas_history_gallery.mjs): the caller finishes the run with its results.
     const historyRun = uc.generationHistory?.beginRun("bake", {
       settings, bbox: work, mode: "bake", inferenceSize: size, outputSize: output, targetLayerId: layer.id,
@@ -800,17 +801,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
 
   /** The bake request and the extraction of each returned image. */
   async function requestBake({ layer, characterId, settings, inputs, work, size, output, rect, anchors, model, seed, debugId, poseHash, refHash }) {
-    const res = await fetch(BAKE_DRAW_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode: "img2img", pose_edit: { image1: inputs.image1, image2: inputs.image2 }, source_empty: false,
-        bbox: work, inference_size: size, output_size: output, debug_id: debugId, settings,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
+    const { images } = await requestDirectDraw({
+      mode: "img2img", pose_edit: { image1: inputs.image1, image2: inputs.image2 }, source_empty: false,
+      bbox: work, inference_size: size, output_size: output, debug_id: debugId, settings,
+    }, { route: BAKE_DRAW_ROUTE });
     if (!images.length) throw new Error("The bake returned no images.");
     if (!uc.layers.includes(layer)) throw new Error("The pose layer was removed while baking.");
     const results = [];
@@ -958,14 +952,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       uc.setStatus(poseCharacterIssues(uc, layer).length ? "Bind a character reference to a mannequin to bake it." : "Every character of this layer is already baked.");
       return;
     }
-    uc.drawInProgress = true;
-    if (uc.drawBtn) uc.drawBtn.disabled = true;
-    let result;
-    try { result = await bakeSequence(candidates); }
-    finally {
-      uc.drawInProgress = false;
-      if (uc.drawBtn) uc.drawBtn.disabled = false;
-    }
+    const result = await runExclusiveGeneration(uc, () => bakeSequence(candidates));
     if (result.entries.length) uc.pushHistoryEntry(result.entries.length === 1 ? result.entries[0] : { kind: "historyGroup", entries: result.entries });
     uc.syncToNode?.();
     uc.renderLayerList();
@@ -990,14 +977,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     // Scene Generate switched off (Settings > VNCCS > UniCanvas): GENERATE runs the scene only.
     const candidates = isUniCanvasEnabled("sceneGenerate") ? collectBakeCandidates(uc, { includeStale: uc.settings.rebake_stale_on_generate !== false, hasPart }) : [];
     if (!candidates.length) return true;
-    uc.drawInProgress = true;
-    if (uc.drawBtn) uc.drawBtn.disabled = true;
-    let result;
-    try { result = await bakeSequence(candidates); }
-    finally {
-      uc.drawInProgress = false;
-      if (uc.drawBtn) uc.drawBtn.disabled = false;
-    }
+    const result = await runExclusiveGeneration(uc, () => bakeSequence(candidates));
     uc.syncToNode?.();
     uc.renderLayerList();
     if (result.error) {

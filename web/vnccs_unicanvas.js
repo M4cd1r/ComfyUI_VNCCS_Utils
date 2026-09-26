@@ -96,6 +96,7 @@ import {
   uniCanvasRequestSettings,
 } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { escapeHtml, randomId } from "./vnccs_unicanvas_util.mjs";
+import { runExclusiveGeneration, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -6956,8 +6957,7 @@ class UniCanvasWidget {
     } else {
       this.startDrawProgressPolling(debugId);
     }
-    this.drawBtn.disabled = true;
-    if (this.batchInput) this.batchInput.disabled = true;
+    this.setGenerationLock(true);
     let performance = "";
     try {
       if (configLinked) {
@@ -6996,13 +6996,21 @@ class UniCanvasWidget {
       this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
     } finally {
       this.stopDrawProgressPolling();
-      this.drawInProgress = false;
-      this.drawBtn.disabled = false;
-      if (this.batchInput) this.batchInput.disabled = false;
+      this.setGenerationLock(false);
       window.setTimeout(() => {
         if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
       }, 1800);
     }
+  }
+
+  // One generation at a time: GENERATE, bakes, sprite variants and AI harmonize share this lock
+  // (vnccs_unicanvas_draw_client.mjs); it also disables the controls that start a generation.
+  setGenerationLock(on) {
+    setGenerationLock(this, on);
+  }
+
+  runExclusiveGeneration(work) {
+    return runExclusiveGeneration(this, work);
   }
 
   imageResultToURL(image) {

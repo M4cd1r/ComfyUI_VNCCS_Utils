@@ -43,13 +43,14 @@ import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { applyHomography, homographyFromUnitSquare, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
 import { createSpriteSurface, normalizeSpriteCamera } from "./vnccs_unicanvas_sprites_panorama.mjs";
 import { cloneJson, uniqueId } from "./vnccs_unicanvas_util.mjs";
+import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
 
 export const SPRITE_LAYER_TYPE = "sprite";
 export const SPRITE_SCHEMA_VERSION = 1;
 export const SPRITE_VARIANT_HISTORY_KIND = "spriteVariant";
 export const SPRITE_VARIANT_KINDS = Object.freeze(["expression", "outfit", "pose", "custom"]);
 export const SPRITE_VARIANT_STATUSES = Object.freeze(["empty", "ready", "failed"]);
-export const SPRITE_DRAW_ROUTE = "/vnccs/unicanvas/draw";
+export const SPRITE_DRAW_ROUTE = UNICANVAS_DRAW_ROUTE;
 export const SPRITE_REMOVE_BG_ROUTE = "/vnccs/unicanvas/remove_bg";
 // faceRect margin around a baked headRect, rect margin around the source alpha, and how much
 // context around faceRect an expression request sees.
@@ -1106,18 +1107,11 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       params: { variantId: String(variantId), variant: variant.name, kind: variant.kind, batch: settings.batch_size },
     }) || null;
     try {
-      const res = await fetch(SPRITE_DRAW_ROUTE, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "inpaint", image: image.toDataURL("image/png"), mask: maskImage.toDataURL("image/png"), source_empty: false,
-          bbox: world, inference_size: inference, output_size: { width: Math.max(64, work.width), height: Math.max(64, work.height) },
-          debug_id: `sprite-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, settings,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-      const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
+      const { images } = await requestDirectDraw({
+        mode: "inpaint", image: image.toDataURL("image/png"), mask: maskImage.toDataURL("image/png"), source_empty: false,
+        bbox: world, inference_size: inference, output_size: { width: Math.max(64, work.width), height: Math.max(64, work.height) },
+        debug_id: drawDebugId("sprite"), settings,
+      }, { route: SPRITE_DRAW_ROUTE });
       if (!images.length) throw new Error("The generation returned no images.");
       if (!uc.layers.includes(layer) || !variantOf(layer, variantId)) throw new Error("The sprite layer changed while generating.");
       const results = [];
@@ -1176,8 +1170,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   }
 
   function lockDraw(on) {
-    uc.drawInProgress = on;
-    if (uc.drawBtn) uc.drawBtn.disabled = on;
+    setGenerationLock(uc, on);
   }
 
   /** Per-variant Generate / Regenerate: batch results are staged in place over the sprite. */
