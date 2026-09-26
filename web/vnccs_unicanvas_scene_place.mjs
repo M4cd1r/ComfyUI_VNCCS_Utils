@@ -947,6 +947,38 @@ export async function backgroundDepth(uc, layer) {
   return result;
 }
 
+/**
+ * The cached depth of a layer's current pixels in rect-relative form, for a background asset
+ * (vnccs_unicanvas_library.mjs): `{ depthDataURL, width, height, horizon }` with `horizon` a
+ * fraction of the rect height (or null). Null when nothing is cached for these pixels.
+ */
+export function cachedBackgroundDepth(uc, layer) {
+  const cached = layer && uc._scenePlace?.depthCache.get(`${layer.id}:${layer.pixelRevision ?? 0}`);
+  if (!cached?.depth || !(cached.rect?.height > 0)) return null;
+  return {
+    depthDataURL: cached.depth, width: cached.width, height: cached.height,
+    horizon: cached.horizonY === null ? null : (cached.horizonY - cached.rect.y) / cached.rect.height,
+  };
+}
+
+/**
+ * Seeds the depth cache of a layer's current pixels from a stored depth (see
+ * cachedBackgroundDepth), so "Estimate from background" and occluders reuse it. `depthURL` is
+ * where the stored depth PNG loads from. Returns true when the cache was seeded.
+ */
+export function seedBackgroundDepth(uc, layer, stored, depthURL) {
+  const state = uc._scenePlace;
+  const source = state && layerSource(uc, layer);
+  const width = Number(stored?.width), height = Number(stored?.height), horizon = finite(stored?.horizon);
+  if (!source || !depthURL || !(width > 0) || !(height > 0)) return false;
+  for (const key of state.depthCache.keys()) if (key.startsWith(`${layer.id}:`)) state.depthCache.delete(key);
+  state.depthCache.set(`${layer.id}:${layer.pixelRevision ?? 0}`, {
+    depth: depthURL, width, height, rect: source.rect,
+    horizonY: horizon === null ? null : source.rect.y + horizon * source.rect.height,
+  });
+  return true;
+}
+
 async function estimateFromBackground(uc) {
   const state = uc._scenePlace;
   const layer = backgroundLayer(uc);

@@ -392,3 +392,32 @@ test("library characters list both scopes and bind as a library reference with p
   const prop = [...assets.values()].find((asset) => asset.kind === "prop");
   await assert.rejects(libraryCharacterReference(uc, "global", prop.id, client), /not a character/);
 });
+
+test("a background asset saves the cached depth map and an insert seeds the depth cache", async () => {
+  const { client, assets } = fakeServer();
+  const uc = fakeWidget();
+  uc._scenePlace = { depthCache: new Map() };
+  const layer = { id: "bg", type: "raster", name: "Forest", pixelRevision: 7, meta: { origin: "import", category: "Background" }, canvas: fakeCanvas(), bounds: { x: 0, y: 100, width: 40, height: 100 } };
+  uc.layers.push(layer);
+  uc._scenePlace.depthCache.set("bg:7", { depth: "data:image/png;base64,REVQVEg=", width: 256, height: 128, rect: { x: 0, y: 100, width: 40, height: 100 }, horizonY: 125 });
+  const asset = await saveLayerToLibrary(uc, layer, { kind: "background", name: "Forest", scope: "project" }, client);
+  const stored = assets.get(asset.id);
+  assert.deepEqual(stored.data.depth, { depthDataURL: "data:image/png;base64,REVQVEg=", width: 256, height: 128, horizon: 0.25 });
+
+  // A fresh widget: inserting the background seeds its depth, mapped onto the new rect.
+  const other = fakeWidget();
+  other._scenePlace = { depthCache: new Map() };
+  other.getLayerAlphaBounds = () => ({ x: 10, y: 20, width: 40, height: 100 });
+  const depthRef = { blob: `${SHA}.png` };
+  const inserted = await insertAsset(other, { ...stored, scope: "project", data: { ...stored.data, depth: { ...stored.data.depth, depthDataURL: depthRef } } }, { x: 30, y: 70 });
+  const seeded = other._scenePlace.depthCache.get(`${inserted.id}:0`);
+  assert.equal(seeded.depth, `/vnccs/unicanvas/projects/prj_1/blobs/${SHA}`);
+  assert.deepEqual(seeded.rect, { x: 10, y: 20, width: 40, height: 100 });
+  assert.equal(seeded.horizonY, 45);
+  assert.equal(seeded.width, 256);
+
+  // Without a cached depth the asset keeps none.
+  uc._scenePlace.depthCache.clear();
+  const plain = await saveLayerToLibrary(uc, layer, { kind: "background", name: "Plain", scope: "project" }, client);
+  assert.equal(assets.get(plain.id).data.depth, null);
+});

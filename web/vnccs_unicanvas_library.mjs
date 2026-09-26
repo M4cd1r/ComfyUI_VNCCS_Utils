@@ -21,6 +21,8 @@
  *   (`{ source: "library", assetId, assetScope, name, dataURL }`); binding one also sets its
  *   identity prompt and applies its default mesh morphs (taken from the baked mannequin a
  *   character layer came from) to that mannequin.
+ * - Background assets keep the depth map estimated for their pixels (`data.depth`), and an
+ *   insert seeds the depth cache with it.
  * - Characters saved from a sprite layer (Plan 03, #6) carry their sprite set (`data.spriteSet`,
  *   every variant a PNG blob) and insert as a sprite layer with all variants; other characters
  *   insert as raster layers. The reserved `skin` kind is not built yet.
@@ -31,7 +33,7 @@
 
 import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { expectedHeightAt, isPerspectiveCalibrated, layerHeightFactor, normalizeScenePerspective, editScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { cachedBackgroundDepth, expectedHeightAt, isPerspectiveCalibrated, layerHeightFactor, normalizeScenePerspective, editScenePerspective, seedBackgroundDepth } from "./vnccs_unicanvas_scene_place.mjs";
 import { serializePose } from "./vnccs_unicanvas_pose_state.mjs";
 import { PROJECTS_BASE } from "./vnccs_unicanvas_project.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
@@ -348,6 +350,9 @@ export function layerAssetData(uc, layer, kind, previous = {}) {
   }
   if (kind === "background") {
     data.perspective = relativePerspective(uc.scenePerspective, image.rect) ?? previous?.perspective ?? null;
+    // The depth estimated for these pixels (Estimate from background, occluders) travels along,
+    // so inserting the background does not run the depth model again.
+    data.depth = cachedBackgroundDepth(uc, layer) ?? (previous?.depth || null);
   }
   if (kind === "pose") {
     if (!layer.pose) throw new Error("the layer has no pose");
@@ -482,6 +487,11 @@ export async function insertAsset(uc, asset, point) {
   // Category folders (issue #17): the move joins the add's undo entry when auto-file is on.
   if (kind !== "background") uc.autoFileLayer?.(layer);
   refreshWidget(uc);
+  if (kind === "background" && data.depth?.depthDataURL) {
+    const ref = data.depth.depthDataURL;
+    const url = typeof ref === "string" && ref.startsWith("data:") ? ref : assetBlobUrl(scope, projectId, ref);
+    seedBackgroundDepth(uc, layer, data.depth, url);
+  }
   if (kind === "background" && data.perspective && !isPerspectiveCalibrated(uc.scenePerspective)) {
     const absolute = absolutePerspective(data.perspective, rect);
     if (absolute) editScenePerspective(uc, (next) => Object.assign(next, absolute));
