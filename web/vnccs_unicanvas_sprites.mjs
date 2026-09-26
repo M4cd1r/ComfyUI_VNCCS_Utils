@@ -834,7 +834,8 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     return serializeSpriteState(layer.sprite, includeData ? (variant) => variant.pixels.toDataURL("image/png") : null);
   }
 
-  async function restore(layer, stored) {
+  /** A stored set with its variant pixels loaded (data URLs or blob URLs), not yet on a layer. */
+  async function loadSet(stored) {
     const sprite = normalizeSpriteState(stored);
     for (const variant of sprite.variants) {
       if (variant.dataURL) {
@@ -850,6 +851,11 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
         delete variant.dataURL;
       }
     }
+    return sprite;
+  }
+
+  async function restore(layer, stored) {
+    const sprite = await loadSet(stored);
     layer.sprite = sprite;
     const active = activeVariant(layer);
     // Metadata-only states (the node widget) take the active variant from the saved layer pixels.
@@ -1489,8 +1495,21 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     { id: "split-variant-to-layer", label: "Split variant to layer", visible: (layer) => isSprite(layer), run: (layer) => splitVariantToLayer(layer) },
   ];
 
+  /** A loaded set (loadSet) becomes the layer's, e.g. a library character: the canvas shows it. */
+  function attachSet(layer, sprite) {
+    if (layer?.type !== SPRITE_LAYER_TYPE || !sprite) return;
+    for (const variant of sprite.variants) if (variant.status === "ready" && !variant.pixels) variant.status = "empty";
+    if (!activeVariant({ sprite })?.pixels) {
+      const ready = readyVariants(sprite)[0];
+      if (ready) sprite.activeVariantId = ready.id;
+    }
+    layer.sprite = sprite;
+    drawActive(layer);
+    if (uc.activeLayerId === layer.id) renderPanel();
+  }
+
   const api = {
-    isSprite, syncFromCanvas, snapshot, restoreSnapshot, cloneLayerFields, serialize, restore, onMove, onTransform, onDepthScale, onStroke,
+    isSprite, syncFromCanvas, snapshot, restoreSnapshot, cloneLayerFields, serialize, restore, loadSet, attachSet, onMove, onTransform, onDepthScale, onStroke,
     setActiveVariant, applyVariantHistory, cycleActive, preview, endPreview, createFromLayer, splitVariantToLayer,
     addPresets, addCustom, removeVariant, setPaintAll, stageVariant, generateMissing, acceptStaged, renderPanel,
     /** Shows the active variant again after something else (a scene state) switched it. */

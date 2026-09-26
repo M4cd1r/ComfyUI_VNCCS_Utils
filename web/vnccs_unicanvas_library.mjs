@@ -17,9 +17,9 @@
  *   props); with the scene's depth scale on (Plan 08) a character is sized for that ground row.
  * - The settings popover gets "Save generation preset to library".
  *
- * Not built yet, because their plans are not merged: sprite sets on characters (Plan 03, #6),
- * the "From library" source of the pose character reference card and default mesh morphs
- * (Plan 01, #4), and the reserved `skin` kind. A character is inserted as a raster layer.
+ * - Characters saved from a sprite layer (Plan 03, #6) carry their sprite set (`data.spriteSet`,
+ *   every variant a PNG blob) and insert as a sprite layer with all variants; other characters
+ *   insert as raster layers. The reserved `skin` kind is not built yet.
  *
  * The widget only calls installUniCanvasLibrary(); the layer menu and the settings popover read
  * `uc.layerMenuExtensions` / `uc.library`.
@@ -74,6 +74,7 @@ const KIND_CATEGORIES = Object.freeze({ character: "Characters", background: "Ba
 export function saveableKinds(layer) {
   if (!layer || isMaskSectionLayer(layer) || layer.type === "group" || layer.type === "panorama") return [];
   if (layer.type === "pose") return ["pose"];
+  if (layer.type === "sprite") return ["character"];
   const meta = normalizeLayerMeta(layer.meta);
   const raster = ["character", "prop", "background"];
   const suggested = (meta.origin === "asset" && raster.includes(meta.assetKind) && meta.assetKind)
@@ -174,6 +175,33 @@ export function absolutePerspective(relative, rect) {
   };
 }
 
+/**
+ * A character asset's sprite set placed over the world `rect` (integers): the rect-space anchor
+ * and face area scale with it, variant pixels keep their stored resolution (they are drawn
+ * scaled). `urlOf(ref)` turns a stored pixel ref (a blob ref from the server) into a loadable
+ * URL; data URLs pass through.
+ */
+export function placedSpriteSet(stored, rect, urlOf = (ref) => ref) {
+  if (!stored?.rect || !Array.isArray(stored.variants)) return null;
+  const set = clone(stored);
+  const next = { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) };
+  const sx = next.width / Math.max(1, Number(stored.rect.width) || 1), sy = next.height / Math.max(1, Number(stored.rect.height) || 1);
+  if (set.anchor) set.anchor = { x: Number(set.anchor.x) * sx, y: Number(set.anchor.y) * sy };
+  if (set.faceRect) {
+    const face = set.faceRect;
+    set.faceRect = { x: Math.round(face.x * sx), y: Math.round(face.y * sy), width: Math.max(1, Math.round(face.width * sx)), height: Math.max(1, Math.round(face.height * sy)) };
+  }
+  set.rect = next;
+  for (const variant of set.variants) {
+    if (!variant || variant.dataURL == null) continue;
+    const url = typeof variant.dataURL === "string" && variant.dataURL.startsWith("data:") ? variant.dataURL : urlOf(variant.dataURL);
+    if (url) variant.dataURL = url;
+    else delete variant.dataURL;
+  }
+  delete set.sourceLayerId;
+  return set;
+}
+
 // ---------------------------------------------------------------------------
 // HTTP client
 // ---------------------------------------------------------------------------
@@ -246,6 +274,12 @@ function refreshWidget(uc) {
 
 /** The pixels of a layer for an asset: its hi-res source when present, else its alpha crop. */
 function layerImage(uc, layer) {
+  if (layer.type === "sprite" && layer.sprite?.rect && uc.sprites) {
+    // A sprite set: the active variant at its stored resolution over the set's rect.
+    uc.sprites.syncFromCanvas(layer);
+    const active = layer.sprite.variants.find((variant) => variant.id === layer.sprite.activeVariantId);
+    if (active?.pixels) return { dataURL: active.pixels.toDataURL("image/png"), rect: { ...layer.sprite.rect } };
+  }
   if (layer.hiresCanvas && layer.hiresRect) {
     return { dataURL: layer.hiresCanvas.toDataURL("image/png"), rect: uc.normalizeLayerWorldRect(layer.hiresRect) };
   }
@@ -272,6 +306,12 @@ export function layerAssetData(uc, layer, kind, previous = {}) {
     data.heightFactor = layerHeightFactor(layer);
     data.meshMorphs = previous?.meshMorphs ?? null;
     data.spriteSet = previous?.spriteSet ?? null;
+    if (layer.type === "sprite" && layer.sprite?.rect && uc.sprites) {
+      data.spriteSet = uc.sprites.serialize(layer);
+      // The feet of the set are the asset's anchor, so a drop puts them on the drop point.
+      const { rect, anchor } = layer.sprite;
+      data.anchor = normalizeAnchor({ x: anchor.x / rect.width, y: anchor.y / rect.height }, kind);
+    }
   }
   if (kind === "background") {
     data.perspective = relativePerspective(uc.scenePerspective, image.rect) ?? previous?.perspective ?? null;
@@ -379,6 +419,20 @@ export async function insertAsset(uc, asset, point) {
   }
 
   if (!uc.ensureWorldRectBounds(rect, 0)) throw new Error("the drop point is outside the canvas limits");
+  if (kind === "character" && data.spriteSet && uc.sprites) {
+    // A character with a sprite set comes in as a sprite layer holding every variant.
+    const placed = placedSpriteSet(data.spriteSet, rect, (ref) => assetBlobUrl(scope, projectId, ref));
+    const sprite = placed && await uc.sprites.loadSet(placed);
+    if (uc._disposed) return null;
+    if (sprite?.variants?.some((variant) => variant.pixels)) {
+      const layer = uc.addLayer("sprite", asset.name, true, true, createLayerMeta("asset", meta));
+      uc.sprites.attachSet(layer, sprite);
+      uc.autoFileLayer?.(layer);
+      refreshWidget(uc);
+      uc.setStatus(`Inserted character "${asset.name}" with ${sprite.variants.length} sprite variant${sprite.variants.length === 1 ? "" : "s"}${scale !== 1 ? " (depth scaled)" : ""}`);
+      return layer;
+    }
+  }
   let layer;
   if (kind === "background") {
     // Backgrounds go under everything: one snapshot entry covers the insert and the reorder.
@@ -427,11 +481,24 @@ export async function updateLayerFromLibrary(uc, layer, client = uc.library?.cli
   const image = await loadAssetImage(uc, link.scope, currentProjectId(uc), data.imageDataURL);
   if (uc._disposed || !uc.layers.includes(layer)) return null;
   const size = data.size?.width > 0 ? data.size : image ? { width: image.naturalWidth || image.width, height: image.naturalHeight || image.height } : null;
-  const current = layer.type === "pose" && layer.pose?.rect ? layer.pose.rect : uc.getLayerWorldBounds(layer);
+  const current = layer.type === "pose" && layer.pose?.rect ? layer.pose.rect
+    : layer.type === "sprite" && layer.sprite?.rect ? layer.sprite.rect : uc.getLayerWorldBounds(layer);
   if (!size || !current) throw new Error("nothing to update");
   const scale = current.height > 0 ? current.height / size.height : 1;
   let rect = anchoredRect(size, anchor, anchorPoint(current, anchor), scale);
   if (Math.abs(scale - 1) < 1e-6) rect = roundRect(rect);
+  if (layer.type === "sprite" && data.spriteSet && uc.sprites) {
+    const placed = placedSpriteSet(data.spriteSet, rect, (ref) => assetBlobUrl(link.scope, currentProjectId(uc), ref));
+    const sprite = placed && await uc.sprites.loadSet(placed);
+    if (uc._disposed || !uc.layers.includes(layer) || !sprite) return null;
+    uc.ensureWorldRectBounds(sprite.rect, 0);
+    const before = uc.createLayerPixelSnapshot(layer);
+    uc.sprites.attachSet(layer, sprite);
+    uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+    refreshWidget(uc);
+    uc.setStatus(`Updated "${layer.name}" from the library`);
+    return asset;
+  }
   const before = uc.createLayerPixelSnapshot(layer);
   if (layer.type === "pose" && data.pose) {
     const poseRect = data.pose.rect || rect;

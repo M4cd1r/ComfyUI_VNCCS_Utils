@@ -15,6 +15,7 @@ import {
   installUniCanvasLibrary,
   normalizeAnchor,
   parseTags,
+  placedSpriteSet,
   poseForAsset,
   presetSnapshot,
   pushLayerToLibrary,
@@ -44,6 +45,7 @@ test("saveable kinds follow the layer type and provenance", () => {
   assert.deepEqual(saveableKinds({ type: "mask" }), []);
   assert.deepEqual(saveableKinds({ type: "group" }), []);
   assert.deepEqual(saveableKinds({ type: "pose" }), ["pose"]);
+  assert.deepEqual(saveableKinds({ type: "sprite", meta: {} }), ["character"]);
   assert.equal(saveableKinds({ type: "raster", meta: { origin: "paint" } })[0], "prop");
   assert.equal(saveableKinds({ type: "raster", meta: { origin: "generate", heightFactor: 1.1 } })[0], "character");
   assert.equal(saveableKinds({ type: "raster", meta: { origin: "asset", assetKind: "background" } })[0], "background");
@@ -293,4 +295,65 @@ test("install adds the layer menu entries and works without a DOM", () => {
   assert.equal(update.visible({ type: "raster", meta: { origin: "paint" } }), false);
   assert.equal(update.visible({ type: "raster", meta: { origin: "asset", assetId: "ast_1", assetScope: "global" } }), true);
   assert.equal(installUniCanvasLibrary(uc), library);
+});
+
+// Sprite sets on character assets (#6 / #23): saved with every variant, inserted as a sprite layer.
+function fakeSprites() {
+  const calls = [];
+  return {
+    calls,
+    syncFromCanvas: (layer) => calls.push(["sync", layer.id]),
+    serialize: (layer) => ({ rect: { ...layer.sprite.rect }, anchor: { ...layer.sprite.anchor }, faceRect: { x: 10, y: 5, width: 20, height: 20 },
+      activeVariantId: "v1", variants: layer.sprite.variants.map((variant) => ({ id: variant.id, name: variant.name, status: "ready", dataURL: "data:image/png;base64,AAAA" })) }),
+    loadSet: async (stored) => ({ ...stored, variants: stored.variants.map((variant) => ({ ...variant, pixels: { src: variant.dataURL } })) }),
+    attachSet: (layer, sprite) => { calls.push(["attach", layer.id]); layer.sprite = sprite; },
+  };
+}
+
+test("a sprite set is placed over a new rect: rect-space fields scale, blob refs become urls", () => {
+  const stored = { rect: { x: 5, y: 5, width: 100, height: 200 }, anchor: { x: 50, y: 200 }, faceRect: { x: 30, y: 10, width: 40, height: 40 }, sourceLayerId: "old",
+    variants: [{ id: "a", dataURL: { blob: `${SHA}.png` } }, { id: "b", dataURL: "data:image/png;base64,AAAA" }, { id: "c", status: "empty" }] };
+  const placed = placedSpriteSet(stored, { x: 10.4, y: 20.6, width: 50, height: 100 }, (ref) => assetBlobUrl("global", null, ref));
+  assert.deepEqual(placed.rect, { x: 10, y: 21, width: 50, height: 100 });
+  assert.deepEqual(placed.anchor, { x: 25, y: 100 });
+  assert.deepEqual(placed.faceRect, { x: 15, y: 5, width: 20, height: 20 });
+  assert.equal(placed.variants[0].dataURL, `/vnccs/unicanvas/library/blobs/${SHA}`);
+  assert.equal(placed.variants[1].dataURL, "data:image/png;base64,AAAA");
+  assert.equal(placed.variants[2].dataURL, undefined);
+  assert.equal(placed.sourceLayerId, undefined);
+  assert.equal(stored.rect.width, 100, "the stored set is not changed");
+  assert.equal(placedSpriteSet(null, { x: 0, y: 0, width: 1, height: 1 }), null);
+});
+
+test("a sprite layer saves as a character with its set and inserts back as a sprite layer", async () => {
+  const { client, assets } = fakeServer();
+  const uc = fakeWidget();
+  uc.sprites = fakeSprites();
+  const layer = { id: "s1", type: "sprite", name: "Alice sprites", meta: { origin: "sprite", heightFactor: 1 }, canvas: fakeCanvas(),
+    sprite: { rect: { x: 100, y: 100, width: 40, height: 100 }, anchor: { x: 20, y: 90 }, activeVariantId: "v1",
+      variants: [{ id: "v1", name: "neutral", pixels: fakeCanvas(80, 200) }, { id: "v2", name: "happy", pixels: fakeCanvas(80, 200) }] } };
+  uc.layers.push(layer);
+  const asset = await saveLayerToLibrary(uc, layer, { kind: "character", name: "Alice", scope: "global" }, client);
+  const stored = assets.get(asset.id);
+  assert.equal(stored.data.spriteSet.variants.length, 2);
+  assert.deepEqual(stored.data.size, { width: 40, height: 100 });
+  assert.deepEqual(stored.data.anchor, { x: 0.5, y: 0.9 }, "the set's feet are the anchor");
+  assert.deepEqual(uc.sprites.calls[0], ["sync", "s1"]);
+
+  const inserted = await insertAsset(uc, { ...stored, scope: "global" }, { x: 300, y: 400 });
+  assert.equal(inserted.type, "sprite");
+  assert.deepEqual(inserted.sprite.rect, { x: 280, y: 310, width: 40, height: 100 });
+  assert.equal(inserted.sprite.variants.length, 2);
+  assert.ok(inserted.sprite.variants.every((variant) => variant.pixels));
+  assert.equal(normalizeLayerMeta(inserted.meta).assetId, asset.id);
+  assert.equal(uc.history.at(-1).kind, "addLayer");
+  assert.deepEqual(uc.filed.at(-1), inserted.id);
+  assert.match(uc.statuses.at(-1)[0], /2 sprite variants/);
+
+  // Update from library keeps the place and replaces the set in one history entry.
+  const before = uc.history.length;
+  await updateLayerFromLibrary(uc, inserted, client);
+  assert.equal(uc.history.length, before + 1);
+  assert.equal(uc.history.at(-1).kind, "layerPixels");
+  assert.deepEqual(inserted.sprite.rect, { x: 280, y: 310, width: 40, height: 100 });
 });
