@@ -14,8 +14,6 @@ model (``unload_depth_model`` frees it). The client caches answers per backgroun
 
 from __future__ import annotations
 
-import base64
-import io
 import threading
 from typing import Any
 
@@ -23,6 +21,7 @@ import numpy as np
 from PIL import Image
 
 from .helper_models import ensure_helper_model
+from .helper_runtime import gray_png, helper_torch_device, normalize_unit
 from .locks import _COMFY_MODEL_OP_LOCK
 
 
@@ -40,18 +39,10 @@ def _load_pipeline() -> Any:
         cached = _MODEL.get(DEPTH_MODEL_KEY)
         if cached is not None:
             return cached
-        import torch
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation, pipeline
 
         root = ensure_helper_model(DEPTH_MODEL_KEY)
-        try:
-            import comfy.model_management as model_management
-
-            device = model_management.get_torch_device()
-        except Exception:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if getattr(device, "type", None) not in {"cpu", "cuda"}:
-            device = torch.device("cpu")
+        device = helper_torch_device()
         processor = AutoImageProcessor.from_pretrained(root, local_files_only=True)
         model = AutoModelForDepthEstimation.from_pretrained(root, local_files_only=True).to(device).eval()
         _MODEL[DEPTH_MODEL_KEY] = pipeline("depth-estimation", model=model, image_processor=processor, device=device)
@@ -61,6 +52,12 @@ def _load_pipeline() -> Any:
 def unload_depth_model() -> None:
     with _MODEL_LOCK:
         _MODEL.clear()
+
+
+def predict_depth(image: Image.Image) -> np.ndarray:
+    """Relative inverse depth (near is large), float32 ``(height, width)``; holds the model lock."""
+    with _COMFY_MODEL_OP_LOCK:
+        return _predict_depth(image)
 
 
 def _predict_depth(image: Image.Image) -> np.ndarray:
@@ -81,13 +78,7 @@ def _predict_depth(image: Image.Image) -> np.ndarray:
 
 def depth_to_png16(depth: np.ndarray) -> str:
     """A depth array as a 16-bit grayscale PNG data URL (min..max stretched to 0..65535)."""
-    values = np.nan_to_num(np.asarray(depth, dtype=np.float64))
-    low, high = (float(values.min()), float(values.max())) if values.size else (0.0, 0.0)
-    scaled = (values - low) / (high - low) if high > low else np.zeros_like(values)
-    image = Image.fromarray(np.round(scaled * 65535.0).astype(np.uint16))
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    return gray_png(normalize_unit(depth), "gray16")
 
 
 def estimate_horizon(depth: np.ndarray) -> float | None:
@@ -138,8 +129,7 @@ def _run_unicanvas_depth(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(source, str) or not source:
         raise ValueError("[VNCCS UniCanvas] depth needs an 'image' data URL.")
     image = _decode_data_url(source, "RGB")
-    with _COMFY_MODEL_OP_LOCK:
-        depth = _predict_depth(image)
+    depth = predict_depth(image)
     if depth.shape != (image.height, image.width):
         raise RuntimeError("[VNCCS UniCanvas] The depth model answered with the wrong size.")
     return {

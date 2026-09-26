@@ -52,7 +52,8 @@ Layered; lower layers never import higher ones (no import cycles):
 1. Infrastructure: `constants`, `locks`, `debug`, `paths`, `progress`, `route_utils` (JSON route
    factory `json_route`, `RouteError`)
 2. Images/state: `imaging`, `masking`, `state`, `render`, `project_io` (store lock, atomic JSON,
-   ids, blob refs shared by `projects` and `history`)
+   ids, blob refs shared by `projects` and `history`), `helper_runtime` (helper-model device,
+   grayscale PNG maps)
 3. ComfyUI integration: `comfy_bridge`, `pipeline`, `loras` (`LoraRequirement`), `loaders`,
    `latents`, `sampling`, `draw_pipeline` (`ImageDrawPipeline`, `DrawContext`)
 4. Model families: `models/` — `capabilities` (tasks, media kinds, reference slots, prompt
