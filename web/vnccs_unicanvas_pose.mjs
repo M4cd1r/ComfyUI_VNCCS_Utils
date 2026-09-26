@@ -2,7 +2,7 @@
 import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { composePoseReference, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, poseMultiReferences, posePromptMapping, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs";
+import { composePoseReference, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, poseMultiReferences, posePromptMapping, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs";
 import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
 import { openPoseFromRig } from "./vnccs_unicanvas_control_scene.mjs";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
@@ -554,7 +554,10 @@ export class UniCanvasPoseEditor {
     layout() {
         if (!this.studio || !this.layer) return;
         if (!this.host.layers.includes(this.layer)) { this.release(); return; }
-        const rect = this.layer.pose.rect, view = this.host.view, stage = this.host.stageWrap;
+        // The surface follows the layer's scene-state offset (and timeline position), like its pixels.
+        const rect = posePlacedRect(this.layer.pose.rect, this.host.getLayerRenderTransform?.(this.layer),
+            this.host.getLayerStateOffset?.(this.layer));
+        const view = this.host.view, stage = this.host.stageWrap;
         const surface = this.studio.canvasContainer;
         // Controls are confined to the stage, leaving model settings, Generate and layers accessible.
         Object.assign(this.controls.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,

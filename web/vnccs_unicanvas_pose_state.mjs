@@ -21,6 +21,20 @@ export function serializePose(pose, includeData = true) {
     return result;
 }
 
+/**
+ * Where a pose layer's live editor surface sits in world space: `pose.rect` moved like the layer
+ * renders it. A translation-only render transform (scene-state offset, timeline position keys)
+ * moves the surface with it; a scaled or rotated timeline frame cannot be matched by the 3D
+ * surface, so only the scene-state offset applies there.
+ */
+export function posePlacedRect(rect, matrix = null, stateOffset = null) {
+    const translation = Array.isArray(matrix) && matrix.length >= 6 && Math.abs(matrix[0] - 1) < 1e-9
+        && Math.abs(matrix[1]) < 1e-9 && Math.abs(matrix[2]) < 1e-9 && Math.abs(matrix[3] - 1) < 1e-9;
+    const dx = translation ? Number(matrix[4]) || 0 : Number(stateOffset?.x) || 0;
+    const dy = translation ? Number(matrix[5]) || 0 : Number(stateOffset?.y) || 0;
+    return { ...rect, x: rect.x + dx, y: rect.y + dy };
+}
+
 export function poseLayerBelow(layers, layer) {
     const index = layers.indexOf(layer);
     return index < 0 ? [] : layers.slice(index + 1).filter(item => item.visible && isImageLayer(item));

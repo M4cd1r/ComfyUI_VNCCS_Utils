@@ -227,6 +227,24 @@ test("bbox editor geometry follows pan and zoom and clips outside the canvas", (
     layer.locked = true; editor.layout(); assert.equal(editor.sidePanel.inert, true);
 });
 
+test("the pose editor surface follows the layer's scene-state offset (#7)", () => {
+    const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
+    host.view = { x: 0, y: 0, scale: 2 };
+    let matrix = [1, 0, 0, 1, 30, -12];
+    host.getLayerStateOffset = () => ({ x: 30, y: -12 });
+    host.getLayerRenderTransform = () => matrix;
+    editor.layout();
+    const style = editor.studio.canvasContainer.style;
+    assert.equal(parseFloat(style.left), 320 + (10 + 30) * 2);
+    assert.equal(parseFloat(style.top), 40 + (20 - 12) * 2);
+    assert.equal(parseFloat(style.width), 800, "the offset never resizes the surface");
+    // A scaled timeline frame cannot be matched by the 3D surface: the state offset still applies.
+    matrix = [1.5, 0, 0, 1.5, 400, 400];
+    editor.layout();
+    assert.equal(parseFloat(style.left), 320 + (10 + 30) * 2);
+    assert.deepEqual(state.posePlacedRect({ x: 1, y: 2, width: 3, height: 4 }), { x: 1, y: 2, width: 3, height: 4 });
+});
+
 test("pose controls stay inside the resized stage and never replace the generation panel", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     const generationPanel = new Element(), generate = new Element("button");
