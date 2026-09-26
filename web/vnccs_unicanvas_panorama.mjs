@@ -434,6 +434,18 @@ export class PanoramaDocument {
     this.projectLayer(layer);
   }
 
+  /** `view` (layer-canvas sized) seen from camera `from`, re-projected as seen from camera `to`. */
+  reprojectView(view, from, to = this.settings) {
+    const w = this.widget;
+    const patch = w.cloneCanvasCrop(view, { x: w.bbox.x - w.origin.x, y: w.bbox.y - w.origin.y, width: w.bbox.width, height: w.bbox.height });
+    const sphere = this.surfaceFromView(patch, normalizePanorama({ ...this.settings, ...from }));
+    const out = canvas(view.width, view.height);
+    const rendered = this.renderer.render(sphere, normalizePanorama({ ...this.settings, ...to }), w.bbox.width, w.bbox.height);
+    out.getContext("2d").drawImage(rendered, w.bbox.x - w.origin.x, w.bbox.y - w.origin.y);
+    this.pruneTextures();
+    return out;
+  }
+
   /**
    * Put an image on `layer` inside the current view: at `rect` (world) when it overlaps the
    * editing window, otherwise fitted into it. Used by imports and History results.

@@ -592,3 +592,30 @@ test("ControlNet and sprite layers keep their data in a saved panorama and reope
     assert.equal(restoredSprites.length, 1);
   } finally { context.PanoramaDocument = realDocument; }
 });
+
+test("reprojectView carries a view from one camera to another through a temporary sphere", () => {
+  const realDocument = globalThis.document;
+  const draws = [];
+  const surface = (name) => ({ name, width: 0, height: 0, getContext: () => ({ drawImage: (source, x, y) => draws.push([name, source.name, x, y]) }) });
+  let made = 0;
+  globalThis.document = { createElement: () => surface(`canvas${++made}`) };
+  try {
+    const renders = [];
+    const doc = Object.assign(Object.create(PanoramaDocument.prototype), {
+      settings: settings({ yaw: 5, width: 4096, height: 2048 }),
+      widget: { bbox: { x: 10, y: 20, width: 1024, height: 1024 }, origin: { x: -100, y: -50 }, layers: [], stagingItems: [],
+        cloneCanvasCrop: (view, crop) => ({ name: "patch", crop }) },
+      renderer: {
+        render: (source, camera, width, height, before, after) => { renders.push({ source: source.name, yaw: camera.yaw, width, height, after: after?.name }); return { name: `render${renders.length}` }; },
+        invalidate() {}, retain: (sources) => renders.push({ retained: sources.length }),
+      },
+    });
+    const view = { name: "view", width: 2048, height: 2048 };
+    const out = doc.reprojectView(view, { yaw: 0, pitch: 0, roll: 0, fov: 90 }, { yaw: 40, pitch: 0, roll: 0, fov: 90 });
+    assert.equal(out.width, 2048); assert.equal(out.height, 2048);
+    assert.deepEqual(renders[0], { source: "canvas1", yaw: 0, width: 4096, height: 2048, after: "patch" }, "the view lands on a sphere from its own camera");
+    assert.deepEqual(renders[1], { source: "canvas1", yaw: 40, width: 1024, height: 1024, after: undefined }, "and is seen from the new camera");
+    assert.deepEqual(draws.at(-1), [out.name, "render2", 110, 70], "at the editing window of the layer canvas");
+    assert.equal(doc.settings.yaw, 5, "the document camera is untouched");
+  } finally { globalThis.document = realDocument; }
+});

@@ -3949,6 +3949,7 @@ class UniCanvasWidget {
       this.panorama.projectLayer(layer);
       this.panorama.settings.contentRevision++;
       this.poseBake?.restoreSnapshot(layer, snapshot, { rebuild: false });
+      this.sprites?.restoreSnapshot(layer, snapshot);
       return;
     }
     if (snapshot.origin && (snapshot.origin.x !== this.origin.x || snapshot.origin.y !== this.origin.y || snapshot.size?.width !== this.size.width || snapshot.size?.height !== this.size.height)) {
