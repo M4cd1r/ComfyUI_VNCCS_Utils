@@ -290,3 +290,42 @@ test("the layer menu offers split for multi-character layers and merge for pose 
     assert.equal(layerMenuItemAvailable(uc, single, merge), true);
     assert.equal(layerMenuItemAvailable(uc, raster, merge), false);
 });
+
+test("legacy multi-mannequin layers with one reference say which mannequin image2 shows (#4)", async () => {
+    // An old state: two mannequins in the studio, but only pose.character (no characterRefs).
+    const layer = poseLayer("legacy", [character("c1", 0), character("c2", 1)]);
+    layer.pose.character = upload("alice");
+    assert.equal(layer.pose.characterRefs, undefined);
+    assert.equal(state.poseMultiReferences(layer), null, "one reference keeps the single-image path");
+    assert.equal(state.posePromptMappingForLayer(layer),
+        "The character on the left is the person in image2; the character on the right is not in image2.");
+    // image2 still holds only that one reference, centred.
+    const drawn = [];
+    const out = { getContext: () => ({ fillRect() {}, save() {}, restore() {}, drawImage: (image, ...box) => drawn.push([image.name, ...box]) }) };
+    const host = { layers: [layer], bbox: layer.pose.rect, _createCanvas: () => Object.assign(out, { width: 200, height: 100 }),
+        loadImage: async url => ({ name: url.split(",")[1], width: 50, height: 100 }), drawRasterLayerToWorldRect() {} };
+    await state.composePoseReference(host, layer, { width: 200, height: 100 });
+    assert.deepEqual(drawn, [["alice", 75, 0, 50, 100]]);
+
+    // Screen order decides the words: with c1 on the right, the reference is "on the right".
+    const [red, green] = state.POSE_ID_COLORS, canvas = new PixelCanvas(4, 2);
+    canvas.set(0, 0, green); canvas.set(3, 0, red);
+    layer.poseIdCanvas = canvas;
+    layer.poseIdMeta = { key: state.poseIdKey(layer.pose), ids: ["c1", "c2"], rect: { ...layer.pose.rect } };
+    state.setPoseCharacterPrompt(layer.pose, "c2", "tall man");
+    assert.equal(state.poseCharacterRef(layer, "c1").name, "alice", "the identity prompt map keeps the legacy reference");
+    assert.equal(state.posePromptMappingForLayer(layer),
+        "The character on the right is the person in image2; the character on the left (tall man) is not in image2.");
+
+    // Three mannequins, two bound: the column mapping plus the unbound one.
+    const three = poseLayer("three", [character("a", 0), character("b", 1), character("c", 2)]);
+    state.setPoseCharacterRef(three.pose, "a", upload("a"));
+    state.setPoseCharacterRef(three.pose, "c", upload("c"));
+    assert.equal(state.posePromptMappingForLayer(three),
+        "The character on the left is the first person in image2, the character on the right is the second person in image2; the character in the middle is not in image2.");
+    // Nothing bound, or a single mannequin: no mapping line.
+    assert.equal(state.posePromptMappingForLayer(poseLayer("none", [character("a", 0), character("b", 1)])), "");
+    const single = poseLayer("single", [character("a", 0)]);
+    single.pose.character = upload("a");
+    assert.equal(state.posePromptMappingForLayer(single), "");
+});

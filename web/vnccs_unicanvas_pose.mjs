@@ -2,7 +2,7 @@
 import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { composePoseReference, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, poseMultiReferences, posePromptMapping, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs";
+import { composePoseReference, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, posePromptMappingForLayer, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs";
 import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
 import { openPoseFromRig } from "./vnccs_unicanvas_control_scene.mjs";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
@@ -851,9 +851,9 @@ export class UniCanvasPoseEditor {
         if (token !== this.token || !this.host.layers.includes(layer)) throw new Error("The pose layer changed. Generate again.");
         const index = state.activeTab || 0;
         const posePrompt = state.pose_prompts?.[index] ?? state.poses?.[index]?.prompt ?? params.user_prompt ?? "";
-        // Several bound references share image2 in columns: say which one is which.
-        const multi = poseMultiReferences(layer);
-        const mapping = multi ? posePromptMapping(multi.entries, multi.total) : "";
+        // Several mannequins: say which one image2 shows (one column per bound reference) and
+        // which ones have no reference.
+        const mapping = posePromptMappingForLayer(layer);
         const userPrompt = [posePrompt, this.host.settings.positive, mapping].filter(Boolean).join("\n");
         const positive = PoseStudioWidget.prototype.generatePromptFromLights.call(
             { exportParams: params }, state.lights || [], userPrompt,
