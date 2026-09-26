@@ -26,6 +26,7 @@ import {
   finiteNumber,
 } from "./vnccs_animation_core.mjs";
 import { stateOffsetMatrix } from "./vnccs_unicanvas_state_offset.mjs";
+import { fnv1a } from "./vnccs_unicanvas_util.mjs";
 
 export const TIMELINE_SCHEMA_VERSION = 1;
 export const TIMELINE_HISTORY_KIND = "timeline";
@@ -342,14 +343,7 @@ export function evaluateTrack(timeline, trackId, frame) {
 }
 
 /** Deterministic 32-bit string hash (FNV-1a). */
-export function hashString(text) {
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index++) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
+export const hashString = fnv1a;
 
 /** Mulberry32: a seeded [0, 1) generator. */
 export function seededRandom(seed) {

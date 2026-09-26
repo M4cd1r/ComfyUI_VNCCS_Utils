@@ -95,6 +95,7 @@ import {
   uniCanvasRequestOverrides,
   uniCanvasRequestSettings,
 } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { escapeHtml, randomId } from "./vnccs_unicanvas_util.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -528,7 +529,7 @@ function enableUniCanvasGraphNavigationForwarding(root) {
   }, { capture: true, passive: false });
 }
 
-const uid = () => `uc_${Math.random().toString(36).slice(2, 10)}`;
+const uid = () => randomId("uc");
 const MASK_OVERLAY_COLOR = "rgba(255, 143, 163, 0.48)";
 const STAGE_MIN_SCALE = 0.1;
 const STAGE_MAX_SCALE = 20;
@@ -3145,7 +3146,7 @@ class UniCanvasWidget {
   }
 
   _escape(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    return escapeHtml(value);
   }
 
   resize() {

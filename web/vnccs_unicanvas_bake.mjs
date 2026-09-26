@@ -28,6 +28,7 @@ import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs";
 
 // Offline fallback for the bake families (the families whose backend descriptor sets
 // capabilities.supports_pose_edit) until /assets has loaded; it also gives the known families
@@ -40,17 +41,9 @@ export const BAKE_REMOVE_BG_ROUTE = "/vnccs/unicanvas/remove_bg";
 export const BAKE_WORK_MARGIN = 0.1;
 export const BAKE_CROP_MARGIN = 0.15;
 
-const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
+const clone = cloneJson;
 
-export function hashText(text) {
-  let hash = 0x811c9dc5;
-  const value = String(text);
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16);
-}
+export const hashText = fnv1aHex;
 
 /* ----------------------------------------------------------------------------------------------
  * State and staleness

@@ -24,6 +24,7 @@
 
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { uniCanvasSurface } from "./vnccs_unicanvas_surface.mjs";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
 export const PROJECTS_BASE = "/vnccs/unicanvas/projects";
 export const PROJECT_POINTER_KEY = "vnccs-unicanvas-standalone-project";
@@ -919,11 +920,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 function button(label, className, onClick, title = label) {

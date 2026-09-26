@@ -60,6 +60,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 // Import cycle with the layer tools (they list this module's menu entries): only functions and
 // constants read at call time cross it.
 import { COLOR_MATCH_METHODS, COLOR_MATCH_ROUTE, COLOR_MATCH_STRENGTH_MAX, placeInHost } from "./vnccs_unicanvas_layer_tools.mjs";
+import { escapeHtml, finiteOrNull } from "./vnccs_unicanvas_util.mjs";
 
 export const SHADOW_KINDS = Object.freeze(["contact", "cast"]);
 export const SHADOW_LAYER_HISTORY_KIND = "shadowLayer";
@@ -81,10 +82,7 @@ export const SHADOW_PARAM_SPECS = Object.freeze({
   ]),
 });
 
-function finite(value) {
-  const number = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
-  return typeof number === "number" && Number.isFinite(number) ? number : null;
-}
+const finite = finiteOrNull;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -1487,9 +1485,6 @@ const HARMONIZE_LIGHT_SLIDERS = [
 ];
 const COLOR_METHOD_LABELS = { local_lab: "Local (follows the colors around each part)", reinhard_lab_gpu: "Global LAB mean / contrast" };
 
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[<>&"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[ch]);
-}
 
 function formatLight(spec, value) {
   return spec.unit ? `${Math.round(value)}${spec.unit}` : Number(value).toFixed(2);

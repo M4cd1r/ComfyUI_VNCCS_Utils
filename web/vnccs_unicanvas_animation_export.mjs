@@ -17,6 +17,7 @@
  */
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
 export const ANIMATION_ROUTE = "/vnccs/unicanvas/animation";
 export const EXPORT_FORMATS = Object.freeze([
@@ -44,11 +45,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 // Pure helpers (Node tests) ---------------------------------------------------------------------

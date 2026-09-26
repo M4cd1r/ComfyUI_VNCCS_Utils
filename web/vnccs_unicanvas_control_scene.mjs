@@ -30,6 +30,7 @@
 import { isControlLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs";
+import { clamp, finite, rectsIntersect } from "./vnccs_unicanvas_util.mjs";
 
 export const CONTROL_PREPROCESS_ROUTE = "/vnccs/unicanvas/control_preprocess";
 export const CONTROL_SOURCE_MAX_SIDE = 2048;
@@ -84,8 +85,6 @@ export const CONTROL_SCENE_TYPES = Object.freeze({
   },
 });
 
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-const finite = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
 let sourceCounter = 0;
 
 export function isSceneControlType(type) {
@@ -435,9 +434,6 @@ export function drawOpenPose(ctx, people, size, params, scale = 1) {
   ctx.restore();
 }
 
-function rectsIntersect(a, b) {
-  return a && b && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-}
 
 // Visible pose layers under a bbox (ids in stack order).
 export function poseLayersUnder(layers, bbox, isVisible = (layer) => layer?.visible !== false) {

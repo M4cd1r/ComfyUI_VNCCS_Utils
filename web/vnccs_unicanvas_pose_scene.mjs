@@ -18,8 +18,9 @@ import { MAX_POSE_STUDIO_CHARACTERS, nextCharacterColor, nextCharacterId, nextCh
 import { getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { cloneJson } from "./vnccs_unicanvas_util.mjs";
 
-const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
+const clone = cloneJson;
 const newId = () => (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`);
 const sameJSON = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 

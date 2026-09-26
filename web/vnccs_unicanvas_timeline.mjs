@@ -82,6 +82,7 @@ import {
 } from "./vnccs_unicanvas_timeline_pose.mjs";
 import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs";
 import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
 const STYLE_ID = "vnccs-uc-timeline-styles";
 const LABEL_WIDTH = 180;
@@ -142,11 +143,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 const isTextTarget = (target) => target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));

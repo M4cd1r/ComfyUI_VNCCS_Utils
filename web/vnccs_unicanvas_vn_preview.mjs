@@ -20,6 +20,7 @@
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
+import { ensureStyleTag, finite, rectsIntersect } from "./vnccs_unicanvas_util.mjs";
 
 export const VN_PREVIEW_PRESETS = Object.freeze([
   { id: "16x9_1080", label: "16:9 - 1920x1080", width: 1920, height: 1080 },
@@ -92,10 +93,6 @@ export function defaultVnPreviewState() {
   };
 }
 
-function finite(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
 
 export function normalizeFrameRect(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -317,10 +314,7 @@ export function fitAspect(rect, aspect) {
   return { x: rect.x + (width - w) / 2, y: rect.y + (height - h) / 2, width: w, height: h };
 }
 
-export function rectsIntersect(a, b) {
-  if (!a || !b) return false;
-  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-}
+export { rectsIntersect };
 
 /** Skin units per reference pixel: skins are authored at `designResolution` and scale to fit. */
 export function skinUnitsForPreset(skin, preset) {
@@ -653,11 +647,7 @@ const VN_PREVIEW_CSS = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById("vnccs-uc-vnp-styles")) return;
-  const style = document.createElement("style");
-  style.id = "vnccs-uc-vnp-styles";
-  style.textContent = VN_PREVIEW_CSS;
-  document.head.appendChild(style);
+  ensureStyleTag("vnccs-uc-vnp-styles", VN_PREVIEW_CSS);
 }
 
 let measureCanvas = null;

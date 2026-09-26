@@ -42,6 +42,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { applyHomography, homographyFromUnitSquare, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
 import { createSpriteSurface, normalizeSpriteCamera } from "./vnccs_unicanvas_sprites_panorama.mjs";
+import { cloneJson, uniqueId } from "./vnccs_unicanvas_util.mjs";
 
 export const SPRITE_LAYER_TYPE = "sprite";
 export const SPRITE_SCHEMA_VERSION = 1;
@@ -78,9 +79,8 @@ export const SPRITE_EXPRESSION_PRESETS = Object.freeze([
   ["sleepy", "a sleepy, drowsy"],
 ].map(([name, phrase]) => Object.freeze({ name, phrase })));
 
-const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
-let idCounter = 0;
-export const newVariantId = () => `var_${Date.now().toString(36)}_${(idCounter++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const clone = cloneJson;
+export const newVariantId = () => uniqueId("var");
 
 /* ----------------------------------------------------------------------------------------------
  * Prompts
