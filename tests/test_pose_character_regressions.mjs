@@ -363,7 +363,7 @@ test("pose serialization preserves SAM joint-root translations across commit", (
     const getPoseMethod = methodSource(
         poseStudioCoreSource,
         "getPose()",
-        "\n    recordState()",
+        "\n    recordState(",
     );
     assert.match(getPoseMethod, /const bonePositions = \{\}/);
     assert.match(getPoseMethod, /b\.position\.distanceToSquared\(restPosition\)/);

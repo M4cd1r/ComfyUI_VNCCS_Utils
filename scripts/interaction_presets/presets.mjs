@@ -67,11 +67,11 @@ export function buildPresetScene(definition, meshes = []) {
         }
     });
     definition.pose(context(rigs));
-    const report = definition.contacts.map(([a, pointA, b, pointB, tolerance = 0.6]) => ({
-        label: `${a}.${pointA}~${b}.${pointB}`,
-        distance: point(rigs[a], pointA).distanceTo(point(rigs[b], pointB)),
-        tolerance,
-    }));
+    const report = definition.contacts.map(([a, pointA, b, pointB, tolerance = 0.6]) => {
+        const gap = point(rigs[b], pointB).sub(point(rigs[a], pointA));
+        // The authored gap lets Pose Studio re-fit the contact on other bodies (vnccs_pose_contacts.mjs).
+        return { label: `${a}.${pointA}~${b}.${pointB}`, distance: gap.length(), offset: gap.toArray(), tolerance };
+    });
     return {
         characters: rigs.map((rig, index) => ({
             mesh: meshes[index] || {},

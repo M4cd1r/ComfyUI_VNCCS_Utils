@@ -21,6 +21,20 @@ export function serializePose(pose, includeData = true) {
     return result;
 }
 
+/**
+ * Where a pose layer's live editor surface sits in world space: `pose.rect` moved like the layer
+ * renders it. A translation-only render transform (scene-state offset, timeline position keys)
+ * moves the surface with it; a scaled or rotated timeline frame cannot be matched by the 3D
+ * surface, so only the scene-state offset applies there.
+ */
+export function posePlacedRect(rect, matrix = null, stateOffset = null) {
+    const translation = Array.isArray(matrix) && matrix.length >= 6 && Math.abs(matrix[0] - 1) < 1e-9
+        && Math.abs(matrix[1]) < 1e-9 && Math.abs(matrix[2]) < 1e-9 && Math.abs(matrix[3] - 1) < 1e-9;
+    const dx = translation ? Number(matrix[4]) || 0 : Number(stateOffset?.x) || 0;
+    const dy = translation ? Number(matrix[5]) || 0 : Number(stateOffset?.y) || 0;
+    return { ...rect, x: rect.x + dx, y: rect.y + dy };
+}
+
 export function poseLayerBelow(layers, layer) {
     const index = layers.indexOf(layer);
     return index < 0 ? [] : layers.slice(index + 1).filter(item => item.visible && isImageLayer(item));
@@ -336,6 +350,31 @@ export function posePromptMapping(entries, total = entries.length) {
         const identity = entry.prompt ? ` (${entry.prompt})` : "";
         return `the character ${words[entry.position ?? index]}${identity} is the ${ORDINALS[index]} person in image2`;
     }).join(", ").replace(/^t/, "T") + ".";
+}
+
+/**
+ * The prompt line that ties image2 to the mannequins of a layer with 2+ mannequins. With 2+
+ * bound references it is the column mapping (posePromptMapping). With one bound reference
+ * (a legacy layer that only has `pose.character`, or a layer where one mannequin is bound)
+ * image2 shows that single person, so the line says which mannequin it is. Either way the
+ * unbound mannequins are named as not in image2 (with their identity prompt, if any), so the
+ * model does not give them the referenced identity.
+ */
+export function posePromptMappingForLayer(layer) {
+    const characters = poseStudioCharacters(layer?.pose);
+    if (characters.length < 2) return "";
+    const words = POSITION_WORDS[characters.length];
+    if (!words) return "";
+    const order = poseCharacterScreenOrder(layer).map((id, position) => ({
+        id, position, ref: poseCharacterRef(layer, id), prompt: poseCharacterPrompt(layer, id),
+    }));
+    const bound = order.filter(entry => entry.ref), unbound = order.filter(entry => !entry.ref);
+    if (!bound.length) return "";
+    const describe = entry => `the character ${words[entry.position]}${entry.prompt ? ` (${entry.prompt})` : ""}`;
+    const head = bound.length >= 2 ? posePromptMapping(bound, characters.length).replace(/\.$/, "")
+        : `${describe(bound[0])} is the person in image2`.replace(/^t/, "T");
+    const tail = unbound.map(entry => `${describe(entry)} is not in image2`);
+    return `${[head, ...tail].join("; ")}.`;
 }
 
 /** Bound references in left-to-right screen order, when a layer has 2+ mannequins and 2+ references. */

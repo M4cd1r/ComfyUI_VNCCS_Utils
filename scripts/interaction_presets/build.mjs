@@ -1,7 +1,7 @@
 /**
  * Writes the bundled Interactions presets (pose_presets/Interactions/*.json)
- * from presets.mjs. Previews (*.webp next to each JSON) are rendered
- * separately from the same scenes in Pose Studio's viewer.
+ * from presets.mjs. Previews (*.webp next to each JSON) are rendered from
+ * these JSONs by render_previews.mjs in Pose Studio's viewer.
  *
  *   node scripts/interaction_presets/build.mjs
  */
@@ -44,7 +44,10 @@ export function buildPresetAsset(definition) {
             key: definition.key,
             reference_heights: scene.characters.map(character => round(character.height)),
             supports: characters.map((_character, slot) => definition.supports?.[slot] ?? null),
-            contacts: definition.contacts.map(([a, pointA, b, pointB, tolerance = 0.6]) => ({ a, point_a: pointA, b, point_b: pointB, tolerance })),
+            // offset: point_b - point_a at the reference proportions, for re-fitting hands on other bodies.
+            contacts: definition.contacts.map(([a, pointA, b, pointB, tolerance = 0.6], index) => ({
+                a, point_a: pointA, b, point_b: pointB, tolerance, offset: scene.report[index].offset.map(round),
+            })),
         },
         _library: {
             repository: INTERACTION_REPOSITORY,
