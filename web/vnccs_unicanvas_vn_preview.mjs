@@ -1004,7 +1004,9 @@ export class VnPreviewController {
     if (!this.popover) return;
     this.popover.remove();
     this.popover = null;
-    document.removeEventListener("pointerdown", this.outsideHandler, true);
+    // Removes the popover's document listener.
+    this.popoverAbort?.abort();
+    this.popoverAbort = null;
   }
 
   openPopover() {
@@ -1070,12 +1072,12 @@ export class VnPreviewController {
     uc.anchorPopoverTo?.(panel, this.button, uc.container);
     installCustomSelects(panel);
     this.popover = panel;
-    this.outsideHandler = (event) => {
+    this.popoverAbort = new AbortController();
+    document.addEventListener("pointerdown", (event) => {
       if (panel.contains(event.target) || this.button.contains(event.target)) return;
       if (event.target?.closest?.(".vnccs-custom-select-menu")) return;
       this.closePopover();
-    };
-    document.addEventListener("pointerdown", this.outsideHandler, true);
+    }, { capture: true, signal: this.popoverAbort.signal });
   }
 
   onButtonClick() {
@@ -1090,6 +1092,7 @@ export function installUniCanvasVnPreview(uc) {
   ensureStyles();
   const controller = new VnPreviewController(uc);
   uc.vnPreview = controller;
+  uc.onDispose?.(() => controller.closePopover());
 
   if (uc.settingsBar && typeof uc._button === "function") {
     controller.button = uc._button(SPEECH_ICON, "vnccs-uc-icon vnccs-uc-vnp-toggle", () => controller.onButtonClick(), "VN preview (P)");

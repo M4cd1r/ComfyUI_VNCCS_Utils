@@ -945,6 +945,8 @@ class UniCanvasWidget {
     this.presetDownloadTimer = null;
     this.presetPickerOpen = false;
     this._disposed = false;
+    // Feature cleanups registered with onDispose(), run by dispose() (last registered first).
+    this._disposers = [];
     this._eventAbortController = null;
     this.settings = makeDefaultUniCanvasSettings();
     if (!this.settings.preset_runtime_settings || typeof this.settings.preset_runtime_settings !== "object") {
@@ -8632,6 +8634,25 @@ class UniCanvasWidget {
     document.addEventListener("pointerdown", this._vnccsSettingsOutside, true);
   }
 
+  // Features register their own teardown (popovers, menus, timers) instead of the widget
+  // knowing each one. A cleanup registered after disposal runs at once.
+  onDispose(cleanup) {
+    if (typeof cleanup !== "function") return;
+    if (this._disposed) {
+      this._runDisposer(cleanup);
+      return;
+    }
+    this._disposers.push(cleanup);
+  }
+
+  _runDisposer(cleanup) {
+    try {
+      cleanup();
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] A feature cleanup failed during disposal", err);
+    }
+  }
+
   dispose() {
     this.poseEditor?.dispose();
     if (this._disposed) return;
@@ -8641,6 +8662,7 @@ class UniCanvasWidget {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
     this._disposed = true;
+    for (const cleanup of this._disposers.splice(0).reverse()) this._runDisposer(cleanup);
     teardownUniCanvasWidgetModes(this);
     this._vnccsTogglesOff?.();
     this._vnccsTogglesOff = null;

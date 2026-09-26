@@ -958,8 +958,9 @@ async function runAction(widget, label, action) {
 function closeSceneMenu(widget) {
   widget._vnccsSceneMenu?.remove();
   widget._vnccsSceneMenu = null;
-  if (widget._vnccsSceneMenuOutside) document.removeEventListener("pointerdown", widget._vnccsSceneMenuOutside, true);
-  widget._vnccsSceneMenuOutside = null;
+  // Aborting removes the menu's document listener, whichever way the menu closes.
+  widget._vnccsSceneMenuAbort?.abort();
+  widget._vnccsSceneMenuAbort = null;
 }
 
 function openSceneMenu(widget, session, scene, event) {
@@ -989,10 +990,11 @@ function openSceneMenu(widget, session, scene, event) {
   menu.style.top = `${event.clientY}px`;
   document.body.appendChild(menu);
   widget._vnccsSceneMenu = menu;
-  widget._vnccsSceneMenuOutside = (e) => {
+  const abort = new AbortController();
+  widget._vnccsSceneMenuAbort = abort;
+  document.addEventListener("pointerdown", (e) => {
     if (!menu.contains(e.target)) closeSceneMenu(widget);
-  };
-  document.addEventListener("pointerdown", widget._vnccsSceneMenuOutside, true);
+  }, { capture: true, signal: abort.signal });
 }
 
 function renderProjectBar(widget, session) {
@@ -1253,6 +1255,8 @@ export function installUniCanvasProjects(widget, options = {}) {
   if (!widget || widget.projectSession) return widget?.projectSession;
   const session = new UniCanvasProjectSession(widget, options);
   widget.projectSession = session;
+  // The scene menu lives on document.body, outside the widget's DOM.
+  widget.onDispose?.(() => closeSceneMenu(widget));
   if (typeof document !== "undefined" && widget.side) {
     ensureStyles();
     const bar = buildProjectBar(widget, session);

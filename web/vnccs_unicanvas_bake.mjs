@@ -533,6 +533,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   if (!uc || uc.poseBake) return uc;
   let pending = null;
   let labelTimer = 0;
+  uc.onDispose?.(() => {
+    if (labelTimer) clearTimeout(labelTimer);
+    labelTimer = 0;
+  });
   const busy = new Map(); // layerId -> Set(characterId)
 
   const editingLayer = (layer) => uc.tool === "pose" && uc.poseEditSession?.layerId === layer?.id;

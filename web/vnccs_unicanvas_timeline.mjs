@@ -1431,6 +1431,9 @@ class TimelineController {
   closeMenu() {
     this.menu?.remove();
     this.menu = null;
+    // Removes the menu's document listener, however the menu closed.
+    this.menuAbort?.abort();
+    this.menuAbort = null;
   }
 
   showMenu(e, build) {
@@ -1466,12 +1469,11 @@ class TimelineController {
     menu.style.left = `${Math.max(0, Math.min(host.width - menu.offsetWidth - 4, e.clientX - host.left))}px`;
     menu.style.top = `${Math.max(0, Math.min(host.height - menu.offsetHeight - 4, e.clientY - host.top))}px`;
     this.menu = menu;
-    const dismiss = (event) => {
+    this.menuAbort = new AbortController();
+    document.addEventListener("pointerdown", (event) => {
       if (menu.contains(event.target)) return;
       this.closeMenu();
-      document.removeEventListener("pointerdown", dismiss, true);
-    };
-    document.addEventListener("pointerdown", dismiss, true);
+    }, { capture: true, signal: this.menuAbort.signal });
   }
 
   onBodyContextMenu(e) {
