@@ -370,10 +370,11 @@ function showToggleToast(appRef, message) {
 }
 
 function writeSetting(appRef, id, value) {
+  const refused = (err) => console.warn(`[VNCCS UniCanvas] Setting ${id} was not saved`, err);
   try {
     const store = appRef?.extensionManager?.setting;
-    if (typeof store?.set === "function") return Promise.resolve(store.set(id, value)).catch(() => {});
-    if (typeof appRef?.ui?.settings?.setSettingValue === "function") return Promise.resolve(appRef.ui.settings.setSettingValue(id, value)).catch(() => {});
+    if (typeof store?.set === "function") return Promise.resolve(store.set(id, value)).catch(refused);
+    if (typeof appRef?.ui?.settings?.setSettingValue === "function") return Promise.resolve(appRef.ui.settings.setSettingValue(id, value)).catch(refused);
   } catch (_) {
     // A refused write leaves the stored value; the reader still never reports all families off.
   }

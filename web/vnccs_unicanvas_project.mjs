@@ -733,7 +733,11 @@ export class UniCanvasProjectSession {
       this.afterSceneApplied();
       void this.request("PATCH", this.projectPath(), { json: { activeSceneId: sceneId } }).then((project) => {
         if (project?.id === this.projectId) this.project = { ...project, scenes: this.project.scenes };
-      }).catch(() => {});
+      }).catch((err) => {
+        // The scene is open; only the project's remembered active scene is stale.
+        console.warn("[VNCCS UniCanvas] Saving the active scene failed", err);
+        this.widget.setStatus?.("[VNCCS UniCanvas] The project could not remember this scene as the active one; it reopens on the previous scene.", true);
+      });
     }
     return ok;
   }

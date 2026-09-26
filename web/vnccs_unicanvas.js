@@ -8458,7 +8458,7 @@ class UniCanvasWidget {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
-    }).catch(() => {});
+    }).catch((err) => console.warn("[VNCCS UniCanvas] Debug mode toggle failed", err));
   }
 
   openUniCanvasSettings() {

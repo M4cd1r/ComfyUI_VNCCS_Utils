@@ -253,7 +253,10 @@ export function mergePoseLayers(uc, ids = uc.selectedLayerIds, createEditor = nu
   const editor = uc.poseEditor || createEditor?.();
   if (editor) {
     uc.poseEditor = editor;
-    void editor.activate(merged, { show: false }).then(() => editor.commit()).catch(() => {});
+    void editor.activate(merged, { show: false }).then(() => editor.commit()).catch((err) => {
+      console.warn("[VNCCS UniCanvas] Rendering the merged pose layer failed", err);
+      uc.setStatus?.(`Merged ${merged.name}, but its preview could not be rendered: open it in the pose editor to refresh it.`, true);
+    });
   }
   return merged;
 }

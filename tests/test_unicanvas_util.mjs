@@ -5,6 +5,16 @@ import {
 } from "../web/vnccs_unicanvas_util.mjs";
 import { hashText } from "../web/vnccs_unicanvas_bake.mjs";
 import { hashString } from "../web/vnccs_unicanvas_timeline_core.mjs";
+import { readFileSync } from "node:fs";
+
+const read = (name) => readFileSync(new URL(`../web/${name}`, import.meta.url), "utf8");
+
+test("failed debug toggles, setting writes, merged pose renders and active-scene saves are reported, not swallowed", () => {
+  assert.match(read("vnccs_unicanvas.js"), /body: JSON\.stringify\(\{ enabled \}\),\n    \}\)\.catch\(\(err\) => console\.warn\(/);
+  assert.doesNotMatch(read("vnccs_unicanvas_feature_toggles.mjs"), /\.catch\(\(\) => \{\}\)/);
+  assert.match(read("vnccs_unicanvas_pose_scene.mjs"), /editor\.commit\(\)\)\.catch\(\(err\) => \{\n\s+console\.warn\(/);
+  assert.match(read("vnccs_unicanvas_project.mjs"), /Saving the active scene failed/);
+});
 
 test("FNV-1a matches the reference vectors and the bake / timeline hashes share it", () => {
   assert.equal(fnv1a(""), 0x811c9dc5);
