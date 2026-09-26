@@ -90,6 +90,8 @@ import {
   isUniCanvasSettingsSectionEnabled,
   isUniCanvasToolEnabled,
   syncUniCanvasSelectOptions,
+  uniCanvasRequestOverrides,
+  uniCanvasRequestSettings,
 } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
@@ -977,7 +979,7 @@ class UniCanvasWidget {
     installUniCanvasLibrary(this);
     installUniCanvasAutoNaming(this);
     installUniCanvasFiling(this);
-    installUniCanvasHistory(this);
+    installUniCanvasHistory(this, { modelModule: getUniCanvasModelModule });
     installUniCanvasTimeline(this, { createPoseEditor: () => new UniCanvasPoseEditor(this) });
     // Settings > VNCCS > UniCanvas switches (issue #50): applied live to this widget.
     installUniCanvasFeatureToggles(this);
@@ -1783,6 +1785,7 @@ class UniCanvasWidget {
     }
     this.tool = tool;
     this.poseBake?.onToolChanged(previousTool, tool);
+    this.samRemoveBg?.onToolChanged(tool);
     if (tool === "pose") void this.activatePoseTool(!force);
     this.container.querySelectorAll("[data-tool]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.tool === tool);
@@ -2474,7 +2477,8 @@ class UniCanvasWidget {
     this.forceSelectedPresetModelSettings();
     const settings = JSON.parse(JSON.stringify(this.settings));
     settings.lora_stack = this.filteredLoraStack();
-    return settings;
+    // Features switched off in Settings > VNCCS > UniCanvas do not run (the saved settings keep them).
+    return uniCanvasRequestSettings(settings);
   }
 
   renderLoraStackControls() {
@@ -3875,6 +3879,7 @@ class UniCanvasWidget {
       before,
       after: this.createLayerPixelSnapshot(layer),
     });
+    this.samRemoveBg?.onApplied(layer, crop); // SAM 3 Remove background: one History record
     this.clearSamMask(false);
     this.sam.status = "Mask applied";
     this.renderSamPanel();
@@ -4262,8 +4267,9 @@ class UniCanvasWidget {
         this.activeLayerId = entry.layer.id;
       }
       this.invalidateLayerCaches(entry.layer);
-      void this.generationHistory?.onAcceptHistory(entry, direction);
     }
+    // A staged result accepted into a new layer or into its own layer (bake, sprite, harmonize).
+    if (entry.acceptedItem) void this.generationHistory?.onAcceptHistory(entry, direction);
     if (entry.kind === HISTORY_SETTINGS_HISTORY_KIND) this.generationHistory?.applySettingsHistory(entry, direction);
     if (entry.kind === "addLayer") {
       if (direction === "undo") {
@@ -6904,6 +6910,8 @@ class UniCanvasWidget {
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
       this.settings.draw_id = `uc_${Date.now().toString(36)}`;
       this.settings.queued_draw = this._buildDrawPayload(drawContext);
+      // The node runs with the saved settings; switched-off features travel as overrides.
+      this.settings.queued_draw.settings_overrides = uniCanvasRequestOverrides(this.settings);
       // The widget value has to be current before queuePrompt serializes the graph, so the
       // debounced settings sync is flushed synchronously here.
       this.flushSettingsToWidget();

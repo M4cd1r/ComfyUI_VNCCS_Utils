@@ -9,7 +9,7 @@ import {
   COCO18_KEYPOINTS, CONTROL_SCENE_TYPES, OPENPOSE_COLORS, OPENPOSE_LIMBS, adjustDepth, adjustLineart, cannyEdges,
   controlPlacementRect, controlSourceSize, downscaleGray, drawOpenPose, installUniCanvasControlScene, isSceneControlType,
   luminance, normalizeControlSource, normalizeSceneParams, openPoseFromRig, placeOpenPosePeople, poseLayersUnder,
-  poseLinkSignature, sceneTypesFor,
+  POSE_PREVIEW_MAX_SIDE, poseLinkSignature, previewedPoseRect, sceneTypesFor,
 } from "../web/vnccs_unicanvas_control_scene.mjs";
 
 const widgetSource = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
@@ -167,6 +167,64 @@ test("pose links track the pose layers under the bbox and their joints", () => {
   assert.notEqual(first, moved, "a mannequin edit changes the link");
   pose.pose.rect = { ...pose.pose.rect, x: 20 };
   assert.notEqual(poseLinkSignature([pose], ["p"]), moved, "moving the pose layer changes the link");
+});
+
+test("a dragged pose layer's preview moves the link live; the drop is a new state (#46)", () => {
+  const rect = { x: 10, y: 20, width: 100, height: 200 };
+  assert.equal(previewedPoseRect(rect, null), rect);
+  assert.deepEqual(previewedPoseRect(rect, { dx: 5, dy: -5 }), { x: 15, y: 15, width: 100, height: 200 });
+  assert.deepEqual(previewedPoseRect(rect, { dx: 0, dy: 0, scale: 2, anchor: { x: 60, y: 220 } }), { x: -40, y: -180, width: 200, height: 400 });
+  const pose = { id: "p", type: "pose", visible: true, pose: { rect, openpose: { people: [] } } };
+  let preview = null;
+  const signature = () => poseLinkSignature([pose], ["p"], undefined, () => preview);
+  const rest = signature();
+  preview = { dx: 30, dy: 0 };
+  const dragging = signature();
+  assert.notEqual(dragging, rest, "the drag preview changes the link before the drop");
+  preview = { dx: 31, dy: 0 };
+  assert.notEqual(signature(), dragging, "every pointermove does");
+  // The drop commits the same place into the rect: still a new state, so it renders full size.
+  preview = null;
+  pose.pose.rect = { ...rect, x: rect.x + 31 };
+  const dropped = signature();
+  preview = { dx: 0, dy: 0 };
+  assert.notEqual(signature(), dropped, "dragging and resting at one place differ");
+});
+
+test("the preview skeleton is drawn small with thinner lines", () => {
+  const sizes = [];
+  const ctx = { save() {}, restore() {}, beginPath() {}, fill() {}, fillRect() {}, arc(x, y, r) { sizes.push(r); }, ellipse(x, y, rx, ry) { sizes.push(ry); } };
+  const points = COCO18_KEYPOINTS.map((_, index) => ({ x: index, y: index * 2 }));
+  drawOpenPose(ctx, [points], { width: 64, height: 64 }, { lineWidth: 8, jointSize: 8 }, 0.25);
+  assert.ok(sizes.every((value) => value === 2), "line and joint sizes shrink with the preview scale");
+  assert.ok(POSE_PREVIEW_MAX_SIDE <= 1024);
+});
+
+test("a linked pose control follows a drag live at preview size and renders full size on drop (#46)", () => {
+  const pose = { id: "p", type: "pose", visible: true, pose: { rect: { x: 0, y: 0, width: 64, height: 64 }, openpose: { people: [{ points: [{ x: 0.5, y: 0.5 }] }] } } };
+  const source = normalizeControlSource({ id: "s", type: "pose", bbox: { x: 0, y: 0, width: 64, height: 64 }, poseLayerIds: ["p"] });
+  const layer = { id: "c", name: "ControlNet", type: "control", control: defaultControlState(null, "pose"), controlSource: source };
+  const { uc, api, painted, frames } = install([layer, pose]);
+  let syncs = 0;
+  uc.syncLightStateToWidget = () => { syncs += 1; };
+  let preview = null;
+  uc.getLayerMovePreview = (item) => (item === pose ? preview : null);
+  api.syncLinked(layer);
+  for (const dx of [4, 8, 12]) {
+    preview = { dx, dy: 0 };
+    api.syncLinked(layer);
+    frames.shift()();
+  }
+  assert.deepEqual(painted.map((item) => item.preview), [true, true, true], "every drag frame repaints the skeleton, cheaply");
+  assert.equal(syncs, 0, "nothing is persisted mid-gesture");
+  preview = null;
+  pose.pose.rect = { ...pose.pose.rect, x: 12 };
+  api.syncLinked(layer);
+  frames.shift()();
+  assert.equal(painted.at(-1).preview, false, "the drop renders the final quality");
+  assert.equal(syncs, 1);
+  api.syncLinked(layer);
+  assert.equal(frames.length, 0, "a resting pose layer schedules nothing");
 });
 
 // --- installed behaviour --------------------------------------------------------------------------

@@ -223,19 +223,44 @@ function sourceLayerOf(uc, layer) {
   return source && source !== layer && !source.shadow ? source : null;
 }
 
+/** The source's open Free Transform draft (the widget's live preview), if any. */
+function transformDraftOf(uc, source) {
+  return typeof uc.getLayerTransformDraft === "function" ? uc.getLayerTransformDraft(source) : null;
+}
+
+/**
+ * What the source's silhouette depends on: its pixels and scene-state offset, or, while a Free
+ * Transform is open on it, the draft's frame (so the shadow follows the live preview, #19).
+ */
+export function shadowSilhouetteKey(uc, source) {
+  const draft = transformDraftOf(uc, source);
+  if (draft?.quad) return JSON.stringify([source.id, "transform", draft.quad, draft.mesh || null, draft.sourceBounds || null]);
+  const offset = stateOffsetOf(uc, source);
+  return `${source.id}:${source.pixelRevision ?? 0}:${offset.x}:${offset.y}`;
+}
+
 /**
  * The source's black silhouette on a small canvas, its alpha rect, feet and feet width, in world
- * pixels where the source shows (its scene-state offset included).
+ * pixels where the source shows (its scene-state offset included). An open Free Transform draft
+ * is drawn through its frame instead of the committed pixels.
  */
 function buildSilhouette(uc, source) {
-  const bounds = uc.getLayerWorldBounds(source);
+  const draft = transformDraftOf(uc, source);
+  const bounds = draft?.quad ? draft.bounds : uc.getLayerWorldBounds(source);
   if (!bounds || bounds.width < 1 || bounds.height < 1) return null;
   const scale = Math.min(1, SILHOUETTE_MAX_SIDE / Math.max(bounds.width, bounds.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(bounds.width * scale));
   canvas.height = Math.max(1, Math.round(bounds.height * scale));
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  uc.drawRasterLayerToWorldRect(ctx, source, bounds, { x: 0, y: 0, width: canvas.width, height: canvas.height }, true, false);
+  if (draft?.quad) {
+    // The cheap preview mesh is enough for a silhouette; Apply redraws from the committed pixels.
+    ctx.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, -bounds.x * canvas.width / bounds.width, -bounds.y * canvas.height / bounds.height);
+    uc.drawTransformDraft(ctx, draft, 8);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  } else {
+    uc.drawRasterLayerToWorldRect(ctx, source, bounds, { x: 0, y: 0, width: canvas.width, height: canvas.height }, true, false);
+  }
   ctx.globalCompositeOperation = "source-in";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -258,8 +283,7 @@ function buildSilhouette(uc, source) {
 }
 
 function sourceSilhouette(uc, source) {
-  const offset = stateOffsetOf(uc, source);
-  const key = `${source.id}:${source.pixelRevision ?? 0}:${offset.x}:${offset.y}`;
+  const key = shadowSilhouetteKey(uc, source);
   if (source._shadowSilhouette?.key !== key) source._shadowSilhouette = { key, value: buildSilhouette(uc, source) };
   return source._shadowSilhouette.value;
 }
@@ -390,7 +414,9 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
   delete layer.hiresRect;
   const silhouette = sourceSilhouette(uc, source);
   if (silhouette) {
-    const placed = placedSilhouette(silhouette, uc.getLayerMovePreview(source));
+    // A transform draft already places the silhouette; a move preview never runs at the same time.
+    const preview = transformDraftOf(uc, source) ? null : uc.getLayerMovePreview(source);
+    const placed = placedSilhouette(silhouette, preview);
     // Canvas pixel = world - origin - the shadow's own state offset, so it lands where it shows.
     const own = stateOffsetOf(uc, layer);
     const base = { x: uc.origin.x + own.x, y: uc.origin.y + own.y };
@@ -404,9 +430,9 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
 
 function shadowKey(uc, layer, source) {
   const preview = uc.getLayerMovePreview(source);
-  const sourceOffset = stateOffsetOf(uc, source), ownOffset = stateOffsetOf(uc, layer);
+  const ownOffset = stateOffsetOf(uc, layer);
   return JSON.stringify([
-    source.id, source.pixelRevision ?? 0, sourceOffset.x, sourceOffset.y, ownOffset.x, ownOffset.y,
+    shadowSilhouetteKey(uc, source), ownOffset.x, ownOffset.y,
     preview ? [preview.dx || 0, preview.dy || 0, preview.scale || 1, preview.anchor?.x ?? 0, preview.anchor?.y ?? 0] : null,
     normalizeShadow(layer.shadow), normalizeSceneLight(uc.sceneLight), uc.scenePerspective?.horizonY ?? null,
     uc.origin.x, uc.origin.y, layer.canvas.width, layer.canvas.height,
@@ -1191,6 +1217,12 @@ export async function runAiHarmonize(uc, layer) {
   if (uc.drawBtn) uc.drawBtn.disabled = true;
   uc.startDrawProgressPolling?.(debugId);
   uc.setStatus(`${label} running on ${layer.name}...`);
+  const snapshot = buildStagingSnapshot(settings, { mode: "harmonize", bbox: region });
+  // History (vnccs_unicanvas_history_gallery.mjs): one record per run with every staged result.
+  const historyRun = uc.generationHistory?.beginRun("harmonize", {
+    settings, snapshot, bbox: region, mode: "harmonize", inferenceSize: size, outputSize: { width: region.width, height: region.height },
+    targetLayerId: layer.id, imageCanvas, maskCanvas,
+  }) || null;
   try {
     const res = await fetch(DRAW_ROUTE, {
       method: "POST",
@@ -1204,11 +1236,11 @@ export async function runAiHarmonize(uc, layer) {
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
     const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
     if (!images.length) throw new Error("the model returned no image");
-    const snapshot = buildStagingSnapshot(settings, { mode: "harmonize", bbox: region });
-    let staged = 0, rejected = 0;
+    const stagedItems = [];
+    let rejected = 0;
     for (const image of images) {
       const img = await uc.loadImage(uc.resultImageURL(image));
-      if (uc._disposed || !uc.layers.includes(layer)) return undefined;
+      if (uc._disposed || !uc.layers.includes(layer)) throw new Error(`${layer.name} was removed while harmonizing`);
       const result = makeCanvas(region.width, region.height);
       const resultCtx = result.getContext("2d", { willReadFrequently: true });
       resultCtx.drawImage(img, 0, 0, result.width, result.height);
@@ -1217,20 +1249,24 @@ export async function runAiHarmonize(uc, layer) {
       if (!harmonizeKeepsSilhouette(original, box)) { rejected += 1; continue; }
       const candidate = makeCanvas(region.width, region.height);
       candidate.getContext("2d").putImageData(new ImageData(pixels, region.width, region.height), 0, 0);
-      uc.addStagingItem({
+      const item = {
         url: candidate.toDataURL("image/png"), img: candidate, bbox: { ...region },
         displaySize: { width: region.width, height: region.height }, inferenceSize: size, image: null,
         visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
         snapshot: { ...snapshot, seed: Number.isFinite(image?.seed) ? image.seed : snapshot.seed },
         harmonize: { layerId: layer.id, region: { ...region }, box },
-      });
-      staged += 1;
+      };
+      uc.addStagingItem(item);
+      stagedItems.push(item);
     }
+    historyRun?.finish(stagedItems);
+    const staged = stagedItems.length;
     uc.requestRender();
     const rejectedText = rejected ? ` ${rejected} result${rejected === 1 ? "" : "s"} rejected: the silhouette moved more than ${Math.round(AI_BBOX_TOLERANCE * 100)}%.` : "";
     uc.setStatus(staged ? `${label}: ${staged} result${staged === 1 ? "" : "s"} staged; accept replaces ${layer.name}'s pixels.${rejectedText}` : `${label}:${rejectedText || " no usable result."}`, !staged);
   } catch (err) {
-    uc.setStatus(`${label} failed: ${err.message || err}`, true);
+    historyRun?.fail(err);
+    if (!uc._disposed) uc.setStatus(`${label} failed: ${err.message || err}`, true);
   } finally {
     uc.stopDrawProgressPolling?.();
     uc.drawInProgress = false;
@@ -1264,7 +1300,8 @@ export function acceptHarmonizeStaging(uc, staging) {
   ctx.drawImage(staging.img, target.x, target.y, target.width, target.height);
   ctx.restore();
   uc.markLayerPixelsChanged(layer, uc.clampCanvasBounds ? uc.clampCanvasBounds(target, layer.canvas) : target, false);
-  uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+  const entry = { kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) };
+  uc.pushHistoryEntry(uc.generationHistory?.acceptIntoLayer(entry, staging, layer) ?? entry);
   uc.stagingItems = [];
   uc.activeStagingIndex = -1;
   uc.refreshLayerRow?.(layer.id);

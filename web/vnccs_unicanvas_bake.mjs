@@ -25,7 +25,8 @@ import { getPoseCharacterMask, poseAtPanoramaCamera, poseCharacterIssues, poseCh
 import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
 import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { resolveRemoveBgSelection, removeBgEditSettings } from "./vnccs_unicanvas_remove_bg.mjs";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
+import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 
 export const BAKE_FAMILIES = Object.freeze([["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"]]);
@@ -388,11 +389,13 @@ export function bakeSettingsPayload(base, { model, defaults = {}, positive, seed
   return settings;
 }
 
-/** Remove-background method for bakes: SAM 3 is interactive, so it falls back to BiRefNet. */
+/**
+ * Remove-background method for bakes: SAM 3 is interactive, so it falls back to BiRefNet (or the
+ * next enabled backend). Null when Remove background is switched off: the bake then cuts the
+ * character out along its mannequin silhouette.
+ */
 export function bakeRemoveBgRequest(settings) {
-  const { method, editModel } = resolveRemoveBgSelection(settings);
-  const resolved = method === "sam3" ? "birefnet" : method;
-  return { method: resolved, edit_model: editModel, edit_settings: resolved === "edit" ? removeBgEditSettings(settings, editModel) : undefined };
+  return automaticRemoveBgRequest(settings);
 }
 
 /** Parts drawn back to front: farther characters (feet higher on screen) first. */
@@ -572,11 +575,14 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     return resolveBakeModel(uc.settings, { currentBase: uc.getModelBase(), presets: uc.presets || [], presetReady, baseOf });
   }
 
+  /** The cut-out alpha of `crop`, or null when Remove background is switched off. */
   async function removeBackground(crop) {
+    const request = bakeRemoveBgRequest(uc.settings);
+    if (!request) return null;
     const res = await fetch(BAKE_REMOVE_BG_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...bakeRemoveBgRequest(uc.settings), image: crop.toDataURL("image/png") }),
+      body: JSON.stringify({ ...request, image: crop.toDataURL("image/png") }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `Remove background HTTP ${res.status}`);
@@ -620,9 +626,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const cropBox = expandBox(silBox, BAKE_CROP_MARGIN, size.width, size.height);
     const crop = uc._createCanvas(cropBox.width, cropBox.height);
     crop.getContext("2d").drawImage(generated, cropBox.x, cropBox.y, cropBox.width, cropBox.height, 0, 0, cropBox.width, cropBox.height);
-    const alpha = await removeBackground(crop);
     const silCrop = dilateAlpha(subAlpha(silAlpha, size.width, cropBox), cropBox.width, cropBox.height,
       Math.max(1, Math.round(0.01 * Math.max(cropBox.width, cropBox.height))));
+    // Remove background switched off (Settings > VNCCS > UniCanvas): the mannequin silhouette cuts.
+    const alpha = (await removeBackground(crop)) ?? silCrop;
     const kept = keepOverlappingComponents(alpha, silCrop, cropBox.width, cropBox.height);
     const keptBox = alphaBounds(kept, cropBox.width, cropBox.height);
     if (!keptBox) throw new Error("The bake produced no character pixels over the mannequin.");
@@ -665,6 +672,21 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const defaults = model.useCurrent ? {} : (modelModule(model.family)?.defaults || {});
     const settings = bakeSettingsPayload(uc.makeSettingsPayload(), { model, defaults, positive: inputs.positive, seed, batch });
     const debugId = `bake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // History (vnccs_unicanvas_history_gallery.mjs): the caller finishes the run with its results.
+    const historyRun = uc.generationHistory?.beginRun("bake", {
+      settings, bbox: work, mode: "bake", inferenceSize: size, outputSize: output, targetLayerId: layer.id,
+      params: { characterId: String(characterId), batch },
+    }) || null;
+    try {
+      return { ...(await requestBake({ layer, characterId, settings, inputs, work, size, output, rect, anchors, model, seed, debugId, poseHash, refHash })), historyRun };
+    } catch (error) {
+      historyRun?.fail(error);
+      throw error;
+    }
+  }
+
+  /** The bake request and the extraction of each returned image. */
+  async function requestBake({ layer, characterId, settings, inputs, work, size, output, rect, anchors, model, seed, debugId, poseHash, refHash }) {
     const res = await fetch(BAKE_DRAW_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -743,15 +765,15 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     uc.setStatus(`Baking ${character?.name || "character"}...`);
     try {
       const out = await api.runBake(layer, characterId, { seed, batch });
-      for (const result of out.results) {
-        uc.addStagingItem({
-          url: result.surface.toDataURL("image/png"), img: result.surface, bbox: { ...out.work },
-          displaySize: { width: out.work.width, height: out.work.height }, inferenceSize: out.size,
-          visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
-          panoramaCamera: null, snapshot: { seed: result.seed, mode: "bake" },
-          bake: { layerId: layer.id, characterId: String(characterId), result, meta: out.meta },
-        });
-      }
+      const staged = out.results.map((result) => ({
+        url: result.surface.toDataURL("image/png"), img: result.surface, bbox: { ...out.work },
+        displaySize: { width: out.work.width, height: out.work.height }, inferenceSize: out.size,
+        visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
+        panoramaCamera: null, snapshot: { seed: result.seed, mode: "bake" },
+        bake: { layerId: layer.id, characterId: String(characterId), result, meta: out.meta },
+      }));
+      for (const item of staged) uc.addStagingItem(item);
+      out.historyRun?.finish(staged);
       uc.render?.();
       uc.setStatus(`Bake of ${character?.name || "character"} staged: accept, discard or pick another variant.`);
     } catch (error) {
@@ -775,7 +797,8 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     }
     const before = uc.createLayerPixelSnapshot(layer);
     api.applyBake(layer, info.characterId, info.result, info.meta);
-    uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+    const entry = { kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) };
+    uc.pushHistoryEntry(uc.generationHistory?.acceptIntoLayer(entry, staging, layer) ?? entry);
     uc.syncToNode?.();
     uc.renderLayerList();
     uc.setStatus("Bake accepted.");
@@ -794,6 +817,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       try {
         const out = await api.runBake(layer, characterId, { seed: newSeed(), batch: 1 });
         api.applyBake(layer, characterId, out.results[0], out.meta);
+        out.historyRun?.finish([autoAcceptedHistoryItem({ img: out.results[0].surface, seed: out.results[0].seed, rect: out.work, layerId: layer.id })]);
       } catch (failure) {
         markFailed(layer, characterId, failure);
         error = new Error(`${name}: ${failure.message || failure}`);

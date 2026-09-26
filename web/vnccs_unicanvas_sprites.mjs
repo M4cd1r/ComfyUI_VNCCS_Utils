@@ -29,7 +29,8 @@
 
 import { alphaBounds, dilateAlpha } from "./vnccs_unicanvas_bake.mjs";
 import { poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
-import { resolveRemoveBgSelection, removeBgEditSettings } from "./vnccs_unicanvas_remove_bg.mjs";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
+import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
@@ -532,12 +533,15 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     if (sync) uc.syncToNode?.();
   }
 
-  /** One undoable change of the sprite state (variants, faceRect, ...): a layerPixels entry. */
-  function commitChange(layer, mutate) {
+  /**
+   * One undoable change of the sprite state (variants, faceRect, ...): a layerPixels entry.
+   * `decorate` may extend the entry (an accepted staged result carries its history item).
+   */
+  function commitChange(layer, mutate, decorate = (entry) => entry) {
     const before = uc.createLayerPixelSnapshot(layer);
     const result = mutate();
     if (result === false) return false;
-    uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+    uc.pushHistoryEntry(decorate({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) }));
     refresh(layer);
     return true;
   }
@@ -843,13 +847,14 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     return null;
   }
 
+  /** The cut-out alpha of an outfit result, or null when Remove background is switched off. */
   async function removeBackground(canvas) {
-    const { method, editModel } = resolveRemoveBgSelection(uc.settings);
-    const resolved = method === "sam3" ? "birefnet" : method;
+    const request = automaticRemoveBgRequest(uc.settings);
+    if (!request) return null;
     const res = await fetch(SPRITE_REMOVE_BG_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ method: resolved, edit_model: editModel, edit_settings: resolved === "edit" ? removeBgEditSettings(uc.settings, editModel) : undefined, image: canvas.toDataURL("image/png") }),
+      body: JSON.stringify({ ...request, image: canvas.toDataURL("image/png") }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `Remove background HTTP ${res.status}`);
@@ -904,40 +909,53 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     }
     delete settings.queued_draw;
     delete settings.draw_id;
-    const res = await fetch(SPRITE_DRAW_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode: "inpaint", image: image.toDataURL("image/png"), mask: maskImage.toDataURL("image/png"), source_empty: false,
-        bbox: world, inference_size: inference, output_size: { width: Math.max(64, work.width), height: Math.max(64, work.height) },
-        debug_id: `sprite-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, settings,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
-    if (!images.length) throw new Error("The generation returned no images.");
-    if (!uc.layers.includes(layer) || !variantOf(layer, variantId)) throw new Error("The sprite layer changed while generating.");
-    const results = [];
-    for (const item of images) {
-      const loaded = await uc.loadImage(uc.resultImageURL(item));
-      const full = copyCanvas(neutral.pixels);
-      const fullCtx = full.getContext("2d");
-      fullCtx.clearRect(work.x, work.y, work.width, work.height);
-      if (outfit) { fullCtx.fillStyle = "#ffffff"; fullCtx.fillRect(work.x, work.y, work.width, work.height); }
-      fullCtx.drawImage(loaded, work.x, work.y, work.width, work.height);
-      let pixels;
-      if (outfit) {
-        const alpha = await removeBackground(full);
-        pixels = compositeOutfitPixels(neutralData, readPixels(full), alpha, face);
-        const anchor = detectSpriteAnchor(alphaOf(pixels), size.width, size.height);
-        pixels = shiftPixels(pixels, size.width, size.height, sprite.anchor.x - anchor.x, sprite.anchor.y - anchor.y);
-      } else {
-        pixels = compositeExpressionPixels(neutralData, readPixels(full), mask);
+    // History (vnccs_unicanvas_history_gallery.mjs): the caller finishes the run with its results.
+    const historyRun = uc.generationHistory?.beginRun("sprite", {
+      settings, bbox: world, mode: "sprite", inferenceSize: inference, outputSize: { width: Math.max(64, work.width), height: Math.max(64, work.height) },
+      targetLayerId: layer.id, imageCanvas: image, maskCanvas: maskImage,
+      params: { variantId: String(variantId), variant: variant.name, kind: variant.kind, batch: settings.batch_size },
+    }) || null;
+    try {
+      const res = await fetch(SPRITE_DRAW_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "inpaint", image: image.toDataURL("image/png"), mask: maskImage.toDataURL("image/png"), source_empty: false,
+          bbox: world, inference_size: inference, output_size: { width: Math.max(64, work.width), height: Math.max(64, work.height) },
+          debug_id: `sprite-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, settings,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
+      if (!images.length) throw new Error("The generation returned no images.");
+      if (!uc.layers.includes(layer) || !variantOf(layer, variantId)) throw new Error("The sprite layer changed while generating.");
+      const results = [];
+      for (const item of images) {
+        const loaded = await uc.loadImage(uc.resultImageURL(item));
+        const full = copyCanvas(neutral.pixels);
+        const fullCtx = full.getContext("2d");
+        fullCtx.clearRect(work.x, work.y, work.width, work.height);
+        if (outfit) { fullCtx.fillStyle = "#ffffff"; fullCtx.fillRect(work.x, work.y, work.width, work.height); }
+        fullCtx.drawImage(loaded, work.x, work.y, work.width, work.height);
+        let pixels;
+        if (outfit) {
+          // Remove background switched off (Settings > VNCCS > UniCanvas): the outfit mask (the neutral
+          // silhouette grown a little) cuts instead.
+          const alpha = (await removeBackground(full)) ?? mask;
+          pixels = compositeOutfitPixels(neutralData, readPixels(full), alpha, face);
+          const anchor = detectSpriteAnchor(alphaOf(pixels), size.width, size.height);
+          pixels = shiftPixels(pixels, size.width, size.height, sprite.anchor.x - anchor.x, sprite.anchor.y - anchor.y);
+        } else {
+          pixels = compositeExpressionPixels(neutralData, readPixels(full), mask);
+        }
+        results.push({ pixels: canvasFromPixels(pixels, size.width, size.height), seed: Number.isFinite(item?.seed) ? item.seed : seed });
       }
-      results.push({ pixels: canvasFromPixels(pixels, size.width, size.height), seed: Number.isFinite(item?.seed) ? item.seed : seed });
+      return { results, rect: { ...sprite.rect }, inference, prompt: settings.positive, historyRun };
+    } catch (error) {
+      historyRun?.fail(error);
+      throw error;
     }
-    return { results, rect: { ...sprite.rect }, inference, prompt: settings.positive };
   }
 
   function applyVariant(layer, variantId, result, prompt) {
@@ -986,15 +1004,15 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     progress(`Generating sprite ${variant.name}`, 0.05);
     try {
       const out = await api.requestVariant(layer, variantId, { seed, batch });
-      for (const result of out.results) {
-        uc.addStagingItem({
-          url: result.pixels.toDataURL("image/png"), img: result.pixels, bbox: { ...out.rect },
-          displaySize: { width: out.rect.width, height: out.rect.height }, inferenceSize: out.inference,
-          visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
-          panoramaCamera: null, snapshot: { seed: result.seed, mode: "sprite" },
-          sprite: { layerId: layer.id, variantId, result, prompt: out.prompt },
-        });
-      }
+      const staged = out.results.map((result) => ({
+        url: result.pixels.toDataURL("image/png"), img: result.pixels, bbox: { ...out.rect },
+        displaySize: { width: out.rect.width, height: out.rect.height }, inferenceSize: out.inference,
+        visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
+        panoramaCamera: null, snapshot: { seed: result.seed, mode: "sprite" },
+        sprite: { layerId: layer.id, variantId, result, prompt: out.prompt },
+      }));
+      for (const item of staged) uc.addStagingItem(item);
+      out.historyRun?.finish(staged);
       progress(`Sprite ${variant.name} staged`, 1);
       uc.setStatus(`Sprite ${variant.name} staged: accept, discard or pick another result.`);
     } catch (error) {
@@ -1026,7 +1044,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       drawActive(layer);
       selectedVariantId = info.variantId;
       return true;
-    });
+    }, (entry) => uc.generationHistory?.acceptIntoLayer(entry, staging, layer) ?? entry);
     uc.setStatus(applied ? "Sprite variant accepted." : "The sprite changed size since this result was generated: generate it again.", !applied);
     uc.requestRender();
   }
@@ -1049,7 +1067,12 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
         renderPanel();
         try {
           const out = await api.requestVariant(layer, variant.id, { seed: newSeed(), batch: 1 });
-          if (applyVariant(layer, variant.id, out.results[0], out.prompt)) done++;
+          if (applyVariant(layer, variant.id, out.results[0], out.prompt)) {
+            done++;
+            out.historyRun?.finish([autoAcceptedHistoryItem({ img: out.results[0].pixels, seed: out.results[0].seed, rect: out.rect, layerId: layer.id })]);
+          } else {
+            out.historyRun?.fail(new Error("The sprite changed size while generating."));
+          }
         } catch (failure) {
           markFailed(layer, variant.id, failure);
           error = new Error(`${variant.name}: ${failure.message || failure}`);
