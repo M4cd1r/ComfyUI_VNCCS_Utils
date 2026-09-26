@@ -155,7 +155,8 @@ def find_bundled_pose_file(name, category=None):
             continue
         try:
             found_category = get_raw_library_meta(read_pose_json(path)).get("category") or category_dir
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("[VNCCS] Bundled preset %s unreadable: %s", path, exc)
             found_category = category_dir
         if category and found_category != category:
             continue
@@ -1935,7 +1936,8 @@ async def list_poses(request):
     for name, path, category_dir in iter_bundled_pose_files():
         try:
             pose_data = read_pose_json(path)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("[VNCCS] Bundled preset %s unreadable: %s", path, exc)
             continue
         poses.append(build_pose_record(
             name,

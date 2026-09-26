@@ -202,10 +202,10 @@ def test_history_routes_map_errors_to_status_codes(user_root):
     for key in [("GET", base), ("POST", base), ("POST", f"{base}/prune"), ("GET", f"{base}/{{hid}}"),
                 ("PATCH", f"{base}/{{hid}}"), ("DELETE", f"{base}/{{hid}}")]:
         assert key in table, key
-    # routes.py registers them through project_routes.
+    # routes.py registers the history table itself; the project table no longer carries it.
     from nodes.unicanvas import projects as project_module
     project_table = {(method, path) for method, path, _ in project_module.project_routes(web, lambda request, size: True, factory)}
-    assert set(table) <= project_table
+    assert not set(table) & project_table
 
     class Request:
         def __init__(self, match_info=None, payload=None, query=None):

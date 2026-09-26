@@ -19,6 +19,7 @@ from .debug import debug_enabled, debug_event, set_unicanvas_debug
 from .depth import _run_unicanvas_depth
 from .describe_layers import _run_unicanvas_describe_layers
 from .draw import _run_unicanvas_draw
+from .history import history_routes
 from .models.qwen_image21 import (
     _QWEN21_TURBO_LORA_DOWNLOAD,
     QWEN21_TURBO_LORA_NAME,
@@ -271,6 +272,7 @@ def register_unicanvas_layer_routes() -> None:
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         except Exception as exc:
+            logging.error("[VNCCS UniCanvas] Depth failed: %s", traceback.format_exc())
             return web.json_response({"error": str(exc) or type(exc).__name__}, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/control_preprocess")
@@ -337,12 +339,16 @@ def register_unicanvas_layer_routes() -> None:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
-    # Durable projects (Plan 10.2) and the asset library (Plan 10.4): /vnccs/unicanvas/projects/..., /vnccs/unicanvas/library/...
-    for method, path, handler in project_routes(web, _content_length_ok):
-        getattr(PromptServer.instance.routes, method.lower())(path)(handler)
-
-    # Timeline animation export (Plan 06.2): /vnccs/unicanvas/animation/begin|frames|end|cancel|status.
-    for method, path, handler in animation_export_routes(web, _content_length_ok):
-        getattr(PromptServer.instance.routes, method.lower())(path)(handler)
+    route_tables = (
+        # Durable projects (Plan 10.2) and the asset library (Plan 10.4): /vnccs/unicanvas/projects/..., /vnccs/unicanvas/library/...
+        project_routes(web, _content_length_ok),
+        # Generation history (Plan 10.5): /vnccs/unicanvas/projects/{id}/history/...
+        history_routes(web, _content_length_ok),
+        # Timeline animation export (Plan 06.2): /vnccs/unicanvas/animation/begin|frames|end|cancel|status.
+        animation_export_routes(web, _content_length_ok),
+    )
+    for table in route_tables:
+        for method, path, handler in table:
+            getattr(PromptServer.instance.routes, method.lower())(path)(handler)
 
     _UNICANVAS_LAYER_ROUTES_REGISTERED = True

@@ -9,7 +9,7 @@ they exist) writes one record into its project::
          inputs: {imageDataURL, maskDataURL},                     256 px thumbnails as blob refs
          results: [{index, imageDataURL, accepted, layerId, seed, width, height}]}
 
-Pixel fields are content-addressed blobs shared with the scenes (``ProjectStore._dehydrate``), so
+Pixel fields are content-addressed blobs shared with the scenes (``ProjectStore.dehydrate``), so
 an accepted image is stored exactly once however many records and scenes reference it; the blob
 GC in ``ProjectStore.collect_garbage`` already counts history references.
 
@@ -24,20 +24,20 @@ import asyncio
 import os
 from typing import Any, Callable
 
-from .projects import (
-    MAX_SCENE_BYTES,
+from .project_io import (
+    STORE_LOCK,
     ProjectError,
-    ProjectStore,
-    _STORE_LOCK,
-    _atomic_write_json,
-    _collect_blob_refs,
-    _new_id,
-    _now,
-    _read_json,
-    _request_user,
-    _safe_id,
+    atomic_write_json,
+    collect_blob_refs,
     default_user_root,
+    new_id,
+    now as current_time,
+    read_json,
+    request_user,
+    safe_id,
 )
+from .projects import MAX_SCENE_BYTES, ProjectStore
+from .route_utils import json_route, match, read_json_object
 
 
 HISTORY_SCHEMA_VERSION = 1
@@ -78,7 +78,7 @@ def _clean_results(results: Any) -> list[dict[str, Any]]:
 
 
 def _timestamp(value: Any) -> float:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else _now()
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else current_time()
 
 
 class HistoryStore:
@@ -90,10 +90,10 @@ class HistoryStore:
     # -- paths ---------------------------------------------------------------------------------
 
     def history_dir(self, project_id: str) -> str:
-        return self.projects._inside(os.path.join(self.projects.project_dir(project_id), "history"))
+        return self.projects.inside(os.path.join(self.projects.project_dir(project_id), "history"))
 
     def record_path(self, project_id: str, history_id: str) -> str:
-        return self.projects._inside(os.path.join(self.history_dir(project_id), f"{_safe_id(history_id, 'history id')}.json"))
+        return self.projects.inside(os.path.join(self.history_dir(project_id), f"{safe_id(history_id, 'history id')}.json"))
 
     # -- records -------------------------------------------------------------------------------
 
@@ -104,7 +104,7 @@ class HistoryStore:
             if not name.endswith(".json"):
                 continue
             try:
-                record = _read_json(os.path.join(directory, name))
+                record = read_json(os.path.join(directory, name))
             except (OSError, ValueError):
                 continue
             if isinstance(record, dict) and record.get("id"):
@@ -126,7 +126,7 @@ class HistoryStore:
         path = self.record_path(project_id, history_id)
         if not os.path.isfile(path):
             raise ProjectError("[VNCCS UniCanvas] History record not found.", 404)
-        return _read_json(path)
+        return read_json(path)
 
     def create_record(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
@@ -134,14 +134,14 @@ class HistoryStore:
         kind = payload.get("kind")
         if kind not in HISTORY_KINDS:
             raise ProjectError(f"[VNCCS UniCanvas] Unknown history kind: {kind}.", 400)
-        with _STORE_LOCK:
+        with STORE_LOCK:
             self.projects.load_project(project_id)
             requested = payload.get("id")
-            history_id = _safe_id(requested, "history id") if requested else _new_id("gen")
+            history_id = safe_id(requested, "history id") if requested else new_id("gen")
             path = self.record_path(project_id, history_id)
             if os.path.exists(path):
                 raise ProjectError("[VNCCS UniCanvas] A history record with this id already exists.", 409)
-            record = self.projects._dehydrate(project_id, payload)
+            record = self.projects.dehydrate(project_id, payload)
             record.update({
                 "schemaVersion": HISTORY_SCHEMA_VERSION,
                 "id": history_id,
@@ -150,7 +150,7 @@ class HistoryStore:
                 "results": _clean_results(record.get("results")),
             })
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            _atomic_write_json(path, record)
+            atomic_write_json(path, record)
             pruned = self.prune(project_id)
             return {"record": record, "pruned": pruned}
 
@@ -158,7 +158,7 @@ class HistoryStore:
         """Updates result flags (``results: [{index, accepted, layerId}]``) and the duration/error."""
         if not isinstance(patch, dict):
             raise ProjectError("[VNCCS UniCanvas] Expected a JSON object.", 400)
-        with _STORE_LOCK:
+        with STORE_LOCK:
             record = self.get_record(project_id, history_id)
             results = record.get("results") or []
             for change in patch.get("results") or []:
@@ -174,11 +174,11 @@ class HistoryStore:
             for key in ("durationMs", "status", "error"):
                 if key in patch:
                     record[key] = patch[key]
-            _atomic_write_json(self.record_path(project_id, history_id), record)
+            atomic_write_json(self.record_path(project_id, history_id), record)
             return record
 
     def delete_record(self, project_id: str, history_id: str) -> None:
-        with _STORE_LOCK:
+        with STORE_LOCK:
             path = self.record_path(project_id, history_id)
             if not os.path.isfile(path):
                 raise ProjectError("[VNCCS UniCanvas] History record not found.", 404)
@@ -196,7 +196,7 @@ class HistoryStore:
                     if not name.endswith(".json"):
                         continue
                     try:
-                        _collect_blob_refs(_read_json(os.path.join(folder, name)), referenced)
+                        collect_blob_refs(read_json(os.path.join(folder, name)), referenced)
                     except (OSError, ValueError):
                         return None
         return referenced
@@ -211,7 +211,7 @@ class HistoryStore:
         records = self._load_all(project_id)
         blobs: set[str] = set()
         for record in records:
-            _collect_blob_refs(record, blobs)
+            collect_blob_refs(record, blobs)
         return {"records": len(records), "bytes": sum(self._blob_size(project_id, sha) for sha in blobs)}
 
     def prune(self, project_id: str, max_records: int | None = None, max_bytes: int | None = None) -> dict[str, Any]:
@@ -220,7 +220,7 @@ class HistoryStore:
         Bytes count the history's own blobs, i.e. those no scene or asset references: pruning
         can only free those, so the rest never counts against the cap and is never deleted.
         """
-        with _STORE_LOCK:
+        with STORE_LOCK:
             caps = retention_settings(self.projects.load_project(project_id))
             max_records = max_records or caps["maxRecords"]
             max_bytes = max_bytes or caps["maxBytes"]
@@ -231,7 +231,7 @@ class HistoryStore:
             refcount: dict[str, int] = {}
             per_record: dict[str, set[str]] = {}
             for record in records:
-                refs = _collect_blob_refs(record, set())
+                refs = collect_blob_refs(record, set())
                 per_record[record["id"]] = refs
                 for sha in refs:
                     refcount[sha] = refcount.get(sha, 0) + 1
@@ -267,7 +267,7 @@ class HistoryStore:
                     record["results"] = [item for item in record["results"] if item.get("accepted")]
                     removed_results += len(discarded)
                     release(per_record[record["id"]])
-                    per_record[record["id"]] = _collect_blob_refs(record, set())
+                    per_record[record["id"]] = collect_blob_refs(record, set())
                     retain(per_record[record["id"]])
                     changed[record["id"]] = record
                     if own_bytes() <= max_bytes:
@@ -279,7 +279,7 @@ class HistoryStore:
                 if os.path.isfile(path):
                     os.remove(path)
             for history_id, record in changed.items():
-                _atomic_write_json(self.record_path(project_id, history_id), record)
+                atomic_write_json(self.record_path(project_id, history_id), record)
             deleted_blobs = []
             for sha, count in refcount.items():
                 if count > 0 or sha in protected:
@@ -295,36 +295,20 @@ class HistoryStore:
 
 def history_routes(web, content_length_ok: Callable[[Any, int], bool],
                    store_factory: Callable[[str], ProjectStore] | None = None) -> list[tuple[str, str, Callable]]:
-    """(method, path, handler) triples under /vnccs/unicanvas/projects/{id}/history."""
+    """(method, path, handler) triples for ``routes.py`` under /vnccs/unicanvas/projects/{id}/history."""
     base = "/vnccs/unicanvas/projects/{id}/history"
 
     def store_for(request) -> HistoryStore:
-        user = _request_user(request)
+        user = request_user(request)
         return HistoryStore(store_factory(user) if store_factory else ProjectStore(default_user_root(), user))
 
     def handler(max_bytes: int, work):
         async def run(request):
-            if not content_length_ok(request, max_bytes):
-                return web.json_response({"error": "[VNCCS UniCanvas] History request is too large."}, status=413)
-            try:
-                result = await work(request, store_for(request))
-                return web.json_response(result)
-            except ProjectError as exc:
-                return web.json_response({"error": str(exc), **exc.extra}, status=exc.status)
-            except Exception as exc:
-                return web.json_response({"error": f"[VNCCS UniCanvas] History storage failed: {exc}"}, status=500)
-        return run
+            return await work(request, store_for(request))
+        return json_route(web, content_length_ok, max_bytes, run, subject="History", failure="History storage failed")
 
-    async def body(request) -> dict[str, Any]:
-        if not getattr(request, "can_read_body", False):
-            return {}
-        payload = await request.json()
-        if not isinstance(payload, dict):
-            raise ProjectError("[VNCCS UniCanvas] Expected a JSON object.", 400)
-        return payload
-
-    def m(request, key):
-        return request.match_info.get(key) or ""
+    body = read_json_object
+    m = match
 
     async def list_(request, store):
         try:

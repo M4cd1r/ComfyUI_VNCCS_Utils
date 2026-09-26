@@ -138,6 +138,15 @@ class _Routes:
     def post(self, path):
         return self._add("POST", path)
 
+    def put(self, path):
+        return self._add("PUT", path)
+
+    def patch(self, path):
+        return self._add("PATCH", path)
+
+    def delete(self, path):
+        return self._add("DELETE", path)
+
 
 class _Request:
     def __init__(self, payload, length=None):
@@ -149,14 +158,27 @@ class _Request:
         return json.loads(self._body)
 
 
-def _handler(monkeypatch):
+def _registered(monkeypatch):
     pytest.importorskip("aiohttp.web")
     table = _Routes()
     monkeypatch.setattr(sys.modules["server"], "PromptServer", types.SimpleNamespace(instance=types.SimpleNamespace(routes=table)), raising=False)
     monkeypatch.setattr(routes, "_UNICANVAS_LAYER_ROUTES_REGISTERED", False)
-    monkeypatch.setattr(routes, "project_routes", lambda web, check: [])
     routes.register_unicanvas_layer_routes()
-    return table.handlers[("POST", "/vnccs/unicanvas/control_preprocess")]
+    return table.handlers
+
+
+def _handler(monkeypatch):
+    return _registered(monkeypatch)[("POST", "/vnccs/unicanvas/control_preprocess")]
+
+
+def test_layer_routes_register_the_project_history_and_animation_tables(monkeypatch):
+    handlers = _registered(monkeypatch)
+    for key in [("PATCH", "/vnccs/unicanvas/projects/{id}"),
+                ("GET", "/vnccs/unicanvas/library/assets"),
+                ("PATCH", "/vnccs/unicanvas/projects/{id}/history/{hid}"),
+                ("POST", "/vnccs/unicanvas/projects/{id}/history/prune"),
+                ("POST", "/vnccs/unicanvas/animation/begin")]:
+        assert key in handlers, key
 
 
 def test_route_answers_with_the_raw_map(monkeypatch):

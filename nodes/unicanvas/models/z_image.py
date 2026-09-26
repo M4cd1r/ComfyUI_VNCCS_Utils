@@ -72,7 +72,6 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         "_z_image_fun_controlnet_mask",
         "_z_image_fun_controlnet_vae",
         "_z_image_fun_controlnet_patch_model",
-        "_z_image_fun_controlnet_applied",
     )
     decode_tile_size: ClassVar[int] = 256
     capabilities: ModelCapabilities = ModelCapabilities(
@@ -239,7 +238,6 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         width: int | None = None,
         height: int | None = None,
     ):
-        model = self._apply_fun_controlnet_if_needed(model, gen_settings, draw_id)
         model = self._apply_aura_flow_sampling(model, gen_settings, draw_id)
         if str(gen_settings.get("draw_mode") or "") in {"inpaint", "outpaint"} and bool(gen_settings.get("fun_controlnet_inpaint", True)):
             denoise = 1.0
@@ -260,9 +258,18 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
             height=height,
         )
 
+    def prepare_model_for_sampling(self, ctx) -> Any:
+        """The inpaint/outpaint Fun ControlNet patch.
+
+        A draw with a control image gets one combined patch (control image plus the inpaint
+        inputs) from :meth:`apply_control`, which the pipeline calls right after this hook, so
+        the model is left alone here.
+        """
+        if ctx.request.control is not None:
+            return ctx.model
+        return self._apply_fun_controlnet_if_needed(ctx.model, ctx.settings, ctx.draw_id)
+
     def _apply_fun_controlnet_if_needed(self, model: Any, gen_settings: dict[str, Any], draw_id: str) -> Any:
-        if gen_settings.pop("_z_image_fun_controlnet_applied", False):
-            return model  # apply_control already patched the model (control image, plus the inpaint inputs)
         draw_mode = str(gen_settings.get("draw_mode") or "")
         if draw_mode not in {"inpaint", "outpaint"}:
             return model
@@ -279,8 +286,8 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
                 "Z-image Fun ControlNet skipped",
                 {
                     "reason": "missing inpaint image, mask, or VAE",
-                    "image": _tensor_debug(gen_settings.get("_z_image_fun_controlnet_image")) if torch.is_tensor(gen_settings.get("_z_image_fun_controlnet_image")) else None,
-                    "mask": _tensor_debug(gen_settings.get("_z_image_fun_controlnet_mask")) if torch.is_tensor(gen_settings.get("_z_image_fun_controlnet_mask")) else None,
+                    "image": _tensor_debug_or_none(gen_settings.get("_z_image_fun_controlnet_image")),
+                    "mask": _tensor_debug_or_none(gen_settings.get("_z_image_fun_controlnet_mask")),
                     "has_vae": vae is not None,
                 },
             )
@@ -352,24 +359,21 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
                 "mode": str(gen_settings.get("draw_mode") or ""),
                 "patch": patch_name,
                 "strength": float(strength),
-                "control": _tensor_debug(image) if torch.is_tensor(image) else None,
-                "image": _tensor_debug(inpaint_image) if torch.is_tensor(inpaint_image) else None,
-                "mask": _tensor_debug(mask) if torch.is_tensor(mask) else None,
+                "control": _tensor_debug_or_none(image),
+                "image": _tensor_debug_or_none(inpaint_image),
+                "mask": _tensor_debug_or_none(mask),
             },
         )
         return patched
 
     def apply_control(self, ctx) -> Any:
         """Control image through the same Fun ControlNet Union patch; a masked draw adds its inpaint inputs."""
-        settings = ctx.settings
-        inpaint_image, mask, vae = self._fun_controlnet_inpaint_inputs(settings)
-        patched = self._apply_fun_controlnet(
-            ctx.model, settings, ctx.draw_id, vae=vae if vae is not None else ctx.vae,
+        inpaint_image, mask, vae = self._fun_controlnet_inpaint_inputs(ctx.settings)
+        return self._apply_fun_controlnet(
+            ctx.model, ctx.settings, ctx.draw_id, vae=vae if vae is not None else ctx.vae,
             strength=ctx.request.control.strength, image=ctx.control_tensor,
             inpaint_image=inpaint_image, mask=mask,
         )
-        settings["_z_image_fun_controlnet_applied"] = True
-        return patched
 
     def _apply_aura_flow_sampling(self, model: Any, gen_settings: dict[str, Any], draw_id: str) -> Any:
         shift = float(gen_settings.get("aura_flow_shift", 3.0))
@@ -480,3 +484,7 @@ def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknow
 
 def _masked_draw(settings: dict[str, Any]) -> bool:
     return str((settings or {}).get("draw_mode") or "").lower() in {"inpaint", "outpaint"}
+
+
+def _tensor_debug_or_none(value: Any) -> dict[str, Any] | None:
+    return _tensor_debug(value) if torch.is_tensor(value) else None

@@ -262,8 +262,8 @@ def test_z_image_applies_the_control_image_through_zimage_fun_controlnet(monkeyp
     assert kwargs["image"] is ctx.control_tensor
     assert kwargs["inpaint_image"] is None and kwargs["mask"] is None
     assert kwargs["strength"] == 0.6 and kwargs["model_patch"] == "PATCH"
-    # sample_latent's inpaint patch must not patch the model a second time.
-    assert module._apply_fun_controlnet_if_needed("PATCHED", ctx.settings, "z") == "PATCHED"
+    # The pipeline's prepare_model_for_sampling hook must not patch the model a second time.
+    assert module.prepare_model_for_sampling(ctx) == "M"
     assert len(calls) == 1
 
 
@@ -276,8 +276,20 @@ def test_z_image_control_with_inpaint_mask_is_one_patch(monkeypatch):
     assert kwargs["image"] is ctx.control_tensor
     assert kwargs["inpaint_image"] is ctx.settings["_z_image_fun_controlnet_image"]
     assert kwargs["mask"] is ctx.settings["_z_image_fun_controlnet_mask"]
-    module._apply_fun_controlnet_if_needed("PATCHED", ctx.settings, "z")
+    assert module.prepare_model_for_sampling(ctx) == "M"
     assert len(calls) == 1
+
+
+def test_z_image_inpaint_without_control_patches_once_before_sampling(monkeypatch):
+    calls = []
+    monkeypatch.setattr("nodes.unicanvas.models.z_image._call_node_method", lambda names, methods, **kw: calls.append(kw) or "PATCHED")
+    module, ctx = z_image_ctx("inpaint", masked=True)
+    ctx.request.control = None
+    assert module.prepare_model_for_sampling(ctx) == "PATCHED"
+    [kwargs] = calls
+    assert kwargs["image"] is None
+    assert kwargs["inpaint_image"] is ctx.settings["_z_image_fun_controlnet_image"]
+    assert not any(key.endswith("_applied") for key in ctx.settings)
 
 
 def test_z_image_preloads_the_patch_for_a_control_draw(monkeypatch):

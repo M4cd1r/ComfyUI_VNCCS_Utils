@@ -27,20 +27,20 @@ import threading
 import time
 import uuid
 from fractions import Fraction
-from typing import Any
+from typing import Any, Callable, NamedTuple
 
 from PIL import Image
 
 from .constants import _MAX_PIXELS, _MAX_UPLOAD_BYTES
 from .paths import _unicanvas_runtime_temp_root
+from .route_utils import RouteError, json_route, read_json_object
 from .save_output import _sanitize_name_part, _sanitize_output_subfolder
 
 
-ANIMATION_FORMATS = ("webm", "mp4", "gif", "png")
 MAX_ANIMATION_FRAMES = 3600
 MAX_ANIMATION_FPS = 60
 MAX_ANIMATION_SIDE = 4096
-# An abandoned job (tab closed mid-export) is removed when the next job begins.
+# An abandoned job (tab closed mid-export) is removed by the next request that touches the job table.
 JOB_TTL_SECONDS = 2 * 60 * 60
 _JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _DEFAULT_NAME = "animation"
@@ -50,12 +50,15 @@ _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
 
 
-class AnimationExportError(ValueError):
-    """A request error (reported as a 4xx)."""
+class AnimationExportError(RouteError, ValueError):
+    """A request error (reported as a 400, or a 404 by the status route)."""
 
 
-class AnimationExportCancelled(RuntimeError):
-    """The job was cancelled while encoding."""
+class AnimationExportCancelled(RouteError, RuntimeError):
+    """The job was cancelled while encoding (reported as a 409 with ``cancelled: true``)."""
+
+    def __init__(self, message: str):
+        super().__init__(message, 409, cancelled=True)
 
 
 def _jobs_root() -> str:
@@ -161,6 +164,7 @@ def _frame_path(job: dict[str, Any], index: int) -> str:
 def add_animation_frames(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise AnimationExportError("[VNCCS UniCanvas] animation export expects a JSON object.")
+    _expire_jobs(time.time())
     job = _job(payload.get("job_id"))
     frames = payload.get("frames")
     if not isinstance(frames, list) or not frames:
@@ -290,6 +294,30 @@ def _write_png_sequence(job: dict[str, Any], folder: str) -> list[str]:
     return paths
 
 
+class _Encoder(NamedTuple):
+    """How one format reserves its output path and writes the job there (returns the file count)."""
+
+    reserve: Callable[[str, str, str], str]
+    write: Callable[[dict[str, Any], str], int]
+
+
+def _single_file(encode: Callable[[dict[str, Any], str], None]) -> Callable[[dict[str, Any], str], int]:
+    def write(job: dict[str, Any], output: str) -> int:
+        encode(job, output)
+        return 1
+    return write
+
+
+_ENCODERS: dict[str, _Encoder] = {
+    "webm": _Encoder(_reserve_output_file, _single_file(_encode_video)),
+    "mp4": _Encoder(_reserve_output_file, _single_file(_encode_video)),
+    "gif": _Encoder(_reserve_output_file, _single_file(_encode_gif)),
+    "png": _Encoder(lambda folder, name, _fmt: _reserve_output_folder(folder, name),
+                    lambda job, output: len(_write_png_sequence(job, output))),
+}
+ANIMATION_FORMATS = tuple(_ENCODERS)
+
+
 def end_animation_export(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise AnimationExportError("[VNCCS UniCanvas] animation export expects a JSON object.")
@@ -305,17 +333,9 @@ def end_animation_export(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         folder = _output_folder(job["subfolder"])
         fmt = job["format"]
-        if fmt == "png":
-            output = _reserve_output_folder(folder, job["name"])
-            files = _write_png_sequence(job, output)
-            result = {"ok": True, "format": fmt, "path": output, "files": len(files)}
-        else:
-            output = _reserve_output_file(folder, job["name"], fmt)
-            if fmt == "gif":
-                _encode_gif(job, output)
-            else:
-                _encode_video(job, output)
-            result = {"ok": True, "format": fmt, "path": output, "files": 1}
+        encoder = _ENCODERS[fmt]
+        output = encoder.reserve(folder, job["name"], fmt)
+        result = {"ok": True, "format": fmt, "path": output, "files": encoder.write(job, output)}
         result.update({"frames": job["frame_count"], "width": job["width"], "height": job["height"], "fps": job["fps"]})
         return result
     except BaseException:
@@ -349,6 +369,7 @@ def cancel_animation_export(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def animation_export_status(job_id: str) -> dict[str, Any]:
+    _expire_jobs(time.time())
     job = _job(job_id)
     return {
         "ok": True, "received": job["received"], "encoded": job["encoded"], "frame_count": job["frame_count"],
@@ -364,27 +385,15 @@ def animation_export_routes(web, content_length_ok) -> list[tuple[str, str, Any]
 
     def handler(worker, max_bytes: int):
         async def run(request):
-            if not content_length_ok(request, max_bytes):
-                return web.json_response({"error": "[VNCCS UniCanvas] Animation export request is too large."}, status=413)
-            try:
-                payload = await request.json()
-            except Exception:
-                return web.json_response({"error": "[VNCCS UniCanvas] Animation export expects a JSON object."}, status=400)
-            try:
-                return web.json_response(await asyncio.to_thread(worker, payload))
-            except AnimationExportCancelled as exc:
-                return web.json_response({"error": str(exc), "cancelled": True}, status=409)
-            except AnimationExportError as exc:
-                return web.json_response({"error": str(exc)}, status=400)
-            except Exception as exc:
-                return web.json_response({"error": f"[VNCCS UniCanvas] Animation export failed: {exc}"}, status=500)
-        return run
+            payload = await read_json_object(request, "[VNCCS UniCanvas] Animation export expects a JSON object.")
+            return await asyncio.to_thread(worker, payload)
+        return json_route(web, content_length_ok, max_bytes, run, subject="Animation export", failure="Animation export failed")
 
     async def status(request):
         try:
-            return web.json_response(animation_export_status(str(request.match_info.get("job_id") or "")))
+            return await asyncio.to_thread(animation_export_status, str(request.match_info.get("job_id") or ""))
         except AnimationExportError as exc:
-            return web.json_response({"error": str(exc)}, status=404)
+            raise RouteError(str(exc), 404) from None
 
     small = 64 * 1024
     return [
@@ -392,5 +401,6 @@ def animation_export_routes(web, content_length_ok) -> list[tuple[str, str, Any]
         ("POST", f"{base}/frames", handler(add_animation_frames, _MAX_UPLOAD_BYTES + 1024 * 1024)),
         ("POST", f"{base}/end", handler(end_animation_export, small)),
         ("POST", f"{base}/cancel", handler(cancel_animation_export, small)),
-        ("GET", f"{base}/status/{{job_id}}", status),
+        ("GET", f"{base}/status/{{job_id}}", json_route(web, content_length_ok, small, status,
+                                                       subject="Animation export", failure="Animation export failed")),
     ]
