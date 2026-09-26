@@ -19,6 +19,9 @@
  *    write), so history snapshots share them by reference.
  *  - A move only changes `rect`; a transform maps `rect`, `anchor`, `faceRect` and the other
  *    variants through the same frame.
+ *  - Panorama documents: the rect is measured from the sprite's anchor camera and the layer's
+ *    pixels live on the sphere; every canvas access goes through the sprite surface
+ *    (vnccs_unicanvas_sprites_panorama.mjs).
  *  - Generation reuses the draw route with an inpaint mask: expressions repaint `faceRect` over the
  *    neutral variant and keep its alpha, outfits repaint the body and take their alpha from the
  *    background remover, re-anchored on the feet.
@@ -35,6 +38,7 @@ import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { applyHomography, homographyFromUnitSquare, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
+import { createSpriteSurface, normalizeSpriteCamera } from "./vnccs_unicanvas_sprites_panorama.mjs";
 
 export const SPRITE_LAYER_TYPE = "sprite";
 export const SPRITE_SCHEMA_VERSION = 1;
@@ -144,6 +148,9 @@ export function normalizeSpriteState(raw) {
     paintAll: raw?.paintAll === true,
   };
   if (typeof raw?.sourceLayerId === "string" && raw.sourceLayerId) sprite.sourceLayerId = raw.sourceLayerId;
+  // Panorama documents: the camera the rect is measured from (vnccs_unicanvas_sprites_panorama.mjs).
+  const camera = normalizeSpriteCamera(raw?.panoramaCamera);
+  if (camera) sprite.panoramaCamera = camera;
   return sprite;
 }
 
@@ -154,6 +161,7 @@ export function snapshotSprite(sprite) {
     ...sprite,
     rect: { ...sprite.rect }, anchor: { ...sprite.anchor },
     faceRect: sprite.faceRect ? { ...sprite.faceRect } : null,
+    ...(sprite.panoramaCamera ? { panoramaCamera: { ...sprite.panoramaCamera } } : {}),
     variants: sprite.variants.map((variant) => ({ ...variant, meta: variant.meta ? clone(variant.meta) : undefined })),
   };
 }
@@ -174,6 +182,7 @@ export function serializeSpriteState(sprite, dataURLOf = null) {
     }),
   };
   if (sprite.sourceLayerId) out.sourceLayerId = sprite.sourceLayerId;
+  if (sprite.panoramaCamera) out.panoramaCamera = { ...sprite.panoramaCamera };
   return out;
 }
 
@@ -376,9 +385,8 @@ export function mapBox(map, box) {
 }
 
 /** Which layers can become a sprite set, and why not. */
-export function spriteSourceIssue(layer, { panorama = false } = {}) {
+export function spriteSourceIssue(layer) {
   if (!layer) return "Pick a layer first.";
-  if (panorama) return "Sprite sets are not available in panorama documents.";
   if (layer.locked) return "Unlock the layer first.";
   if (layer.type === "raster") return layer.shadow ? "Shadow layers cannot become sprite sets." : null;
   if (layer.type !== "pose") return "Sprite sets are made from raster or baked pose layers.";
@@ -460,28 +468,27 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     return canvasFromPixels(data, width, height);
   }
 
-  /** The rect region of the layer canvas (world pixels). */
-  function cropRect(layer, rect = layer.sprite.rect) {
+  // Where the layer's pixels live: `layer.canvas`, or the sphere of a panorama seen from the
+  // sprite's anchor camera (vnccs_unicanvas_sprites_panorama.mjs).
+  const surface = createSpriteSurface(uc, { mapBox, clampBox, unionBox, alphaBounds, alphaOf, readPixels });
+
+  /** The rect region (world pixels) of a layer-sized canvas. */
+  function cropRect(source, rect) {
     const canvas = createCanvas(rect.width, rect.height);
-    canvas.getContext("2d").drawImage(layer.canvas, rect.x - uc.origin.x, rect.y - uc.origin.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    canvas.getContext("2d").drawImage(source, rect.x - uc.origin.x, rect.y - uc.origin.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
     return canvas;
   }
 
+  /** Shows `pixels` at the shared rect as the layer's whole content. */
   function drawIntoLayer(layer, pixels) {
-    const ctx = layer.canvas.getContext("2d");
-    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
-    const rect = layer.sprite.rect;
-    if (pixels) ctx.drawImage(pixels, rect.x - uc.origin.x, rect.y - uc.origin.y, rect.width, rect.height);
-    layer.hiresCanvas = null;
-    layer.hiresRect = null;
+    surface.write(layer, pixels, layer.sprite.rect);
   }
 
-  /** Redraws `layer.canvas` from the active variant; the canvas is then in sync. */
+  /** Redraws the layer from the active variant; the layer is then in sync. */
   function drawActive(layer) {
     if (!isSprite(layer)) return;
     drawIntoLayer(layer, activeVariant(layer)?.pixels || null);
-    uc.invalidateLayerCaches(layer);
-    layer.sprite._syncedRevision = layer.pixelRevision;
+    layer.sprite._syncedRevision = surface.syncKey(layer);
   }
 
   function endPreview(layer, { render = true } = {}) {
@@ -516,14 +523,16 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   function syncFromCanvas(layer) {
     if (!isSprite(layer)) return;
     if (layer.sprite._previewId) { endPreview(layer); return; }
-    if (layer.sprite._syncedRevision === layer.pixelRevision) return;
+    const key = surface.syncKey(layer);
+    if (layer.sprite._syncedRevision === key) return;
     const active = activeVariant(layer);
     if (!active) return;
-    const crop = uc.getLayerAlphaBounds(layer);
+    const view = surface.read(layer);
+    const crop = surface.bounds(layer, view);
     if (crop) growRect(layer, { x: crop.x + uc.origin.x, y: crop.y + uc.origin.y, width: crop.width, height: crop.height });
-    active.pixels = cropRect(layer);
+    active.pixels = cropRect(view, layer.sprite.rect);
     active.status = "ready";
-    layer.sprite._syncedRevision = layer.pixelRevision;
+    layer.sprite._syncedRevision = key;
   }
 
   function refresh(layer, { sync = true } = {}) {
@@ -600,8 +609,6 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     if (!layer.sprite._previewId) syncFromCanvas(layer);
     layer.sprite._previewId = id;
     drawIntoLayer(layer, variant.pixels);
-    uc.invalidateLayerRenderCaches(layer);
-    layer._boundsCache = undefined;
     uc.requestRender();
   }
 
@@ -610,6 +617,8 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   /** A move of the layer's pixels (single or group move): only the rect moves. */
   function onMove(layer, source, dx, dy) {
     if (!isSprite(layer)) return;
+    // The move was measured in the current view; a panorama set is re-anchored to it first.
+    if (!source._spriteRect) surface.reanchor(layer);
     source._spriteRect ||= { ...layer.sprite.rect };
     layer.sprite.rect = { ...source._spriteRect, x: source._spriteRect.x + Math.round(dx), y: source._spriteRect.y + Math.round(dy) };
   }
@@ -617,6 +626,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   /** An applied transform: the rect, anchor, faceRect and the other variants follow the frame. */
   function onTransform(layer, draft) {
     if (!isSprite(layer) || !draft?.sourceCanvas || !draft.quad) return;
+    surface.reanchor(layer);
     const sprite = layer.sprite;
     const old = sprite.rect;
     const map = transformPointMap(draft);
@@ -648,6 +658,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   /** "Paint on all variants": brush and eraser strokes replay on every other ready variant. */
   function onStroke(layer, start, end, { size, opacity, color, erase }) {
     if (!isSprite(layer) || !layer.sprite.paintAll) return;
+    surface.reanchor(layer);
     const sprite = layer.sprite;
     for (const variant of sprite.variants) {
       if (!variant.pixels || variant.status !== "ready" || variant.id === sprite.activeVariantId) continue;
@@ -678,7 +689,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     layer.sprite = snapshotSprite(stored.sprite);
     layer.sprite._previewId = null;
     // The snapshot's canvas crop is the active variant it was taken with.
-    layer.sprite._syncedRevision = layer.pixelRevision;
+    layer.sprite._syncedRevision = surface.syncKey(layer);
     if (uc.activeLayerId === layer.id) renderPanel();
   }
 
@@ -708,7 +719,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     layer.sprite = sprite;
     const active = activeVariant(layer);
     // Metadata-only states (the node widget) take the active variant from the saved layer pixels.
-    if (active && !active.pixels) active.pixels = cropRect(layer);
+    if (active && !active.pixels) active.pixels = cropRect(layer.canvas, sprite.rect);
     for (const variant of sprite.variants) if (variant.status === "ready" && !variant.pixels) variant.status = "empty";
     sprite._syncedRevision = null;
   }
@@ -742,7 +753,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
 
   /** Layer menu "Create sprite set": raster or baked single-character pose layer. */
   function createFromLayer(layer) {
-    const issue = spriteSourceIssue(layer, { panorama: Boolean(uc.panorama) });
+    const issue = spriteSourceIssue(layer);
     if (issue) { uc.setStatus(issue, true); return null; }
     if (uc.transformDraft) { uc.setStatus("Apply or cancel the active transform first", true); return null; }
     uc.poseEditor?.commit?.();
@@ -773,6 +784,8 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     sprite.variants = [variant];
     sprite.activeVariantId = variant.id;
     if (source.ref) sprite._ref = source.ref;
+    const camera = surface.cameraFor(layer);
+    if (camera) sprite.panoramaCamera = camera;
 
     const structureBefore = captureGroupStructure(uc.layers);
     const activeBefore = uc.activeLayerId;
@@ -817,9 +830,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     uc.layers = uc.layers.filter((item) => item !== copy);
     uc.layers.splice(Math.max(0, uc.layers.indexOf(layer)), 0, copy);
     uc.normalizeLayerOrder();
-    const rect = layer.sprite.rect;
-    copy.canvas.getContext("2d").drawImage(variant.pixels, rect.x - uc.origin.x, rect.y - uc.origin.y);
-    uc.invalidateLayerCaches(copy);
+    surface.write(copy, variant.pixels, layer.sprite.rect, layer.sprite.panoramaCamera);
     uc.pushHistoryEntry({ kind: "groupStructure", before: structureBefore, after: captureGroupStructure(uc.layers), activeBefore, activeAfter: copy.id });
     uc.activeLayerId = copy.id;
     uc.selectedLayerIds = [copy.id];

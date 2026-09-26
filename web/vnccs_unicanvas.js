@@ -9,7 +9,8 @@ import { SPRITE_VARIANT_HISTORY_KIND, installUniCanvasSprites } from "./vnccs_un
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
-  panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION } from "./vnccs_unicanvas_panorama.mjs";
+  panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION,
+  PANORAMA_VIEW_HISTORY_KIND, applyPanoramaViewHistory } from "./vnccs_unicanvas_panorama.mjs";
 import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vnccs_unicanvas_panorama_panel.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
@@ -1280,8 +1281,8 @@ class UniCanvasWidget {
     this.container.append(this.left, this.stageWrap, this.side, this.bottom);
   }
 
-  // The panorama layer's settings panel (vnccs_unicanvas_panorama_panel.mjs): sphere, camera,
-  // projection and navigation quality. Shown while the document has a panorama layer.
+  // The panorama view panel (vnccs_unicanvas_panorama_panel.mjs): sphere, camera, projection,
+  // navigation quality and Reset / Cancel / Save. Shown only during a panorama view session.
   buildPanoramaControls() {
     this.panoramaLayerPanel = buildPanoramaLayerPanel(this);
     this.panoramaOrbit = this.panoramaLayerPanel.orbit;
@@ -1298,14 +1299,16 @@ class UniCanvasWidget {
   }
 
 
-  // Layer row button: select the panorama layer and bring its settings panel into view.
+  // Layer row globe button: select the panorama layer and open its view session.
   showPanoramaLayerSettings(layer) {
     if (!isPanoramaLayer(layer)) return;
     if (this.activeLayerId !== layer.id) this.onLayerRowClick(layer.id, {});
     this.updatePanoramaControls();
-    this.panoramaLayerPanel.details.open = true;
-    this.panoramaPanel.scrollIntoView?.({ block: "nearest" });
+    if (this.panoramaLayerPanel.enter()) this.panoramaPanel.scrollIntoView?.({ block: "nearest" });
   }
+
+  // While the view session is open the canvas turns the camera and history waits for Save/Cancel.
+  get panoramaViewActive() { return Boolean(this.panorama && this.panoramaLayerPanel?.session.isFor(this.panorama)); }
 
   choosePanoramaImport(img) {
     return new Promise((resolve) => {
@@ -3334,7 +3337,7 @@ class UniCanvasWidget {
       if (this.panoramaOrbit?.gesture) this.panoramaOrbit.finish();
       this.panoramaLayerPanel?.finishCamera();
       this.panorama.flushCamera();
-      if (e.button === 0 && this.tool === "panorama") {
+      if (e.button === 0 && (this.tool === "panorama" || this.panoramaViewActive)) {
         if (!this.panorama.beginCamera()) return;
         e.preventDefault(); e.stopPropagation(); this.canvas.setPointerCapture?.(e.pointerId);
         this.isPointerDown = true; this.pointerMode = "panorama";
@@ -3955,6 +3958,7 @@ class UniCanvasWidget {
       this.panorama.projectLayer(layer);
       this.panorama.settings.contentRevision++;
       this.poseBake?.restoreSnapshot(layer, snapshot, { rebuild: false });
+      this.sprites?.restoreSnapshot(layer, snapshot);
       return;
     }
     if (snapshot.origin && (snapshot.origin.x !== this.origin.x || snapshot.origin.y !== this.origin.y || snapshot.size?.width !== this.size.width || snapshot.size?.height !== this.size.height)) {
@@ -4029,6 +4033,8 @@ class UniCanvasWidget {
     if (layer.poseNormalCanvas) { clone.poseNormalCanvas = layer.poseNormalCanvas; clone.poseNormalMeta = layer.poseNormalMeta; }
     // Sprite variants are shared by reference (copy on write).
     Object.assign(clone, this.sprites?.cloneLayerFields(layer));
+    // ControlNet settings and scene source (replaced, never mutated) survive full-snapshot undo.
+    if (isControlLayer(layer)) Object.assign(clone, { control: normalizeControlState(layer.control), controlSource: layer.controlSource });
     this.invalidateLayerCaches(clone);
     return clone;
   }
@@ -4143,6 +4149,7 @@ class UniCanvasWidget {
       this.updateHistoryButtons();
       return;
     }
+    if (this.panoramaViewActive) { this.setStatus("Save or cancel the panorama view first", true); return; }
     this.panorama?.commit();
     this.poseBake?.flushPendingHistory();
     if (!this.undoStack.length) return;
@@ -4176,6 +4183,7 @@ class UniCanvasWidget {
       this.updateHistoryButtons();
       return;
     }
+    if (this.panoramaViewActive) { this.setStatus("Save or cancel the panorama view first", true); return; }
     this.panorama?.commit();
     if (!this.redoStack.length) return;
     if (this.transformDraft) {
@@ -4281,6 +4289,7 @@ class UniCanvasWidget {
       }
       this.invalidateLayerCaches(entry.layer);
     }
+    if (entry.kind === PANORAMA_VIEW_HISTORY_KIND) applyPanoramaViewHistory(this, entry, direction);
     if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
     if (entry.kind === SPRITE_VARIANT_HISTORY_KIND) this.sprites?.applyVariantHistory(entry, direction);
     if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
@@ -5977,7 +5986,7 @@ class UniCanvasWidget {
       row.append(thumb, label, edit, lock, del);
       this.poseBake?.decorateLayerRow(row, layer);
     } else if (isPanoramaLayer(layer)) {
-      const settings = this._button(PANORAMA_ICON, "vnccs-uc-icon vnccs-uc-layer-panorama-settings", null, "Panorama settings");
+      const settings = this._button(PANORAMA_ICON, "vnccs-uc-icon vnccs-uc-layer-panorama-settings", null, "Edit panorama view");
       settings.addEventListener("click", (e) => { e.stopPropagation(); this.showPanoramaLayerSettings(layer); });
       settings.addEventListener("dblclick", (e) => e.stopPropagation());
       row.append(thumb, label, settings, lock, del);
@@ -6889,7 +6898,8 @@ class UniCanvasWidget {
     const snapshotSettings = this.settings;
     const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
     // ControlNet layer (vnccs_unicanvas_control.mjs): the topmost active one, cropped like the mask.
-    const control = requestPanorama ? null : this.controlLayers?.collectForDraw(inferenceSize, { masked: maskStats.nonzeroAlphaPixels > 0 });
+    // In a panorama its canvas holds the current view, the same one the image and mask come from.
+    const control = this.controlLayers?.collectForDraw(inferenceSize, { masked: maskStats.nonzeroAlphaPixels > 0 });
     if (control?.error) {
       this.drawInProgress = false;
       this.setStatus(control.error, true);
@@ -7867,6 +7877,20 @@ class UniCanvasWidget {
     }
   }
 
+  // Sprite sets and ControlNet layers, in flat and panorama documents alike (#33).
+  serializeLayerKindFields(layer, includeData) {
+    const fields = {};
+    // Sprite set: metadata always, variant pixels only with layer data.
+    if (layer.type === "sprite") fields.sprite = this.sprites?.serialize(layer, includeData);
+    if (isControlLayer(layer)) fields.control = normalizeControlState(layer.control);
+    // The scene source of a ControlNet layer (vnccs_unicanvas_control_scene.mjs); its PNG only with layer data.
+    if (isControlLayer(layer) && layer.controlSource) {
+      fields.controlSource = this.controlScene?.serialize(layer);
+      if (!includeData && fields.controlSource) delete fields.controlSource.image;
+    }
+    return fields;
+  }
+
   serializeLayer(layer, includeData = true) {
     if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
     // Per-character ID pass: state cache only, never workflow metadata.
@@ -7878,6 +7902,7 @@ class UniCanvasWidget {
     if (this.panorama) {
       this.panorama.commitLayer(layer);
       return {
+        ...this.serializeLayerKindFields(layer, includeData),
         pose: serializePose(layer.pose, includeData),
         id: layer.id, name: layer.name, nameSource: layer.nameSource || null, meta: normalizeLayerMeta(layer.meta), type: layer.type, groupId: layer.groupId || null, visible: layer.visible, locked: layer.locked,
         opacity: layer.opacity, blendMode: layer.blendMode || "source-over",
@@ -7914,14 +7939,7 @@ class UniCanvasWidget {
     if (poseId) payload.poseId = poseId;
     if (poseNormal) payload.poseNormal = poseNormal;
     if (bakePixels) payload.bakePixels = bakePixels;
-    // Sprite set: metadata always, variant pixels only with layer data.
-    if (layer.type === "sprite") payload.sprite = this.sprites?.serialize(layer, includeData);
-    if (isControlLayer(layer)) payload.control = normalizeControlState(layer.control);
-    // The scene source of a ControlNet layer (vnccs_unicanvas_control_scene.mjs); its PNG only with layer data.
-    if (isControlLayer(layer) && layer.controlSource) {
-      payload.controlSource = this.controlScene?.serialize(layer);
-      if (!includeData && payload.controlSource) delete payload.controlSource.image;
-    }
+    Object.assign(payload, this.serializeLayerKindFields(layer, includeData));
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -8085,7 +8103,7 @@ class UniCanvasWidget {
           id: item.id || uid(),
           name: item.name || "Layer",
           nameSource: typeof item.nameSource === "string" ? item.nameSource : undefined,
-          type: item.type === "mask" ? "mask" : isControlLayer(item) && !restoredPanorama ? "control" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite && !restoredPanorama ? "sprite"
+          type: item.type === "mask" ? "mask" : isControlLayer(item) ? "control" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite ? "sprite"
             : isPanoramaLayer(item) && panoramaSettings?.baseLayerId === item.id ? "panorama" : "raster",
           pose: item.type === "pose" ? serializePose(item.pose) : undefined,
           visible: item.visible !== false,

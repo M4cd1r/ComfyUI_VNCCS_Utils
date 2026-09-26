@@ -23,6 +23,7 @@
  */
 
 import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
+import { isImageLayer } from "./vnccs_unicanvas_pose_state.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 
 export const GROUP_LAYER_TYPE = "group";
@@ -749,7 +750,8 @@ export function flattenGroup(uc, group = uc.activeLayer) {
     const surface = uc.panorama.ensureLayer(layer);
     const pctx = surface.getContext("2d");
     compositeLayerStack(pctx, descendants, (target, leaf) => {
-      if (leaf.type !== "raster" && leaf.type !== "pose") return;
+      // Every image layer, sprite sets included, as in the flat composite above.
+      if (!isImageLayer(leaf)) return;
       target.save();
       target.globalAlpha = leaf.opacity;
       target.globalCompositeOperation = leaf.blendMode || "source-over";
@@ -979,7 +981,8 @@ function moveTargetsFor(uc) {
   const leaves = [];
   for (const pick of picks) {
     for (const layer of [pick, ...getGroupDescendants(uc.layers, pick)]) {
-      if (layer.type !== "raster" && layer.type !== "pose") continue;
+      // Image layers move (sprite sets too: only their rect follows); the panorama base stays.
+      if (!isImageLayer(layer)) continue;
       if (isLayerEffectivelyLocked(uc.layers, layer)) continue;
       if (layer.id === uc.panorama?.settings?.baseLayerId) continue;
       if (!leaves.includes(layer)) leaves.push(layer);

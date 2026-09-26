@@ -278,7 +278,6 @@ test("a transform frame maps the rect and anchor of the stored pixels", () => {
 
 test("only raster layers and baked single-character pose layers become sprite sets", () => {
   assert.equal(spriteSourceIssue({ type: "raster" }), null);
-  assert.match(spriteSourceIssue({ type: "raster" }, { panorama: true }), /panorama/);
   assert.match(spriteSourceIssue({ type: "mask" }), /raster or baked pose/);
   const pose = { type: "pose", pose: { studio: { characters: [{ id: "a", name: "A" }, { id: "b", name: "B" }] } } };
   assert.match(spriteSourceIssue(pose), /Split the characters/);
@@ -512,7 +511,139 @@ test("the widget only receives hook calls", () => {
   assert.match(widget, /this\.sprites\?\.onTransform\(layer, draft\)/);
   assert.match(widget, /this\.sprites\?\.onStroke\(layer, start, end,/);
   assert.match(widget, /if \(staging\.sprite\) return this\.sprites\?\.acceptStaged\(staging\)/);
-  assert.match(widget, /payload\.sprite = this\.sprites\?\.serialize\(layer, includeData\)/);
+  assert.match(widget, /fields\.sprite = this\.sprites\?\.serialize\(layer, includeData\)/);
   assert.match(widget, /if \(layer\.type === "sprite"\) await this\.sprites\?\.restore\(layer, item\.sprite\)/);
   assert.match(modes, /widget\.sprites\?\.cycleActive\(key === "\." \? 1 : -1\)/);
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * Panorama documents (#6, #33): a stand-in sphere where turning the camera by `yaw` degrees
+ * slides the 256px editing window along a 512px strip by `yaw` pixels.
+ * ---------------------------------------------------------------------------------------------- */
+
+function withPanorama(uc, yaw = 0) {
+  const offset = (camera) => 128 + Math.round(camera.yaw);
+  const toSphere = (view, camera) => { const sphere = new FakeCanvas(512, 256); sphere.getContext().drawImage(view, offset(camera), 0); return sphere; };
+  const fromSphere = (sphere, camera) => { const view = new FakeCanvas(256, 256); if (sphere) view.getContext().drawImage(sphere, -offset(camera), 0); return view; };
+  const doc = {
+    settings: { yaw, pitch: 0, roll: 0, fov: 90 },
+    commitLayer(layer) {
+      if (!layer._panoramaDirty) return;
+      layer.panoramaCanvas = toSphere(layer.canvas, doc.settings);
+      layer.panoramaRevision = (layer.panoramaRevision || 0) + 1;
+      layer._panoramaDirty = false;
+    },
+    projectLayer(layer) { layer.canvas = fromSphere(layer.panoramaCanvas, doc.settings); uc.invalidateLayerCaches(layer); layer._panoramaDirty = false; },
+    viewOfLayer(layer, camera) { doc.commitLayer(layer); return fromSphere(layer.panoramaCanvas, camera); },
+    replaceLayerFromView(layer, view, camera) {
+      layer.panoramaCanvas = toSphere(view, camera);
+      layer.panoramaRevision = (layer.panoramaRevision || 0) + 1;
+      doc.projectLayer(layer);
+    },
+    reprojectView: (view, from, to) => fromSphere(toSphere(view, from), to),
+    turn(next) {
+      for (const layer of uc.layers) if (layer.canvas) doc.commitLayer(layer);
+      doc.settings = { ...doc.settings, yaw: next };
+      for (const layer of uc.layers) if (layer.panoramaCanvas) doc.projectLayer(layer);
+    },
+  };
+  for (const name of ["invalidateLayerCaches", "invalidateLayerRenderCaches"]) {
+    const original = uc[name];
+    uc[name] = (layer) => { original(layer); layer._panoramaDirty = true; };
+  }
+  uc.panorama = doc;
+  uc.bbox = { x: 0, y: 0, width: 256, height: 256 };
+  return doc;
+}
+
+function redVariant(layer, id = "red") {
+  const variant = { ...layer.sprite.variants[0], id, name: id, pixels: new FakeCanvas(layer.sprite.rect.width, layer.sprite.rect.height) };
+  variant.pixels.fill(0, 0, 10, 10, [255, 0, 0, 255]);
+  layer.sprite.variants.push(variant);
+  return variant;
+}
+
+test("a panorama sprite set remembers its camera and survives save and reload with it", () => {
+  const { uc, source } = harness();
+  withPanorama(uc, 0);
+  assert.equal(spriteSourceIssue(source), null, "sprite sets are no longer refused in panoramas");
+  const layer = uc.sprites.createFromLayer(source);
+  assert.deepEqual(layer.sprite.panoramaCamera, { yaw: 0, pitch: 0, roll: 0, fov: 90 });
+  assert.deepEqual(alphaBox(layer.panoramaCanvas), { x: 228, y: 100, width: 40, height: 80 }, "the sphere holds the neutral variant");
+  const saved = serializeSpriteState(layer.sprite);
+  assert.deepEqual(normalizeSpriteState(saved).panoramaCamera, layer.sprite.panoramaCamera);
+  assert.equal(normalizeSpriteState({ ...saved, panoramaCamera: { yaw: "x" } }).panoramaCamera, undefined);
+  assert.deepEqual(snapshotSprite(layer.sprite).panoramaCamera, layer.sprite.panoramaCamera);
+});
+
+test("switching variants from another view lands at the sprite's place on the sphere", () => {
+  const { uc, source } = harness();
+  const doc = withPanorama(uc, 0);
+  const layer = uc.sprites.createFromLayer(source);
+  const rect = { ...layer.sprite.rect };
+  redVariant(layer);
+  doc.turn(30);
+  const neutral = layer.sprite.variants[0].pixels;
+  uc.createLayerPixelSnapshot(layer);
+  assert.equal(layer.sprite.variants[0].pixels, neutral, "turning the camera does not re-copy the active variant");
+  assert.equal(uc.sprites.setActiveVariant(layer, "red"), true);
+  assert.deepEqual(alphaBox(layer.panoramaCanvas), { x: 128 + rect.x, y: rect.y, width: 10, height: 10 });
+  assert.deepEqual(alphaBox(layer.canvas), { x: rect.x - 30, y: rect.y, width: 10, height: 10 }, "seen from the current view");
+  assert.deepEqual(layer.sprite.rect, rect, "the rect stays in the sprite's own view");
+});
+
+test("paint in another view reaches the active variant in the sprite's own view", () => {
+  const { uc, source } = harness();
+  const doc = withPanorama(uc, 0);
+  const layer = uc.sprites.createFromLayer(source);
+  const rect = { ...layer.sprite.rect };
+  doc.turn(30);
+  layer.canvas.fill(80, 150, 2, 2, [0, 255, 0, 255]);
+  uc.invalidateLayerCaches(layer);
+  uc.createLayerPixelSnapshot(layer);
+  const active = layer.sprite.variants[0].pixels;
+  const at = ((150 - rect.y) * active.width + (110 - rect.x)) * 4;
+  assert.deepEqual([...active.data.subarray(at, at + 4)], [0, 255, 0, 255]);
+});
+
+test("a move in another view re-anchors the set to that view first", () => {
+  const { uc, source } = harness();
+  const doc = withPanorama(uc, 0);
+  const layer = uc.sprites.createFromLayer(source);
+  const rect = { ...layer.sprite.rect };
+  const red = redVariant(layer);
+  doc.turn(30);
+  uc.sprites.onMove(layer, {}, 10, 0);
+  assert.deepEqual(layer.sprite.panoramaCamera, { yaw: 30, pitch: 0, roll: 0, fov: 90 });
+  assert.deepEqual(layer.sprite.rect, { ...rect, x: rect.x - 30 + 10 });
+  assert.deepEqual(alphaBox(red.pixels), { x: 0, y: 0, width: 10, height: 10 }, "every variant keeps its pixels");
+  assert.ok(layer.sprite.anchor.x >= 0 && layer.sprite.anchor.x <= layer.sprite.rect.width);
+  const again = { ...layer.sprite.rect };
+  uc.sprites.onMove(layer, {}, 0, 0);
+  assert.deepEqual(layer.sprite.rect, again, "an anchored set is not re-projected again");
+});
+
+test("Split variant to layer in a panorama puts the variant on the sphere at the sprite's place", () => {
+  const { uc, source } = harness();
+  const doc = withPanorama(uc, 0);
+  const layer = uc.sprites.createFromLayer(source);
+  doc.turn(-20);
+  const copy = uc.sprites.splitVariantToLayer(layer);
+  assert.deepEqual(alphaBox(copy.panoramaCanvas), { x: 228, y: 100, width: 40, height: 80 });
+  assert.deepEqual(alphaBox(copy.canvas), { x: 120, y: 100, width: 40, height: 80 });
+});
+
+test("view points map between panorama cameras through the sphere", async () => {
+  const { mapViewPoint, normalizeSpriteCamera, sameSpriteCamera } = await import("../web/vnccs_unicanvas_sprites_panorama.mjs");
+  const frame = { x: 0, y: 0, width: 1024, height: 1024 };
+  const front = { yaw: 0, pitch: 0, roll: 0, fov: 90 };
+  const same = mapViewPoint({ x: 300, y: 700 }, frame, front, front);
+  assert.ok(Math.abs(same.x - 300) < 1e-6 && Math.abs(same.y - 700) < 1e-6);
+  const turned = mapViewPoint({ x: 512, y: 512 }, frame, front, { ...front, yaw: 30 });
+  assert.ok(Math.abs(turned.y - 512) < 1e-6 && Math.abs(Math.abs(turned.x - 512) - 512 * Math.tan(Math.PI / 6)) < 1e-6, "the centre slides by tan(30°)");
+  assert.equal(mapViewPoint({ x: 512, y: 512 }, frame, front, { ...front, yaw: 180 }), null, "behind the camera");
+  assert.deepEqual(normalizeSpriteCamera({ yaw: 10, pitch: 5 }), { yaw: 10, pitch: 5, roll: 0, fov: 90 });
+  assert.equal(normalizeSpriteCamera({ yaw: NaN }), null);
+  assert.equal(sameSpriteCamera(front, { ...front, fov: 90.0000001 }), true);
+  assert.equal(sameSpriteCamera(front, null), false);
 });

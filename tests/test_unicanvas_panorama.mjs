@@ -12,6 +12,7 @@ import * as scenePlace from "../web/vnccs_unicanvas_scene_place.mjs";
 import * as harmonize from "../web/vnccs_unicanvas_harmonize.mjs";
 import * as groups from "../web/vnccs_unicanvas_groups.mjs";
 import * as sceneStates from "../web/vnccs_unicanvas_states.mjs";
+import { normalizeControlSource } from "../web/vnccs_unicanvas_control_scene.mjs";
 
 const settings = (extra = {}) => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
@@ -65,7 +66,7 @@ class Element {
 }
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
-  isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
+  isImageLayer, serializePose, poseGenerationLayer, mergePoseCache, normalizeControlSource,
   ...panoramaModule, normalizeTransformMode, ...provenance, ...control, ...groups, ...scenePlace, ...sceneStates, ...harmonize,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
@@ -492,4 +493,129 @@ test("standard PSD export keeps all spherical pixels regardless of roll or viewp
     assert.deepEqual(Array.from(result.children, layer => layer.canvas.pixels), ["complete base", "complete edit"]);
     assert.equal(downloaded, "unicanvas-panorama.psd");
   } finally { context.Blob = previousBlob; }
+});
+
+// --- #33: panorama view session, ControlNet, History results and sprite sets ------------------
+
+// History kinds of modules this harness does not load: distinct placeholders never match.
+for (const name of ["TIMELINE_HISTORY_KIND", "HISTORY_SETTINGS_HISTORY_KIND", "SPRITE_VARIANT_HISTORY_KIND"]) context[name] ??= `test:${name}`;
+const historyHost = (values = {}) => widget({
+  undoStack: [], redoStack: [], tool: "move", statuses: [],
+  setStatus(message, error) { this.statuses.push([message, Boolean(error)]); },
+  updateHistoryButtons() {}, cancelDeferredCanvasCommit() {}, syncPoseToolToActiveLayer() {}, syncActiveLayerControls() {},
+  renderLayerList() {}, updatePanoramaControls() {}, clearSamPrompt() {},
+  ...values,
+});
+
+test("undo waits for an open panorama view session; a saved view undoes and redoes as one camera step", () => {
+  const projected = [];
+  const doc = { settings: settings({ yaw: 35, fov: 60 }), revision: 0, commit() {}, project() { projected.push(doc.settings.yaw); } };
+  const entry = { kind: panoramaModule.PANORAMA_VIEW_HISTORY_KIND,
+    before: { yaw: 10, pitch: 0, roll: 0, fov: 90, quality: "balanced" }, after: { yaw: 35, pitch: 0, roll: 0, fov: 60, quality: "balanced" } };
+  let open = true;
+  const w = historyHost({ panorama: doc, panoramaLayerPanel: { session: { isFor: target => open && target === doc } }, undoStack: [entry] });
+  w.undo();
+  assert.equal(w.undoStack.length, 1, "the view session must be saved or canceled first");
+  assert.deepEqual(w.statuses.at(-1), ["Save or cancel the panorama view first", true]);
+  w.redo();
+  assert.equal(doc.settings.yaw, 35);
+  open = false;
+  w.undo();
+  assert.equal(doc.settings.yaw, 10); assert.equal(doc.settings.fov, 90);
+  assert.deepEqual(projected, [10], "the layers are projected once at the restored camera");
+  w.redo();
+  assert.equal(doc.settings.yaw, 35); assert.equal(w.undoStack.length, 1); assert.equal(w.redoStack.length, 0);
+});
+
+test("the canvas turns the camera during the view session whatever tool is selected", () => {
+  const doc = { settings: settings(), commit() {}, flushCamera() {}, beginCamera: () => true };
+  const w = widget({ panorama: doc, tool: "brush", panoramaLayerPanel: { session: { isFor: target => target === doc }, finishCamera() {} },
+    canvas: { setPointerCapture() {} }, canvasPointFromEvent: () => ({ x: 1, y: 2 }), worldFromEvent: () => ({ x: 1, y: 2 }) });
+  w.onPointerDown({ button: 0, pointerId: 1, preventDefault() {}, stopPropagation() {} });
+  assert.equal(w.pointerMode, "panorama"); assert.equal(w.isPointerDown, true);
+});
+
+test("a panorama draw sends the ControlNet layer cropped from the same view as the image (#45)", async () => {
+  const bodies = [];
+  const realFetch = context.fetch;
+  context.fetch = async (url, options) => { bodies.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ images: [] }) }; };
+  try {
+    const doc = { settings: settings({ yaw: 30 }), commit() {} };
+    const collected = [];
+    const w = widget({ panorama: doc, settings: { batch_size: 1, steps: 1 }, stagingItems: [], drawBtn: {},
+      controlLayers: { collectForDraw: (size, options) => { collected.push({ size, options }); return { payload: { image: "control-view", type: "canny", strength: 1 }, provenance: { type: "canny" }, note: "ControlNet: Edges" }; } },
+      flushSettingsToWidget() {}, normalizeGenerationSettings: () => ({ loader: {} }),
+      getInferenceSize: () => ({ width: 1024, height: 1024 }),
+      getRasterContentInBboxStats: () => ({ nonzeroAlphaPixels: 1024 * 1024 }),
+      getMaskContentInBboxStats: () => ({ nonzeroAlphaPixels: 0 }),
+      makeExportCanvas: () => ({ toDataURL: () => "request-view" }), makeSettingsPayload: () => ({}),
+      updateGenerationProgress() {}, startDrawProgressPolling() {}, stopDrawProgressPolling() {},
+      imageResultToURL: () => "result", loadImage: async () => ({}), render() {},
+    });
+    await w.draw();
+    assert.equal(collected.length, 1, "the control layer is collected in panorama mode");
+    const draw = bodies.find(body => body.image === "request-view");
+    assert.deepEqual(draw.control, { image: "control-view", type: "canny", strength: 1 });
+  } finally { context.fetch = realFetch; }
+});
+
+test("ControlNet and sprite layers keep their data in a saved panorama and reopen as themselves", async () => {
+  const control = { id: "ctl", type: "control", control: { type: "depth", strength: 0.7 }, controlSource: { type: "depth", image: "SRC" },
+    panoramaCanvas: { toDataURL: () => "CTL" } };
+  const sprite = { id: "spr", type: "sprite", sprite: { variants: [] }, panoramaCanvas: { toDataURL: () => "SPR" } };
+  const base = { id: "base", type: "panorama", panoramaCanvas: { toDataURL: () => "BASE" } };
+  const w = widget({ panorama: { settings: settings({ baseLayerId: "base" }), commit() {}, commitLayer() {} },
+    layers: [control, sprite, base], getStateCacheId: () => "cache", settings: {},
+    controlScene: { serialize: layer => ({ ...layer.controlSource }) },
+    sprites: { serialize: (layer, includeData) => ({ saved: true, includeData }) } });
+  const state = w.buildSerializedState(true);
+  const [savedControl, savedSprite] = state.layers;
+  assert.equal(savedControl.type, "control"); assert.equal(savedControl.dataURL, "CTL");
+  assert.equal(savedControl.control.type, "depth"); assert.equal(savedControl.control.strength, 0.7);
+  assert.deepEqual(savedControl.controlSource, { type: "depth", image: "SRC" });
+  assert.deepEqual(savedSprite.sprite, { saved: true, includeData: true }); assert.equal(savedSprite.dataURL, "SPR");
+  assert.equal(w.serializeLayer(control, false).controlSource.image, undefined, "the source PNG only goes with layer data");
+
+  const realDocument = context.PanoramaDocument;
+  context.PanoramaDocument = class {
+    constructor(host, data) { this.settings = data; }
+    ensureLayer(layer) { return layer.panoramaCanvas ||= { width: 4096, height: 2048, getContext: () => ({ drawImage() {} }) }; }
+    project() {} dispose() {}
+  };
+  try {
+    const restoredSprites = [];
+    const r = restorationWidget({ setStatus(m){ this.lastStatus = m; }, sprites: { restore: async (layer, stored) => { restoredSprites.push(stored); layer.sprite = stored; } } });
+    assert.equal(await r.applySerializedState(state), true, r.lastStatus);
+    assert.equal(r.layers.find(layer => layer.id === "ctl").type, "control");
+    assert.equal(r.layers.find(layer => layer.id === "ctl").control.type, "depth");
+    assert.equal(r.layers.find(layer => layer.id === "spr").type, "sprite");
+    assert.equal(restoredSprites.length, 1);
+  } finally { context.PanoramaDocument = realDocument; }
+});
+
+test("reprojectView carries a view from one camera to another through a temporary sphere", () => {
+  const realDocument = globalThis.document;
+  const draws = [];
+  const surface = (name) => ({ name, width: 0, height: 0, getContext: () => ({ drawImage: (source, x, y) => draws.push([name, source.name, x, y]) }) });
+  let made = 0;
+  globalThis.document = { createElement: () => surface(`canvas${++made}`) };
+  try {
+    const renders = [];
+    const doc = Object.assign(Object.create(PanoramaDocument.prototype), {
+      settings: settings({ yaw: 5, width: 4096, height: 2048 }),
+      widget: { bbox: { x: 10, y: 20, width: 1024, height: 1024 }, origin: { x: -100, y: -50 }, layers: [], stagingItems: [],
+        cloneCanvasCrop: (view, crop) => ({ name: "patch", crop }) },
+      renderer: {
+        render: (source, camera, width, height, before, after) => { renders.push({ source: source.name, yaw: camera.yaw, width, height, after: after?.name }); return { name: `render${renders.length}` }; },
+        invalidate() {}, retain: (sources) => renders.push({ retained: sources.length }),
+      },
+    });
+    const view = { name: "view", width: 2048, height: 2048 };
+    const out = doc.reprojectView(view, { yaw: 0, pitch: 0, roll: 0, fov: 90 }, { yaw: 40, pitch: 0, roll: 0, fov: 90 });
+    assert.equal(out.width, 2048); assert.equal(out.height, 2048);
+    assert.deepEqual(renders[0], { source: "canvas1", yaw: 0, width: 4096, height: 2048, after: "patch" }, "the view lands on a sphere from its own camera");
+    assert.deepEqual(renders[1], { source: "canvas1", yaw: 40, width: 1024, height: 1024, after: undefined }, "and is seen from the new camera");
+    assert.deepEqual(draws.at(-1), [out.name, "render2", 110, 70], "at the editing window of the layer canvas");
+    assert.equal(doc.settings.yaw, 5, "the document camera is untouched");
+  } finally { globalThis.document = realDocument; }
 });

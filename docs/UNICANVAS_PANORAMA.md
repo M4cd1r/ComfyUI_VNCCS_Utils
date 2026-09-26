@@ -19,14 +19,21 @@ its own settings:
   moves (Fast 256 px, Balanced 384 px, Sharp 768 px). The full editing-window quality
   returns when the gesture ends.
 
-The panorama layer's settings panel sits at the top of the side panel whenever the
-document has a panorama layer. It contains the sphere control and, under
-**Panorama layer**, exact yaw/pitch/roll/FOV sliders with numeric fields plus the
-projection and navigation-quality selectors. Selecting the panorama layer (or its globe
-button) unfolds these settings, the way the pose layer opens its editor. Sliders and
-fields move the view on every input event; the view is committed when the slider is
-released or the field is confirmed. A document has one panorama layer: duplicating it
-creates an ordinary layer holding a copy of the spherical pixels.
+The view is set in a **panorama view mode**. The globe button of the panorama layer opens
+it; outside the mode the view settings are hidden. The mode shows, at the top of the side
+panel, the sphere control and, under **Panorama view**, exact yaw/pitch/roll/FOV sliders
+with numeric fields plus the projection and navigation-quality selectors. Dragging the
+canvas with the left button also turns the view while the mode is open, whatever tool is
+selected. Sliders and fields move the view on every input event; each gesture ends with a
+full-quality view when it is released or the field is confirmed. The mode ends with:
+
+- **Save**: keeps the view; the whole session is one Undo step.
+- **Cancel**: restores the view from before the mode was opened; nothing is recorded.
+- **Reset** (stays in the mode): returns to the initial view position (yaw, pitch and roll
+  0, FOV 90).
+
+Undo and Redo wait until the mode is saved or canceled. A document has one panorama layer:
+duplicating it creates an ordinary layer holding a copy of the spherical pixels.
 
 ## Editing and navigation
 
@@ -60,11 +67,29 @@ creates an ordinary layer holding a copy of the spherical pixels.
   response from an old view is ignored.
 - Flattening combines visible raster layers into a panorama layer and retains
   the original base underneath, hidden. Undo restores the previous layers.
+- Groups work as in a flat document: new group, group/ungroup, duplicate, delete,
+  move (every image layer of the group moves in the current view), opacity and
+  blend. Flattening a group combines the spherical pixels of its image layers.
+  The panorama layer itself never joins a group.
+- A **ControlNet layer** is sent with a panorama generation like with a flat one:
+  the guide is taken from the current view, the same view as the image and mask.
+- **History results** can be placed as a layer: the result lands in the current
+  view (where it was generated when that was the editing window, otherwise fitted
+  into it), as one Undo step.
+- **Sprite sets** remember the camera they were made in. Switching or generating
+  variants works from any view and puts the variant at the sprite's place on the
+  sphere; paint made in another view reaches the active variant there. A move,
+  transform or paint-all stroke in another view first re-anchors the whole set to
+  that view (every variant is re-projected once). Staged sprite results preview
+  flat at the sprite's rect, which is exact from the sprite's own camera; accepting
+  them always lands on the sphere correctly. Splitting and merging pose layers is
+  still not available in panorama documents.
 
 ## Export and saved workflows
 
 The standard **Export layers as PSD** action and the node's **IMAGE** output
-always use the complete equirectangular document. The camera and square bbox do
+always use the complete equirectangular document; the node output applies layer
+groups (hidden groups, group opacity and blend) and includes sprite sets. The camera and square bbox do
 not crop the output. No additional panorama export button is added. Masks remain editing aids and are not included in the
 composite image. PSD keeps visible raster layers in full panorama coordinates.
 

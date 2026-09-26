@@ -73,6 +73,44 @@ class UniCanvasRenderTests(unittest.TestCase):
         result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
         self.assertEqual(result.getbbox(), None)
 
+    def test_panorama_groups_hide_and_fade_their_layers_in_the_node_output(self):
+        state = self.panorama_state()
+        state["layers"][0]["groupId"] = "folder"
+        state["layers"].insert(0, {"id": "folder", "type": "group", "visible": True, "opacity": 1, "blendMode": "pass-through"})
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        self.assertEqual(result.getpixel((0, 2)), (255, 0, 0, 255))
+        state["layers"][0]["opacity"] = .5
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        self.assertAlmostEqual(result.getpixel((0, 2))[0], 137, delta=1)
+        self.assertEqual(result.getpixel((3, 0)), (20, 40, 60, 255), "the group fades only its own layers")
+        state["layers"][0]["visible"] = False
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        self.assertEqual(result.getpixel((0, 2)), (20, 40, 60, 255))
+
+    def test_group_blend_and_nesting_follow_the_canvas(self):
+        red = Image.new("RGBA", (2, 2), (200, 0, 0, 255))
+        blue = Image.new("RGBA", (2, 2), (0, 0, 200, 255))
+        layer = lambda name, image, **extra: {"id": name, "type": "raster", "visible": True, "opacity": 1,
+                                              "crop": {"x": 0, "y": 0, "width": 2, "height": 2}, "dataURL": _data_url(image), **extra}
+        state = {"version": 2, "origin": {"x": 0, "y": 0}, "bbox": {"x": 0, "y": 0, "width": 2, "height": 2}, "layers": [
+            {"id": "outer", "type": "group", "visible": True, "opacity": 1, "blendMode": "pass-through"},
+            {"id": "inner", "type": "group", "groupId": "outer", "visible": True, "opacity": 0, "blendMode": "pass-through"},
+            layer("top", red, groupId="inner"),
+            layer("bottom", blue),
+        ]}
+        render = UNICANVAS.render._render_unicanvas_state_to_rgba
+        self.assertEqual(render(json.dumps(state)).getpixel((0, 0)), (0, 0, 200, 255), "an invisible nested group")
+        state["layers"][1].update(opacity=1, blendMode="multiply")
+        self.assertEqual(render(json.dumps(state)).getpixel((0, 0)), (0, 0, 0, 255), "the group multiplies onto the layers below")
+        state["layers"][1]["groupId"] = "inner"  # a group inside itself falls back to the root
+        self.assertEqual(render(json.dumps(state)).getpixel((0, 0)), (0, 0, 0, 255))
+
+    def test_sprite_layers_render_their_active_variant(self):
+        state = self.panorama_state()
+        state["layers"][0]["type"] = "sprite"
+        result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        self.assertEqual(result.getpixel((0, 2)), (255, 0, 0, 255))
+
     def test_panorama_invalid_dimensions_and_projection_are_rejected(self):
         for changes in [{"width": 0}, {"height": -1}, {"width": 16384}, {"width": 8192, "height": 8192}, {"width": float("nan")}, {"projection": "cubemap"}]:
             state = self.panorama_state()
