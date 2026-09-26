@@ -161,6 +161,23 @@ def test_gc_keeps_asset_referenced_blobs(store):
     assert global_kept["data"]["imageDataURL"]["blob"] in os.listdir(library_blobs)
 
 
+def test_library_gc_runs_on_writes_not_on_listing(store, monkeypatch):
+    calls = []
+    real = store.collect_library_garbage
+    monkeypatch.setattr(store, "collect_library_garbage", lambda now=None: calls.append(now) or real(now))
+    asset = store.create_asset("global", None, _character())
+    store.list_assets("global")
+    store.list_assets("global")
+    assert calls == []
+    store.put_asset("global", None, asset["id"], {"name": "Renamed"})
+    store.delete_asset("global", None, asset["id"])
+    assert len(calls) == 2
+    project = store.create_project("Local")
+    local = store.create_asset("project", project["id"], _character())
+    store.delete_asset("project", project["id"], local["id"])
+    assert len(calls) == 2
+
+
 def test_asset_routes(tmp_path):
     web = pytest.importorskip("aiohttp.web")
     root = tmp_path / "user"

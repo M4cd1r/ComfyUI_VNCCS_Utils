@@ -15,7 +15,8 @@ directory the state cache uses (ComfyUI wipes that on startup)::
     <user dir>/<comfy user>/vnccs_unicanvas/trash/<projectId>-<timestamp>/   deleted projects, purged after 30 days
 
 ``ProjectStore`` holds the file logic and is what the tests exercise; ``project_routes`` wraps it
-in aiohttp handlers that ``routes.py`` registers.
+in aiohttp handlers that ``routes.py`` registers. The storage primitives it shares with
+``history.py`` live in ``project_io.py``, the route plumbing in ``route_utils.py``.
 """
 
 from __future__ import annotations
@@ -29,14 +30,27 @@ import json
 import os
 import re
 import shutil
-import threading
-import time
 import uuid
 import zipfile
 from typing import Any, Callable
 
 from .constants import _MAX_UPLOAD_BYTES
-from .state import _SAFE_ID_RE
+from .project_io import (
+    SHA_RE,
+    STORE_LOCK,
+    ProjectError,
+    atomic_write_bytes,
+    atomic_write_json,
+    collect_blob_refs,
+    default_user_root,
+    new_id,
+    now as current_time,
+    parse_rev,
+    read_json,
+    request_user,
+    safe_id,
+)
+from .route_utils import json_route, match, read_json_object
 
 
 SCHEMA_VERSION = 1
@@ -46,10 +60,8 @@ BLOB_GC_MIN_AGE_SECONDS = 24 * 3600
 THUMBNAIL_SIZE = 512
 MAX_SCENE_BYTES = _MAX_UPLOAD_BYTES * 4
 MAX_IMPORT_BYTES = 1024 * 1024 * 1024
-_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _PNG_PREFIX = "data:image/png;base64,"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-_STORE_LOCK = threading.RLock()
 ASSET_SCHEMA_VERSION = 1
 ASSET_KINDS = ("character", "background", "prop", "pose", "preset")
 RESERVED_ASSET_KINDS = ("skin",)
@@ -58,50 +70,8 @@ ASSET_THUMBNAIL_SIZE = 256
 MAX_ASSET_TAGS = 32
 
 
-class ProjectError(Exception):
-    """An error a route turns into ``{"error": ...}`` with ``status``."""
-
-    def __init__(self, message: str, status: int = 400, **extra: Any):
-        super().__init__(message)
-        self.status = status
-        self.extra = extra
-
-
-def _safe_id(value: Any, what: str = "id") -> str:
-    raw = str(value or "")
-    safe = _SAFE_ID_RE.sub("_", raw)[:96].strip("_")
-    if not safe or safe != raw:
-        raise ProjectError(f"[VNCCS UniCanvas] Invalid {what}.", 400)
-    return safe
-
-
-def _new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:16]}"
-
-
-def _now() -> float:
-    return time.time()
-
-
 def _is_pixel_key(key: Any) -> bool:
     return isinstance(key, str) and key.lower().endswith("dataurl")
-
-
-def _atomic_write_bytes(path: str, data: bytes) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
-    with open(tmp, "wb") as handle:
-        handle.write(data)
-    os.replace(tmp, path)
-
-
-def _atomic_write_json(path: str, value: Any) -> None:
-    _atomic_write_bytes(path, json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-
-
-def _read_json(path: str) -> Any:
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
 
 
 def decode_png_data_url(value: str) -> bytes:
@@ -116,30 +86,6 @@ def decode_png_data_url(value: str) -> bytes:
     return data
 
 
-def _collect_blob_refs(value: Any, into: set[str]) -> set[str]:
-    if isinstance(value, dict):
-        blob = value.get("blob")
-        if isinstance(blob, str) and blob.endswith(".png") and _SHA_RE.match(blob[:-4]):
-            into.add(blob[:-4])
-        for item in value.values():
-            _collect_blob_refs(item, into)
-    elif isinstance(value, list):
-        for item in value:
-            _collect_blob_refs(item, into)
-    return into
-
-
-def default_user_root() -> str:
-    """``<ComfyUI user directory>``; raises if ComfyUI does not provide one."""
-    import folder_paths
-
-    getter = getattr(folder_paths, "get_user_directory", None)
-    root = getter() if callable(getter) else None
-    if not root:
-        raise ProjectError("[VNCCS UniCanvas] The ComfyUI user directory is not available.", 500)
-    return str(root)
-
-
 def _put_blob_file(path: str, sha: str, data: bytes) -> dict[str, Any]:
     if hashlib.sha256(data).hexdigest() != sha:
         raise ProjectError("[VNCCS UniCanvas] The blob does not match its hash.", 400)
@@ -147,7 +93,7 @@ def _put_blob_file(path: str, sha: str, data: bytes) -> dict[str, Any]:
         raise ProjectError("[VNCCS UniCanvas] Blobs must be PNG images.", 400)
     created = not os.path.exists(path)
     if created:
-        _atomic_write_bytes(path, data)
+        atomic_write_bytes(path, data)
     else:
         os.utime(path)  # a re-referenced blob is fresh again for the GC grace period
     return {"blob": f"{sha}.png", "created": created}
@@ -206,15 +152,15 @@ def _collect_unreferenced_blobs(record_dirs: list[str], blobs: str, now: float |
             for name in files:
                 if name.endswith(".json"):
                     try:
-                        _collect_blob_refs(_read_json(os.path.join(folder, name)), referenced)
+                        collect_blob_refs(read_json(os.path.join(folder, name)), referenced)
                     except (OSError, ValueError):
                         return []  # an unreadable record could hide references: collect nothing
-    now = _now() if now is None else now
+    now = current_time() if now is None else now
     removed = []
     for name in os.listdir(blobs) if os.path.isdir(blobs) else []:
         sha = name[:-4] if name.endswith(".png") else ""
         path = os.path.join(blobs, name)
-        if sha in referenced or not _SHA_RE.match(sha):
+        if sha in referenced or not SHA_RE.match(sha):
             continue
         if now - os.path.getmtime(path) > BLOB_GC_MIN_AGE_SECONDS:
             os.remove(path)
@@ -226,14 +172,14 @@ class ProjectStore:
     """File operations for one comfy user's projects."""
 
     def __init__(self, user_root: str, user: str = "default"):
-        self.base = os.path.abspath(os.path.join(user_root, _safe_id(user, "user"), PROJECTS_DIRNAME))
+        self.base = os.path.abspath(os.path.join(user_root, safe_id(user, "user"), PROJECTS_DIRNAME))
         self.root = os.path.join(self.base, "projects")
         self.trash = os.path.join(self.base, "trash")
         self.library = os.path.join(self.base, "library")
 
     # -- paths ---------------------------------------------------------------------------------
 
-    def _inside(self, path: str, root: str | None = None) -> str:
+    def inside(self, path: str, root: str | None = None) -> str:
         root = os.path.abspath(root or self.root)
         resolved = os.path.abspath(path)
         if os.path.commonpath([root, resolved]) != root:
@@ -251,26 +197,33 @@ class ProjectStore:
             raise ProjectError(f"[VNCCS UniCanvas] The ComfyUI user directory is not writable ({self.base}): {exc}", 500) from exc
 
     def project_dir(self, project_id: str) -> str:
-        return self._inside(os.path.join(self.root, _safe_id(project_id, "project id")))
+        return self.inside(os.path.join(self.root, safe_id(project_id, "project id")))
 
     def _project_json(self, project_id: str) -> str:
         return os.path.join(self.project_dir(project_id), "project.json")
 
     def _scene_json(self, project_id: str, scene_id: str) -> str:
-        return self._inside(os.path.join(self.project_dir(project_id), "scenes", _safe_id(scene_id, "scene id"), "scene.json"))
+        return self.inside(os.path.join(self.project_dir(project_id), "scenes", safe_id(scene_id, "scene id"), "scene.json"))
 
     def blob_path(self, project_id: str, sha: str) -> str:
-        if not isinstance(sha, str) or not _SHA_RE.match(sha):
+        if not isinstance(sha, str) or not SHA_RE.match(sha):
             raise ProjectError("[VNCCS UniCanvas] Invalid blob hash.", 400)
-        return self._inside(os.path.join(self.project_dir(project_id), "blobs", f"{sha}.png"))
+        return self.inside(os.path.join(self.project_dir(project_id), "blobs", f"{sha}.png"))
 
     def library_blob_path(self, sha: str) -> str:
-        if not isinstance(sha, str) or not _SHA_RE.match(sha):
+        if not isinstance(sha, str) or not SHA_RE.match(sha):
             raise ProjectError("[VNCCS UniCanvas] Invalid blob hash.", 400)
-        return self._inside(os.path.join(self.library, "blobs", f"{sha}.png"), self.library)
+        return self.inside(os.path.join(self.library, "blobs", f"{sha}.png"), self.library)
 
     def thumb_path(self, project_id: str, scene_id: str) -> str:
-        return self._inside(os.path.join(self.project_dir(project_id), "thumbs", f"{_safe_id(scene_id, 'scene id')}.png"))
+        return self.inside(os.path.join(self.project_dir(project_id), "thumbs", f"{safe_id(scene_id, 'scene id')}.png"))
+
+    def get_thumb(self, project_id: str, scene_id: str) -> bytes:
+        path = self.thumb_path(project_id, scene_id)
+        if not os.path.isfile(path):
+            raise ProjectError("[VNCCS UniCanvas] Thumbnail not found.", 404)
+        with open(path, "rb") as handle:
+            return handle.read()
 
     # -- projects ------------------------------------------------------------------------------
 
@@ -278,12 +231,12 @@ class ProjectStore:
         path = self._project_json(project_id)
         if not os.path.isfile(path):
             raise ProjectError("[VNCCS UniCanvas] Project not found.", 404)
-        return _read_json(path)
+        return read_json(path)
 
     def _save_project(self, project: dict[str, Any]) -> dict[str, Any]:
-        project["updatedAt"] = _now()
+        project["updatedAt"] = current_time()
         project["rev"] = int(project.get("rev") or 0) + 1
-        _atomic_write_json(self._project_json(project["id"]), project)
+        atomic_write_json(self._project_json(project["id"]), project)
         return project
 
     def list_projects(self) -> list[dict[str, Any]]:
@@ -296,7 +249,7 @@ class ProjectStore:
             if not os.path.isfile(path):
                 continue
             try:
-                project = _read_json(path)
+                project = read_json(path)
             except (OSError, ValueError):
                 continue
             scenes = project.get("scenes") or []
@@ -309,15 +262,15 @@ class ProjectStore:
         return items
 
     def create_project(self, name: str = "", settings: dict[str, Any] | None = None, project_id: str | None = None) -> dict[str, Any]:
-        with _STORE_LOCK:
+        with STORE_LOCK:
             self._ensure_writable()
-            project_id = _safe_id(project_id, "project id") if project_id else _new_id("prj")
+            project_id = safe_id(project_id, "project id") if project_id else new_id("prj")
             directory = self.project_dir(project_id)
             if os.path.exists(directory):
                 raise ProjectError("[VNCCS UniCanvas] A project with this id already exists.", 409)
             for sub in ("scenes", "blobs", "thumbs", "assets", "history"):
                 os.makedirs(os.path.join(directory, sub), exist_ok=True)
-            now = _now()
+            now = current_time()
             project = {
                 "schemaVersion": SCHEMA_VERSION, "id": project_id, "name": str(name or "Untitled project")[:200],
                 "createdAt": now, "updatedAt": now, "rev": 0, "scenes": [], "activeSceneId": None,
@@ -333,7 +286,7 @@ class ProjectStore:
         return project
 
     def patch_project(self, project_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-        with _STORE_LOCK:
+        with STORE_LOCK:
             project = self.load_project(project_id)
             if "name" in patch:
                 name = str(patch.get("name") or "").strip()
@@ -355,34 +308,34 @@ class ProjectStore:
             return self._save_project(project)
 
     def duplicate_project(self, project_id: str, name: str | None = None) -> dict[str, Any]:
-        with _STORE_LOCK:
+        with STORE_LOCK:
             source = self.load_project(project_id)
             self._ensure_writable()
-            new_id = _new_id("prj")
-            shutil.copytree(self.project_dir(project_id), self.project_dir(new_id))
-            project = self.load_project(new_id)
-            project["id"] = new_id
+            copy_id = new_id("prj")
+            shutil.copytree(self.project_dir(project_id), self.project_dir(copy_id))
+            project = self.load_project(copy_id)
+            project["id"] = copy_id
             project["name"] = str(name or f"{source.get('name') or 'Project'} copy")[:200]
-            project["createdAt"] = _now()
+            project["createdAt"] = current_time()
             project["rev"] = 0
             return self._save_project(project)
 
     def delete_project(self, project_id: str) -> None:
-        with _STORE_LOCK:
+        with STORE_LOCK:
             directory = self.project_dir(project_id)
             if not os.path.isfile(os.path.join(directory, "project.json")):
                 raise ProjectError("[VNCCS UniCanvas] Project not found.", 404)
             os.makedirs(self.trash, exist_ok=True)
-            target = self._inside(os.path.join(self.trash, f"{_safe_id(project_id, 'project id')}-{int(_now())}"), self.trash)
+            target = self.inside(os.path.join(self.trash, f"{safe_id(project_id, 'project id')}-{int(current_time())}"), self.trash)
             shutil.move(directory, target)
 
     def purge_trash(self, now: float | None = None) -> int:
         if not os.path.isdir(self.trash):
             return 0
-        now = _now() if now is None else now
+        now = current_time() if now is None else now
         removed = 0
         for name in os.listdir(self.trash):
-            path = self._inside(os.path.join(self.trash, name), self.trash)
+            path = self.inside(os.path.join(self.trash, name), self.trash)
             match = re.search(r"-(\d+)$", name)
             stamp = int(match.group(1)) if match else os.path.getmtime(path)
             if now - stamp > TRASH_RETENTION_SECONDS:
@@ -407,17 +360,17 @@ class ProjectStore:
     def get_library_blob(self, sha: str) -> bytes:
         return _read_blob_file(self.library_blob_path(sha))
 
-    def _dehydrate(self, project_id: str, value: Any) -> Any:
+    def dehydrate(self, project_id: str, value: Any) -> Any:
         """Replaces every inline PNG pixel field by a blob ref; refs the client sent must exist."""
         return _dehydrate_value(value, lambda sha: self.blob_path(project_id, sha))
 
-    def _hydrate(self, project_id: str, value: Any) -> Any:
+    def hydrate(self, project_id: str, value: Any) -> Any:
         """Turns blob refs back into PNG data URLs (for rendering a scene in node mode)."""
         return _hydrate_value(value, lambda sha: self.get_blob(project_id, sha))
 
     def collect_garbage(self, project_id: str, now: float | None = None) -> list[str]:
         """Deletes blobs no scene, asset or history record references and that are older than 24 h."""
-        with _STORE_LOCK:
+        with STORE_LOCK:
             directory = self.project_dir(project_id)
             return _collect_unreferenced_blobs(
                 [os.path.join(directory, sub) for sub in ("scenes", "assets", "history")],
@@ -425,7 +378,7 @@ class ProjectStore:
 
     def collect_library_garbage(self, now: float | None = None) -> list[str]:
         """The same GC for the global library: blobs no global asset references."""
-        with _STORE_LOCK:
+        with STORE_LOCK:
             return _collect_unreferenced_blobs([os.path.join(self.library, "assets")], os.path.join(self.library, "blobs"), now)
 
     # -- scenes --------------------------------------------------------------------------------
@@ -437,20 +390,20 @@ class ProjectStore:
         return entry
 
     def create_scene(self, project_id: str, name: str = "", from_scene_id: str | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
-        with _STORE_LOCK:
+        with STORE_LOCK:
             project = self.load_project(project_id)
-            scene_id = _new_id("scn")
+            scene_id = new_id("scn")
             if from_scene_id:
-                source = self._scene_entry(project, _safe_id(from_scene_id, "scene id"))
-                stored = _read_json(self._scene_json(project_id, source["id"]))
+                source = self._scene_entry(project, safe_id(from_scene_id, "scene id"))
+                stored = read_json(self._scene_json(project_id, source["id"]))
                 name = name or f"{source.get('name') or 'Scene'} copy"
                 thumb = self.thumb_path(project_id, source["id"])
                 if os.path.isfile(thumb):
                     shutil.copyfile(thumb, self.thumb_path(project_id, scene_id))
             else:
-                stored = self._dehydrate(project_id, state if isinstance(state, dict) else {"layers": []})
-            _atomic_write_json(self._scene_json(project_id, scene_id), stored)
-            now = _now()
+                stored = self.dehydrate(project_id, state if isinstance(state, dict) else {"layers": []})
+            atomic_write_json(self._scene_json(project_id, scene_id), stored)
+            now = current_time()
             entry = {
                 "id": scene_id, "name": str(name or f"Scene {len(project['scenes']) + 1}")[:200],
                 "order": len(project["scenes"]), "thumbnail": None, "updatedAt": now, "rev": 1,
@@ -464,35 +417,38 @@ class ProjectStore:
 
     def get_scene(self, project_id: str, scene_id: str, hydrate: bool = False) -> dict[str, Any]:
         project = self.load_project(project_id)
-        entry = self._scene_entry(project, _safe_id(scene_id, "scene id"))
-        state = _read_json(self._scene_json(project_id, entry["id"]))
-        return {**entry, "state": self._hydrate(project_id, state) if hydrate else state}
+        entry = self._scene_entry(project, safe_id(scene_id, "scene id"))
+        state = read_json(self._scene_json(project_id, entry["id"]))
+        return {**entry, "state": self.hydrate(project_id, state) if hydrate else state}
 
     def put_scene(self, project_id: str, scene_id: str, state: dict[str, Any], if_rev: Any = None,
                   name: str | None = None, thumbnail: str | None = None) -> dict[str, Any]:
         if not isinstance(state, dict):
             raise ProjectError("[VNCCS UniCanvas] The scene state must be an object.", 400)
-        with _STORE_LOCK:
+        expected_rev = parse_rev(if_rev)
+        # Rendering the thumbnail is pure CPU work: keep it out of the store-wide lock.
+        thumb_png = _thumbnail_png(decode_png_data_url(thumbnail)) if thumbnail else None
+        with STORE_LOCK:
             project = self.load_project(project_id)
-            entry = self._scene_entry(project, _safe_id(scene_id, "scene id"))
-            if if_rev is not None and int(if_rev) != int(entry.get("rev") or 0):
+            entry = self._scene_entry(project, safe_id(scene_id, "scene id"))
+            if expected_rev is not None and expected_rev != int(entry.get("rev") or 0):
                 raise ProjectError("[VNCCS UniCanvas] The scene changed elsewhere.", 409, rev=entry.get("rev"))
-            stored = self._dehydrate(project_id, state)
-            _atomic_write_json(self._scene_json(project_id, entry["id"]), stored)
-            if thumbnail:
-                _atomic_write_bytes(self.thumb_path(project_id, entry["id"]), _thumbnail_png(decode_png_data_url(thumbnail)))
+            stored = self.dehydrate(project_id, state)
+            atomic_write_json(self._scene_json(project_id, entry["id"]), stored)
+            if thumb_png is not None:
+                atomic_write_bytes(self.thumb_path(project_id, entry["id"]), thumb_png)
                 entry["thumbnail"] = f"thumbs/{entry['id']}.png"
             if name:
                 entry["name"] = str(name)[:200]
             entry["rev"] = int(entry.get("rev") or 0) + 1
-            entry["updatedAt"] = _now()
+            entry["updatedAt"] = current_time()
             self._save_project(project)
             return entry
 
     def delete_scene(self, project_id: str, scene_id: str) -> dict[str, Any]:
-        with _STORE_LOCK:
+        with STORE_LOCK:
             project = self.load_project(project_id)
-            entry = self._scene_entry(project, _safe_id(scene_id, "scene id"))
+            entry = self._scene_entry(project, safe_id(scene_id, "scene id"))
             if len(project["scenes"]) <= 1:
                 raise ProjectError("[VNCCS UniCanvas] A project keeps at least one scene.", 400)
             shutil.rmtree(os.path.dirname(self._scene_json(project_id, entry["id"])), ignore_errors=True)
@@ -520,7 +476,7 @@ class ProjectStore:
 
     def _asset_json(self, scope: Any, project_id: Any, asset_id: Any) -> str:
         assets, _blob_path, root = self._asset_scope(scope, project_id)
-        return self._inside(os.path.join(assets, _safe_id(asset_id, "asset id"), "asset.json"), root)
+        return self.inside(os.path.join(assets, safe_id(asset_id, "asset id"), "asset.json"), root)
 
     def _ensure_library_writable(self) -> None:
         try:
@@ -578,7 +534,7 @@ class ProjectStore:
             if not os.path.isfile(path):
                 continue
             try:
-                asset = _read_json(path)
+                asset = read_json(path)
             except (OSError, ValueError):
                 continue
             if kind and asset.get("kind") != kind:
@@ -594,19 +550,19 @@ class ProjectStore:
         path = self._asset_json(scope, project_id, asset_id)
         if not os.path.isfile(path):
             raise ProjectError("[VNCCS UniCanvas] Asset not found.", 404)
-        return {**_read_json(path), "scope": str(scope)}
+        return {**read_json(path), "scope": str(scope)}
 
     def create_asset(self, scope: Any, project_id: Any, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ProjectError("[VNCCS UniCanvas] Expected a JSON object.", 400)
-        with _STORE_LOCK:
+        with STORE_LOCK:
             if scope == "global":
                 self._ensure_library_writable()
             kind = self._asset_kind(payload.get("kind"))
             _assets, blob_path, _root = self._asset_scope(scope, project_id)
-            asset_id = _new_id("ast")
+            asset_id = new_id("ast")
             data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-            now = _now()
+            now = current_time()
             asset = {
                 "schemaVersion": ASSET_SCHEMA_VERSION, "id": asset_id, "kind": kind,
                 "name": str(payload.get("name") or kind.capitalize()).strip()[:200] or kind.capitalize(),
@@ -614,18 +570,18 @@ class ProjectStore:
                 "thumbnail": self._asset_thumbnail(blob_path, payload, data),
                 "data": _dehydrate_value(data, blob_path),
             }
-            _atomic_write_json(self._asset_json(scope, project_id, asset_id), asset)
+            atomic_write_json(self._asset_json(scope, project_id, asset_id), asset)
             return {**asset, "scope": str(scope)}
 
     def put_asset(self, scope: Any, project_id: Any, asset_id: Any, payload: dict[str, Any]) -> dict[str, Any]:
         """Push to library: replaces the asset's data (and name / tags when given); ``ifRev`` guards races."""
         if not isinstance(payload, dict):
             raise ProjectError("[VNCCS UniCanvas] Expected a JSON object.", 400)
-        with _STORE_LOCK:
+        with STORE_LOCK:
             asset = self.get_asset(scope, project_id, asset_id)
             asset.pop("scope", None)
-            if_rev = payload.get("ifRev")
-            if if_rev is not None and int(if_rev) != int(asset.get("rev") or 0):
+            if_rev = parse_rev(payload.get("ifRev"))
+            if if_rev is not None and if_rev != int(asset.get("rev") or 0):
                 raise ProjectError("[VNCCS UniCanvas] The asset changed elsewhere.", 409, rev=asset.get("rev"))
             _assets, blob_path, _root = self._asset_scope(scope, project_id)
             if "kind" in payload and self._asset_kind(payload.get("kind")) != asset.get("kind"):
@@ -643,16 +599,25 @@ class ProjectStore:
                 if thumbnail or payload.get("thumbnail") is not None:
                     asset["thumbnail"] = thumbnail
             asset["rev"] = int(asset.get("rev") or 0) + 1
-            asset["updatedAt"] = _now()
-            _atomic_write_json(self._asset_json(scope, project_id, asset["id"]), asset)
+            asset["updatedAt"] = current_time()
+            atomic_write_json(self._asset_json(scope, project_id, asset["id"]), asset)
+            self._collect_scope_garbage(scope)
             return {**asset, "scope": str(scope)}
 
     def delete_asset(self, scope: Any, project_id: Any, asset_id: Any) -> None:
-        with _STORE_LOCK:
+        with STORE_LOCK:
             path = self._asset_json(scope, project_id, asset_id)
             if not os.path.isfile(path):
                 raise ProjectError("[VNCCS UniCanvas] Asset not found.", 404)
             shutil.rmtree(os.path.dirname(path))
+            self._collect_scope_garbage(scope)
+
+    def _collect_scope_garbage(self, scope: Any) -> None:
+        """After a write that can orphan global library blobs, collect them; listing never does.
+
+        Project-scope blobs are collected when the project opens (``open_project``)."""
+        if scope == "global":
+            self.collect_library_garbage()
 
     # -- export / import -----------------------------------------------------------------------
 
@@ -678,7 +643,7 @@ class ProjectStore:
             archive = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile as exc:
             raise ProjectError("[VNCCS UniCanvas] The file is not a project zip.", 400) from exc
-        with archive, _STORE_LOCK:
+        with archive, STORE_LOCK:
             infos = archive.infolist()
             if sum(info.file_size for info in infos) > MAX_IMPORT_BYTES:
                 raise ProjectError("[VNCCS UniCanvas] The project zip is too large.", 413)
@@ -691,19 +656,19 @@ class ProjectStore:
             self._ensure_writable()
             original = str(project.get("id") or "")
             try:
-                project_id = _safe_id(original, "project id")
+                project_id = safe_id(original, "project id")
             except ProjectError:
-                project_id = _new_id("prj")
+                project_id = new_id("prj")
             if os.path.exists(self.project_dir(project_id)):
-                project_id = _new_id("prj")
+                project_id = new_id("prj")
             directory = self.project_dir(project_id)
-            staging = self._inside(os.path.join(self.root, f".import-{uuid.uuid4().hex[:8]}"))
+            staging = self.inside(os.path.join(self.root, f".import-{uuid.uuid4().hex[:8]}"))
             try:
                 for info in infos:
                     name = info.filename
                     if name.startswith("/") or "\\" in name or ".." in name.split("/") or ":" in name:
                         raise ProjectError("[VNCCS UniCanvas] The zip contains an unsafe path.", 400)
-                    target = self._inside(os.path.join(staging, *name.split("/")), staging)
+                    target = self.inside(os.path.join(staging, *name.split("/")), staging)
                     if name.endswith("/"):
                         os.makedirs(target, exist_ok=True)
                         continue
@@ -718,7 +683,7 @@ class ProjectStore:
                 for sub in ("scenes", "blobs", "thumbs", "assets", "history"):
                     os.makedirs(os.path.join(staging, sub), exist_ok=True)
                 project["id"] = project_id
-                _atomic_write_json(os.path.join(staging, "project.json"), project)
+                atomic_write_json(os.path.join(staging, "project.json"), project)
                 os.replace(staging, directory)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
@@ -744,55 +709,25 @@ def load_project_scene_state(project_id: str, scene_id: str, user: str = "defaul
 
 # -- aiohttp routes ------------------------------------------------------------------------------
 
-def _request_user(request) -> str:
-    """The comfy user of a request, resolved the way ComfyUI's own userdata routes do."""
-    try:
-        from server import PromptServer
-
-        manager = getattr(PromptServer.instance, "user_manager", None)
-    except (ImportError, AttributeError):
-        manager = None
-    if manager is None:
-        return "default"
-    try:
-        return str(manager.get_request_user_id(request) or "default")
-    except Exception as exc:
-        raise ProjectError(f"[VNCCS UniCanvas] Unknown ComfyUI user: {exc}", 403) from exc
-
-
 def project_routes(web, content_length_ok: Callable[[Any, int], bool],
                    store_factory: Callable[[str], ProjectStore] | None = None) -> list[tuple[str, str, Callable]]:
-    """(method, path, handler) triples for ``routes.py`` to register under /vnccs/unicanvas/projects and /library."""
+    """(method, path, handler) triples for ``routes.py`` to register under /vnccs/unicanvas/projects and /library.
+
+    Generation history (``.../{id}/history``) has its own table in ``history.py``.
+    """
     base = "/vnccs/unicanvas/projects"
 
     def store_for(request) -> ProjectStore:
-        user = _request_user(request)
+        user = request_user(request)
         return store_factory(user) if store_factory else ProjectStore(default_user_root(), user)
 
     def handler(max_bytes: int, work):
         async def run(request):
-            if not content_length_ok(request, max_bytes):
-                return web.json_response({"error": "[VNCCS UniCanvas] Project request is too large."}, status=413)
-            try:
-                store = store_for(request)
-                result = await work(request, store)
-                return result if isinstance(result, web.StreamResponse) else web.json_response(result)
-            except ProjectError as exc:
-                return web.json_response({"error": str(exc), **exc.extra}, status=exc.status)
-            except Exception as exc:
-                return web.json_response({"error": f"[VNCCS UniCanvas] Project storage failed: {exc}"}, status=500)
-        return run
+            return await work(request, store_for(request))
+        return json_route(web, content_length_ok, max_bytes, run, subject="Project", failure="Project storage failed")
 
-    async def body(request) -> dict[str, Any]:
-        if not getattr(request, "can_read_body", False):
-            return {}
-        payload = await request.json()
-        if not isinstance(payload, dict):
-            raise ProjectError("[VNCCS UniCanvas] Expected a JSON object.", 400)
-        return payload
-
-    def m(request, key):
-        return request.match_info.get(key) or ""
+    body = read_json_object
+    m = match
 
     async def list_(request, store):
         return {"projects": await asyncio.to_thread(store.list_projects)}
@@ -839,11 +774,8 @@ def project_routes(web, content_length_ok: Callable[[Any, int], bool],
         return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
     async def get_thumb(request, store):
-        path = store.thumb_path(m(request, "id"), m(request, "scene"))
-        if not os.path.isfile(path):
-            raise ProjectError("[VNCCS UniCanvas] Thumbnail not found.", 404)
-        with open(path, "rb") as handle:
-            return web.Response(body=handle.read(), content_type="image/png", headers={"Cache-Control": "no-cache"})
+        data = await asyncio.to_thread(store.get_thumb, m(request, "id"), m(request, "scene"))
+        return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "no-cache"})
 
     async def export(request, store):
         project = await asyncio.to_thread(store.load_project, m(request, "id"))
@@ -861,8 +793,6 @@ def project_routes(web, content_length_ok: Callable[[Any, int], bool],
     async def list_assets(request, store):
         scope, project_id = asset_scope(request)
         query = getattr(request, "query", None) or {}
-        if scope == "global":
-            await asyncio.to_thread(store.collect_library_garbage)
         return {"assets": await asyncio.to_thread(store.list_assets, scope, project_id, query.get("kind") or None, query.get("q") or None)}
 
     async def create_asset(request, store):
@@ -916,12 +846,4 @@ def project_routes(web, content_length_ok: Callable[[Any, int], bool],
         ("PUT", f"{library}/assets/{{asset}}", handler(MAX_SCENE_BYTES, put_asset)),
         ("DELETE", f"{library}/assets/{{asset}}", handler(small, delete_asset)),
         ("GET", f"{library}/blobs/{{sha}}", handler(small, get_library_blob)),
-        # Generation history (Plan 10.5) lives under .../{id}/history; history.py builds on this module.
-        *_history_routes(web, content_length_ok, store_factory),
     ]
-
-
-def _history_routes(web, content_length_ok, store_factory):
-    from .history import history_routes  # deferred: history.py imports this module
-
-    return history_routes(web, content_length_ok, store_factory)

@@ -19,7 +19,7 @@ import shutil
 import pytest
 from PIL import Image
 
-from nodes.unicanvas import projects
+from nodes.unicanvas import project_io, projects
 from nodes.unicanvas.projects import ProjectError, ProjectStore
 
 
@@ -145,7 +145,7 @@ def test_gc_keeps_referenced_blobs_and_deletes_old_unreferenced_ones(store):
     history.write_text(json.dumps({"image": {"blob": f"{history_sha}.png"}}))
     old_orphan = store.store_png(pid, _png((1, 2, 3, 255)))
     new_orphan = store.store_png(pid, _png((4, 5, 6, 255)))
-    old = projects._now() - projects.BLOB_GC_MIN_AGE_SECONDS - 60
+    old = project_io.now() - projects.BLOB_GC_MIN_AGE_SECONDS - 60
     for sha in (kept, history_sha, old_orphan):
         os.utime(store.blob_path(pid, sha), (old, old))
     assert store.collect_garbage(pid) == [old_orphan]
@@ -224,8 +224,8 @@ def test_delete_moves_to_trash_and_purges_after_30_days(store):
     assert store.list_projects() == []
     trashed = os.listdir(store.trash)
     assert len(trashed) == 1 and trashed[0].startswith(project["id"])
-    assert store.purge_trash(now=projects._now() + 29 * 24 * 3600) == 0
-    assert store.purge_trash(now=projects._now() + 31 * 24 * 3600) == 1
+    assert store.purge_trash(now=project_io.now() + 29 * 24 * 3600) == 0
+    assert store.purge_trash(now=project_io.now() + 31 * 24 * 3600) == 1
     assert os.listdir(store.trash) == []
 
 
@@ -289,6 +289,8 @@ def test_routes_map_errors_to_status_codes(user_root):
             self.headers = {}
 
         async def json(self):
+            if isinstance(self._payload, Exception):
+                raise self._payload
             return self._payload
 
         async def read(self):
@@ -314,6 +316,18 @@ def test_routes_map_errors_to_status_codes(user_root):
         status, body = await call("PUT", f"{base}/{{id}}/scenes/{{scene}}", match_info={"id": pid, "scene": sid},
                                   payload={"state": _state(), "ifRev": 1})
         assert status == 409 and body["rev"] == 2
+        status, body = await call("GET", f"{base}/{{id}}/thumbs/{{scene}}", match_info={"id": pid, "scene": "scn_missing"})
+        assert status == 404 and "error" in body
+        # Client errors are 400s, not "storage failed" 500s.
+        status, body = await call("PATCH", f"{base}/{{id}}", match_info={"id": pid},
+                                  payload=json.JSONDecodeError("Expecting value", "{", 1))
+        assert status == 400 and "JSON object" in body["error"]
+        status, body = await call("PATCH", f"{base}/{{id}}", match_info={"id": pid}, payload=[1, 2])
+        assert status == 400 and "JSON object" in body["error"]
+        for bad_rev in ("abc", [1], {"n": 1}):
+            status, body = await call("PUT", f"{base}/{{id}}/scenes/{{scene}}", match_info={"id": pid, "scene": sid},
+                                      payload={"state": _state(), "ifRev": bad_rev})
+            assert status == 400 and "ifRev" in body["error"], bad_rev
         status, data = await call("POST", f"{base}/{{id}}/export", match_info={"id": pid})
         assert status == 200 and data[:2] == b"PK"
 

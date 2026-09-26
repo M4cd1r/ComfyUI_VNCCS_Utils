@@ -49,8 +49,10 @@ is described in `AGENTS.md`.
 
 Layered; lower layers never import higher ones (no import cycles):
 
-1. Infrastructure: `constants`, `locks`, `debug`, `paths`, `progress`
-2. Images/state: `imaging`, `masking`, `state`, `render`
+1. Infrastructure: `constants`, `locks`, `debug`, `paths`, `progress`, `route_utils` (JSON route
+   factory `json_route`, `RouteError`)
+2. Images/state: `imaging`, `masking`, `state`, `render`, `project_io` (store lock, atomic JSON,
+   ids, blob refs shared by `projects` and `history`)
 3. ComfyUI integration: `comfy_bridge`, `pipeline`, `loras` (`LoraRequirement`), `loaders`,
    `latents`, `sampling`, `draw_pipeline` (`ImageDrawPipeline`, `DrawContext`)
 4. Model families: `models/` — `capabilities` (tasks, media kinds, reference slots, prompt
@@ -85,7 +87,8 @@ Draw flow: `draw._run_unicanvas_draw` -> `DrawRequest.from_payload` -> `family.v
   `register_color_transfer`) — extend them, do not add `if` chains.
 - **New route/feature**: logic in its own module, registration in `routes.py`; heavy work via
   `asyncio.to_thread`, errors as `{"error": ...}` with a non-2xx status, request size checked
-  with `_content_length_ok`.
+  with `_content_length_ok`. A table of JSON routes builds its handlers with
+  `route_utils.json_route` (malformed JSON is a 400 via `read_json_object`).
 - No import-time side effects (threads, route registration, downloads). Model downloads are
   lazy and go through `huggingface_hub` with `token=False`.
 - Paths to repo files use `paths._EXTENSION_ROOT`, not `__file__` math. Model work
