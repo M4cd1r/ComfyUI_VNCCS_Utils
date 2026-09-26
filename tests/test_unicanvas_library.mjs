@@ -12,6 +12,10 @@ import {
   dropScale,
   filterAssets,
   insertAsset,
+  libraryCharacterReference,
+  listLibraryCharacters,
+  mannequinMeshOf,
+  normalizeMeshMorphs,
   installUniCanvasLibrary,
   normalizeAnchor,
   parseTags,
@@ -356,4 +360,35 @@ test("a sprite layer saves as a character with its set and inserts back as a spr
   assert.equal(uc.history.length, before + 1);
   assert.equal(uc.history.at(-1).kind, "layerPixels");
   assert.deepEqual(inserted.sprite.rect, { x: 280, y: 310, width: 40, height: 100 });
+});
+
+test("mesh morphs: only finite numbers and booleans, taken from the mannequin a character came from", () => {
+  assert.deepEqual(normalizeMeshMorphs({ height: 0.7, show_genitals: false, name: "x", bad: NaN, "__proto__x": 1 }), { height: 0.7, show_genitals: false });
+  assert.equal(normalizeMeshMorphs({}), null);
+  assert.equal(normalizeMeshMorphs([1]), null);
+  const pose = { id: "p", type: "pose", pose: { studio: { characters: [{ id: "a", mesh: { height: 0.2 } }, { id: "b", mesh: { height: 0.9, age: 30 } }] } } };
+  const sprite = { id: "s", type: "sprite", sprite: { sourceLayerId: "p", characterId: "b" } };
+  assert.deepEqual(mannequinMeshOf([pose, sprite], sprite), { height: 0.9, age: 30 });
+  const split = { id: "r", type: "raster", meta: { origin: "sprite", derivedFrom: "p", character: { id: "a" } } };
+  assert.deepEqual(mannequinMeshOf([pose, split], split), { height: 0.2 });
+  assert.equal(mannequinMeshOf([pose], { id: "x", type: "raster", meta: {} }), null);
+});
+
+test("library characters list both scopes and bind as a library reference with prompt and morphs", async () => {
+  const { client, assets } = fakeServer();
+  const uc = fakeWidget();
+  uc._createCanvas = (width, height) => ({ ...fakeCanvas(width, height), toDataURL: () => "data:image/png;base64,QUxJQ0U=" });
+  const created = await client.create("global", null, { kind: "character", name: "Alice", tags: [], data: {
+    imageDataURL: "data:image/png;base64,AAAA", identityPrompt: "red hair", meshMorphs: { height: 0.8, junk: "x" } } });
+  await client.create("global", null, { kind: "prop", name: "Lamp", tags: [], data: { imageDataURL: "data:image/png;base64,AAAA" } });
+  const list = await listLibraryCharacters(uc, {
+    list: async (scope, _projectId, { kind }) => [...assets.values()].filter((asset) => asset.kind === kind).map((asset) => ({ ...asset, scope })),
+  });
+  assert.deepEqual(list.map((item) => [item.scope, item.name]), [["project", "Alice"], ["global", "Alice"]]);
+  const picked = await libraryCharacterReference(uc, "global", created.id, client);
+  assert.deepEqual(picked.ref, { source: "library", assetId: created.id, assetScope: "global", name: "Alice", dataURL: "data:image/png;base64,QUxJQ0U=" });
+  assert.equal(picked.prompt, "red hair");
+  assert.deepEqual(picked.meshMorphs, { height: 0.8 });
+  const prop = [...assets.values()].find((asset) => asset.kind === "prop");
+  await assert.rejects(libraryCharacterReference(uc, "global", prop.id, client), /not a character/);
 });

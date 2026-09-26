@@ -20,7 +20,7 @@
  * controller onto the widget like the other install* modules.
  */
 
-import { getPoseCharacterMask, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
+import { getPoseCharacterMask, isImageRef, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
   poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
 import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
@@ -126,7 +126,7 @@ export function bakeRefHash(layers, layer, characterId) {
   if (ref?.source === "layer") {
     const target = (layers || []).find((item) => item.id === ref.layerId);
     source = `layer:${ref.layerId}:${target?.pixelRevision ?? "missing"}`;
-  } else if (ref?.source === "upload") source = `upload:${uploadHash(ref.dataURL || ref.name)}`;
+  } else if (isImageRef(ref)) source = `upload:${uploadHash(ref.dataURL || ref.name)}`;
   return hashText(JSON.stringify([source, prompt]));
 }
 

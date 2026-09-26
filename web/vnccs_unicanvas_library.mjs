@@ -17,6 +17,10 @@
  *   props); with the scene's depth scale on (Plan 08) a character is sized for that ground row.
  * - The settings popover gets "Save generation preset to library".
  *
+ * - The pose character reference card lists library characters as a third source
+ *   (`{ source: "library", assetId, assetScope, name, dataURL }`); binding one also sets its
+ *   identity prompt and applies its default mesh morphs (taken from the baked mannequin a
+ *   character layer came from) to that mannequin.
  * - Characters saved from a sprite layer (Plan 03, #6) carry their sprite set (`data.spriteSet`,
  *   every variant a PNG blob) and insert as a sprite layer with all variants; other characters
  *   insert as raster layers. The reserved `skin` kind is not built yet.
@@ -202,6 +206,35 @@ export function placedSpriteSet(stored, rect, urlOf = (ref) => ref) {
   return set;
 }
 
+/**
+ * The mesh morphs a character asset applies to a mannequin it is bound to: the finite numbers
+ * and booleans of a Pose Studio mesh (`age`, `height`, `weight`, proportions...), or null.
+ */
+export function normalizeMeshMorphs(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!/^[a-z][a-z0-9_]{0,63}$/i.test(key)) continue;
+    if (typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))) out[key] = item;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * The mannequin mesh behind a character layer, for its asset's default mesh morphs: a sprite
+ * set or a layer made from a baked pose layer (`sourceLayerId` / `meta.derivedFrom`) points at
+ * that pose layer and its mannequin (`characterId` / `meta.character.id`).
+ */
+export function mannequinMeshOf(layers, layer) {
+  const sourceId = layer?.sprite?.sourceLayerId || normalizeLayerMeta(layer?.meta).derivedFrom || null;
+  const source = sourceId ? (layers || []).find((item) => item.id === sourceId) : null;
+  const characters = Array.isArray(source?.pose?.studio?.characters) ? source.pose.studio.characters : null;
+  if (!characters?.length) return null;
+  const id = layer?.sprite?.characterId || normalizeLayerMeta(layer?.meta).character?.id || null;
+  const mannequin = (id && characters.find((item) => String(item?.id) === String(id))) || (characters.length === 1 ? characters[0] : null);
+  return normalizeMeshMorphs(mannequin?.mesh);
+}
+
 // ---------------------------------------------------------------------------
 // HTTP client
 // ---------------------------------------------------------------------------
@@ -304,7 +337,7 @@ export function layerAssetData(uc, layer, kind, previous = {}) {
   if (kind === "character") {
     data.identityPrompt = typeof previous?.identityPrompt === "string" ? previous.identityPrompt : (meta.prompt || "");
     data.heightFactor = layerHeightFactor(layer);
-    data.meshMorphs = previous?.meshMorphs ?? null;
+    data.meshMorphs = mannequinMeshOf(uc.layers, layer) ?? normalizeMeshMorphs(previous?.meshMorphs);
     data.spriteSet = previous?.spriteSet ?? null;
     if (layer.type === "sprite" && layer.sprite?.rect && uc.sprites) {
       data.spriteSet = uc.sprites.serialize(layer);
@@ -455,6 +488,43 @@ export async function insertAsset(uc, asset, point) {
   }
   uc.setStatus(`Inserted ${ASSET_KIND_LABELS[kind]?.toLowerCase() || "asset"} "${asset.name}"${scale !== 1 ? " (depth scaled)" : ""}`);
   return layer;
+}
+
+/** Character assets of both scopes (the project one only inside a project), for the pose card. */
+export async function listLibraryCharacters(uc, client = uc.library?.client) {
+  const projectId = currentProjectId(uc);
+  const scopes = projectId ? ["project", "global"] : ["global"];
+  const out = [];
+  for (const scope of scopes) {
+    try {
+      for (const asset of await client.list(scope, projectId, { kind: "character" })) {
+        if (asset?.id) out.push({ id: String(asset.id), scope, name: String(asset.name || "Character") });
+      }
+    } catch (_) { /* one unreachable scope leaves the other listed */ }
+  }
+  return out;
+}
+
+/**
+ * A library character as a pose character reference (`source: "library"`, the image inline
+ * like an upload so generation and bakes read it the same way) plus its identity prompt and
+ * default mesh morphs.
+ */
+export async function libraryCharacterReference(uc, scope, assetId, client = uc.library?.client) {
+  const projectId = currentProjectId(uc);
+  const asset = await client.get(scope, projectId, assetId);
+  if (asset?.kind !== "character") throw new Error("the asset is not a character");
+  const image = await loadAssetImage(uc, scope, projectId, asset.data?.imageDataURL);
+  if (!image) throw new Error("the character has no image");
+  const width = image.naturalWidth || image.width, height = image.naturalHeight || image.height;
+  const scale = Math.min(1, 2048 / Math.max(1, width, height));
+  const canvas = uc._createCanvas(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)));
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+  return {
+    ref: { source: "library", assetId: String(asset.id), assetScope: scope, name: String(asset.name || "Character"), dataURL: canvas.toDataURL("image/png") },
+    prompt: typeof asset.data?.identityPrompt === "string" ? asset.data.identityPrompt : "",
+    meshMorphs: normalizeMeshMorphs(asset.data?.meshMorphs),
+  };
 }
 
 function linkedAsset(layer) {
@@ -933,6 +1003,9 @@ export function installUniCanvasLibrary(uc, { fetchImpl } = {}) {
     get scope() { return panel.effectiveScope; },
     refresh: () => panel.refresh(),
     insert: (asset, point) => insertAsset(uc, asset, point),
+    // Pose character reference card "From library" (vnccs_unicanvas_pose.mjs).
+    listCharacters: () => listLibraryCharacters(uc, client),
+    characterReference: (scope, id) => libraryCharacterReference(uc, scope, id, client),
     openSaveDialog: (layer, point) => openSaveDialog(uc, layer, point),
     // Settings popover: "Asset library" section with the preset save.
     buildSettingsSection(body) {

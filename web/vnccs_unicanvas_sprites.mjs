@@ -31,7 +31,7 @@
  */
 
 import { alphaBounds, dilateAlpha } from "./vnccs_unicanvas_bake.mjs";
-import { poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
+import { isImageRef, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { resolveRemoveBgSelection, removeBgEditSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
@@ -1009,7 +1009,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       const source = findLayer(layer.sprite.sourceLayerId);
       return source?.type === "pose" ? poseCharacterRef(source, layer.sprite.characterId) : null;
     })();
-    if (ref?.source === "upload" && typeof ref.dataURL === "string") return ref.dataURL;
+    if (isImageRef(ref) && typeof ref.dataURL === "string") return ref.dataURL;
     if (ref?.source === "layer") {
       const target = findLayer(ref.layerId);
       const crop = target?.canvas ? uc.getLayerAlphaBounds(target) : null;
