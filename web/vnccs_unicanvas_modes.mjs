@@ -161,16 +161,9 @@ export function handleUniCanvasShortcut(widget, event) {
     else widget.cancelTransformDraft?.();
     return true;
   }
-  // Pose editing: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z walk the mannequin's history from anywhere in
-  // the widget (the Pose Studio viewport has focus then, not the canvas).
-  const historyKey = (event.ctrlKey || event.metaKey) && !event.altKey ? key.toLowerCase() : "";
-  if ((historyKey === "z" || historyKey === "y") && widget.tool === "pose" && widget.poseEditSession
-    && widget.container?.contains?.(event.target)) {
-    consumeUniCanvasShortcut(event);
-    if (historyKey === "y" || event.shiftKey) widget.redo();
-    else widget.undo();
-    return true;
-  }
+  // Undo / redo are not handled here. In fullscreen and the standalone tab the history key
+  // capture (vnccs_unicanvas_history_keys.mjs) owns them; inline on the node they stay with
+  // ComfyUI's own undo / redo (m4cd1r, #33).
   // Esc exits fullscreen from anywhere inside the fullscreen (chrome behavior).
   if (key === "Escape" && widget._vnccsFullscreen) {
     consumeUniCanvasShortcut(event);
@@ -191,13 +184,6 @@ export function handleUniCanvasShortcut(widget, event) {
   if (!isUniCanvasCanvasFocused(widget, event)) return false;
   const lower = key.toLowerCase();
   const modifier = event.ctrlKey || event.metaKey;
-  // History: Ctrl+Z / Ctrl+Shift+Z.
-  if (modifier && !event.altKey && (lower === "z" || lower === "y")) {
-    consumeUniCanvasShortcut(event);
-    if (lower === "y" || event.shiftKey) widget.redo();
-    else widget.undo();
-    return true;
-  }
   // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
   // (Alt+digit types other characters on some keyboards).
   const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
@@ -261,23 +247,6 @@ function installUniCanvasShortcuts(widget) {
   widget.container.addEventListener("keydown", (event) => {
     handleUniCanvasShortcut(widget, event);
   });
-  // Pose Studio's WebGL viewport does not take keyboard focus, so while a pose is edited the
-  // history keys arrive on the document. They count when the last click was inside this widget.
-  const controller = new AbortController();
-  widget._vnccsPoseKeysAbort = controller;
-  document.addEventListener("pointerdown", (event) => {
-    widget._vnccsPointerInside = Boolean(widget.container?.contains?.(event.target));
-  }, { capture: true, signal: controller.signal });
-  document.addEventListener("keydown", (event) => {
-    if (!widget.poseEditSession || widget.tool !== "pose" || !widget._vnccsPointerInside) return;
-    if (widget.container?.contains?.(event.target) || isUniCanvasTextTarget(event)) return; // the container handler has it
-    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-    const key = String(event.key || "").toLowerCase();
-    if (key !== "z" && key !== "y") return;
-    consumeUniCanvasShortcut(event);
-    if (key === "y" || event.shiftKey) widget.redo();
-    else widget.undo();
-  }, { signal: controller.signal });
 }
 
 function toggleUniCanvasTrueFullscreen(widget) {
@@ -714,8 +683,6 @@ export function teardownUniCanvasWidgetModes(widget) {
   widget._vnccsStandaloneActive = false;
   syncUniCanvasHistoryKeyCapture(widget);
   flushStandalonePersistence(widget);
-  widget._vnccsPoseKeysAbort?.abort();
-  widget._vnccsPoseKeysAbort = null;
 }
 
 function readStandalonePersistedStateValue() {

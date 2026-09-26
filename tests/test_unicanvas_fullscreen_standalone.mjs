@@ -65,10 +65,10 @@ test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc",
     }
 
     const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
-    assert.ok(/lower === "z"/.test(shortcuts), "history shortcut must be Z");
-    assert.ok(shortcuts.includes("event.ctrlKey || event.metaKey"), "history shortcut must use Ctrl/Cmd");
-    assert.ok(shortcuts.includes("widget.undo()") && shortcuts.includes("widget.redo()"), "undo/redo must be wired");
-    assert.ok(shortcuts.includes("event.shiftKey"), "Ctrl+Shift+Z must redo");
+    // Undo / redo live in the history key capture; inline on the node they stay with ComfyUI.
+    assert.ok(!shortcuts.includes("widget.undo()") && !shortcuts.includes("widget.redo()"),
+        "the inline shortcut map must not take undo / redo from ComfyUI");
+    assert.ok(historyKeysSource.includes("undo") && historyKeysSource.includes("redo"), "undo/redo must be wired in the capture");
     assert.ok(shortcuts.includes('key === "["') && shortcuts.includes('key === "]"'), "brush size keys [ and ]");
     assert.ok(shortcuts.includes('key === "Tab"'), "Tab toggles panel visibility");
     assert.ok(shortcuts.includes('key === "Escape"'), "Esc exits fullscreen");
