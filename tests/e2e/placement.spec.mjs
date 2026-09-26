@@ -281,6 +281,56 @@ test("shadow layers follow their character live, obey the light, detach, undo an
   expect((await layers(page)).find((layer) => layer.id === cast.id).type).toBe("raster");
   expect(meanDifference(await croppedPixels(page, cast.id), pixelsBefore)).toBeLessThan(1);
 });
+
+test("dragging the sun turns the cast shadow live, always away from the light (#19)", async ({ page }) => {
+  await openUnicanvas(page);
+  await newLayerAfter(page, () => importImageLayer(page, BACKDROP));
+  const figure = await newLayerAfter(page, () => importImageLayer(page, CHARACTER));
+  const start = await character(page, figure.id);
+  const cast = await addShadow(page, figure.id, "Add cast shadow");
+  await expect(page.locator(`${shell} [data-light-control="azimuth"]`)).toBeVisible();
+  await setLight(page, "elevation", 35);
+  await setLight(page, "azimuth", 270);
+  await expect.poll(async () => (await centroid(page, cast.id)).x - start.feet.x).toBeGreaterThan(10);
+
+  // The sun handle sits on an ellipse around the feet (same geometry as the gizmo); drag it along
+  // that ellipse from the left (270) through the front (0) to the right (90) without releasing.
+  const light = await hook(page, "getSceneLight");
+  const radius = Math.max(24, start.rect.height * 0.6);
+  const reach = radius * (0.12 + 0.88 * (1 - light.elevation / 90));
+  const sunAt = (azimuth) => ({
+    x: start.feet.x + Math.sin(azimuth * Math.PI / 180) * reach,
+    y: start.feet.y + Math.cos(azimuth * Math.PI / 180) * reach * 0.35,
+  });
+  const path = [270, 300, 330, 360, 30, 60, 90].map(sunAt);
+  const first = await client(page, path[0]);
+  await page.mouse.move(first.x, first.y);
+  await page.mouse.down();
+  const samples = [];
+  for (const point of path.slice(1)) {
+    const at = await client(page, point);
+    await page.mouse.move(at.x, at.y, { steps: 4 });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const { azimuth } = await hook(page, "getSceneLight");
+    samples.push({ azimuth, dx: (await centroid(page, cast.id)).x - start.feet.x });
+  }
+  // Before pointerup the light is on the right and the shadow already falls to the left.
+  const last = samples.at(-1);
+  expect(Math.abs(last.azimuth - 90)).toBeLessThan(20);
+  expect(last.dx).toBeLessThan(-10);
+  // Along the way the shadow always points away from the light (sin(azimuth) opposite to dx).
+  for (const sample of samples) {
+    const side = Math.sin(sample.azimuth * Math.PI / 180);
+    if (Math.abs(side) > 0.5) expect(Math.sign(sample.dx)).toBe(-Math.sign(side));
+  }
+  await page.mouse.up();
+  await expect.poll(async () => (await centroid(page, cast.id)).x - start.feet.x).toBeLessThan(-10);
+
+  // One undo entry for the whole gesture: the light and the shadow go back to the left light.
+  await page.locator(`${shell} [title="Undo"]`).first().click();
+  await expect.poll(async () => (await hook(page, "getSceneLight")).azimuth).toBe(270);
+  await expect.poll(async () => (await centroid(page, cast.id)).x - start.feet.x).toBeGreaterThan(10);
+});
 // Plan 08.3 (#20): Harmonize panel and foreground occluder. No GPU: the draw and depth routes are
 // stubbed, and the character gets a synthetic normal pass (a sphere) through the E2E hook.
 

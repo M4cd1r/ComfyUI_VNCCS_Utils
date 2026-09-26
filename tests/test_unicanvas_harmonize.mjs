@@ -31,6 +31,7 @@ import {
   defaultShadowParams,
   normalizeShadow,
   previewPoint,
+  shadowSilhouetteKey,
   shadowTint,
   updateShadowLayers,
 } from "../web/vnccs_unicanvas_harmonize.mjs";
@@ -140,6 +141,52 @@ test("shadow regeneration skips panorama mode and orphans", () => {
   assert.equal(updateShadowLayers({ panorama: {}, layers: [] }), 0);
   const orphan = { id: "sh", type: "raster", canvas: {}, shadow: { sourceLayerId: "gone", kind: "cast" } };
   assert.equal(updateShadowLayers({ layers: [orphan] }), 0);
+});
+
+test("a shadow follows its source's live Free Transform preview, before Apply (#19)", () => {
+  // A 2D context stub: every call is a no-op, reads return empty pixels.
+  const context = () => new Proxy({ canvas: null }, {
+    get(target, key) {
+      if (key in target) return target[key];
+      if (key === "getImageData") return (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
+      return () => {};
+    },
+    set(target, key, value) { target[key] = value; return true; },
+  });
+  const canvas = () => { const c = { width: 64, height: 64 }; c.getContext = () => { const ctx = context(); ctx.canvas = c; return ctx; }; return c; };
+  const previousDocument = globalThis.document;
+  globalThis.document = { createElement: () => canvas() };
+  try {
+    const source = { id: "src", type: "raster", pixelRevision: 3, canvas: canvas() };
+    const shadow = { id: "sh", type: "raster", pixelRevision: 0, canvas: canvas(), shadow: { sourceLayerId: "src", kind: "cast" } };
+    const drawn = [];
+    let draft = null;
+    const uc = {
+      layers: [source, shadow], origin: { x: 0, y: 0 }, sceneLight: {}, scenePerspective: null, _harmonize: {},
+      getLayerTransformDraft: (layer) => (layer === source ? draft : null),
+      getLayerMovePreview: () => null,
+      getLayerWorldBounds: () => ({ x: 0, y: 0, width: 32, height: 64 }),
+      drawRasterLayerToWorldRect: () => drawn.push("pixels"),
+      drawTransformDraft: (ctx, item) => drawn.push(item),
+      invalidateLayerRenderCaches() {},
+    };
+    assert.equal(updateShadowLayers(uc), 1, "first frame draws the shadow");
+    assert.equal(updateShadowLayers(uc), 0, "nothing changed");
+    const restKey = shadowSilhouetteKey(uc, source);
+    draft = { quad: { tl: { x: 0, y: 0 }, tr: { x: 32, y: 0 }, br: { x: 32, y: 64 }, bl: { x: 0, y: 64 } }, bounds: { x: 0, y: 0, width: 32, height: 64 } };
+    assert.notEqual(shadowSilhouetteKey(uc, source), restKey, "an open transform is its own silhouette");
+    assert.equal(updateShadowLayers(uc), 1, "opening the transform redraws the shadow");
+    assert.equal(drawn.at(-1), draft, "the silhouette comes from the draft, not the committed pixels");
+    draft = { ...draft, quad: { ...draft.quad, tr: { x: 60, y: 10 } }, bounds: { x: 0, y: 0, width: 60, height: 64 } };
+    assert.equal(updateShadowLayers(uc), 1, "every frame of the gesture moves the shadow");
+    assert.equal(updateShadowLayers(uc), 0);
+    draft = null;
+    source.pixelRevision += 1;
+    assert.equal(updateShadowLayers(uc), 1, "Apply (or Cancel) goes back to the pixels");
+    assert.equal(drawn.at(-1), "pixels");
+  } finally {
+    globalThis.document = previousDocument;
+  }
 });
 
 test("the widget wires shadows through hooks, serialization and history", () => {

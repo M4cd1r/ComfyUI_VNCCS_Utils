@@ -223,19 +223,44 @@ function sourceLayerOf(uc, layer) {
   return source && source !== layer && !source.shadow ? source : null;
 }
 
+/** The source's open Free Transform draft (the widget's live preview), if any. */
+function transformDraftOf(uc, source) {
+  return typeof uc.getLayerTransformDraft === "function" ? uc.getLayerTransformDraft(source) : null;
+}
+
+/**
+ * What the source's silhouette depends on: its pixels and scene-state offset, or, while a Free
+ * Transform is open on it, the draft's frame (so the shadow follows the live preview, #19).
+ */
+export function shadowSilhouetteKey(uc, source) {
+  const draft = transformDraftOf(uc, source);
+  if (draft?.quad) return JSON.stringify([source.id, "transform", draft.quad, draft.mesh || null, draft.sourceBounds || null]);
+  const offset = stateOffsetOf(uc, source);
+  return `${source.id}:${source.pixelRevision ?? 0}:${offset.x}:${offset.y}`;
+}
+
 /**
  * The source's black silhouette on a small canvas, its alpha rect, feet and feet width, in world
- * pixels where the source shows (its scene-state offset included).
+ * pixels where the source shows (its scene-state offset included). An open Free Transform draft
+ * is drawn through its frame instead of the committed pixels.
  */
 function buildSilhouette(uc, source) {
-  const bounds = uc.getLayerWorldBounds(source);
+  const draft = transformDraftOf(uc, source);
+  const bounds = draft?.quad ? draft.bounds : uc.getLayerWorldBounds(source);
   if (!bounds || bounds.width < 1 || bounds.height < 1) return null;
   const scale = Math.min(1, SILHOUETTE_MAX_SIDE / Math.max(bounds.width, bounds.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(bounds.width * scale));
   canvas.height = Math.max(1, Math.round(bounds.height * scale));
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  uc.drawRasterLayerToWorldRect(ctx, source, bounds, { x: 0, y: 0, width: canvas.width, height: canvas.height }, true, false);
+  if (draft?.quad) {
+    // The cheap preview mesh is enough for a silhouette; Apply redraws from the committed pixels.
+    ctx.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, -bounds.x * canvas.width / bounds.width, -bounds.y * canvas.height / bounds.height);
+    uc.drawTransformDraft(ctx, draft, 8);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  } else {
+    uc.drawRasterLayerToWorldRect(ctx, source, bounds, { x: 0, y: 0, width: canvas.width, height: canvas.height }, true, false);
+  }
   ctx.globalCompositeOperation = "source-in";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -258,8 +283,7 @@ function buildSilhouette(uc, source) {
 }
 
 function sourceSilhouette(uc, source) {
-  const offset = stateOffsetOf(uc, source);
-  const key = `${source.id}:${source.pixelRevision ?? 0}:${offset.x}:${offset.y}`;
+  const key = shadowSilhouetteKey(uc, source);
   if (source._shadowSilhouette?.key !== key) source._shadowSilhouette = { key, value: buildSilhouette(uc, source) };
   return source._shadowSilhouette.value;
 }
@@ -390,7 +414,9 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
   delete layer.hiresRect;
   const silhouette = sourceSilhouette(uc, source);
   if (silhouette) {
-    const placed = placedSilhouette(silhouette, uc.getLayerMovePreview(source));
+    // A transform draft already places the silhouette; a move preview never runs at the same time.
+    const preview = transformDraftOf(uc, source) ? null : uc.getLayerMovePreview(source);
+    const placed = placedSilhouette(silhouette, preview);
     // Canvas pixel = world - origin - the shadow's own state offset, so it lands where it shows.
     const own = stateOffsetOf(uc, layer);
     const base = { x: uc.origin.x + own.x, y: uc.origin.y + own.y };
@@ -404,9 +430,9 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
 
 function shadowKey(uc, layer, source) {
   const preview = uc.getLayerMovePreview(source);
-  const sourceOffset = stateOffsetOf(uc, source), ownOffset = stateOffsetOf(uc, layer);
+  const ownOffset = stateOffsetOf(uc, layer);
   return JSON.stringify([
-    source.id, source.pixelRevision ?? 0, sourceOffset.x, sourceOffset.y, ownOffset.x, ownOffset.y,
+    shadowSilhouetteKey(uc, source), ownOffset.x, ownOffset.y,
     preview ? [preview.dx || 0, preview.dy || 0, preview.scale || 1, preview.anchor?.x ?? 0, preview.anchor?.y ?? 0] : null,
     normalizeShadow(layer.shadow), normalizeSceneLight(uc.sceneLight), uc.scenePerspective?.horizonY ?? null,
     uc.origin.x, uc.origin.y, layer.canvas.width, layer.canvas.height,
