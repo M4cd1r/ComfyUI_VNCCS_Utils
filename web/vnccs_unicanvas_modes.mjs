@@ -12,6 +12,8 @@ import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenanc
 import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { isUniCanvasEnabled, isUniCanvasToolEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { isUniCanvasModalOpen, isUniCanvasTextTarget, syncUniCanvasHistoryKeyCapture, uniCanvasHistoryKeyAction } from "./vnccs_unicanvas_history_keys.mjs";
+import { isUniCanvasFeatureAvailable, isUniCanvasStandalone, markUniCanvasStandaloneNode } from "./vnccs_unicanvas_surface.mjs";
 import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
@@ -99,15 +101,8 @@ export function ensureUniCanvasModeStyles() {
   document.head.appendChild(style);
 }
 
-export function isUniCanvasTextTarget(event) {
-  const target = event?.target;
-  return Boolean(target?.closest?.("input, textarea, select, [contenteditable]"));
-}
-
-export function isUniCanvasModalOpen(widget) {
-  // The widget's confirm/prompt modal owns Enter and Escape while it is open.
-  return Boolean(widget?.container?.querySelector(".vnccs-uc-modal-overlay"));
-}
+// Text-field and modal checks live with the undo / redo capture (vnccs_unicanvas_history_keys.mjs).
+export { isUniCanvasModalOpen, isUniCanvasTextTarget };
 
 function isUniCanvasCanvasFocused(widget, event) {
   const target = event?.target;
@@ -206,7 +201,7 @@ export function handleUniCanvasShortcut(widget, event) {
   // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
   // (Alt+digit types other characters on some keyboards).
   const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
-  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex && isUniCanvasEnabled("sceneStates")) {
+  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex && isUniCanvasFeatureAvailable(widget, "sceneStates")) {
     consumeUniCanvasShortcut(event);
     widget.applySceneStateByIndex(Number(stateDigit[1] || stateDigit[0]) - 1);
     return true;
@@ -218,7 +213,7 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   // P toggles the VN preview overlay.
-  if (lower === "p" && widget.vnPreview && isUniCanvasEnabled("vnPreview")) {
+  if (lower === "p" && widget.vnPreview && isUniCanvasFeatureAvailable(widget, "vnPreview")) {
     consumeUniCanvasShortcut(event);
     widget.vnPreview.toggle();
     return true;
@@ -347,6 +342,8 @@ export function enterUniCanvasFullscreen(widget) {
   // keys before they reach it, so it gets them first.
   const orbitTarget = (event) => (widget.panoramaOrbit && event.target === widget.panoramaOrbit.canvas ? widget.panoramaOrbit : null);
   const onKeyDown = (event) => {
+    // Undo / redo belong to the history key capture (vnccs_unicanvas_history_keys.mjs), from any focus.
+    if (uniCanvasHistoryKeyAction(event)) return;
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
     orbitTarget(event)?.keyDown(event);
@@ -390,6 +387,7 @@ export function enterUniCanvasFullscreen(widget) {
     onKeyPress,
     onFullscreenChange,
   };
+  syncUniCanvasHistoryKeyCapture(widget);
   syncUniCanvasFullscreenButton(widget);
   // The ResizeObserver re-lays out; the view fits the new size.
   widget.resize();
@@ -422,6 +420,7 @@ export function exitUniCanvasFullscreen(widget) {
     }
   }
   widget._vnccsFullscreen = null;
+  syncUniCanvasHistoryKeyCapture(widget);
   syncUniCanvasFullscreenButton(widget);
   if (!widget._disposed) {
     widget.resize();
@@ -442,7 +441,7 @@ function syncUniCanvasFullscreenButton(widget) {
 
 function installUniCanvasFullscreenButton(widget) {
   // The standalone tab already fills the window, so a fullscreen toggle there is redundant.
-  if (widget.standalone) return;
+  if (isUniCanvasStandalone(widget)) return;
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "vnccs-uc-icon vnccs-uc2-fullscreen-btn";
@@ -587,7 +586,7 @@ export async function newUniCanvasDocument(widget) {
 function installUniCanvasOutputActions(widget) {
   // Only the standalone tab needs these: on a node the composite already goes to the
   // node's image output, so Save to output would just duplicate it.
-  if (!widget.standalone) return;
+  if (!isUniCanvasStandalone(widget)) return;
   const row = document.createElement("div");
   row.className = "vnccs-uc2-output-actions";
   row.append(widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas"));
@@ -607,7 +606,7 @@ export function installUniCanvasWidgetModes(widget) {
   installUniCanvasShortcuts(widget);
   installUniCanvasFullscreenButton(widget);
   installUniCanvasOutputActions(widget);
-  if (widget.standalone) {
+  if (isUniCanvasStandalone(widget)) {
     installStandaloneEngineNote(widget);
     installStandalonePersistence(widget);
   }
@@ -712,6 +711,8 @@ export function teardownUniCanvasWidgetModes(widget) {
   // leave fullscreen (without touching a disposed widget) and flush/clear the
   // pending standalone persistence timer.
   exitUniCanvasFullscreen(widget);
+  widget._vnccsStandaloneActive = false;
+  syncUniCanvasHistoryKeyCapture(widget);
   flushStandalonePersistence(widget);
   widget._vnccsPoseKeysAbort?.abort();
   widget._vnccsPoseKeysAbort = null;
@@ -736,12 +737,13 @@ function readStandalonePersistedStateValue() {
 function createStandaloneWidget(UniCanvasWidgetClass) {
   // No node and no workflow: the stub only feeds the existing restore pipeline
   // (hidden unicanvas_state widget) and carries a size hint.
-  const stubNode = {
+  // The marker tells the widget its surface from the constructor on (vnccs_unicanvas_surface.mjs).
+  const stubNode = markUniCanvasStandaloneNode({
     id: undefined,
     inputs: [],
     size: [1280, 860],
     widgets: [{ name: "unicanvas_state", value: readStandalonePersistedStateValue() }],
-  };
+  });
   const widget = new UniCanvasWidgetClass(stubNode);
   widget.standalone = true;
   installUniCanvasWidgetModes(widget);
@@ -857,6 +859,8 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
 
   const syncStandaloneChrome = () => {
     if (!widget) return;
+    // The open tab owns undo / redo; a hidden one gives them back to ComfyUI.
+    widget._vnccsStandaloneActive = active;
     if (active) {
       if (widget._vnccsFullscreen) exitUniCanvasFullscreen(widget);
       if (!shell) {
@@ -884,6 +888,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       if (!parking) parking = document.createDocumentFragment();
       (mountContainer?.isConnected ? mountContainer : parking).appendChild(widget.container);
     }
+    syncUniCanvasHistoryKeyCapture(widget);
     widget.resize?.();
     widget.requestRender?.();
   };

@@ -7,6 +7,8 @@ import test from "node:test";
 // Windows checkouts (see tests/test_unicanvas_frontend.mjs for the contrast).
 const modesSource = await readFile(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
 const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+// The text-field and modal checks live with the undo / redo key capture.
+const historyKeysSource = await readFile(new URL("../web/vnccs_unicanvas_history_keys.mjs", import.meta.url), "utf8");
 
 // Handler-region scoping: assertions run against the named region only, so they
 // cannot pass on unrelated code elsewhere in the file.
@@ -38,7 +40,7 @@ test("fullscreen installs window capture-phase keyboard isolation", () => {
         assert.ok(body.includes("modalOwnsKey(event)"), `${handler} must defer Enter/Escape to an open modal`);
     }
 
-    assert.ok(modesSource.includes("input, textarea, select, [contenteditable]"),
+    assert.ok(historyKeysSource.includes("input, textarea, select, [contenteditable]"),
         "text targets are input/textarea/select/[contenteditable] per spec 5");
     for (const type of ["keydown", "keyup", "keypress"]) {
         const removal = new RegExp(`window\\.removeEventListener\\("${type}",\\s*state\\.onKey[^,]*,\\s*true\\)`);
@@ -81,7 +83,7 @@ test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc",
 test("open widget modals keep their Enter/Escape keyboard contract in fullscreen", () => {
     assert.ok(modesSource.includes('const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape")'),
         "Enter/Escape must be deferred to the modal while one is open");
-    assert.ok(modesSource.includes(".vnccs-uc-modal-overlay"), "the modal overlay must be detected");
+    assert.ok(historyKeysSource.includes(".vnccs-uc-modal-overlay"), "the modal overlay must be detected");
     const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
     assert.ok(shortcuts.includes("isUniCanvasModalOpen(widget)"), "an open modal must keep the keyboard");
     assert.ok(shortcuts.indexOf("isUniCanvasModalOpen(widget)") < shortcuts.indexOf('key === "Escape"'),
@@ -233,5 +235,5 @@ test("Save to output saves the bbox crop and reports the result in a toast", () 
 
 test("the standalone tab has no fullscreen toggle", () => {
     const install = region(modesSource, "function installUniCanvasFullscreenButton", "export function showUniCanvasToast");
-    assert.ok(install.includes("if (widget.standalone) return;"), "standalone must skip the fullscreen button");
+    assert.ok(install.includes("if (isUniCanvasStandalone(widget)) return;"), "standalone must skip the fullscreen button");
 });

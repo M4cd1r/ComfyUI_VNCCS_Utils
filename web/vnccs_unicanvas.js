@@ -76,6 +76,7 @@ import {
 import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
 import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
 import { installUniCanvasControlScene, normalizeControlSource } from "./vnccs_unicanvas_control_scene.mjs";
+import { applyUniCanvasSurface } from "./vnccs_unicanvas_surface.mjs";
 import {
   bindUniCanvasFeatureToggles,
   buildUniCanvasToggleSettings,
@@ -980,6 +981,9 @@ class UniCanvasWidget {
     installUniCanvasTimeline(this, { createPoseEditor: () => new UniCanvasPoseEditor(this) });
     // Settings > VNCCS > UniCanvas switches (issue #50): applied live to this widget.
     installUniCanvasFeatureToggles(this);
+    // Node vs standalone tab: the node does not show the standalone-only features (states,
+    // timeline, VN preview, projects / history); their data still loads and saves.
+    applyUniCanvasSurface(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;

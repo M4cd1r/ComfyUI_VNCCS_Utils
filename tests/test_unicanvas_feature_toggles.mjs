@@ -267,7 +267,7 @@ test("the widget, shortcuts and timeline read the toggles", async () => {
   assert.match(widgetSource, /isUniCanvasFamilyEnabled\(getUniCanvasModelModule\(preset/);
   assert.match(modesSource, /isUniCanvasToolEnabled\(TOOL_SHORTCUTS\[lower\]\)/);
   assert.match(modesSource, /isUniCanvasEnabled\("groups"\)/);
-  assert.match(timelineSource, /this\.uc\.standalone === true && isUniCanvasEnabled\("timeline"\)/,
+  assert.match(timelineSource, /isUniCanvasFeatureAvailable\(this\.uc, "timeline"\)/,
     "the toggle only hides on top of the standalone split");
   assert.ok(!/localStorage\s*[.[]/.test(await read("vnccs_unicanvas_feature_toggles.mjs")), "values live in ComfyUI settings, not localStorage");
 });
