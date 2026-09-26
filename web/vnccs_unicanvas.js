@@ -5148,9 +5148,12 @@ class UniCanvasWidget {
             height: visibleWorldRect.height / scale,
           };
         }
-        if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
-        else this.drawRasterLayerVisible(ctx, layer);
-        if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
+        try {
+          if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
+          else this.drawRasterLayerVisible(ctx, layer);
+        } finally {
+          if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
+        }
       }
       ctx.restore();
     }, this._groupScratchPool);
@@ -5302,11 +5305,14 @@ class UniCanvasWidget {
       ctx.translate(offset.x, offset.y);
       if (visible) this._visibleWorldRectForRender = { ...visible, x: visible.x - offset.x, y: visible.y - offset.y };
     }
-    if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
-    else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
-    if (offset.x || offset.y) {
-      this._visibleWorldRectForRender = visible;
-      ctx.restore();
+    try {
+      if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+      else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+    } finally {
+      if (offset.x || offset.y) {
+        this._visibleWorldRectForRender = visible;
+        ctx.restore();
+      }
     }
   }
 
@@ -5330,10 +5336,13 @@ class UniCanvasWidget {
       const saved = this._visibleWorldRectForRender;
       // The source crop is the visible rect mapped back into the layer's rest space.
       this._visibleWorldRectForRender = visibleWorld ? transformRectBounds(inverse, visibleWorld) : null;
-      if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
-      else if (this._visibleWorldRectForRender) this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
-      else ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
-      this._visibleWorldRectForRender = saved;
+      try {
+        if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+        else if (this._visibleWorldRectForRender) this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+        else ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
+      } finally {
+        this._visibleWorldRectForRender = saved;
+      }
     }
     ctx.restore();
   }
