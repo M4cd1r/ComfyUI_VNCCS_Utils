@@ -23,6 +23,7 @@
  */
 
 import { getGroupDescendants, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible, topLevelSelection } from "./vnccs_unicanvas_groups.mjs";
+import { isZeroStateOffset, normalizeStateOffset, sameStateOffset } from "./vnccs_unicanvas_state_offset.mjs";
 
 export const SCENE_STATE_HISTORY_KINDS = new Set(["applySceneState", "sceneStates", "sceneStateOffset"]);
 export const MOVE_SCOPE_STATE = "state";
@@ -36,14 +37,10 @@ const clamp01 = (value, fallback = 1) => (Number.isFinite(Number(value)) ? Math.
 
 // Pure helpers ---------------------------------------------------------------------------------
 
-/** An integer world-pixel offset; anything malformed is { x: 0, y: 0 }. */
-export function normalizeStateOffset(value) {
-  const x = Number(value?.x);
-  const y = Number(value?.y);
-  return { x: Number.isFinite(x) ? Math.round(x) : 0, y: Number.isFinite(y) ? Math.round(y) : 0 };
-}
+// The offset shape (a move plus an optional depth scale) lives in vnccs_unicanvas_state_offset.mjs.
+export { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, feetPlacement } from "./vnccs_unicanvas_state_offset.mjs";
 
-const isZeroOffset = (offset) => !offset || (!offset.x && !offset.y);
+const isZeroOffset = isZeroStateOffset;
 
 /** Layers a state can capture: everything but masks. */
 export const isStateLayer = (layer) => Boolean(layer && layer.id && layer.type !== "mask");
@@ -174,9 +171,7 @@ export function sameLayerState(a, b) {
   for (const key of ["visible", "opacity", "blendMode", ...SCENE_STATE_VIEW_KEYS]) {
     if (key in a && key in b && (key === "opacity" ? Math.abs(a[key] - b[key]) > 1e-4 : a[key] !== b[key])) return false;
   }
-  const ao = normalizeStateOffset(a.offset);
-  const bo = normalizeStateOffset(b.offset);
-  return ("offset" in a && "offset" in b) ? ao.x === bo.x && ao.y === bo.y : true;
+  return ("offset" in a && "offset" in b) ? sameStateOffset(a.offset, b.offset) : true;
 }
 
 /** True when the live layers differ from what the state stores for them. */
@@ -590,7 +585,7 @@ export function endPreview(uc, render = true) {
 function stateMoveTargets(uc) {
   const layers = uc.layers;
   const byId = new Map(layers.map((layer) => [layer.id, layer]));
-  const ids = uc.selectedLayerIds?.length > 1 ? topLevelSelection(layers, uc.selectedLayerIds) : [uc.activeLayerId];
+  const ids = uc.selectedLayerIds?.length > 1 ? topLevelSelection(layers, uc.selectedLayerIds).map((layer) => layer.id) : [uc.activeLayerId];
   const targets = [];
   for (const id of ids) {
     const layer = byId.get(id);
@@ -611,8 +606,8 @@ export function getSceneStateMoveScope(uc) {
 
 export function beginSceneStateMove(uc) {
   if (!uc.dragStart) return false;
-  // Depth scaling (vnccs_unicanvas_scene_place.mjs) measures the stored pixels and states have
-  // no per-state scale, so a state move, or a move of an offset layer, stays a plain move.
+  // A pixel move of a layer the active state offsets stays plain: depth scaling
+  // (vnccs_unicanvas_scene_place.mjs) would resample pixels the state shows elsewhere.
   const plain = () => { uc.dragStart.depthScale = null; };
   if (getSceneStateMoveScope(uc) !== MOVE_SCOPE_STATE) {
     if (!uc.panorama && !isZeroOffset(normalizeStateOffset(uc.activeLayer?.stateOffset))) plain();
@@ -621,12 +616,16 @@ export function beginSceneStateMove(uc) {
   const targets = stateMoveTargets(uc);
   if (!targets.length) return false;
   endPreview(uc, false);
-  plain();
   uc.pointerMode = "layer-move";
   uc.dragStart.stateMove = true;
   uc.dragStart.layerId = uc.activeLayerId;
   uc.dragStart.moveLayerIds = new Set(targets.map((layer) => layer.id));
   uc.dragStart.stateMoveLayerIds = targets.map((layer) => layer.id);
+  // One layer moved in this state depth-scales like a base-state move, as a render-time scale
+  // in the state's offset (scene_place writes `stateDepthOffset` during the drag).
+  if (targets.length === 1 && targets[0].id === uc.activeLayerId) {
+    uc.dragStart.stateOffsetBefore = normalizeStateOffset(targets[0].stateOffset);
+  } else plain();
   return true;
 }
 
@@ -651,13 +650,17 @@ export function commitSceneStateMove(uc, dragStart) {
   const state = activeState(uc);
   const dx = Math.round(dragStart?.previewDx || 0);
   const dy = Math.round(dragStart?.previewDy || 0);
-  if (!state || (!dx && !dy)) return;
+  const depth = dragStart?.stateDepthOffset && dragStart.stateOffsetBefore ? dragStart : null;
+  if (!state || (!depth && !dx && !dy)) return;
+  if (depth && sameStateOffset(depth.stateDepthOffset, depth.stateOffsetBefore)) return;
   const changes = {};
   for (const layerId of dragStart.stateMoveLayerIds || []) {
     const layer = uc.layers.find((item) => item.id === layerId);
     if (!layer) continue;
-    const liveBefore = normalizeStateOffset(layer.stateOffset);
-    const liveAfter = { x: liveBefore.x + dx, y: liveBefore.y + dy };
+    // A depth-scaled drag already shows its placement live; the entry starts from the offset
+    // the drag started with.
+    const liveBefore = depth ? normalizeStateOffset(depth.stateOffsetBefore) : normalizeStateOffset(layer.stateOffset);
+    const liveAfter = depth ? normalizeStateOffset(depth.stateDepthOffset) : { ...liveBefore, x: liveBefore.x + dx, y: liveBefore.y + dy };
     const existing = state.layers[layerId];
     const entryBefore = existing ? JSON.parse(JSON.stringify(existing)) : null;
     const base = entryBefore ? { ...captureLayerState(layer), ...entryBefore } : captureLayerState(layer);

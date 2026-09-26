@@ -27,6 +27,7 @@
 
 import { isControlLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs";
 
 export const CONTROL_PREPROCESS_ROUTE = "/vnccs/unicanvas/control_preprocess";
 export const CONTROL_SOURCE_MAX_SIDE = 2048;
@@ -384,9 +385,12 @@ export function placeOpenPosePeople(entries, bbox, size) {
   for (const { rect, offset = { x: 0, y: 0 }, people: list } of entries || []) {
     if (!rect) continue;
     for (const person of list || []) {
-      const points = (person?.points || person || []).map((point) => (point
-        ? { x: (rect.x + offset.x + point.x * rect.width - bbox.x) * sx, y: (rect.y + offset.y + point.y * rect.height - bbox.y) * sy }
-        : null));
+      // Where the pose shows: its scene-state move and depth scale (vnccs_unicanvas_state_offset.mjs).
+      const points = (person?.points || person || []).map((point) => {
+        if (!point) return null;
+        const world = stateOffsetPoint(offset, { x: rect.x + point.x * rect.width, y: rect.y + point.y * rect.height });
+        return { x: (world.x - bbox.x) * sx, y: (world.y - bbox.y) * sy };
+      });
       people.push(points);
     }
   }

@@ -283,8 +283,10 @@ test("Alt+digit applies states by index", () => {
 
 test("the widget routes composites, bounds and tools through the state offset", () => {
   for (const pattern of [
-    // The render transform (issue #9) is the state offset plus the timeline frame.
-    /getLayerRenderTransform\(layer\) \{[\s\S]{0,200}const offset = this\.getLayerStateOffset\(layer\);\n\s+return \[1, 0, 0, 1, offset\.x, offset\.y\];/,
+    // The render transform (issue #9) is the state offset (a move, or a move and a per-state
+    // depth scale, #33) plus the timeline frame; scaled placements draw through the frame path.
+    /getLayerRenderTransform\(layer\) \{[\s\S]{0,300}const offset = this\.getLayerStateOffset\(layer\);\n\s+return stateOffsetMatrix\(offset\);/,
+    /drawRasterLayerToWorldRect\(ctx, layer, worldRect, destRect, smoothing = true, useLod = false\) \{\n\s+const frame = this\.getLayerScaledFrame\(layer\);/,
     /const renderMatrix = this\.getLayerRenderTransform\(layer\);\n\s+const stateOffset = \{ x: renderMatrix\[4\], y: renderMatrix\[5\] \};/,
     /target\.drawImage\(layer\.canvas, offset\.x, offset\.y\)/,
     /getLayerWorldBounds\(layer = this\.activeLayer\) \{[\s\S]{0,160}getLayerRenderTransform/,
@@ -297,4 +299,48 @@ test("the widget routes composites, bounds and tools through the state offset", 
   ]) {
     assert.match(widgetSource, pattern);
   }
+});
+
+test("a depth-scaled move in one state stores a scale around the feet in that state only (#33)", () => {
+  const ben = layer("ben", { stateOffset: { x: 10, y: 0 } });
+  const uc = fakeWidget([ben, layer("bg")]);
+  const a = newStateFromCurrent(uc);
+  const b = newStateFromCurrent(uc);
+  assert.equal(getSceneStateMoveScope(uc), MOVE_SCOPE_STATE);
+  uc.activeLayerId = "ben";
+  uc.dragStart = {};
+  assert.ok(beginSceneStateMove(uc));
+  assert.equal(uc.dragStart.depthScale, undefined, "a single-layer state move may depth-scale");
+  assert.deepEqual(uc.dragStart.stateOffsetBefore, { x: 10, y: 0 });
+  // What scene_place writes live during the drag: feet (50, 200) shown at (80, 260), scale 1.5.
+  const next = normalizeStateOffset({ x: 30, y: 60, scale: 1.5, ax: 50, ay: 200 });
+  ben.stateOffset = next;
+  uc.dragStart.stateDepthOffset = next;
+  commitSceneStateMove(uc, uc.dragStart);
+  assert.deepEqual(b.layers.ben.offset, { x: 30, y: 60, scale: 1.5, ax: 50, ay: 200 });
+  assert.deepEqual(a.layers.ben.offset, { x: 10, y: 0 }, "the other state keeps its placement");
+  assert.deepEqual(serializeStateOffset(uc, ben).stateOffset, { x: 30, y: 60, scale: 1.5, ax: 50, ay: 200 });
+  const entry = uc.undoStack.at(-1);
+  assert.equal(entry.kind, "sceneStateOffset");
+  assert.deepEqual(entry.changes.ben.liveBefore, { x: 10, y: 0 });
+  applySceneStateHistory(uc, entry, "undo");
+  assert.deepEqual(ben.stateOffset, { x: 10, y: 0 });
+  assert.deepEqual(b.layers.ben.offset, { x: 10, y: 0 });
+  applySceneStateHistory(uc, entry, "redo");
+  assert.equal(ben.stateOffset.scale, 1.5);
+  // Saved and loaded, the scale survives; a plain move of the scaled layer keeps it.
+  const restored = normalizeSceneStates(serializeSceneStates(uc));
+  assert.deepEqual(restored.states.find((state) => state.id === b.id).layers.ben.offset, { x: 30, y: 60, scale: 1.5, ax: 50, ay: 200 });
+  uc.dragStart = {};
+  beginSceneStateMove(uc);
+  uc.dragStart.previewDx = 5;
+  commitSceneStateMove(uc, uc.dragStart);
+  assert.deepEqual(ben.stateOffset, { x: 35, y: 60, scale: 1.5, ax: 50, ay: 200 });
+
+  // Several layers move as a plain offset.
+  uc.selectedLayerIds = ["ben", "bg"];
+  uc.dragStart = {};
+  assert.ok(beginSceneStateMove(uc), "a multi-selection moves in the state");
+  assert.deepEqual(uc.dragStart.stateMoveLayerIds, ["ben", "bg"]);
+  assert.equal(uc.dragStart.depthScale, null);
 });

@@ -30,6 +30,7 @@
 
 import { groupChainOf, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { feetPlacement, isZeroStateOffset, stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs";
 
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
 export const PERSPECTIVE_TOOL = "perspective";
@@ -342,6 +343,44 @@ function beginDepthScale(uc, layer, start) {
   };
 }
 
+/**
+ * A depth-scaled move inside a scene state (vnccs_unicanvas_states.mjs, "Move affects: this
+ * state"): the rest pixels are measured as in the base state, the drag starts from the feet
+ * where the state shows them, and the result is a render-time placement (move + scale around
+ * the rest feet) in the state's offset. Pixels are never resampled.
+ */
+function beginStateDepthScale(uc, layer, start) {
+  if (!isDepthScaleLayer(uc, layer) || !start.stateOffsetBefore) return null;
+  const perspective = perspectiveState(uc);
+  if (!isPerspectiveCalibrated(perspective)) {
+    uc.setStatus("Depth-scale: set the horizon and calibrate first (Perspective tool, G).", true);
+    return null;
+  }
+  const measured = measureSource(layerSource(uc, layer));
+  if (!measured || measured.rect.height < 2) return null;
+  return {
+    character: measured.rect,
+    restFeet: measured.feet,
+    feet: stateOffsetPoint(start.stateOffsetBefore, measured.feet),
+    factor: layerHeightFactor(layer),
+  };
+}
+
+/** The live placement of a state depth drag at `point`; shown at once, committed on release. */
+function updateStateDepthScale(uc, start, point) {
+  const layer = uc.layers.find((item) => item.id === start.layerId);
+  if (!layer) return;
+  const drag = start.stateDepthScale;
+  const placement = depthScalePlacement(perspectiveState(uc), drag, point, start.point);
+  const next = feetPlacement(drag.restFeet, placement.feet, placement.scale);
+  if (isZeroStateOffset(next)) delete layer.stateOffset;
+  else layer.stateOffset = next;
+  start.stateDepthOffset = next;
+  start.stateDepthPlacement = placement;
+  start.previewDx = 0;
+  start.previewDy = 0;
+}
+
 /** Rect of `rect` after the placement; snapped to whole pixels, and to the source size when unscaled. */
 function placedRect(rect, placement, source) {
   const next = scaleAround(rect, placement.anchor, { x: placement.anchor.x + placement.dx, y: placement.anchor.y + placement.dy }, placement.scale);
@@ -498,7 +537,7 @@ export function drawScenePlaceOverlay(uc, ctx) {
 function drawPerspectiveOverlay(uc, ctx) {
   const state = uc._scenePlace;
   const perspective = perspectiveState(uc);
-  const dragging = uc.pointerMode === "layer-move" && uc.dragStart?.depthScale;
+  const dragging = uc.pointerMode === "layer-move" && (uc.dragStart?.depthScale || uc.dragStart?.stateDepthScale);
   if (uc.tool !== PERSPECTIVE_TOOL && !dragging) return;
   const visible = uc.visibleWorldRect();
   if (perspective.horizonY !== null) {
@@ -559,8 +598,8 @@ function lightGizmoGeometry(uc) {
   if (!measured) return null;
   // Where the character shows: its scene-state offset (vnccs_unicanvas_states.mjs) included.
   const offset = typeof uc.getLayerStateOffset === "function" ? uc.getLayerStateOffset(layer) : null;
-  let center = { x: measured.feet.x + (offset?.x || 0), y: measured.feet.y + (offset?.y || 0) };
-  let height = measured.rect.height;
+  let center = stateOffsetPoint(offset, measured.feet);
+  let height = measured.rect.height * (offset?.scale || 1);
   const preview = uc.getLayerMovePreview(layer);
   if (preview) {
     const scale = preview.scale || 1;
@@ -1119,6 +1158,15 @@ export function installUniCanvasScenePlace(uc) {
   const originalUpdateLayerMovePreview = uc.updateLayerMovePreview;
   uc.updateLayerMovePreview = (point) => {
     const start = uc.dragStart;
+    if (start?.stateMove) {
+      // A single-layer move in "this state" depth-scales in the state's offset.
+      if (start.depthScale === undefined) {
+        start.depthScale = null;
+        start.stateDepthScale = depthScaleActive(uc) ? beginStateDepthScale(uc, uc.activeLayer, start) : null;
+      }
+      if (start.stateDepthScale) return updateStateDepthScale(uc, start, point);
+      return Reflect.apply(originalUpdateLayerMovePreview, uc, [point]);
+    }
     // A group or multi-selection move (vnccs_unicanvas_groups.mjs) keeps its plain offset.
     if (start && start.depthScale === undefined) start.depthScale = depthScaleActive(uc) && !start.moveTargets ? beginDepthScale(uc, uc.activeLayer, start) : null;
     if (!start?.depthScale) return Reflect.apply(originalUpdateLayerMovePreview, uc, [point]);
@@ -1248,6 +1296,6 @@ export function restoreSceneLight(uc, raw) {
 
 /** Read-only view of the running depth-scaled drag for the E2E hook. */
 export function describeDepthScaleDrag(uc) {
-  const placement = uc.pointerMode === "layer-move" ? uc.dragStart?.depthPlacement : null;
+  const placement = uc.pointerMode === "layer-move" ? (uc.dragStart?.depthPlacement || uc.dragStart?.stateDepthPlacement) : null;
   return placement ? { height: placement.height, scale: placement.scale, feet: { ...placement.feet } } : null;
 }

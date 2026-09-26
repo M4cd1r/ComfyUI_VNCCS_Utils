@@ -266,6 +266,21 @@ class FlatDocument:
             return 0, 0
         return int(round(_number(offset.get("x"), 0))), int(round(_number(offset.get("y"), 0)))
 
+    def layer_scale(self, layer: dict[str, Any], origin: dict[str, float]) -> tuple[float, float, float]:
+        """A per-state depth scale of the layer: (scale, anchor x, anchor y) in canvas-local pixels.
+
+        The scale applies around the anchor (the character's feet) before the offset, like
+        web/vnccs_unicanvas_state_offset.mjs; states without one give (1, 0, 0).
+        """
+        offset = layer.get("stateOffset")
+        if not isinstance(offset, dict):
+            return 1.0, 0.0, 0.0
+        scale = _number(offset.get("scale"), 1.0)
+        if not (math.isfinite(scale) and scale > 0) or abs(scale - 1.0) <= 1e-6:
+            return 1.0, 0.0, 0.0
+        scale = min(64.0, max(1.0 / 64.0, scale))
+        return scale, _number(offset.get("ax"), 0.0) - origin["x"], _number(offset.get("ay"), 0.0) - origin["y"]
+
     def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
         """Validate a layer's crop rectangle against the output size."""
 
@@ -315,6 +330,9 @@ class EquirectangularPanorama(FlatDocument):
 
     def layer_offset(self, layer: dict[str, Any]) -> tuple[int, int]:
         return 0, 0  # every panorama layer covers the whole document
+
+    def layer_scale(self, layer: dict[str, Any], origin: dict[str, float]) -> tuple[float, float, float]:
+        return 1.0, 0.0, 0.0
 
     def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
         if crop != (0, 0, *size):
@@ -389,17 +407,27 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         layer_h = max(1, int(round(_number(crop.get("height"), 1))))
         document.check_layer((layer_x, layer_y, layer_w, layer_h), (width, height))
         offset_x, offset_y = document.layer_offset(layer)
-        dst_x = int(round(layer_x + offset_x - bbox_local_x))
-        dst_y = int(round(layer_y + offset_y - bbox_local_y))
+        scale, anchor_x, anchor_y = document.layer_scale(layer, origin)
+        placed_w, placed_h = layer_w, layer_h
+        left, top = float(layer_x), float(layer_y)
+        if scale != 1.0:
+            left = anchor_x + (layer_x - anchor_x) * scale
+            top = anchor_y + (layer_y - anchor_y) * scale
+            placed_w = max(1, int(round(layer_w * scale)))
+            placed_h = max(1, int(round(layer_h * scale)))
+        dst_x = int(round(left + offset_x - bbox_local_x))
+        dst_y = int(round(top + offset_y - bbox_local_y))
         inter_left = max(0, dst_x)
         inter_top = max(0, dst_y)
-        inter_right = min(width, dst_x + layer_w)
-        inter_bottom = min(height, dst_y + layer_h)
+        inter_right = min(width, dst_x + placed_w)
+        inter_bottom = min(height, dst_y + placed_h)
         if inter_right <= inter_left or inter_bottom <= inter_top:
             continue
 
         image = _decode_data_url(str(data_url), "RGBA", max_pixels=pixel_limit)
         document.check_image(image, (width, height))
+        if scale != 1.0:
+            image = image.resize((placed_w, placed_h), Image.BICUBIC)
         src_left = inter_left - dst_x
         src_top = inter_top - dst_y
         src_right = src_left + (inter_right - inter_left)
