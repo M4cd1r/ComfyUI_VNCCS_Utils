@@ -12,6 +12,7 @@ import zlib from "node:zlib";
 import * as THREE from "../../web/three.module.js";
 import { parseMorphPack, solveMorph } from "../../web/vnccs_pose_morph_runtime.mjs";
 import { meshVerticalExtent } from "../../web/vnccs_pose_interactions.mjs";
+import { aimBone, boneHeadWorld, boneTailWorld, contactPoint, reachLimb } from "../../web/vnccs_pose_contacts.mjs";
 
 const PACK_URL = new URL("../../web/assets/pose_studio_makehuman.v2.bin.gz", import.meta.url);
 let packCache = null;
@@ -87,40 +88,10 @@ export function readPose(rig) {
     return { bones, modelRotation };
 }
 
-export function headWorld(rig, name) {
-    return rig.bones[name].getWorldPosition(new THREE.Vector3());
-}
-
-export function tailWorld(rig, name) {
-    const bone = rig.bones[name];
-    return bone.localToWorld(bone.userData.tailLocal.clone());
-}
-
-/** Named contact points (world space) used by presets and their checks. */
-export function point(rig, name) {
-    const side = name.endsWith("_l") ? "l" : name.endsWith("_r") ? "r" : "";
-    const base = side ? name.slice(0, -2) : name;
-    const mid = (a, b, t = 0.5) => a.clone().lerp(b, t);
-    switch (base) {
-        case "palm": return mid(headWorld(rig, `hand_${side}`), headWorld(rig, `middle_01_${side}`), 0.6);
-        case "fingertip": return tailWorld(rig, `middle_03_${side}`);
-        case "fist": return mid(headWorld(rig, `middle_01_${side}`), headWorld(rig, `index_01_${side}`));
-        case "wrist": return headWorld(rig, `hand_${side}`);
-        case "elbow": return headWorld(rig, `lowerarm_${side}`);
-        case "forearm": return mid(headWorld(rig, `lowerarm_${side}`), headWorld(rig, `hand_${side}`));
-        case "shoulder": return headWorld(rig, `upperarm_${side}`);
-        case "knee": return headWorld(rig, `calf_${side}`);
-        case "hip": return headWorld(rig, `thigh_${side}`);
-        case "ankle": return headWorld(rig, `foot_${side}`);
-        case "head_top": return tailWorld(rig, "head");
-        case "head": return mid(headWorld(rig, "head"), tailWorld(rig, "head"), 0.45);
-        case "neck": return headWorld(rig, "neck_01");
-        case "chest": return mid(headWorld(rig, "spine_03"), tailWorld(rig, "spine_03"), 0.55);
-        case "pelvis": return headWorld(rig, "pelvis");
-        case "spine": return headWorld(rig, "spine_03");
-        default: throw new Error(`Unknown contact point ${name}`);
-    }
-}
+export const headWorld = (rig, name) => boneHeadWorld(THREE, rig, name);
+export const tailWorld = (rig, name) => boneTailWorld(THREE, rig, name);
+/** Named contact points (world space); shared with Pose Studio (web/vnccs_pose_contacts.mjs). */
+export const point = (rig, name) => contactPoint(THREE, rig, name);
 
 function firstChildDirection(bone) {
     const child = bone.children.find(item => item.isBone);
@@ -131,17 +102,7 @@ function firstChildDirection(bone) {
  * Rotate a bone (minimal change from its current rotation) so its
  * head-to-child direction points along worldDirection.
  */
-export function aim(rig, name, worldDirection, childName = null) {
-    const bone = rig.bones[name];
-    bone.updateMatrixWorld(true);
-    const localDirection = childName ? rig.bones[childName].position.clone().normalize() : firstChildDirection(bone);
-    const parentQuaternion = bone.parent.getWorldQuaternion(new THREE.Quaternion());
-    const desired = worldDirection.clone().normalize().applyQuaternion(parentQuaternion.invert());
-    const current = localDirection.clone().applyQuaternion(bone.quaternion);
-    const delta = new THREE.Quaternion().setFromUnitVectors(current, desired);
-    bone.quaternion.premultiply(delta);
-    bone.updateMatrixWorld(true);
-}
+export const aim = (rig, name, worldDirection, childName = null) => aimBone(THREE, rig, name, worldDirection, childName);
 
 /** Twist a bone around its own length axis (degrees). */
 export function twist(rig, name, degrees) {
@@ -165,46 +126,11 @@ export function setRotation(rig, name, [x = 0, y = 0, z = 0]) {
     rig.bones[name].updateMatrixWorld(true);
 }
 
-const CHAINS = {
-    arm_l: ["upperarm_l", "lowerarm_l", "hand_l"],
-    arm_r: ["upperarm_r", "lowerarm_r", "hand_r"],
-    leg_l: ["thigh_l", "calf_l", "foot_l"],
-    leg_r: ["thigh_r", "calf_r", "foot_r"],
-};
-
-function solveTwoBone(rig, [upperName, lowerName, endName], target, bendWorld) {
-    const start = headWorld(rig, upperName);
-    const upperLength = start.distanceTo(headWorld(rig, lowerName));
-    const lowerLength = headWorld(rig, lowerName).distanceTo(headWorld(rig, endName));
-    const toTarget = target.clone().sub(start);
-    const distance = Math.min(Math.max(toTarget.length(), Math.abs(upperLength - lowerLength) + 1e-3), (upperLength + lowerLength) * 0.9995);
-    const direction = toTarget.normalize();
-    const along = (upperLength ** 2 - lowerLength ** 2 + distance ** 2) / (2 * distance);
-    const height = Math.sqrt(Math.max(0, upperLength ** 2 - along ** 2));
-    const bend = bendWorld.clone().sub(direction.clone().multiplyScalar(bendWorld.dot(direction)));
-    if (bend.lengthSq() < 1e-8) bend.set(0, 0, 1);
-    bend.normalize();
-    const joint = start.clone().addScaledVector(direction, along).addScaledVector(bend, height);
-    aim(rig, upperName, joint.clone().sub(start), lowerName);
-    const endPosition = start.clone().addScaledVector(direction, distance);
-    aim(rig, lowerName, endPosition.sub(headWorld(rig, lowerName)), endName);
-}
-
 /**
  * Two-bone IK: move a limb so that the named contact point lands on target.
  * bendWorld is the direction the elbow / knee should point to.
  */
-export function reach(rig, chain, target, bendWorld, contact = null) {
-    const bones = CHAINS[chain];
-    let aimAt = target.clone();
-    for (let iteration = 0; iteration < 8; iteration += 1) {
-        solveTwoBone(rig, bones, aimAt, bendWorld);
-        if (!contact) break;
-        const error = target.clone().sub(point(rig, contact));
-        if (error.length() < 1e-3) break;
-        aimAt.add(error);
-    }
-}
+export const reach = (rig, chain, target, bendWorld, contact = null) => reachLimb(THREE, rig, chain, target, bendWorld, contact);
 
 /**
  * Orient a hand in world space: fingers along fingerWorld and the palm facing

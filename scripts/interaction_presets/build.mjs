@@ -44,7 +44,10 @@ export function buildPresetAsset(definition) {
             key: definition.key,
             reference_heights: scene.characters.map(character => round(character.height)),
             supports: characters.map((_character, slot) => definition.supports?.[slot] ?? null),
-            contacts: definition.contacts.map(([a, pointA, b, pointB, tolerance = 0.6]) => ({ a, point_a: pointA, b, point_b: pointB, tolerance })),
+            // offset: point_b - point_a at the reference proportions, for re-fitting hands on other bodies.
+            contacts: definition.contacts.map(([a, pointA, b, pointB, tolerance = 0.6], index) => ({
+                a, point_a: pointA, b, point_b: pointB, tolerance, offset: scene.report[index].offset.map(round),
+            })),
         },
         _library: {
             repository: INTERACTION_REPOSITORY,
