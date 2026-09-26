@@ -23,6 +23,7 @@
  */
 
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { uniCanvasSurface } from "./vnccs_unicanvas_surface.mjs";
 
 export const PROJECTS_BASE = "/vnccs/unicanvas/projects";
 export const PROJECT_POINTER_KEY = "vnccs-unicanvas-standalone-project";
@@ -227,7 +228,7 @@ export class UniCanvasProjectSession {
   }
 
   get mode() {
-    return this.widget?.standalone ? "standalone" : "node";
+    return uniCanvasSurface(this.widget);
   }
 
   get attached() {

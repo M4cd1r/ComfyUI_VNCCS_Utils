@@ -81,7 +81,7 @@ import {
   studioFramesForRange,
 } from "./vnccs_unicanvas_timeline_pose.mjs";
 import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs";
-import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
 
 const STYLE_ID = "vnccs-uc-timeline-styles";
 const LABEL_WIDTH = 180;
@@ -179,8 +179,8 @@ class TimelineController {
 
   get data() { return this.uc.timeline; }
 
-  // Standalone only, and only while Settings > VNCCS > UniCanvas > Timeline and export is on.
-  isAvailable() { return this.uc.standalone === true && isUniCanvasEnabled("timeline"); }
+  // Standalone only (vnccs_unicanvas_surface.mjs), and only while Settings > VNCCS > UniCanvas > Timeline and export is on.
+  isAvailable() { return isUniCanvasFeatureAvailable(this.uc, "timeline"); }
 
   isOpen() { return this.open && this.isAvailable() && !this.uc.panorama; }
 
