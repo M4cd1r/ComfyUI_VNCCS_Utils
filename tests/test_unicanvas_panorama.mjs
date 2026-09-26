@@ -12,6 +12,7 @@ import * as scenePlace from "../web/vnccs_unicanvas_scene_place.mjs";
 import * as harmonize from "../web/vnccs_unicanvas_harmonize.mjs";
 import * as groups from "../web/vnccs_unicanvas_groups.mjs";
 import * as sceneStates from "../web/vnccs_unicanvas_states.mjs";
+import * as psdExport from "../web/vnccs_unicanvas_psd_export.mjs";
 
 const settings = (extra = {}) => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
@@ -66,7 +67,7 @@ class Element {
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
   isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
-  ...panoramaModule, normalizeTransformMode, ...provenance, ...control, ...groups, ...scenePlace, ...sceneStates, ...harmonize,
+  ...panoramaModule, normalizeTransformMode, ...provenance, ...control, ...groups, ...scenePlace, ...sceneStates, ...harmonize, ...psdExport,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
   uid: () => "new-layer", HISTORY_LIMIT: 20,

@@ -18,6 +18,7 @@ import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_
 import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs";
+import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs";
 import { TIMELINE_HISTORY_KIND, applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
@@ -7056,12 +7057,9 @@ class UniCanvasWidget {
       if (this.panorama) {
         this.panorama.commit();
         const { width, height } = this.panorama.settings;
-        const children = [...this.layers].reverse().filter(layer => isImageLayer(layer) && isLayerEffectivelyVisible(this.layers, layer)).map(layer => ({
-          name: layer.name, left: 0, top: 0, right: width, bottom: height,
-          opacity: Math.round(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          blendMode: layer.blendMode === "source-over" ? "normal" : layer.blendMode,
-          canvas: layer.panoramaCanvas,
-        }));
+        // Groups export as PSD folders with their opacity and blend (vnccs_unicanvas_psd_export.mjs).
+        const children = buildPsdChildren(this.layers, (layer) => (isImageLayer(layer) && layer.panoramaCanvas
+          ? { name: layer.name, left: 0, top: 0, right: width, bottom: height, canvas: layer.panoramaCanvas } : null));
         const buffer = writePsd({ width, height, channels: 3, bitsPerChannel: 8, colorMode: 3, children });
         this.downloadBlob(new Blob([buffer], { type: "application/octet-stream" }), "unicanvas-panorama.psd");
         this.setStatus(`Panorama PSD exported: ${width} × ${height}`); return;
@@ -7078,8 +7076,9 @@ class UniCanvasWidget {
       if (visibleRect.width > maxDimension || visibleRect.height > maxDimension || visibleRect.width * visibleRect.height > maxArea) {
         throw new Error("Canvas is too large for PSD export");
       }
-      const psdLayers = [...visibleLayers].reverse();
-      const children = psdLayers.map((layer, index) => {
+      const exported = new Set(visibleLayers);
+      const children = buildPsdChildren(this.layers, (layer, index) => {
+        if (!exported.has(layer)) return null;
         const crop = this.getCanvasAlphaBounds(layer.canvas);
         const canvas = document.createElement("canvas");
         canvas.width = crop.width;
@@ -7093,9 +7092,6 @@ class UniCanvasWidget {
           top: Math.floor(worldY - visibleRect.y),
           right: Math.floor(worldX - visibleRect.x + canvas.width),
           bottom: Math.floor(worldY - visibleRect.y + canvas.height),
-          opacity: Math.floor(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          hidden: false,
-          blendMode: layer.blendMode === "source-over" ? "normal" : (layer.blendMode || "normal"),
           canvas,
         };
       });
@@ -7110,7 +7106,7 @@ class UniCanvasWidget {
       const buffer = writePsd(psd);
       const blob = new Blob([buffer], { type: "application/octet-stream" });
       this.downloadBlob(blob, `unicanvas-layers-${new Date().toISOString().slice(0, 10)}.psd`);
-      this.setStatus(`PSD exported: ${children.length} layers`);
+      this.setStatus(`PSD exported: ${countPsdLayers(children)} layers`);
     } catch (err) {
       this.setStatus(`PSD failed: ${err.message || err}`, true);
     }
