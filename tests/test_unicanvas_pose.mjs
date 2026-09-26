@@ -300,6 +300,26 @@ test("uploaded character is fitted into image2 and workflow metadata excludes it
     full.rect.x += 100; assert.equal(layer.pose.rect.x, 10);
 });
 
+test("the VNCCS character list falls back to empty when fetch is missing or fails, and caches the result", async () => {
+    // No fetch in the context at all: a synchronous ReferenceError must not escape as a rejection.
+    // Arrays come from the vm realm, so compare copies made in this realm.
+    const load = async editor => [...await editor.loadVnccsCharacters()];
+    const missing = harness();
+    assert.deepEqual(await load(missing.editor), []);
+    const failing = harness();
+    failing.context.fetch = async () => { throw new Error("offline"); };
+    assert.deepEqual(await load(failing.editor), []);
+    const { editor, context } = harness();
+    let calls = 0;
+    context.fetch = async url => {
+        calls++; assert.equal(url, "/vnccs/context_lists");
+        return { ok: true, json: async () => ({ characters: ["Ann", "", 7] }) };
+    };
+    assert.deepEqual(await load(editor), ["Ann", "7"]);
+    assert.deepEqual(await load(editor), ["Ann", "7"]);
+    assert.equal(calls, 1, "the list is fetched once per widget");
+});
+
 test("live viewport changes refresh layer pixels before a gesture commits without PNG encoding", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio();
     editor.initialized = true; editor.visible = true;

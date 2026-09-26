@@ -243,7 +243,7 @@ const shots = {
 };
 // The settings popover exists only once the gear is clicked. The crop still frames
 // the pre-change popover, which the old code parked at the widget's top-left.
-if (topic === "settings-panel") await page.locator('[title="Settings"]').first().click();
+if (topic === "settings-panel") await page.locator('.vnccs-uc-gear').first().click();
 // Automatic naming (issue #17): two painted layers named by rules, then the Organize preview.
 if (topic === "auto-naming") {
   await page.locator('[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon').first().click();

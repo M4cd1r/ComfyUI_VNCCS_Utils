@@ -74,7 +74,7 @@ export async function poseLayer(page) {
  */
 export async function setLayerNaming(page, { level, autoFile } = {}) {
   const shell = ".vnccs-uc2-standalone-shell";
-  await page.locator(`${shell} [title="UniCanvas settings"]`).first().click();
+  await page.locator(`${shell} .vnccs-uc-gear`).first().click();
   const panel = page.locator(".vnccs-uc-settings-popover");
   await expect(panel).toHaveCount(1);
   const section = panel.locator("details.vnccs-uc-settings-section", { has: page.locator("summary", { hasText: "Layer names" }) });

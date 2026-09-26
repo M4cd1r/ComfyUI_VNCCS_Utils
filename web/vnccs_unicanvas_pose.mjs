@@ -366,7 +366,9 @@ export class UniCanvasPoseEditor {
     async loadVnccsCharacters() {
         const host = this.host;
         if (host._vnccsCharacters) return host._vnccsCharacters;
-        host._vnccsCharacters = fetch("/vnccs/context_lists")
+        // Start inside the chain so a fetch that throws synchronously also falls back to [].
+        host._vnccsCharacters = Promise.resolve()
+            .then(() => fetch("/vnccs/context_lists"))
             .then(res => (res.ok ? res.json() : {}))
             .then(data => (Array.isArray(data?.characters) ? data.characters.map(String).filter(Boolean) : []))
             .catch(() => []);
@@ -732,7 +734,7 @@ export class UniCanvasPoseEditor {
             // so the live preview must have at least the pixels the screen shows: a fixed low
             // preview size looked rasterized and jumped to smooth on the final capture.
             const cap = 2048 / Math.max(rect.width, rect.height);
-            const screen = (this.host.view?.scale || 1) * (window.devicePixelRatio || 1);
+            const screen = (this.host.view?.scale || 1) * (globalThis.devicePixelRatio || 1);
             const scale = Math.min(1, cap, final ? Math.max(screen, cap) : screen);
             const surface = this.captureSurface({ width: Math.max(1, Math.round(rect.width * scale)), height: Math.max(1, Math.round(rect.height * scale)) });
             if (!surface) return;

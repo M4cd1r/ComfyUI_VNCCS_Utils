@@ -163,7 +163,7 @@ test("with nothing to bake GENERATE sends only the scene request, and a failed b
   await expect(page.locator(`${SHELL} [title="Accept as layer"]`).first()).toBeVisible({ timeout: 60_000 });
   expect(draws).toHaveLength(1);
   expect(draws[0].pose_edit).toBeUndefined();
-  await page.locator(`${SHELL} [title="Discard"], ${SHELL} [title="Discard staging"]`).first().click().catch(() => {});
+  await page.locator(`${SHELL} [title="Discard"]`).first().click().catch(() => {});
 
   await page.locator(`${SHELL} [data-layer-id="${pose.id}"] .vnccs-uc-layer-edit-pose`).click();
   await bindFirstCharacter(page);
