@@ -5060,6 +5060,7 @@ class UniCanvasWidget {
 
   render() {
     this.poseEditor?.layout();
+    this.poseBake?.syncStagingView?.();
     const ctx = this.canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     const w = this.canvas.width / dpr;

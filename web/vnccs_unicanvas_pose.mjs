@@ -924,7 +924,10 @@ export class UniCanvasPoseEditor {
         layer.pose.openpose = { key: poseIdKey(layer.pose), people };
     }
 
-    /** Projected head box and feet contact point of one character, normalized to `pose.rect`. */
+    /**
+     * Projected head box and feet contact point of one character, normalized to `pose.rect`, and
+     * its camera depth (`depth`, view-space distance, larger is farther).
+     */
     characterAnchors(characterId) {
         const v = this.studio?.viewer, THREE = v?.THREE, camera = v?.camera;
         if (!THREE?.Vector3 || !camera) return null;
@@ -949,6 +952,13 @@ export class UniCanvasPoseEditor {
             if (feet.length) {
                 const lowest = Math.max(...feet.map(point => point.y));
                 result.feet = { x: feet.reduce((sum, point) => sum + point.x, 0) / feet.length, y: lowest };
+            }
+            // Camera depth of the character (view-space distance of its root), for back-to-front order.
+            const root = bone("pelvis") || bone("root") || mesh;
+            if (camera.matrixWorldInverse && root?.getWorldPosition) {
+                camera.updateMatrixWorld?.(true);
+                const depth = -root.getWorldPosition(new THREE.Vector3()).applyMatrix4(camera.matrixWorldInverse).z;
+                if (Number.isFinite(depth)) result.depth = depth;
             }
             return result.head || result.feet ? result : null;
         } catch (_) { return null; }

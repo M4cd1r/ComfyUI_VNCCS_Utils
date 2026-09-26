@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  alphaBounds, bakePoseHash, bakeRefHash, bakeRemoveBgRequest, bakeSettingsPayload, bakeStatus, bakeWorkingRect, boxWithin,
+  alphaBounds, bakePickerGroups, bakePoseHash, bakeRefHash, bakeRemoveBgRequest, bakeSettingsPayload, bakeStatus, bakeWorkingRect, boxWithin,
   collectBakeCandidates, dilateAlpha, expandBox, extentBeyond, generateBakeLabel, installUniCanvasCharacterBake,
   keepOverlappingComponents, normalizePoseBake, orderBakeParts, refreshBakeStatuses, resolveBakeModel, scaleBakeWithPlacement, subtractAlpha,
 } from "../web/vnccs_unicanvas_bake.mjs";
@@ -185,6 +185,15 @@ test("the bake model is the current engine when it is QiE2511 / Klein9b, else th
   assert.deepEqual(orderBakeParts([{ id: "front", feetY: 500 }, { id: "back", feetY: 300 }]).map((item) => item.id), ["back", "front"]);
 });
 
+test("baked parts order back to front by camera depth, and by feet only for bakes without one", () => {
+  // A far character standing lower on screen (e.g. a camera looking down) is still drawn first.
+  const parts = [{ id: "near", feetY: 300, depth: 2 }, { id: "far", feetY: 500, depth: 6 }, { id: "mid", feetY: 400, depth: 4 }];
+  assert.deepEqual(orderBakeParts(parts).map((item) => item.id), ["far", "mid", "near"]);
+  assert.deepEqual(orderBakeParts([{ id: "a", feetY: 500, depth: 6 }, { id: "b", feetY: 300 }]).map((item) => item.id), ["b", "a"]);
+  assert.equal(normalizePoseBake({ characters: { a: { status: "baked", depth: 3.5 } } }).characters.a.depth, 3.5);
+  assert.equal(normalizePoseBake({ characters: { a: { status: "baked" } } }).characters.a.depth, undefined);
+});
+
 function controllerHarness() {
   const ref = { id: "ref", type: "raster", visible: true, pixelRevision: 1 };
   const bound = poseLayer("bound", [character("a", 0)]);
@@ -254,4 +263,57 @@ test("the widget and editor only receive hook calls", () => {
   assert.match(widget, /if \(bakePixels\) payload\.bakePixels = bakePixels/);
   assert.match(editor, /this\.layer\.mannequinSurface = surface/);
   assert.match(editor, /this\.host\.poseBake\?\.afterCommit\(this\.layer\)/);
+});
+
+test("the Bake model picker groups presets by enabled bake family and keeps the chosen family", () => {
+  const presets = [
+    { id: "qie", settings: { generation_mode: "qwen_image_edit" } },
+    { id: "klein", settings: { generation_mode: "flux_klein" } },
+    { id: "sdxl", settings: { generation_mode: "sdxl" } },
+  ];
+  const all = bakePickerGroups(presets);
+  assert.deepEqual(all.map((group) => [group.family, group.presets.map((preset) => preset.id)]), [["qwen_image_edit", ["qie"]], ["flux_klein", ["klein"]]]);
+  const off = (family) => family !== "flux_klein";
+  assert.deepEqual(bakePickerGroups(presets, { familyEnabled: off }).map((group) => group.family), ["qwen_image_edit"]);
+  assert.deepEqual(bakePickerGroups(presets, { familyEnabled: off, current: "flux_klein" }).map((group) => group.family), ["qwen_image_edit", "flux_klein"]);
+  assert.deepEqual(bakePickerGroups([], {}), []);
+});
+
+test("a staged card bake hides its character's mannequin until the staging is gone", () => {
+  const fakeCanvas = (width, height, name = "canvas") => {
+    const draws = [];
+    return { name, width, height, draws, getContext: () => ({
+      clearRect: () => draws.length = 0, drawImage: (image) => draws.push(image.name || "image"),
+      globalCompositeOperation: "source-over",
+    }) };
+  };
+  const layer = poseLayer("p", [character("a", 0)]);
+  layer.canvas = fakeCanvas(2048, 2048, "layer");
+  layer.mannequinSurface = fakeCanvas(400, 600, "mannequin");
+  const uc = {
+    layers: [layer], settings: {}, tool: "move", origin: { x: 0, y: 0 }, stagingItems: [], activeStagingIndex: -1,
+    _createCanvas: (w, h) => fakeCanvas(w, h, "view"), invalidateLayerCaches: () => {}, requestRender: () => {},
+  };
+  installUniCanvasCharacterBake(uc);
+  uc.poseBake.syncStagingView();
+  assert.notEqual(layer._bakeViewBaked, true, "nothing staged: the layer keeps its mannequin pixels");
+
+  uc.stagingItems = [{ visible: true, bake: { layerId: "p", characterId: "a" } }];
+  uc.activeStagingIndex = 0;
+  uc.poseBake.syncStagingView();
+  assert.equal(layer._bakeViewBaked, true);
+  assert.equal(layer.hiresCanvas.draws.includes("mannequin"), false, "the staged character's mannequin is hidden");
+
+  uc.stagingItems[0].visible = false;
+  uc.poseBake.syncStagingView();
+  assert.equal(layer._bakeViewBaked, false, "a hidden staging item shows the mannequin again");
+  assert.equal(layer.hiresCanvas, layer.mannequinSurface);
+
+  uc.stagingItems[0].visible = true;
+  uc.poseBake.syncStagingView();
+  assert.equal(layer._bakeViewBaked, true);
+  uc.stagingItems = []; uc.activeStagingIndex = -1;
+  uc.poseBake.syncStagingView();
+  assert.equal(layer._bakeViewBaked, false, "discarding the staging brings the mannequin back");
+  assert.deepEqual(layer.canvas.draws, ["mannequin"]);
 });
