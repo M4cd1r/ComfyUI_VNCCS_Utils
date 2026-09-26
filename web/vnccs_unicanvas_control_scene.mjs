@@ -19,7 +19,9 @@
  *    frame) and commits one history entry on release.
  *  - Pose control layers stay linked to their pose layers: a mannequin edit or a moved pose layer
  *    redraws the skeleton until the user paints on the control layer, which detaches it
- *    ("Relink" restores the link). Re-running a preprocessor over hand edits asks first.
+ *    ("Relink" restores the link). While a linked pose layer is dragged the skeleton follows it
+ *    live at preview size; the drop renders it at full size. Re-running a preprocessor over hand
+ *    edits asks first.
  *
  * The pure helpers at the top run under Node for tests; installUniCanvasControlScene binds the
  * panel section, the layer menu entries and the pose link onto the widget.
@@ -32,6 +34,8 @@ export const CONTROL_PREPROCESS_ROUTE = "/vnccs/unicanvas/control_preprocess";
 export const CONTROL_SOURCE_MAX_SIDE = 2048;
 // Canny previews while dragging run on at most this many pixels (the release renders full size).
 export const CANNY_PREVIEW_PIXELS = 512 * 512;
+// A linked pose skeleton follows a dragged pose layer at this size; the drop renders full size.
+export const POSE_PREVIEW_MAX_SIDE = 512;
 
 // What each scene preprocessor needs, its defaults and its live sliders.
 export const CONTROL_SCENE_TYPES = Object.freeze({
@@ -393,9 +397,12 @@ export function placeOpenPosePeople(entries, bbox, size) {
   return people;
 }
 
-// OpenPose body skeleton on black: limbs as ellipses at 60 % color, then the joints.
-export function drawOpenPose(ctx, people, size, params) {
-  const p = normalizeSceneParams("pose", params);
+// OpenPose body skeleton on black: limbs as ellipses at 60 % color, then the joints. `scale` shrinks
+// the line and joint sizes for a skeleton drawn smaller than its source (the drag preview).
+export function drawOpenPose(ctx, people, size, params, scale = 1) {
+  const normalized = normalizeSceneParams("pose", params);
+  const k = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const p = { ...normalized, lineWidth: normalized.lineWidth * k, jointSize: normalized.jointSize * k };
   ctx.save();
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
@@ -433,13 +440,30 @@ export function poseLayersUnder(layers, bbox, isVisible = (layer) => layer?.visi
   return (layers || []).filter((layer) => layer?.type === "pose" && layer.pose?.rect && isVisible(layer) && rectsIntersect(layer.pose.rect, bbox));
 }
 
-// What a linked pose control layer depends on: changes whenever a mannequin, a pose rect or a
-// pose layer's visibility changes.
-export function poseLinkSignature(layers, ids, offsetOf = () => ({ x: 0, y: 0 })) {
+/**
+ * A pose rect placed by a live move preview ({ dx, dy, scale?, anchor? }, the widget's
+ * getLayerMovePreview): scaled around the anchor, then offset, like the render transform.
+ */
+export function previewedPoseRect(rect, preview) {
+  if (!rect || !preview) return rect;
+  const scale = preview.scale || 1;
+  const anchor = preview.anchor || { x: 0, y: 0 };
+  return {
+    x: anchor.x + (rect.x - anchor.x) * scale + (preview.dx || 0),
+    y: anchor.y + (rect.y - anchor.y) * scale + (preview.dy || 0),
+    width: rect.width * scale,
+    height: rect.height * scale,
+  };
+}
+
+// What a linked pose control layer depends on: changes whenever a mannequin, a pose rect (live
+// move preview included, `previewOf`) or a pose layer's visibility changes, and when a drag ends.
+export function poseLinkSignature(layers, ids, offsetOf = () => ({ x: 0, y: 0 }), previewOf = () => null) {
   return JSON.stringify((ids || []).map((id) => {
     const layer = (layers || []).find((item) => item.id === id);
     if (!layer?.pose) return [id, null];
-    return [id, layer.visible !== false, layer.pose.rect, offsetOf(layer), layer.pose.openpose?.people ?? null];
+    const preview = previewOf(layer) || null;
+    return [id, layer.visible !== false, previewedPoseRect(layer.pose.rect, preview), offsetOf(layer), layer.pose.openpose?.people ?? null, Boolean(preview)];
   }));
 }
 
@@ -563,11 +587,19 @@ export function installUniCanvasControlScene(uc) {
       return ctx.getImageData(0, 0, size.width, size.height);
     },
 
+    movePreview(layer) {
+      return uc.getLayerMovePreview?.(layer) || null;
+    },
+
     poseEntries(source) {
       return source.poseLayerIds
         .map((id) => uc.layers.find((layer) => layer.id === id))
         .filter((layer) => layer?.pose?.rect && layer.pose.openpose?.people && api.isLayerVisible(layer))
-        .map((layer) => ({ rect: layer.pose.rect, offset: uc.getLayerStateOffset?.(layer) || { x: 0, y: 0 }, people: layer.pose.openpose.people }));
+        .map((layer) => ({
+          rect: previewedPoseRect(layer.pose.rect, api.movePreview(layer)),
+          offset: uc.getLayerStateOffset?.(layer) || { x: 0, y: 0 },
+          people: layer.pose.openpose.people,
+        }));
     },
 
     // The control image of a source at `params` as a canvas of the source size (or a preview size).
@@ -578,7 +610,11 @@ export function installUniCanvasControlScene(uc) {
       out.height = size.height;
       const ctx = out.getContext("2d");
       if (type === "pose") {
-        drawOpenPose(ctx, placeOpenPosePeople(api.poseEntries(source), source.bbox, size), size, params);
+        // A drag preview draws the skeleton small (cheap); paint() stretches it over the bbox.
+        const drawn = preview ? controlSourceSize(source.bbox, POSE_PREVIEW_MAX_SIDE) : size;
+        out.width = drawn.width;
+        out.height = drawn.height;
+        drawOpenPose(ctx, placeOpenPosePeople(api.poseEntries(source), source.bbox, drawn), drawn, params, drawn.width / size.width);
         return out;
       }
       let gray, width = raw.width, height = raw.height;
@@ -780,17 +816,20 @@ export function installUniCanvasControlScene(uc) {
     syncLinked(layer) {
       const source = layer?.controlSource;
       if (!source || source.type !== "pose" || !source.linked || source.handEdited) return;
-      const signature = poseLinkSignature(uc.layers, source.poseLayerIds, (item) => uc.getLayerStateOffset?.(item) || { x: 0, y: 0 });
+      const signature = poseLinkSignature(uc.layers, source.poseLayerIds, (item) => uc.getLayerStateOffset?.(item) || { x: 0, y: 0 }, api.movePreview);
       const previous = api.linkSignatures.get(layer.id);
       if (previous === signature) return;
       api.linkSignatures.set(layer.id, signature);
       if (previous === undefined) return; // first sight (after load or a commit): the pixels are current
       if (api.linkFrame) return;
+      // Realtime: a dragged pose layer redraws the skeleton every frame at preview size, the drop at
+      // full size (the frame reads the newest drag state when it runs).
       api.linkFrame = requestAnimationFrame(() => {
         api.linkFrame = 0;
         if (!uc.layers.includes(layer) || layer.controlSource !== source) return;
-        api.paint(layer, source, api.renderResult(source, "pose", null, source.params.pose));
-        uc.syncLightStateToWidget();
+        const dragging = source.poseLayerIds.some((id) => api.movePreview(uc.layers.find((item) => item.id === id)));
+        api.paint(layer, source, api.renderResult(source, "pose", null, source.params.pose, { preview: dragging }));
+        if (!dragging) uc.syncLightStateToWidget();
       });
     },
 
