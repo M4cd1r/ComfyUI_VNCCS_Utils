@@ -117,6 +117,20 @@ class StateOffsetRenderTests(unittest.TestCase):
         self.assertEqual(moved.getpixel((5, 4)), (255, 0, 0, 255))
         self.assertEqual(moved.getpixel((6, 5)), (255, 0, 0, 255))
 
+    def test_depth_scale_scales_around_the_feet_then_moves(self):
+        # The 2x2 layer at (1, 1) with its feet at (2, 3): scale 2 around the feet, then +1 x.
+        scaled = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(self.state({"x": 1, "y": 0, "scale": 2, "ax": 2, "ay": 3})))
+        # Rest rect (1, 1, 2, 2) -> (0, -1, 4, 4) around the feet, +1 x -> x 1..5, y -1..3 (clipped at 0).
+        self.assertEqual(scaled.split()[3].getbbox(), (1, 0, 5, 3))
+        self.assertEqual(scaled.getpixel((3, 2)), (255, 0, 0, 255))
+
+    def test_a_scale_of_one_or_a_bad_scale_is_a_plain_offset(self):
+        moved = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(self.state({"x": 4, "y": 3})))
+        for scale in (1, 0, -2, "x", None):
+            with self.subTest(scale=scale):
+                other = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(self.state({"x": 4, "y": 3, "scale": scale, "ax": 2, "ay": 3})))
+                self.assertEqual(moved.tobytes(), other.tobytes())
+
     def test_missing_or_bad_offset_is_ignored(self):
         plain = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(self.state()))
         bad = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(self.state("oops")))

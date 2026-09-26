@@ -46,11 +46,13 @@ export function mapViewPoint(point, frame, from, to) {
 
 /**
  * The drawing surface of sprite layers. `helpers` are the sprite module's pure box helpers
- * (`mapBox`, `clampBox`, `unionBox`, `alphaBounds`, `alphaOf`, `readPixels`), passed in to keep this module
- * free of an import cycle.
+ * (`mapBox`, `clampBox`, `unionBox`, `alphaBounds`, `alphaOf`, `readPixels`, optional `drawScaled`),
+ * passed in to keep this module free of an import cycle. Variant pixels may be stored above the
+ * rect's resolution (source resolution); they are drawn scaled to the rect.
  */
 export function createSpriteSurface(uc, helpers) {
   const { mapBox, clampBox, unionBox, alphaBounds, alphaOf, readPixels } = helpers;
+  const drawScaled = helpers.drawScaled || ((ctx, pixels, x, y, width, height) => ctx.drawImage(pixels, x, y, width, height));
   const doc = () => uc.panorama || null;
   const currentCamera = () => normalizeSpriteCamera(doc()?.settings);
   const anchorOf = (layer) => normalizeSpriteCamera(layer.sprite?.panoramaCamera) || currentCamera();
@@ -58,7 +60,7 @@ export function createSpriteSurface(uc, helpers) {
 
   function viewCanvas(layer, pixels, rect) {
     const view = uc._createCanvas(layer.canvas.width, layer.canvas.height);
-    if (pixels) view.getContext("2d").drawImage(pixels, local(rect).x, local(rect).y, rect.width, rect.height);
+    if (pixels) drawScaled(view.getContext("2d"), pixels, local(rect).x, local(rect).y, rect.width, rect.height);
     return view;
   }
 
@@ -106,7 +108,7 @@ export function createSpriteSurface(uc, helpers) {
       if (!doc()) {
         const ctx = target.canvas.getContext("2d");
         ctx.clearRect(0, 0, target.canvas.width, target.canvas.height);
-        if (pixels) ctx.drawImage(pixels, local(rect).x, local(rect).y, rect.width, rect.height);
+        if (pixels) drawScaled(ctx, pixels, local(rect).x, local(rect).y, rect.width, rect.height);
         uc.invalidateLayerCaches(target);
         return;
       }
@@ -131,7 +133,10 @@ export function createSpriteSurface(uc, helpers) {
       let box = null, content = null;
       for (const variant of sprite.variants) {
         if (!variant.pixels) continue;
-        content = unionBox(content, boundsOf(variant.pixels));
+        // Content bounds in rect units (variants may be stored at a higher resolution).
+        const own = boundsOf(variant.pixels);
+        const kx = variant.pixels.width / Math.max(1, old.width), ky = variant.pixels.height / Math.max(1, old.height);
+        if (own) content = unionBox(content, { x: own.x / kx, y: own.y / ky, width: own.width / kx, height: own.height / ky });
         const view = panorama.reprojectView(viewCanvas(layer, variant.pixels, old), from, to);
         views.set(variant, view);
         box = unionBox(box, boundsOf(view));
@@ -145,6 +150,7 @@ export function createSpriteSurface(uc, helpers) {
         x: box.x + uc.origin.x - pad.left, y: box.y + uc.origin.y - pad.top,
         width: box.width + pad.left + pad.right, height: box.height + pad.top + pad.bottom,
       } : { ...old };
+      // Re-projected variants come back at the view's (rect) resolution.
       for (const [variant, view] of views) {
         const pixels = uc._createCanvas(next.width, next.height);
         pixels.getContext("2d").drawImage(view, next.x - uc.origin.x, next.y - uc.origin.y, next.width, next.height, 0, 0, next.width, next.height);

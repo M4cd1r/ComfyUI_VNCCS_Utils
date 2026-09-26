@@ -6,13 +6,22 @@ export const POSE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cl
 export const isImageLayer = layer => layer?.type === "raster" || layer?.type === "pose" || layer?.type === "panorama" || layer?.type === "sprite";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
+/**
+ * A character reference that carries its image inline: an upload (or a VNCCS character) and a
+ * library character (`source: "library"`, vnccs_unicanvas_library.mjs). Both keep the pixels in
+ * the state cache only and are drawn the same way.
+ */
+export const isImageRef = ref => ref?.source === "upload" || ref?.source === "library";
+const sameImageRef = (a, b) => isImageRef(a) && isImageRef(b) && a.source === b.source
+    && (a.source === "library" ? a.assetId === b.assetId : a.name === b.name);
+
 export function serializePose(pose, includeData = true) {
     if (!pose) return undefined;
     const result = clone(pose);
-    if (!includeData && result.character?.source === "upload") delete result.character.dataURL;
+    if (!includeData && isImageRef(result.character)) delete result.character.dataURL;
     // Per-character references follow the same rule: uploaded pixels live in the state cache only.
     for (const ref of Object.values(result.characterRefs || {})) {
-        if (!includeData && ref?.source === "upload") delete ref.dataURL;
+        if (!includeData && isImageRef(ref)) delete ref.dataURL;
     }
     if (!includeData && result.studio?.background_url?.startsWith("data:")) {
         delete result.studio.background_url;
@@ -93,6 +102,25 @@ export function setPoseCharacterRef(pose, characterId, ref) {
     else delete pose.characterRefs[id];
 }
 
+/**
+ * A library character's default mesh morphs on one mannequin: its `mesh` takes the morph
+ * values (other mesh keys stay); the top-level `mesh` mirror follows when that mannequin is the
+ * studio's active one. Returns true when anything changed.
+ */
+export function applyMannequinMeshMorphs(pose, characterId, morphs) {
+    const characters = pose?.studio?.characters;
+    if (!morphs || !Array.isArray(characters)) return false;
+    const id = String(characterId);
+    const target = characters.find(item => String(item?.id) === id);
+    if (!target) return false;
+    const next = { ...(target.mesh || {}), ...morphs };
+    if (JSON.stringify(next) === JSON.stringify(target.mesh || {})) return false;
+    target.mesh = next;
+    const activeId = String(pose.studio.active_character_id ?? poseStudioCharacters(pose)[0].id);
+    if (activeId === id) pose.studio.mesh = { ...next };
+    return true;
+}
+
 export function setPoseCharacterPrompt(pose, characterId, prompt) {
     if (!pose) return;
     const id = String(characterId), text = String(prompt || "").trim();
@@ -106,6 +134,7 @@ export function setPoseCharacterPrompt(pose, characterId, prompt) {
 
 function referenceIssue(host, layer, character) {
     if (character?.source === "upload") return character.dataURL ? null : "The character image is missing. Upload it again.";
+    if (character?.source === "library") return character.dataURL ? null : "The library character image is missing. Pick it again.";
     if (character?.source === "layer") {
         return host.layers.some(item => item.id === character.layerId && item !== layer && isImageLayer(item))
             ? null : "The character layer no longer exists. Choose another character image.";
@@ -425,7 +454,7 @@ export async function composePoseReference(host, layer, size, { rect = host.bbox
                 host.drawRasterLayerToWorldRect(ctx, selected, bounds, fit(bounds.width, bounds.height, box));
                 ctx.restore();
             }
-        } else if (character?.source === "upload") {
+        } else if (isImageRef(character)) {
             if (!character.dataURL) throw new Error("The character image is missing. Load it again.");
             const image = await host.loadImage(character.dataURL);
             const target = fit(image.width, image.height, box);
@@ -456,13 +485,12 @@ export function mergePoseCache(live, cached) {
         result.studio = { ...result.studio, background_url: cached.studio.background_url };
         delete result.backgroundCached;
     }
-    if (result.character?.source === "upload" && !result.character.dataURL
-        && cached?.character?.source === "upload" && cached.character.name === result.character.name) {
+    if (isImageRef(result.character) && !result.character.dataURL && sameImageRef(result.character, cached?.character)) {
         result.character.dataURL = cached.character.dataURL;
     }
     for (const [id, ref] of Object.entries(result.characterRefs || {})) {
         const stored = cached?.characterRefs?.[id];
-        if (ref?.source === "upload" && !ref.dataURL && stored?.source === "upload" && stored.name === ref.name) ref.dataURL = stored.dataURL;
+        if (isImageRef(ref) && !ref.dataURL && sameImageRef(ref, stored)) ref.dataURL = stored.dataURL;
     }
     return result;
 }

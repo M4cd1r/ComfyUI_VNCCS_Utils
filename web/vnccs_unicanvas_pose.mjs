@@ -2,7 +2,7 @@
 import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { composePoseReference, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, posePromptMappingForLayer, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs";
+import { applyMannequinMeshMorphs, composePoseReference, isImageRef, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, posePromptMappingForLayer, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs";
 import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
 import { openPoseFromRig } from "./vnccs_unicanvas_control_scene.mjs";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
@@ -337,6 +337,8 @@ export class UniCanvasPoseEditor {
         this.characterSelect = select; this.characterPreview = image;
         this.characterCount = count; this.characterList = list; this.characterFile = file;
         this.characterSingleParts = [row, issue, actions];
+        // Library characters are listed again whenever the card is built (they change often).
+        this.host._libraryCharacterList = null;
         this.refreshCharacterMenu();
         return menu;
     }
@@ -359,6 +361,11 @@ export class UniCanvasPoseEditor {
         if (select.value === "__uploaded__") return;
         if (select.value.startsWith("vnccs:")) {
             await this.pickVnccsCharacter(select.value.slice(6), characterId);
+            return;
+        }
+        if (select.value.startsWith("library:")) {
+            const [, scope, ...rest] = select.value.split(":");
+            await this.pickLibraryCharacter(scope, rest.join(":"), characterId);
             return;
         }
         this.setCharacterReference(characterId, select.value ? { source: "layer", layerId: select.value } : null);
@@ -402,13 +409,58 @@ export class UniCanvasPoseEditor {
         }
     }
 
-    // Options of a source picker: VNCCS characters, the uploaded image, a legacy layer reference.
+    // Characters of the asset library (vnccs_unicanvas_library.mjs), both scopes.
+    async loadLibraryCharacters() {
+        const host = this.host;
+        if (!host.library?.listCharacters) return [];
+        if (!host._libraryCharacterList) host._libraryCharacterList = host.library.listCharacters().catch(() => []);
+        return host._libraryCharacterList;
+    }
+
+    /**
+     * "From library": binds a library character to the mannequin (its image and, when the row
+     * has none, its identity prompt) and applies its default mesh morphs to that mannequin, as
+     * one undo step. The studio reloads to show the new body.
+     */
+    async pickLibraryCharacter(scope, assetId, characterId = null) {
+        const token = this.token, layer = this.layer;
+        try {
+            const picked = await this.host.library.characterReference(scope, assetId);
+            if (token !== this.token || !this.host.layers.includes(layer)) return;
+            const id = String(characterId ?? this.firstCharacterId());
+            const show = this.visible;
+            this.host.recordHistoryBefore();
+            // The studio's live state is committed first, so the morphs land on top of it.
+            if (picked.meshMorphs) this.release();
+            setPoseCharacterRef(layer.pose, id, picked.ref);
+            if (picked.prompt && !poseCharacterPrompt(layer, id)) setPoseCharacterPrompt(layer.pose, id, picked.prompt);
+            const morphed = applyMannequinMeshMorphs(layer.pose, id, picked.meshMorphs);
+            if (picked.meshMorphs) await this.activate(layer, { show });
+            if (this.characterSelect) { this.characterMenuKey = null; this.refreshCharacterMenu(); }
+            this.host.syncToNode();
+            this.host.setStatus(`Bound library character "${picked.ref.name}"${morphed ? " with its mesh" : ""}`);
+        } catch (error) {
+            this.host.setStatus(`Character reference: ${error.message || error}`, true);
+            this.characterMenuKey = null;
+            this.refreshCharacterMenu();
+        }
+    }
+
+    // Options of a source picker: VNCCS characters, library characters, the uploaded image, a
+    // legacy layer reference.
     fillCharacterSource(select, character) {
         const characters = this.host._vnccsCharacterList || [];
-        select.replaceChildren(new Option(characters.length ? "Choose a character" : "No VNCCS characters - upload an image", ""));
+        const library = Array.isArray(this.host._libraryCharacterResolved) ? this.host._libraryCharacterResolved : [];
+        select.replaceChildren(new Option(characters.length || library.length ? "Choose a character" : "No VNCCS characters - upload an image", ""));
         for (const name of characters) {
             if (character?.vnccsCharacter !== name) select.add(new Option(name, `vnccs:${name}`));
         }
+        const libraryValue = character?.source === "library" ? `library:${character.assetScope || "global"}:${character.assetId}` : null;
+        for (const item of library) select.add(new Option(`Library: ${item.name}`, `library:${item.scope}:${item.id}`));
+        if (libraryValue && !library.some(item => `library:${item.scope}:${item.id}` === libraryValue)) {
+            select.add(new Option(`Library: ${character.name}`, libraryValue));
+        }
+        if (libraryValue) { select.value = libraryValue; return; }
         if (character?.source === "upload") select.add(new Option(character.name, "__uploaded__"));
         // Older poses referenced a canvas layer: keep showing that choice, but offer no new ones.
         const legacy = character?.source === "layer" ? this.host.layers.find(item => item.id === character.layerId) : null;
@@ -418,7 +470,7 @@ export class UniCanvasPoseEditor {
 
     characterThumbnail(character) {
         const selected = character?.source === "layer" ? this.host.layers.find(item => item.id === character.layerId) : null;
-        return character?.source === "upload" ? character.dataURL
+        return isImageRef(character) ? character.dataURL
             : selected ? this.host.getLayerThumbnailCanvas(selected, 256)?.toDataURL("image/png") : null;
     }
 
@@ -429,10 +481,18 @@ export class UniCanvasPoseEditor {
         const multi = mannequins.length > 1;
         const refs = mannequins.map(item => poseCharacterRef(this.layer, item.id));
         const characters = this.host._vnccsCharacterList || [];
-        const key = JSON.stringify([refs.map(ref => [ref?.source, ref?.layerId, ref?.name]), characters,
+        const library = this.host._libraryCharacterResolved || [];
+        const key = JSON.stringify([refs.map(ref => [ref?.source, ref?.layerId, ref?.name, ref?.assetId]), characters, library,
             multi && [mannequins, pose.studio?.active_character_id ?? null]]);
         if (key === this.characterMenuKey) { this.host.poseBake?.renderCardChips(this); return; }
         this.characterMenuKey = key;
+        if (this.host.library?.listCharacters && !this.host._libraryCharacterList) {
+            void this.loadLibraryCharacters().then(list => {
+                this.host._libraryCharacterResolved = list;
+                this.characterMenuKey = null;
+                if (this.characterSelect) this.refreshCharacterMenu();
+            });
+        }
         if (!this.host._vnccsCharacterList) {
             void this.loadVnccsCharacters().then(list => {
                 this.host._vnccsCharacterList = list;
@@ -452,7 +512,7 @@ export class UniCanvasPoseEditor {
         if (src) this.characterPreview.src = src;
         else this.characterPreview.removeAttribute("src");
         this.characterClear.disabled = !character;
-        this.characterIssue.textContent = character ? "" : "Optional: bind a VNCCS character or an image to bake this mannequin.";
+        this.characterIssue.textContent = character ? "" : "Optional: bind a VNCCS or library character, or an image, to bake this mannequin.";
         this.host.poseBake?.renderCardChips(this);
     }
 
@@ -932,7 +992,10 @@ export class UniCanvasPoseEditor {
         layer.pose.openpose = { key: poseIdKey(layer.pose), people };
     }
 
-    /** Projected head box and feet contact point of one character, normalized to `pose.rect`. */
+    /**
+     * Projected head box and feet contact point of one character, normalized to `pose.rect`, and
+     * its camera depth (`depth`, view-space distance, larger is farther).
+     */
     characterAnchors(characterId) {
         const v = this.studio?.viewer, THREE = v?.THREE, camera = v?.camera;
         if (!THREE?.Vector3 || !camera) return null;
@@ -957,6 +1020,13 @@ export class UniCanvasPoseEditor {
             if (feet.length) {
                 const lowest = Math.max(...feet.map(point => point.y));
                 result.feet = { x: feet.reduce((sum, point) => sum + point.x, 0) / feet.length, y: lowest };
+            }
+            // Camera depth of the character (view-space distance of its root), for back-to-front order.
+            const root = bone("pelvis") || bone("root") || mesh;
+            if (camera.matrixWorldInverse && root?.getWorldPosition) {
+                camera.updateMatrixWorld?.(true);
+                const depth = -root.getWorldPosition(new THREE.Vector3()).applyMatrix4(camera.matrixWorldInverse).z;
+                if (Number.isFinite(depth)) result.depth = depth;
             }
             return result.head || result.feet ? result : null;
         } catch (_) { return null; }

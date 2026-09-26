@@ -20,7 +20,7 @@
  * controller onto the widget like the other install* modules.
  */
 
-import { getPoseCharacterMask, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
+import { getPoseCharacterMask, isImageRef, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
   poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
 import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
@@ -58,7 +58,7 @@ function normalizeEntry(entry) {
   const status = BAKE_STATUSES.includes(entry.status) ? entry.status : "none";
   const result = { status };
   for (const key of ["poseHash", "refHash", "model", "error"]) if (typeof entry[key] === "string" && entry[key]) result[key] = entry[key];
-  for (const key of ["seed", "bakedAt"]) if (Number.isFinite(Number(entry[key])) && entry[key] !== null && entry[key] !== "") result[key] = Number(entry[key]);
+  for (const key of ["seed", "bakedAt", "depth"]) if (Number.isFinite(Number(entry[key])) && entry[key] !== null && entry[key] !== "") result[key] = Number(entry[key]);
   const rect = entry.headRect;
   if (rect && ["x", "y", "width", "height"].every((key) => Number.isFinite(Number(rect[key])))) {
     result.headRect = { x: Number(rect.x), y: Number(rect.y), width: Number(rect.width), height: Number(rect.height) };
@@ -127,7 +127,7 @@ export function bakeRefHash(layers, layer, characterId) {
   if (ref?.source === "layer") {
     const target = (layers || []).find((item) => item.id === ref.layerId);
     source = `layer:${ref.layerId}:${target?.pixelRevision ?? "missing"}`;
-  } else if (ref?.source === "upload") source = `upload:${uploadHash(ref.dataURL || ref.name)}`;
+  } else if (isImageRef(ref)) source = `upload:${uploadHash(ref.dataURL || ref.name)}`;
   return hashText(JSON.stringify([source, prompt]));
 }
 
@@ -367,6 +367,17 @@ export function resolveBakeModel(settings, { currentBase, presets = [], presetRe
   return { error: "Character bake needs QiE2511 or Klein9b: choose the Bake model in UniCanvas settings (Character bake)." };
 }
 
+/**
+ * The Bake model picker's menu: one group per bake family that is switched on (the chosen one is
+ * kept even when switched off, so the setting stays visible), each with the family's presets.
+ */
+export function bakePickerGroups(presets, { baseOf = (mode) => mode, familyEnabled = () => true, current = null } = {}) {
+  return BAKE_FAMILIES
+    .filter(([family]) => family === current || familyEnabled(family))
+    .map(([family, label]) => ({ family, label, presets: (presets || []).filter((preset) => baseOf(preset?.settings?.generation_mode || preset?.id) === family) }))
+    .filter((group) => group.presets.length);
+}
+
 /** Settings for one bake request, built on the scene settings payload. */
 export function bakeSettingsPayload(base, { model, defaults = {}, positive, seed, batch = 1 }) {
   const settings = { ...base };
@@ -398,9 +409,52 @@ export function bakeRemoveBgRequest(settings) {
   return automaticRemoveBgRequest(settings);
 }
 
-/** Parts drawn back to front: farther characters (feet higher on screen) first. */
+/**
+ * Parts drawn back to front. With a camera depth for every part (the distance of the character
+ * from the Pose Studio camera at bake time) farther characters come first; bakes made before the
+ * depth was recorded fall back to the feet position (feet higher on screen first).
+ */
 export function orderBakeParts(entries) {
-  return [...entries].sort((a, b) => (a.feetY ?? 0) - (b.feetY ?? 0));
+  const list = [...entries];
+  if (list.every((entry) => Number.isFinite(entry.depth))) return list.sort((a, b) => b.depth - a.depth);
+  return list.sort((a, b) => (a.feetY ?? 0) - (b.feetY ?? 0));
+}
+
+/**
+ * A depth-scaled move of a baked pose layer: `layer.pose.rect` already holds the placed rect,
+ * `previousRect` the rect before. Every baked part and the head / feet anchors follow `map` (a
+ * scale around the feet plus a move), and a bake that matched the scene before the move stays
+ * baked: a placement is not a pose edit. Part and entry objects are replaced, never mutated,
+ * because history snapshots share them.
+ */
+export function scaleBakeWithPlacement(layer, map, previousRect) {
+  const pose = layer?.pose;
+  if (!pose?.rect || !previousRect || !map) return;
+  const anchor = { x: pose.rect.x, y: pose.rect.y };
+  const parts = {};
+  const shifts = {};
+  for (const [id, part] of Object.entries(layer.bakeParts || {})) {
+    if (!part?.rect || !part.anchor) { parts[id] = part; continue; }
+    const dx = previousRect.x - part.anchor.x, dy = previousRect.y - part.anchor.y;
+    shifts[id] = { dx, dy };
+    parts[id] = { ...part, rect: map.rect({ ...part.rect, x: part.rect.x + dx, y: part.rect.y + dy }), anchor: { ...anchor } };
+  }
+  if (layer.bakeParts) layer.bakeParts = parts;
+  const bake = pose.bake;
+  if (!bake?.characters) return;
+  const before = { ...pose, rect: { ...previousRect } };
+  const characters = {};
+  for (const [id, entry] of Object.entries(bake.characters)) {
+    const next = { ...entry };
+    const shift = shifts[id] || { dx: 0, dy: 0 };
+    if (entry.headRect) next.headRect = map.rect({ ...entry.headRect, x: entry.headRect.x + shift.dx, y: entry.headRect.y + shift.dy });
+    if (entry.feetPoint) next.feetPoint = map.point({ x: entry.feetPoint.x + shift.dx, y: entry.feetPoint.y + shift.dy });
+    if ((entry.status === "baked" || entry.status === "stale") && entry.poseHash && entry.poseHash === bakePoseHash(before, id)) {
+      next.poseHash = bakePoseHash(pose, id);
+    }
+    characters[id] = next;
+  }
+  pose.bake = { ...bake, characters };
 }
 
 /* ----------------------------------------------------------------------------------------------
@@ -464,10 +518,36 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       && ["baked", "stale"].includes(layer.pose?.bake?.characters?.[id]?.status));
   }
 
+  /**
+   * The character whose staged bake result is on screen (the active, visible staging item of a
+   * card Bake): its mannequin and old baked part are hidden under the staged pixels.
+   */
+  function stagedCharacter(layer) {
+    const item = uc.stagingItems?.[uc.activeStagingIndex];
+    const bake = item?.visible !== false ? item?.bake : null;
+    return bake && layer && bake.layerId === layer.id ? String(bake.characterId) : null;
+  }
+
   function showsBakedView(layer) {
-    if (layer?.type !== "pose" || !layer.pose?.rect) return false;
-    if (layer.pose.bake?.showMannequin || editingLayer(layer)) return false;
+    if (layer?.type !== "pose" || !layer.pose?.rect || editingLayer(layer)) return false;
+    if (stagedCharacter(layer)) return true;
+    if (layer.pose.bake?.showMannequin) return false;
     return shownParts(layer).length > 0;
+  }
+
+  let stagedViewKey = "";
+  /**
+   * Called on every render: when the staged bake on screen changes (staged, switched, hidden,
+   * accepted or discarded), the pose layers involved rebuild their view.
+   */
+  function syncStagingView() {
+    const item = uc.stagingItems?.[uc.activeStagingIndex];
+    const bake = item?.visible !== false ? item?.bake : null;
+    const key = bake ? `${bake.layerId}\n${bake.characterId}` : "";
+    if (key === stagedViewKey) return;
+    const layerIds = new Set([stagedViewKey, key].filter(Boolean).map((value) => value.split("\n")[0]));
+    stagedViewKey = key;
+    for (const layer of uc.layers || []) if (layerIds.has(layer.id)) rebuildView(layer);
   }
 
   function commitView(layer) {
@@ -493,20 +573,24 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       commitView(layer);
       return;
     }
-    const parts = orderBakeParts(shownParts(layer).map(([id, part]) => {
+    const hidden = stagedCharacter(layer);
+    const visibleParts = layer.pose.bake?.showMannequin ? [] : shownParts(layer).filter(([id]) => id !== hidden);
+    const parts = orderBakeParts(visibleParts.map(([id, part]) => {
       const dx = rect.x - part.anchor.x, dy = rect.y - part.anchor.y;
+      const entry = layer.pose.bake.characters[id];
       return { id, part, at: { ...part.rect, x: part.rect.x + dx, y: part.rect.y + dy },
-        feetY: layer.pose.bake.characters[id]?.feetPoint?.y };
+        feetY: entry?.feetPoint?.y, depth: entry?.depth };
     }));
     let union = { ...rect };
     for (const entry of parts) union = unionRect(union, entry.at);
-    const density = mannequin ? mannequin.width / Math.max(1, rect.width) : parts[0].part.surface.width / Math.max(1, parts[0].part.rect.width);
+    const density = mannequin ? mannequin.width / Math.max(1, rect.width)
+      : parts.length ? parts[0].part.surface.width / Math.max(1, parts[0].part.rect.width) : 1;
     const scale = Math.min(density, 2048 / Math.max(union.width, union.height));
     const out = uc._createCanvas(Math.max(1, Math.round(union.width * scale)), Math.max(1, Math.round(union.height * scale)));
     const ctx = out.getContext("2d");
     const place = (world) => ({ x: (world.x - union.x) * scale, y: (world.y - union.y) * scale, width: world.width * scale, height: world.height * scale });
     const baked = new Set(parts.map((entry) => entry.id));
-    const unbaked = poseStudioCharacters(layer.pose).filter((item) => !baked.has(item.id));
+    const unbaked = poseStudioCharacters(layer.pose).filter((item) => !baked.has(item.id) && item.id !== hidden);
     if (mannequin && unbaked.length) {
       const target = place(rect);
       const masks = unbaked.map((item) => getPoseCharacterMask(layer, item.id, { createCanvas: (w, h) => uc._createCanvas(w, h) }));
@@ -717,7 +801,8 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       return { x: box.x + box.width / 2, y: box.y + box.height };
     })();
     const label = model.useCurrent ? (uc.settings.selected_preset_id || uc.settings.generation_mode) : (model.preset?.id || model.family);
-    return { results, work, size, meta: { poseHash, refHash, model: String(label || ""), headRect, feetPoint: feet } };
+    return { results, work, size, meta: { poseHash, refHash, model: String(label || ""), headRect, feetPoint: feet,
+      ...(Number.isFinite(anchors?.depth) ? { depth: anchors.depth } : {}) } };
   }
 
   function applyBake(layer, characterId, result, meta) {
@@ -966,7 +1051,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       }
       if (Object.keys(parts).length) layer.bakeParts = parts;
       // The saved layer pixels are the composite view unless the mannequins were shown.
-      layer._bakeViewBaked = Object.keys(parts).length > 0 && layer.pose?.bake?.showMannequin !== true;
+      // A mannequin saved without parts: the saved pixels were a staged-bake view, so the next
+      // rebuild (afterStateRestore) redraws the mannequin.
+      layer._bakeViewBaked = (Object.keys(parts).length > 0 && layer.pose?.bake?.showMannequin !== true)
+        || (Boolean(stored.mannequinDataURL) && !Object.keys(parts).length);
     } catch (_) { /* Missing bake pixels read as unbaked. */ }
   }
 
@@ -980,6 +1068,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
         else if (entry.status === "stale") entry.refHash = "stale";
       }
       if (!layer.mannequinSurface && !layer._bakeViewBaked && layer.hiresCanvas) layer.mannequinSurface = layer.hiresCanvas;
+      if (layer._bakeViewBaked && layer.mannequinSurface && !showsBakedView(layer)) rebuildView(layer);
     }
     scheduleGenerateLabel();
   }
@@ -1069,6 +1158,13 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     editor.characterBakeSlot.replaceChildren(bakeRow(layer, mannequins[0].id));
   }
 
+  /** A depth-scaled move (vnccs_unicanvas_scene_place.mjs): the baked characters scale along. */
+  function onDepthScale(layer, map, previousRect) {
+    if (layer?.type !== "pose" || !layer.pose?.rect || !previousRect) return;
+    scaleBakeWithPlacement(layer, map, previousRect);
+    rebuildView(layer);
+  }
+
   function setShowMannequin(layer, show) {
     if (layer?.type !== "pose") return;
     // A view toggle, not an edit: no history entry.
@@ -1104,34 +1200,99 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     for (const layer of uc.layers) if (layer.type === "pose" && (layer._bakeViewBaked || showsBakedView(layer))) rebuildView(layer);
   }
 
-  /** "Character bake" group of the settings popover. */
-  function buildSettings(ui) {
-    const { bind, makeSelect, checkboxRow, commit } = ui;
+  /**
+   * The Bake model picker: the main model picker's preset cards (status, Download), a head card
+   * showing the model bakes use and a menu grouped by bake family. "Automatic" picks the first
+   * ready preset. Its own click handler keeps the cards from selecting the scene preset.
+   */
+  function buildModelPicker(commit) {
     const s = uc.settings;
-    const familyValue = BAKE_FAMILIES.some(([key]) => key === s.bake_model_family) ? s.bake_model_family : BAKE_FAMILIES[0][0];
-    const family = makeSelect(filterUniCanvasChoices(BAKE_FAMILIES, isUniCanvasFamilyEnabled, familyValue), familyValue);
-    const presetSelect = makeSelect([["", "First ready preset"]], "");
+    const baseOf = (mode) => modelModule(mode)?.base || mode;
+    const root = document.createElement("div");
+    root.className = "vnccs-uc-model-picker";
+    root.dataset.bakeModelPicker = "";
     const note = document.createElement("div");
     note.style.cssText = "opacity:.75; line-height:1.35;";
-    const fillPresets = () => {
-      const baseOf = (mode) => modelModule(mode)?.base || mode;
-      const list = (uc.presets || []).filter((preset) => baseOf(preset?.settings?.generation_mode || preset?.id) === family.value);
-      presetSelect.replaceChildren();
-      for (const [value, label] of [["", "First ready preset"], ...list.map((preset) => [preset.id,
-        `${preset.label || preset.name || preset.id}${uc.presetStatus?.(preset)?.installed ? "" : " (not downloaded)"}`])]) {
-        const option = document.createElement("option");
-        option.value = value; option.textContent = label;
-        if (value === (s.bake_preset_id || "")) option.selected = true;
-        presetSelect.appendChild(option);
-      }
+    const plainButton = (label, className) => {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = className; button.textContent = label;
+      return button;
+    };
+    const card = (preset, attrs) => {
+      const node = uc.buildPresetCard(preset, false, attrs.head === true);
+      delete node.dataset.presetId;
+      delete node.dataset.presetPickerToggle;
+      Object.assign(node.dataset, attrs.data);
+      node.classList.toggle("selected", attrs.selected === true);
+      return node;
+    };
+    const render = () => {
       const model = bakeModel();
+      const automatic = !s.bake_preset_id;
+      root.replaceChildren();
+      if (model.preset && typeof uc.buildPresetCard === "function") root.appendChild(card(model.preset, { head: true, data: { bakePickerToggle: "1" } }));
+      else {
+        const head = plainButton(model.useCurrent ? "Current engine (QiE2511 / Klein9b)" : "Choose a Bake model", "vnccs-uc-btn");
+        head.dataset.bakePickerToggle = "1";
+        root.appendChild(head);
+      }
+      const menu = document.createElement("div");
+      menu.className = "vnccs-uc-model-picker-menu";
+      const auto = plainButton("Automatic: first ready preset", `vnccs-uc-btn${automatic ? " active" : ""}`);
+      auto.dataset.bakePreset = "";
+      menu.appendChild(auto);
+      const groups = bakePickerGroups(uc.presets || [], { baseOf, familyEnabled: isUniCanvasFamilyEnabled, current: s.bake_model_family || null });
+      for (const group of groups) {
+        const box = document.createElement("div");
+        box.className = "vnccs-uc-model-picker-group";
+        const title = document.createElement("div");
+        title.className = "vnccs-uc-model-picker-group-title";
+        title.textContent = group.label;
+        box.appendChild(title);
+        for (const preset of group.presets) {
+          if (typeof uc.buildPresetCard !== "function") continue;
+          box.appendChild(card(preset, { data: { bakePreset: preset.id, bakeFamily: group.family }, selected: !automatic && s.bake_preset_id === preset.id }));
+        }
+        menu.appendChild(box);
+      }
+      root.append(menu, note);
       note.textContent = model.useCurrent ? "The current engine bakes (it is QiE2511 or Klein9b)."
         : model.error ? model.error : `Bakes use ${model.preset?.label || model.preset?.id}${model.ready ? "" : " (download it first)"}.`;
     };
-    family.addEventListener("input", () => { s.bake_model_family = family.value; s.bake_preset_id = ""; fillPresets(); commit(); });
-    presetSelect.addEventListener("input", () => { s.bake_preset_id = presetSelect.value; fillPresets(); commit(); });
-    bind("Bake model family", family);
-    bind("Bake preset", presetSelect);
+    root.addEventListener("click", (event) => {
+      const target = event.target?.closest?.("[data-preset-download], [data-bake-preset], [data-bake-picker-toggle]");
+      if (!(target instanceof HTMLElement) || !root.contains(target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (target.dataset.presetDownload) {
+        uc.downloadPreset?.(target.dataset.presetDownload, "assets");
+        return;
+      }
+      if (target.dataset.bakePickerToggle) {
+        root.classList.toggle("open");
+        return;
+      }
+      s.bake_preset_id = target.dataset.bakePreset || "";
+      s.bake_model_family = target.dataset.bakeFamily || "";
+      render();
+      root.classList.remove("open");
+      commit();
+    });
+    render();
+    return root;
+  }
+
+  /** "Character bake" group of the settings popover. */
+  function buildSettings(ui) {
+    const { bind, checkboxRow, commit } = ui;
+    const s = uc.settings;
+    // A div, not the label `bind` makes: a click on a card inside a label would activate the
+    // label's first button.
+    const row = bind("Bake model", buildModelPicker(commit));
+    const block = document.createElement("div");
+    block.style.cssText = row.style.cssText;
+    block.append(...row.childNodes);
+    row.replaceWith(block);
     const number = (key, label, step) => {
       const input = document.createElement("input");
       input.type = "number"; input.className = "vnccs-uc-input"; input.step = step; input.min = "0";
@@ -1145,14 +1306,12 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     checkboxRow("Re-bake stale characters on Generate", s.rebake_stale_on_generate !== false, (checked) => {
       s.rebake_stale_on_generate = checked; commit(); scheduleGenerateLabel();
     });
-    bind("", note);
-    fillPresets();
   }
 
   const api = {
     showsBakedView, rebuildView, afterCommit, beforeScenePass, stageBake, bakeLayer, acceptStaged,
-    wrapHistoryEntry, flushPendingHistory, snapshot, restoreSnapshot, serialize, restore, afterStateRestore,
-    renderCardChips, decorateLayerRow, setShowMannequin, onToolChanged, buildSettings, scheduleGenerateLabel,
+    wrapHistoryEntry, flushPendingHistory, snapshot, restoreSnapshot, serialize, restore, afterStateRestore, syncStagingView,
+    renderCardChips, decorateLayerRow, setShowMannequin, onDepthScale, onToolChanged, buildSettings, scheduleGenerateLabel,
     updateGenerateLabel, candidates: () => collectBakeCandidates(uc, { includeStale: uc.settings?.rebake_stale_on_generate !== false, hasPart }),
     status: (layer, id) => statusOf(layer, id),
     get pending() { return pending; },

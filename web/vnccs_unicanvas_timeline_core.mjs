@@ -25,6 +25,7 @@ import {
   findKeySegment,
   finiteNumber,
 } from "./vnccs_animation_core.mjs";
+import { stateOffsetMatrix } from "./vnccs_unicanvas_state_offset.mjs";
 
 export const TIMELINE_SCHEMA_VERSION = 1;
 export const TIMELINE_HISTORY_KIND = "timeline";
@@ -517,7 +518,8 @@ export function localMatrix(state, anchor = { x: 0, y: 0 }) {
  * `chain` is `[{ state, anchor }]` ordered outermost group -> layer.
  */
 export function composeLayerMatrix(stateOffset, chain) {
-  let matrix = [1, 0, 0, 1, stateOffset?.x || 0, stateOffset?.y || 0];
+  // The scene-state placement: a move, or a move and a depth scale (vnccs_unicanvas_state_offset.mjs).
+  let matrix = stateOffsetMatrix(stateOffset);
   for (const item of chain || []) {
     if (!item?.state) continue;
     matrix = multiplyMatrices(matrix, localMatrix(item.state, item.anchor));

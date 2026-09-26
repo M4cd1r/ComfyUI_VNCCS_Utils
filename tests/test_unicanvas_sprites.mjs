@@ -5,7 +5,7 @@ import {
   SPRITE_EXPRESSION_PRESETS, SPRITE_VARIANT_HISTORY_KIND, clampBox, compositeExpressionPixels, compositeOutfitPixels,
   customVariant, cycleVariantId, detectSpriteAnchor, expressionInstruction, faceRectFromHead, featherMaskAlpha,
   installUniCanvasSprites, mapBox, normalizeSpriteState, presetExpressionVariants, serializeSpriteState, shiftPixels,
-  snapshotSprite, spriteSourceIssue, spriteVariantPrompt, spriteWorkRegion, transformPointMap,
+  snapshotSprite, spriteSourceIssue, spriteVariantPrompt, spriteWorkRegion, transformPointMap, spritePixelDensity, editedPixelMask,
 } from "../web/vnccs_unicanvas_sprites.mjs";
 import { isImageLayer } from "../web/vnccs_unicanvas_pose_state.mjs";
 
@@ -192,11 +192,15 @@ test("the preset list has the 15 expressions of the plan, each with an edit inst
   const variants = presetExpressionVariants({ variants: [{ name: "neutral" }] });
   assert.equal(variants.length, 14, "names already in the set are skipped");
   assert.ok(variants.every((variant) => variant.status === "empty" && variant.kind === "expression"));
+  // The base pixels (named "neutral") do not block the neutral preset: 15 empty variants (#6).
+  const all = presetExpressionVariants({ baseVariantId: "base", variants: [{ id: "base", name: "neutral" }] });
+  assert.equal(all.length, 15);
+  assert.equal(presetExpressionVariants({ baseVariantId: "base", variants: [{ id: "base", name: "neutral" }, ...all] }).length, 0, "adding twice adds nothing");
 });
 
 test("prompts: edit families get the instruction, other families a description on the scene prompt", () => {
   const sprite = { characterName: "Aoi" };
-  const [happy] = presetExpressionVariants({ variants: [{ name: "neutral" }] });
+  const happy = presetExpressionVariants({ variants: [{ name: "neutral" }] }).find((variant) => variant.name === "happy");
   assert.match(spriteVariantPrompt(sprite, happy, { editModel: true }), /only change the facial expression/);
   assert.equal(spriteVariantPrompt(sprite, happy, { editModel: false, basePrompt: "school uniform" }), "Aoi, a happy facial expression, school uniform");
   const outfit = customVariant({ name: "swimsuit", kind: "outfit", text: "a blue swimsuit" });
@@ -318,15 +322,15 @@ test("Generate missing: every variant ready in one undo step, alpha and pixels o
   const { uc, source, history } = harness();
   const layer = uc.sprites.createFromLayer(source);
   uc.sprites.addPresets(layer);
-  assert.equal(layer.sprite.variants.length, 15);
-  assert.equal(layer.sprite.variants.filter((variant) => variant.status === "empty").length, 14);
+  assert.equal(layer.sprite.variants.length, 16, "the base plus the 15 presets");
+  assert.equal(layer.sprite.variants.filter((variant) => variant.status === "empty").length, 15);
   const { rect } = layer.sprite;
   // The head: 108..132 x 100..120 in the world.
   layer.sprite.faceRect = { x: 108 - rect.x, y: 100 - rect.y, width: 24, height: 20 };
   const requests = stubDraw();
   const before = history.length;
   await uc.sprites.generateMissing(layer);
-  assert.equal(requests.length, 14, "one request per empty variant");
+  assert.equal(requests.length, 15, "one request per empty variant");
   assert.equal(requests[0].mode, "inpaint");
   assert.match(requests[0].settings.positive, /only change the facial expression/);
   assert.equal(history.length, before + 1, "one undo step");
@@ -347,7 +351,7 @@ test("Generate missing: every variant ready in one undo step, alpha and pixels o
   }
   assert.equal(uc.drawInProgress, false);
   undo(uc, history.at(-1));
-  assert.equal(layer.sprite.variants.filter((variant) => variant.status === "empty").length, 14, "one undo restores the empty variants");
+  assert.equal(layer.sprite.variants.filter((variant) => variant.status === "empty").length, 15, "one undo restores the empty variants");
 });
 
 test("an expression without a face area fails with a clear message and is marked failed", async () => {
@@ -376,7 +380,7 @@ test("switching variants keeps the alpha bbox and records one small history entr
   assert.equal(history.at(-1).kind, SPRITE_VARIANT_HISTORY_KIND);
   uc.activeLayerId = layer.id;
   assert.equal(uc.sprites.cycleActive(1), true);
-  assert.equal(layer.sprite.activeVariantId, layer.sprite.variants[2].id, "`.` steps to the next ready variant");
+  assert.equal(layer.sprite.activeVariantId, layer.sprite.variants[layer.sprite.variants.indexOf(happy) + 1].id, "`.` steps to the next ready variant");
   assert.deepEqual(alphaBox(layer.canvas), bbox);
   undo(uc, history.at(-1));
   assert.equal(layer.sprite.activeVariantId, happy.id);
@@ -646,4 +650,68 @@ test("view points map between panorama cameras through the sphere", async () => 
   assert.equal(normalizeSpriteCamera({ yaw: NaN }), null);
   assert.equal(sameSpriteCamera(front, { ...front, fov: 90.0000001 }), true);
   assert.equal(sameSpriteCamera(front, null), false);
+});
+
+test("variants keep the source resolution (capped), draw scaled to the rect and merge paint without blurring", async () => {
+  assert.equal(spritePixelDensity({ width: 100, height: 200 }, 3), 3);
+  assert.equal(spritePixelDensity({ width: 100, height: 1000 }, 3), 2.048, "capped at the long side");
+  assert.equal(spritePixelDensity({ width: 100, height: 4000 }, 3), 1, "never below the canvas resolution");
+  assert.equal(spritePixelDensity({ width: 100, height: 100 }, 0.5), 1);
+  assert.equal(editedPixelMask(new Uint8ClampedArray([1, 2, 3, 0]), new Uint8ClampedArray([9, 9, 9, 0]), 1, 1), null, "transparent pixels compare equal");
+  assert.deepEqual([...editedPixelMask(new Uint8ClampedArray([0, 0, 0, 255, 5, 5, 5, 255]), new Uint8ClampedArray([0, 0, 0, 255, 90, 5, 5, 255]), 2, 1)], [0, 255]);
+
+  const { uc, source } = harness();
+  // A 2x hi-res version of the same character (e.g. a generated result).
+  const hires = new FakeCanvas(512, 512);
+  hires.getContext().drawImage(source.canvas, 0, 0, 512, 512);
+  source.hiresCanvas = hires;
+  source.hiresRect = { x: 0, y: 0, width: 256, height: 256 };
+  const layer = uc.sprites.createFromLayer(source);
+  const { rect } = layer.sprite;
+  const base = layer.sprite.variants[0];
+  assert.equal(layer.sprite.baseVariantId, base.id);
+  assert.deepEqual([base.pixels.width, base.pixels.height], [rect.width * 2, rect.height * 2], "stored at the source's 2x resolution");
+  assert.deepEqual(alphaBox(layer.canvas), { x: 100, y: 100, width: 40, height: 80 }, "drawn at the rect on the canvas");
+
+  // Paint one canvas pixel: only that region of the stored variant changes.
+  const beforePixels = base.pixels;
+  layer.canvas.fill(110, 150, 1, 1, [0, 255, 0, 255]);
+  uc.invalidateLayerCaches(layer);
+  uc.createLayerPixelSnapshot(layer);
+  const merged = layer.sprite.variants[0].pixels;
+  assert.notEqual(merged, beforePixels, "copy on write");
+  assert.deepEqual([merged.width, merged.height], [beforePixels.width, beforePixels.height], "the resolution survives the edit");
+  const at = (canvas, x, y) => [...canvas.data.subarray((y * canvas.width + x) * 4, (y * canvas.width + x) * 4 + 4)];
+  const px = (110 - rect.x) * 2, py = (150 - rect.y) * 2;
+  assert.deepEqual(at(merged, px, py), [0, 255, 0, 255], "the painted pixel lands");
+  assert.deepEqual(at(merged, px + 12, py + 12), at(beforePixels, px + 12, py + 12), "untouched pixels stay bit-identical");
+
+  // Generation runs at the stored resolution; results fit the neutral size.
+  layer.sprite.faceRect = { x: 108 - rect.x, y: 100 - rect.y, width: 24, height: 20 };
+  const requests = stubDraw();
+  uc.sprites.addPresets(layer);
+  const happy = layer.sprite.variants.find((variant) => variant.name === "happy");
+  const out = await uc.sprites.requestVariant(layer, happy.id, { seed: 1 });
+  assert.deepEqual([out.results[0].pixels.width, out.results[0].pixels.height], [merged.width, merged.height]);
+  assert.ok(requests[0].output_size.width > 24 * 2, "the face region is requested in stored pixels");
+  assert.equal(uc.sprites.applyVariant(layer, happy.id, out.results[0], out.prompt), true);
+
+  // A depth-scaled move changes the rect (and anchor / faceRect with it), never the pixels.
+  const anchor = { ...layer.sprite.anchor };
+  const map = { rect: (r) => ({ x: r.x, y: r.y, width: r.width * 1.5, height: r.height * 1.5 }), point: (p) => p, scale: 1.5 };
+  uc.sprites.onDepthScale(layer, map);
+  assert.equal(layer.sprite.rect.width, Math.round(rect.width * 1.5));
+  assert.ok(Math.abs(layer.sprite.anchor.y - anchor.y * layer.sprite.rect.height / rect.height) < 1e-9);
+  assert.equal(layer.sprite.variants[0].pixels, merged, "the stored pixels are untouched");
+  assert.equal(uc.sprites.applyVariant(layer, happy.id, out.results[0], out.prompt), true, "a result still fits after a rescale");
+
+  // Sets saved at canvas resolution (before this change) load at their own size.
+  const saved = JSON.parse(JSON.stringify(serializeSpriteState(normalizeSpriteState({ rect: { x: 0, y: 0, width: 10, height: 20 } }))));
+  saved.variants[0].status = "ready";
+  saved.variants[0].dataURL = new FakeCanvas(10, 20).toDataURL();
+  delete saved.baseVariantId;
+  const restored = { id: "r", type: "sprite", canvas: new FakeCanvas(256, 256) };
+  await uc.sprites.restore(restored, saved);
+  assert.deepEqual([restored.sprite.variants[0].pixels.width, restored.sprite.variants[0].pixels.height], [10, 20]);
+  assert.equal(restored.sprite.baseVariantId, restored.sprite.variants[0].id, "old sets take their neutral as the base");
 });

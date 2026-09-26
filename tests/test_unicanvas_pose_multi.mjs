@@ -329,3 +329,28 @@ test("legacy multi-mannequin layers with one reference say which mannequin image
     single.pose.character = upload("a");
     assert.equal(state.posePromptMappingForLayer(single), "");
 });
+
+test("library character references behave like uploads and apply default mesh morphs to one mannequin", () => {
+    const ref = { source: "library", assetId: "ast_1", assetScope: "global", name: "Alice", dataURL: "data:image/png;base64,QQ" };
+    assert.equal(state.isImageRef(ref), true);
+    assert.equal(state.isImageRef({ source: "layer", layerId: "x" }), false);
+    const layer = poseLayer("p", [character("a", 0, { mesh: { height: 0.5, age: 25 } }), character("b", 1, { mesh: { height: 0.5 } })]);
+    layer.pose.studio.active_character_id = "a";
+    state.setPoseCharacterRef(layer.pose, "b", ref);
+    // Stateless serialization drops the pixels; the state cache merges them back by asset id.
+    const light = state.serializePose(layer.pose, false);
+    assert.equal(light.characterRefs.b.dataURL, undefined);
+    assert.equal(state.mergePoseCache(light, layer.pose).characterRefs.b.dataURL, ref.dataURL);
+    const other = clone(layer.pose); other.characterRefs.b.assetId = "ast_2";
+    assert.equal(state.mergePoseCache(light, other).characterRefs.b.dataURL, undefined, "another asset never lends its pixels");
+    // Mesh morphs land on that mannequin only; the top-level mirror follows the active one.
+    assert.equal(state.applyMannequinMeshMorphs(layer.pose, "b", { height: 0.8 }), true);
+    assert.deepEqual(layer.pose.studio.characters.find(item => item.id === "b").mesh, { height: 0.8 });
+    assert.equal(layer.pose.studio.characters.find(item => item.id === "a").mesh.height, 0.5);
+    assert.equal(layer.pose.studio.mesh?.height, undefined);
+    assert.equal(state.applyMannequinMeshMorphs(layer.pose, "b", { height: 0.8 }), false, "no change");
+    assert.equal(state.applyMannequinMeshMorphs(layer.pose, "a", { weight: 0.7 }), true);
+    assert.deepEqual(layer.pose.studio.mesh, { height: 0.5, age: 25, weight: 0.7 });
+    assert.equal(state.applyMannequinMeshMorphs(layer.pose, "missing", { height: 1 }), false);
+    assert.equal(state.applyMannequinMeshMorphs(layer.pose, "a", null), false);
+});

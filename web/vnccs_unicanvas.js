@@ -15,10 +15,11 @@ import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vn
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
-import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS } from "./vnccs_unicanvas_states.mjs";
+import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs";
 import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs";
+import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs";
 import { TIMELINE_HISTORY_KIND, applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
 import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
@@ -4366,8 +4367,19 @@ class UniCanvasWidget {
   getLayerRenderTransform(layer) {
     const framed = layer?._timelineFrame?.matrix || this.timelinePanel?.layerMatrix(layer);
     if (framed) return framed;
+    // A plain offset, or a per-state depth scale around the feet (vnccs_unicanvas_state_offset.mjs).
     const offset = this.getLayerStateOffset(layer);
-    return [1, 0, 0, 1, offset.x, offset.y];
+    return stateOffsetMatrix(offset);
+  }
+
+  // The frame a scaled layer draws through (timeline frame or per-state depth scale), or null
+  // when a translation is enough.
+  getLayerScaledFrame(layer) {
+    const frame = layer._timelineFrame;
+    if (frame?.matrix && (frame.variant || frame.blur || !isTranslationMatrix(frame.matrix))) return frame;
+    if (frame?.matrix) return null;
+    const matrix = this.getLayerRenderTransform(layer);
+    return isTranslationMatrix(matrix) ? null : { matrix };
   }
 
   // World point -> the layer's rest pixel space (inverse render transform).
@@ -4405,6 +4417,10 @@ class UniCanvasWidget {
     if (!layer || layer.locked) return null;
     if (this.timelinePanel?.blocksPixelTransform(layer)) {
       this.setStatus("Free Transform edits the rest pixels: scale / rotate in the timeline, or go to a frame where the layer is at rest", true);
+      return null;
+    }
+    if (this.getLayerStateOffset(layer).scale) {
+      this.setStatus("This scene state shows the layer depth-scaled: Free Transform edits the stored pixels, so use it in a state without a scale", true);
       return null;
     }
     const existing = this.getLayerTransformDraft(layer);
@@ -5079,6 +5095,7 @@ class UniCanvasWidget {
 
   render() {
     this.poseEditor?.layout();
+    this.poseBake?.syncStagingView?.();
     const ctx = this.canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     const w = this.canvas.width / dpr;
@@ -5265,8 +5282,8 @@ class UniCanvasWidget {
   }
 
   drawRasterLayerVisible(ctx, layer) {
-    const frame = layer._timelineFrame;
-    if (frame?.matrix && (frame.variant || frame.blur || !isTranslationMatrix(frame.matrix))) {
+    const frame = this.getLayerScaledFrame(layer);
+    if (frame) {
       this.drawTimelineLayer(ctx, layer, frame, this._visibleWorldRectForRender, this.view.scale, this.shouldUseLayerLod(layer));
       return;
     }
@@ -5326,8 +5343,8 @@ class UniCanvasWidget {
   }
 
   drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, smoothing = true, useLod = false) {
-    const frame = layer._timelineFrame;
-    if (frame?.matrix && (frame.variant || frame.blur || !isTranslationMatrix(frame.matrix))) {
+    const frame = this.getLayerScaledFrame(layer);
+    if (frame) {
       // A timeline frame with scale / rotation / variant / blur: world -> dest, then the frame.
       const sx = destRect.width / worldRect.width;
       const sy = destRect.height / worldRect.height;
@@ -6407,7 +6424,7 @@ class UniCanvasWidget {
       target.save();
       target.globalAlpha = layer.opacity;
       target.globalCompositeOperation = layer.blendMode || "source-over";
-      if ((layer.hiresCanvas && layer.hiresRect) || layer._timelineFrame) {
+      if ((layer.hiresCanvas && layer.hiresRect) || layer._timelineFrame || layer.stateOffset?.scale) {
         this.drawRasterLayerToWorldRect(target, layer, worldRect, destRect, false);
       } else {
         const offset = this.getLayerStateOffset(layer);
@@ -7077,12 +7094,9 @@ class UniCanvasWidget {
       if (this.panorama) {
         this.panorama.commit();
         const { width, height } = this.panorama.settings;
-        const children = [...this.layers].reverse().filter(layer => isImageLayer(layer) && isLayerEffectivelyVisible(this.layers, layer)).map(layer => ({
-          name: layer.name, left: 0, top: 0, right: width, bottom: height,
-          opacity: Math.round(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          blendMode: layer.blendMode === "source-over" ? "normal" : layer.blendMode,
-          canvas: layer.panoramaCanvas,
-        }));
+        // Groups export as PSD folders with their opacity and blend (vnccs_unicanvas_psd_export.mjs).
+        const children = buildPsdChildren(this.layers, (layer) => (isImageLayer(layer) && layer.panoramaCanvas
+          ? { name: layer.name, left: 0, top: 0, right: width, bottom: height, canvas: layer.panoramaCanvas } : null));
         const buffer = writePsd({ width, height, channels: 3, bitsPerChannel: 8, colorMode: 3, children });
         this.downloadBlob(new Blob([buffer], { type: "application/octet-stream" }), "unicanvas-panorama.psd");
         this.setStatus(`Panorama PSD exported: ${width} × ${height}`); return;
@@ -7099,8 +7113,9 @@ class UniCanvasWidget {
       if (visibleRect.width > maxDimension || visibleRect.height > maxDimension || visibleRect.width * visibleRect.height > maxArea) {
         throw new Error("Canvas is too large for PSD export");
       }
-      const psdLayers = [...visibleLayers].reverse();
-      const children = psdLayers.map((layer, index) => {
+      const exported = new Set(visibleLayers);
+      const children = buildPsdChildren(this.layers, (layer, index) => {
+        if (!exported.has(layer)) return null;
         const crop = this.getCanvasAlphaBounds(layer.canvas);
         const canvas = document.createElement("canvas");
         canvas.width = crop.width;
@@ -7114,9 +7129,6 @@ class UniCanvasWidget {
           top: Math.floor(worldY - visibleRect.y),
           right: Math.floor(worldX - visibleRect.x + canvas.width),
           bottom: Math.floor(worldY - visibleRect.y + canvas.height),
-          opacity: Math.floor(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          hidden: false,
-          blendMode: layer.blendMode === "source-over" ? "normal" : (layer.blendMode || "normal"),
           canvas,
         };
       });
@@ -7131,7 +7143,7 @@ class UniCanvasWidget {
       const buffer = writePsd(psd);
       const blob = new Blob([buffer], { type: "application/octet-stream" });
       this.downloadBlob(blob, `unicanvas-layers-${new Date().toISOString().slice(0, 10)}.psd`);
-      this.setStatus(`PSD exported: ${children.length} layers`);
+      this.setStatus(`PSD exported: ${countPsdLayers(children)} layers`);
     } catch (err) {
       this.setStatus(`PSD failed: ${err.message || err}`, true);
     }
@@ -8120,7 +8132,7 @@ class UniCanvasWidget {
         if (layer.type === "control") layer.control = normalizeControlState(item.control);
         if (layer.type === "control" && item.controlSource) layer.controlSource = normalizeControlSource(item.controlSource) || undefined;
         const stateOffset = !isMaskSectionLayer(item) ? normalizeStateOffset(item.stateOffset) : null;
-        if (stateOffset && (stateOffset.x || stateOffset.y)) layer.stateOffset = stateOffset;
+        if (stateOffset && (stateOffset.x || stateOffset.y || stateOffset.scale)) layer.stateOffset = stateOffset;
         if (item.dataURL) {
           const img = await this.loadImage(item.dataURL);
           if (restoredPanorama) {

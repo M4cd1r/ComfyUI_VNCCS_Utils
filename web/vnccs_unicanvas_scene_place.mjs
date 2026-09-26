@@ -13,7 +13,8 @@
  * - Depth-scale (corner bar, next to Snap to grid) makes the move tool rescale a character layer
  *   around its feet during the drag. Pixels are always resampled from the layer's source
  *   (`hiresCanvas` when present), so repeated moves never degrade; the drag stays one history
- *   entry of the move tool.
+ *   entry of the move tool. It covers pose layers (baked characters scale with them), sprite
+ *   sets, raster layers in a `Characters` folder and raster layers above the background.
  * - Scene light (Plan 08.2, #19): `widget.sceneLight = { azimuth, elevation, color, intensity,
  *   ambientColor, ambientIntensity }` is serialized with the state and drives the shadow layers
  *   (vnccs_unicanvas_harmonize.mjs). Azimuth is measured around the vertical axis: 0 is a light on
@@ -27,8 +28,9 @@
  * serialize / history hooks exported here.
  */
 
-import { isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { groupChainOf, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { feetPlacement, isZeroStateOffset, stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs";
 
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
 export const PERSPECTIVE_TOOL = "perspective";
@@ -259,16 +261,31 @@ export function measureLayerCharacter(uc, layer) {
 export function backgroundLayer(uc) {
   for (let index = uc.layers.length - 1; index >= 0; index -= 1) {
     const layer = uc.layers[index];
-    if ((layer.type === "raster" || layer.type === "panorama") && isLayerEffectivelyVisible(uc.layers, layer) && uc.getLayerAlphaBounds(layer)) return layer;
+    if (layer.type !== "raster" && layer.type !== "panorama") continue;
+    if (isLayerEffectivelyVisible(uc.layers, layer) && !isInCharactersFolder(uc.layers, layer) && uc.getLayerAlphaBounds(layer)) return layer;
   }
   return null;
 }
 
-/** Layers the depth scale applies to: pose layers and raster layers above the background. */
+/** The auto-filing folder of character layers (vnccs_unicanvas_filing.mjs), matched case-insensitively. */
+export const CHARACTERS_FOLDER = "Characters";
+
+/** True when the layer sits in a `Characters` folder, directly or in a character subfolder. */
+export function isInCharactersFolder(layers, layer) {
+  const name = CHARACTERS_FOLDER.toLowerCase();
+  return groupChainOf(layers, layer).some((group) => String(group.name || "").trim().toLowerCase() === name);
+}
+
+/**
+ * Layers the depth scale applies to: pose layers (baked or not), sprite sets, anything in a
+ * `Characters` folder, and raster layers above the background.
+ */
 export function isDepthScaleLayer(uc, layer) {
-  if (!layer || layer.type === "mask" || isLayerEffectivelyLocked(uc.layers, layer)) return false;
-  if (layer.type === "pose") return true;
-  return layer.type === "raster" && layer !== backgroundLayer(uc);
+  if (!layer || layer.type === "mask" || isGroupLayer(layer) || isLayerEffectivelyLocked(uc.layers, layer)) return false;
+  if (layer.type === "pose" || layer.type === "sprite") return true;
+  if (layer.type !== "raster") return false;
+  // A character raster is never "the background", even when it is the lowest raster layer.
+  return isInCharactersFolder(uc.layers, layer) || layer !== backgroundLayer(uc);
 }
 
 function scaleAround(rect, from, to, scale) {
@@ -326,6 +343,44 @@ function beginDepthScale(uc, layer, start) {
   };
 }
 
+/**
+ * A depth-scaled move inside a scene state (vnccs_unicanvas_states.mjs, "Move affects: this
+ * state"): the rest pixels are measured as in the base state, the drag starts from the feet
+ * where the state shows them, and the result is a render-time placement (move + scale around
+ * the rest feet) in the state's offset. Pixels are never resampled.
+ */
+function beginStateDepthScale(uc, layer, start) {
+  if (!isDepthScaleLayer(uc, layer) || !start.stateOffsetBefore) return null;
+  const perspective = perspectiveState(uc);
+  if (!isPerspectiveCalibrated(perspective)) {
+    uc.setStatus("Depth-scale: set the horizon and calibrate first (Perspective tool, G).", true);
+    return null;
+  }
+  const measured = measureSource(layerSource(uc, layer));
+  if (!measured || measured.rect.height < 2) return null;
+  return {
+    character: measured.rect,
+    restFeet: measured.feet,
+    feet: stateOffsetPoint(start.stateOffsetBefore, measured.feet),
+    factor: layerHeightFactor(layer),
+  };
+}
+
+/** The live placement of a state depth drag at `point`; shown at once, committed on release. */
+function updateStateDepthScale(uc, start, point) {
+  const layer = uc.layers.find((item) => item.id === start.layerId);
+  if (!layer) return;
+  const drag = start.stateDepthScale;
+  const placement = depthScalePlacement(perspectiveState(uc), drag, point, start.point);
+  const next = feetPlacement(drag.restFeet, placement.feet, placement.scale);
+  if (isZeroStateOffset(next)) delete layer.stateOffset;
+  else layer.stateOffset = next;
+  start.stateDepthOffset = next;
+  start.stateDepthPlacement = placement;
+  start.previewDx = 0;
+  start.previewDy = 0;
+}
+
 /** Rect of `rect` after the placement; snapped to whole pixels, and to the source size when unscaled. */
 function placedRect(rect, placement, source) {
   const next = scaleAround(rect, placement.anchor, { x: placement.anchor.x + placement.dx, y: placement.anchor.y + placement.dy }, placement.scale);
@@ -352,9 +407,22 @@ function commitDepthScale(uc, layer, drag, placement, allowExpand) {
     layer.hiresRect = { ...rect };
   }
   if (layer.pose && drag.poseRect) layer.pose.rect = placedRect(drag.poseRect, placement, null);
+  // Layer kinds with their own geometry follow the same placement: baked characters
+  // (vnccs_unicanvas_bake.mjs) and sprite sets (vnccs_unicanvas_sprites.mjs).
+  const map = placementMap(placement);
+  uc.poseBake?.onDepthScale?.(layer, map, drag.poseRect);
+  uc.sprites?.onDepthScale?.(layer, map);
   uc.invalidateLayerRenderCaches(layer);
   layer._boundsCache = undefined;
   return true;
+}
+
+/** A depth-scale placement as world-point and world-rect maps (scale around the feet, then move). */
+export function placementMap(placement) {
+  const { anchor, dx, dy, scale } = placement;
+  const point = (p) => ({ x: anchor.x + dx + (p.x - anchor.x) * scale, y: anchor.y + dy + (p.y - anchor.y) * scale });
+  const rect = (r) => ({ ...point(r), width: r.width * scale, height: r.height * scale });
+  return { point, rect, scale };
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +537,7 @@ export function drawScenePlaceOverlay(uc, ctx) {
 function drawPerspectiveOverlay(uc, ctx) {
   const state = uc._scenePlace;
   const perspective = perspectiveState(uc);
-  const dragging = uc.pointerMode === "layer-move" && uc.dragStart?.depthScale;
+  const dragging = uc.pointerMode === "layer-move" && (uc.dragStart?.depthScale || uc.dragStart?.stateDepthScale);
   if (uc.tool !== PERSPECTIVE_TOOL && !dragging) return;
   const visible = uc.visibleWorldRect();
   if (perspective.horizonY !== null) {
@@ -530,8 +598,8 @@ function lightGizmoGeometry(uc) {
   if (!measured) return null;
   // Where the character shows: its scene-state offset (vnccs_unicanvas_states.mjs) included.
   const offset = typeof uc.getLayerStateOffset === "function" ? uc.getLayerStateOffset(layer) : null;
-  let center = { x: measured.feet.x + (offset?.x || 0), y: measured.feet.y + (offset?.y || 0) };
-  let height = measured.rect.height;
+  let center = stateOffsetPoint(offset, measured.feet);
+  let height = measured.rect.height * (offset?.scale || 1);
   const preview = uc.getLayerMovePreview(layer);
   if (preview) {
     const scale = preview.scale || 1;
@@ -918,6 +986,38 @@ export async function backgroundDepth(uc, layer) {
   return result;
 }
 
+/**
+ * The cached depth of a layer's current pixels in rect-relative form, for a background asset
+ * (vnccs_unicanvas_library.mjs): `{ depthDataURL, width, height, horizon }` with `horizon` a
+ * fraction of the rect height (or null). Null when nothing is cached for these pixels.
+ */
+export function cachedBackgroundDepth(uc, layer) {
+  const cached = layer && uc._scenePlace?.depthCache.get(`${layer.id}:${layer.pixelRevision ?? 0}`);
+  if (!cached?.depth || !(cached.rect?.height > 0)) return null;
+  return {
+    depthDataURL: cached.depth, width: cached.width, height: cached.height,
+    horizon: cached.horizonY === null ? null : (cached.horizonY - cached.rect.y) / cached.rect.height,
+  };
+}
+
+/**
+ * Seeds the depth cache of a layer's current pixels from a stored depth (see
+ * cachedBackgroundDepth), so "Estimate from background" and occluders reuse it. `depthURL` is
+ * where the stored depth PNG loads from. Returns true when the cache was seeded.
+ */
+export function seedBackgroundDepth(uc, layer, stored, depthURL) {
+  const state = uc._scenePlace;
+  const source = state && layerSource(uc, layer);
+  const width = Number(stored?.width), height = Number(stored?.height), horizon = finite(stored?.horizon);
+  if (!source || !depthURL || !(width > 0) || !(height > 0)) return false;
+  for (const key of state.depthCache.keys()) if (key.startsWith(`${layer.id}:`)) state.depthCache.delete(key);
+  state.depthCache.set(`${layer.id}:${layer.pixelRevision ?? 0}`, {
+    depth: depthURL, width, height, rect: source.rect,
+    horizonY: horizon === null ? null : source.rect.y + horizon * source.rect.height,
+  });
+  return true;
+}
+
 async function estimateFromBackground(uc) {
   const state = uc._scenePlace;
   const layer = backgroundLayer(uc);
@@ -1058,6 +1158,15 @@ export function installUniCanvasScenePlace(uc) {
   const originalUpdateLayerMovePreview = uc.updateLayerMovePreview;
   uc.updateLayerMovePreview = (point) => {
     const start = uc.dragStart;
+    if (start?.stateMove) {
+      // A single-layer move in "this state" depth-scales in the state's offset.
+      if (start.depthScale === undefined) {
+        start.depthScale = null;
+        start.stateDepthScale = depthScaleActive(uc) ? beginStateDepthScale(uc, uc.activeLayer, start) : null;
+      }
+      if (start.stateDepthScale) return updateStateDepthScale(uc, start, point);
+      return Reflect.apply(originalUpdateLayerMovePreview, uc, [point]);
+    }
     // A group or multi-selection move (vnccs_unicanvas_groups.mjs) keeps its plain offset.
     if (start && start.depthScale === undefined) start.depthScale = depthScaleActive(uc) && !start.moveTargets ? beginDepthScale(uc, uc.activeLayer, start) : null;
     if (!start?.depthScale) return Reflect.apply(originalUpdateLayerMovePreview, uc, [point]);
@@ -1187,6 +1296,6 @@ export function restoreSceneLight(uc, raw) {
 
 /** Read-only view of the running depth-scaled drag for the E2E hook. */
 export function describeDepthScaleDrag(uc) {
-  const placement = uc.pointerMode === "layer-move" ? uc.dragStart?.depthPlacement : null;
+  const placement = uc.pointerMode === "layer-move" ? (uc.dragStart?.depthPlacement || uc.dragStart?.stateDepthPlacement) : null;
   return placement ? { height: placement.height, scale: placement.scale, feet: { ...placement.feet } } : null;
 }

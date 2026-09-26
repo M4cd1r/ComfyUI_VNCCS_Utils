@@ -3,7 +3,8 @@
  *
  *  - Data model: `widget.sceneStates = { activeStateId, moveScope, newLayersHidden, states }`.
  *    A state stores per-layer properties keyed by layer id, never pixels: raster and pose
- *    layers keep { visible, opacity, blendMode, offset }, groups keep { visible, opacity }.
+ *    layers keep { visible, opacity, blendMode, offset }, groups keep { visible, opacity }; pose
+ *    layers add `showMannequin` and sprite layers `spriteVariantId` (VIEW_PARTS, additive).
  *    Layers a state does not know keep their current properties when it is applied.
  *  - Offsets: the live offset of a layer is `layer.stateOffset` (world pixels). It is applied
  *    at render time through widget.getLayerStateOffset (viewport, flatten, export, generation
@@ -22,6 +23,7 @@
  */
 
 import { getGroupDescendants, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible, topLevelSelection } from "./vnccs_unicanvas_groups.mjs";
+import { isZeroStateOffset, normalizeStateOffset, sameStateOffset } from "./vnccs_unicanvas_state_offset.mjs";
 
 export const SCENE_STATE_HISTORY_KINDS = new Set(["applySceneState", "sceneStates", "sceneStateOffset"]);
 export const MOVE_SCOPE_STATE = "state";
@@ -35,27 +37,63 @@ const clamp01 = (value, fallback = 1) => (Number.isFinite(Number(value)) ? Math.
 
 // Pure helpers ---------------------------------------------------------------------------------
 
-/** An integer world-pixel offset; anything malformed is { x: 0, y: 0 }. */
-export function normalizeStateOffset(value) {
-  const x = Number(value?.x);
-  const y = Number(value?.y);
-  return { x: Number.isFinite(x) ? Math.round(x) : 0, y: Number.isFinite(y) ? Math.round(y) : 0 };
-}
+// The offset shape (a move plus an optional depth scale) lives in vnccs_unicanvas_state_offset.mjs.
+export { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, feetPlacement } from "./vnccs_unicanvas_state_offset.mjs";
 
-const isZeroOffset = (offset) => !offset || (!offset.x && !offset.y);
+const isZeroOffset = isZeroStateOffset;
 
 /** Layers a state can capture: everything but masks. */
 export const isStateLayer = (layer) => Boolean(layer && layer.id && layer.type !== "mask");
 
+/**
+ * View parts a state switches on top of the shared properties: a pose layer's "Show
+ * mannequin" (character bake, #5) and a sprite layer's active variant (#6). Each part owns one
+ * key of the state entry; `apply` returns true when the layer's view changed, so the widget
+ * rebuilds that layer's pixels. Entries saved before a part existed simply lack its key.
+ */
+const VIEW_PARTS = Object.freeze([
+  {
+    key: "showMannequin",
+    applies: (layer) => layer?.type === "pose" && Boolean(layer.pose),
+    read: (layer) => layer.pose?.bake?.showMannequin === true,
+    normalize: (value) => (typeof value === "boolean" ? value : undefined),
+    apply(layer, value) {
+      if ((layer.pose.bake?.showMannequin === true) === value) return false;
+      layer.pose.bake = { characters: {}, ...(layer.pose.bake || {}), showMannequin: value };
+      return true;
+    },
+  },
+  {
+    key: "spriteVariantId",
+    applies: (layer) => layer?.type === "sprite" && Boolean(layer.sprite),
+    read: (layer) => layer.sprite?.activeVariantId || undefined,
+    normalize: (value) => (typeof value === "string" && value ? value : undefined),
+    apply(layer, value) {
+      const sprite = layer.sprite;
+      if (sprite.activeVariantId === value) return false;
+      // Only a ready variant can show: a deleted or empty one keeps the current variant.
+      if (!sprite.variants?.some((variant) => variant.id === value && variant.status === "ready")) return false;
+      sprite.activeVariantId = value;
+      return true;
+    },
+  },
+]);
+export const SCENE_STATE_VIEW_KEYS = Object.freeze(VIEW_PARTS.map((part) => part.key));
+
 /** The properties one state stores for one layer. */
 export function captureLayerState(layer) {
   if (isGroupLayer(layer)) return { visible: layer.visible !== false, opacity: clamp01(layer.opacity) };
-  return {
+  const entry = {
     visible: layer.visible !== false,
     opacity: clamp01(layer.opacity),
     blendMode: typeof layer.blendMode === "string" && layer.blendMode ? layer.blendMode : "source-over",
     offset: normalizeStateOffset(layer.stateOffset),
   };
+  for (const part of VIEW_PARTS) {
+    const value = part.applies(layer) ? part.read(layer) : undefined;
+    if (value !== undefined) entry[part.key] = value;
+  }
+  return entry;
 }
 
 export function captureSceneLayers(layers) {
@@ -72,14 +110,30 @@ function normalizeLayerEntry(entry, group) {
   if (!group) {
     if (typeof entry.blendMode === "string" && entry.blendMode) out.blendMode = entry.blendMode;
     if (entry.offset !== undefined) out.offset = normalizeStateOffset(entry.offset);
+    for (const part of VIEW_PARTS) {
+      const value = part.normalize(entry[part.key]);
+      if (value !== undefined) out[part.key] = value;
+    }
   }
   return out;
 }
 
-/** Sets the stored properties on one layer (only the keys the entry has). */
+/** True when applying `entry` would switch a view part (bake view, sprite variant) of the layer. */
+export function layerStateChangesView(layer, entry) {
+  if (!layer || !entry || isGroupLayer(layer)) return false;
+  return VIEW_PARTS.some((part) => {
+    const value = part.applies(layer) ? part.normalize(entry[part.key]) : undefined;
+    return value !== undefined && value !== part.read(layer);
+  });
+}
+
+/**
+ * Sets the stored properties on one layer (only the keys the entry has). Returns true when a
+ * view part changed, so the caller rebuilds that layer's pixels.
+ */
 export function applyLayerState(layer, entry) {
   const props = normalizeLayerEntry(entry, isGroupLayer(layer));
-  if (!layer || !props) return;
+  if (!layer || !props) return false;
   if ("visible" in props) layer.visible = props.visible;
   if ("opacity" in props) layer.opacity = props.opacity;
   if ("blendMode" in props) layer.blendMode = props.blendMode;
@@ -87,31 +141,37 @@ export function applyLayerState(layer, entry) {
     if (isZeroOffset(props.offset)) delete layer.stateOffset;
     else layer.stateOffset = { ...props.offset };
   }
+  let viewChanged = false;
+  for (const part of VIEW_PARTS) {
+    if (part.key in props && part.applies(layer) && part.apply(layer, props[part.key])) viewChanged = true;
+  }
+  return viewChanged;
 }
 
 /**
  * Applies a { [layerId]: entry } map to the layers it names and returns the previous
  * properties of exactly those layers (the undo half of an applySceneState entry).
+ * `view.before(layer)` runs before a view part of the layer switches (sprites keep unsynced
+ * paint), `view.after(layer)` once it switched (the layer's pixels are rebuilt).
  */
-export function applySceneLayers(layers, map) {
+export function applySceneLayers(layers, map, view = null) {
   const previous = {};
   if (!map) return previous;
   for (const layer of layers || []) {
     if (!isStateLayer(layer) || !map[layer.id]) continue;
     previous[layer.id] = captureLayerState(layer);
-    applyLayerState(layer, map[layer.id]);
+    if (view?.before && layerStateChangesView(layer, map[layer.id])) view.before(layer);
+    if (applyLayerState(layer, map[layer.id])) view?.after?.(layer);
   }
   return previous;
 }
 
 export function sameLayerState(a, b) {
   if (!a || !b) return false;
-  for (const key of ["visible", "opacity", "blendMode"]) {
+  for (const key of ["visible", "opacity", "blendMode", ...SCENE_STATE_VIEW_KEYS]) {
     if (key in a && key in b && (key === "opacity" ? Math.abs(a[key] - b[key]) > 1e-4 : a[key] !== b[key])) return false;
   }
-  const ao = normalizeStateOffset(a.offset);
-  const bo = normalizeStateOffset(b.offset);
-  return ("offset" in a && "offset" in b) ? ao.x === bo.x && ao.y === bo.y : true;
+  return ("offset" in a && "offset" in b) ? sameStateOffset(a.offset, b.offset) : true;
 }
 
 /** True when the live layers differ from what the state stores for them. */
@@ -306,6 +366,25 @@ function busy(uc) {
   return false;
 }
 
+// How the widget rebuilds a layer whose view part a state switched (see VIEW_PARTS).
+function layerView(uc) {
+  return {
+    before(layer) {
+      // A sprite copies unsynced paint into the variant that is still active.
+      if (layer.type === "sprite") uc.sprites?.syncFromCanvas?.(layer);
+    },
+    after(layer) {
+      if (layer.type === "pose") uc.poseBake?.rebuildView?.(layer);
+      else if (layer.type === "sprite") uc.sprites?.redraw?.(layer);
+      uc.refreshLayerRow?.(layer.id);
+    },
+  };
+}
+
+function applyToLayers(uc, map) {
+  return applySceneLayers(uc.layers, map, layerView(uc));
+}
+
 function afterPropertyChange(uc) {
   uc.renderLayerList?.();
   uc.syncActiveLayerControls?.();
@@ -323,11 +402,11 @@ function afterListChange(uc) {
 // Runs `fn` with the state's properties applied to the layers, then restores the live ones.
 // Synchronous: nothing renders in between, so the viewport never shows the temporary state.
 export function withSceneStateApplied(uc, state, fn) {
-  const previous = applySceneLayers(uc.layers, state?.layers);
+  const previous = applyToLayers(uc, state?.layers);
   try {
     return fn();
   } finally {
-    applySceneLayers(uc.layers, previous);
+    applyToLayers(uc, previous);
   }
 }
 
@@ -466,7 +545,7 @@ export function applySceneState(uc, id, { record = true } = {}) {
   if (!state || busy(uc)) return false;
   endPreview(uc);
   const previousStateId = scene(uc).activeStateId;
-  const before = applySceneLayers(uc.layers, state.layers);
+  const before = applyToLayers(uc, state.layers);
   const after = {};
   for (const layerId of Object.keys(before)) after[layerId] = { ...state.layers[layerId] };
   scene(uc).activeStateId = state.id;
@@ -489,7 +568,7 @@ export function previewSceneState(uc, id) {
   endPreview(uc, false);
   const state = findState(uc, id);
   if (!state) return;
-  uc._scenePreview = { id, previous: applySceneLayers(uc.layers, state.layers) };
+  uc._scenePreview = { id, previous: applyToLayers(uc, state.layers) };
   uc.requestRender?.();
 }
 
@@ -497,7 +576,7 @@ export function endPreview(uc, render = true) {
   const preview = uc._scenePreview;
   if (!preview) return;
   uc._scenePreview = null;
-  applySceneLayers(uc.layers, preview.previous);
+  applyToLayers(uc, preview.previous);
   if (render) uc.requestRender?.();
 }
 
@@ -506,7 +585,7 @@ export function endPreview(uc, render = true) {
 function stateMoveTargets(uc) {
   const layers = uc.layers;
   const byId = new Map(layers.map((layer) => [layer.id, layer]));
-  const ids = uc.selectedLayerIds?.length > 1 ? topLevelSelection(layers, uc.selectedLayerIds) : [uc.activeLayerId];
+  const ids = uc.selectedLayerIds?.length > 1 ? topLevelSelection(layers, uc.selectedLayerIds).map((layer) => layer.id) : [uc.activeLayerId];
   const targets = [];
   for (const id of ids) {
     const layer = byId.get(id);
@@ -527,8 +606,8 @@ export function getSceneStateMoveScope(uc) {
 
 export function beginSceneStateMove(uc) {
   if (!uc.dragStart) return false;
-  // Depth scaling (vnccs_unicanvas_scene_place.mjs) measures the stored pixels and states have
-  // no per-state scale, so a state move, or a move of an offset layer, stays a plain move.
+  // A pixel move of a layer the active state offsets stays plain: depth scaling
+  // (vnccs_unicanvas_scene_place.mjs) would resample pixels the state shows elsewhere.
   const plain = () => { uc.dragStart.depthScale = null; };
   if (getSceneStateMoveScope(uc) !== MOVE_SCOPE_STATE) {
     if (!uc.panorama && !isZeroOffset(normalizeStateOffset(uc.activeLayer?.stateOffset))) plain();
@@ -537,12 +616,16 @@ export function beginSceneStateMove(uc) {
   const targets = stateMoveTargets(uc);
   if (!targets.length) return false;
   endPreview(uc, false);
-  plain();
   uc.pointerMode = "layer-move";
   uc.dragStart.stateMove = true;
   uc.dragStart.layerId = uc.activeLayerId;
   uc.dragStart.moveLayerIds = new Set(targets.map((layer) => layer.id));
   uc.dragStart.stateMoveLayerIds = targets.map((layer) => layer.id);
+  // One layer moved in this state depth-scales like a base-state move, as a render-time scale
+  // in the state's offset (scene_place writes `stateDepthOffset` during the drag).
+  if (targets.length === 1 && targets[0].id === uc.activeLayerId) {
+    uc.dragStart.stateOffsetBefore = normalizeStateOffset(targets[0].stateOffset);
+  } else plain();
   return true;
 }
 
@@ -567,13 +650,17 @@ export function commitSceneStateMove(uc, dragStart) {
   const state = activeState(uc);
   const dx = Math.round(dragStart?.previewDx || 0);
   const dy = Math.round(dragStart?.previewDy || 0);
-  if (!state || (!dx && !dy)) return;
+  const depth = dragStart?.stateDepthOffset && dragStart.stateOffsetBefore ? dragStart : null;
+  if (!state || (!depth && !dx && !dy)) return;
+  if (depth && sameStateOffset(depth.stateDepthOffset, depth.stateOffsetBefore)) return;
   const changes = {};
   for (const layerId of dragStart.stateMoveLayerIds || []) {
     const layer = uc.layers.find((item) => item.id === layerId);
     if (!layer) continue;
-    const liveBefore = normalizeStateOffset(layer.stateOffset);
-    const liveAfter = { x: liveBefore.x + dx, y: liveBefore.y + dy };
+    // A depth-scaled drag already shows its placement live; the entry starts from the offset
+    // the drag started with.
+    const liveBefore = depth ? normalizeStateOffset(depth.stateOffsetBefore) : normalizeStateOffset(layer.stateOffset);
+    const liveAfter = depth ? normalizeStateOffset(depth.stateDepthOffset) : { ...liveBefore, x: liveBefore.x + dx, y: liveBefore.y + dy };
     const existing = state.layers[layerId];
     const entryBefore = existing ? JSON.parse(JSON.stringify(existing)) : null;
     const base = entryBefore ? { ...captureLayerState(layer), ...entryBefore } : captureLayerState(layer);
@@ -603,7 +690,7 @@ export function applySceneStateHistory(uc, entry, direction) {
   endPreview(uc, false);
   const undo = direction === "undo";
   if (entry.kind === "applySceneState") {
-    applySceneLayers(uc.layers, undo ? entry.before : entry.after);
+    applyToLayers(uc, undo ? entry.before : entry.after);
     const id = undo ? entry.previousStateId : entry.stateId;
     scene(uc).activeStateId = findState(uc, id) ? id : null;
     afterPropertyChange(uc);

@@ -343,3 +343,38 @@ test("scenes: new, switch, duplicate without uploads, reorder", async () => {
   await session.reorderScenes(order);
   assert.deepEqual(session.project.scenes.map((scene) => scene.id), order);
 });
+
+test("thumbnails: an unchanged scene still sends a due thumbnail, a throttled one goes with a trailing save", async () => {
+  const server = fakeServer();
+  const bodies = [];
+  const fetchImpl = (url, init = {}) => {
+    if ((init.method || "GET") === "PUT" && url.includes("/scenes/")) bodies.push(JSON.parse(init.body));
+    return server.fetch(url, init);
+  };
+  const widget = fakeWidget({ layers: [layer("a", "one")] });
+  let clock = 100_000;
+  const session = new UniCanvasProjectSession(widget, { fetchImpl, storage: null, now: () => clock });
+  widget.projectSession = session;
+  let thumbs = 0;
+  session.buildThumbnail = () => `thumb-${(thumbs += 1)}`;
+  assert.equal(await session.save(), true);
+  assert.equal(bodies.at(-1).thumbnail, "thumb-1");
+
+  // An edit inside the throttle interval saves without a thumbnail...
+  paint(widget.layers[0], "two");
+  clock += 1000;
+  assert.equal(await session.save(), true);
+  assert.equal(bodies.at(-1).thumbnail, undefined);
+  assert.equal(session.thumbnailDirty, true);
+  // ...and once the interval has passed, a save with no other change sends it.
+  clock += 10_000;
+  const count = bodies.length;
+  assert.equal(await session.save(), true);
+  assert.equal(bodies.length, count + 1);
+  assert.equal(bodies.at(-1).thumbnail, "thumb-2");
+  assert.equal(session.thumbnailDirty, false);
+  // Nothing dirty: an unchanged scene does not write again.
+  assert.equal(await session.save(), true);
+  assert.equal(bodies.length, count + 1);
+  session.dispose();
+});

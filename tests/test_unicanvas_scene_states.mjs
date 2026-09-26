@@ -140,6 +140,43 @@ test("normalizeSceneStates is additive and tolerant", () => {
   assert.deepEqual(scene.states[1].layers.a, { visible: false, offset: { x: 2, y: 0 } });
 });
 
+test("states capture showMannequin and the sprite variant, and old entries without them still apply", () => {
+  const pose = layer("p", { type: "pose", pose: { rect: { x: 0, y: 0, width: 10, height: 10 }, bake: { characters: {}, showMannequin: false } } });
+  const sprite = layer("s", { type: "sprite", sprite: { activeVariantId: "v1", variants: [
+    { id: "v1", status: "ready" }, { id: "v2", status: "ready" }, { id: "v3", status: "empty" }] } });
+  const captured = captureSceneLayers([pose, sprite]);
+  assert.equal(captured.p.showMannequin, false);
+  assert.equal(captured.s.spriteVariantId, "v1");
+  assert.equal("spriteVariantId" in captured.p, false);
+
+  const rebuilt = [];
+  const synced = [];
+  const view = { before: (item) => synced.push(item.id), after: (item) => rebuilt.push(item.id) };
+  const previous = applySceneLayers([pose, sprite], { p: { showMannequin: true }, s: { spriteVariantId: "v2" } }, view);
+  assert.equal(pose.pose.bake.showMannequin, true);
+  assert.equal(sprite.sprite.activeVariantId, "v2");
+  assert.deepEqual(rebuilt, ["p", "s"]);
+  assert.deepEqual(synced, ["p", "s"]);
+  assert.equal(sceneLayersDiffer([pose, sprite], { layers: captured }), true);
+  applySceneLayers([pose, sprite], previous, view);
+  assert.equal(pose.pose.bake.showMannequin, false);
+  assert.equal(sprite.sprite.activeVariantId, "v1");
+  assert.equal(sceneLayersDiffer([pose, sprite], { layers: captured }), false);
+
+  // An empty or deleted variant never becomes active; unchanged parts rebuild nothing.
+  rebuilt.length = 0;
+  applySceneLayers([pose, sprite], { s: { spriteVariantId: "v3" }, p: { showMannequin: false } }, view);
+  assert.equal(sprite.sprite.activeVariantId, "v1");
+  assert.deepEqual(rebuilt, []);
+  // Old entries (before #5 / #6) lack the keys and leave the view as it is.
+  const legacy = normalizeSceneStates({ states: [{ id: "old", layers: { s: { visible: true, blendMode: "normal", offset: { x: 0, y: 0 } } } }] });
+  applySceneLayers([sprite], legacy.states[0].layers, view);
+  assert.equal(sprite.sprite.activeVariantId, "v1");
+  const restored = normalizeSceneStates({ states: [{ id: "n", layers: { s: { visible: true, blendMode: "normal", spriteVariantId: "v2" }, p: { visible: true, blendMode: "normal", showMannequin: true } } }] });
+  assert.equal(restored.states[0].layers.s.spriteVariantId, "v2");
+  assert.equal(restored.states[0].layers.p.showMannequin, true);
+});
+
 test("export names are safe and unique", () => {
   assert.deepEqual(exportFileNames(["Day", "day", "a/b:c", "..", ""]), ["Day", "day-2", "a_b_c", "state-4", "state-5"]);
 });
@@ -246,8 +283,10 @@ test("Alt+digit applies states by index", () => {
 
 test("the widget routes composites, bounds and tools through the state offset", () => {
   for (const pattern of [
-    // The render transform (issue #9) is the state offset plus the timeline frame.
-    /getLayerRenderTransform\(layer\) \{[\s\S]{0,200}const offset = this\.getLayerStateOffset\(layer\);\n\s+return \[1, 0, 0, 1, offset\.x, offset\.y\];/,
+    // The render transform (issue #9) is the state offset (a move, or a move and a per-state
+    // depth scale, #33) plus the timeline frame; scaled placements draw through the frame path.
+    /getLayerRenderTransform\(layer\) \{[\s\S]{0,300}const offset = this\.getLayerStateOffset\(layer\);\n\s+return stateOffsetMatrix\(offset\);/,
+    /drawRasterLayerToWorldRect\(ctx, layer, worldRect, destRect, smoothing = true, useLod = false\) \{\n\s+const frame = this\.getLayerScaledFrame\(layer\);/,
     /const renderMatrix = this\.getLayerRenderTransform\(layer\);\n\s+const stateOffset = \{ x: renderMatrix\[4\], y: renderMatrix\[5\] \};/,
     /target\.drawImage\(layer\.canvas, offset\.x, offset\.y\)/,
     /getLayerWorldBounds\(layer = this\.activeLayer\) \{[\s\S]{0,160}getLayerRenderTransform/,
@@ -260,4 +299,48 @@ test("the widget routes composites, bounds and tools through the state offset", 
   ]) {
     assert.match(widgetSource, pattern);
   }
+});
+
+test("a depth-scaled move in one state stores a scale around the feet in that state only (#33)", () => {
+  const ben = layer("ben", { stateOffset: { x: 10, y: 0 } });
+  const uc = fakeWidget([ben, layer("bg")]);
+  const a = newStateFromCurrent(uc);
+  const b = newStateFromCurrent(uc);
+  assert.equal(getSceneStateMoveScope(uc), MOVE_SCOPE_STATE);
+  uc.activeLayerId = "ben";
+  uc.dragStart = {};
+  assert.ok(beginSceneStateMove(uc));
+  assert.equal(uc.dragStart.depthScale, undefined, "a single-layer state move may depth-scale");
+  assert.deepEqual(uc.dragStart.stateOffsetBefore, { x: 10, y: 0 });
+  // What scene_place writes live during the drag: feet (50, 200) shown at (80, 260), scale 1.5.
+  const next = normalizeStateOffset({ x: 30, y: 60, scale: 1.5, ax: 50, ay: 200 });
+  ben.stateOffset = next;
+  uc.dragStart.stateDepthOffset = next;
+  commitSceneStateMove(uc, uc.dragStart);
+  assert.deepEqual(b.layers.ben.offset, { x: 30, y: 60, scale: 1.5, ax: 50, ay: 200 });
+  assert.deepEqual(a.layers.ben.offset, { x: 10, y: 0 }, "the other state keeps its placement");
+  assert.deepEqual(serializeStateOffset(uc, ben).stateOffset, { x: 30, y: 60, scale: 1.5, ax: 50, ay: 200 });
+  const entry = uc.undoStack.at(-1);
+  assert.equal(entry.kind, "sceneStateOffset");
+  assert.deepEqual(entry.changes.ben.liveBefore, { x: 10, y: 0 });
+  applySceneStateHistory(uc, entry, "undo");
+  assert.deepEqual(ben.stateOffset, { x: 10, y: 0 });
+  assert.deepEqual(b.layers.ben.offset, { x: 10, y: 0 });
+  applySceneStateHistory(uc, entry, "redo");
+  assert.equal(ben.stateOffset.scale, 1.5);
+  // Saved and loaded, the scale survives; a plain move of the scaled layer keeps it.
+  const restored = normalizeSceneStates(serializeSceneStates(uc));
+  assert.deepEqual(restored.states.find((state) => state.id === b.id).layers.ben.offset, { x: 30, y: 60, scale: 1.5, ax: 50, ay: 200 });
+  uc.dragStart = {};
+  beginSceneStateMove(uc);
+  uc.dragStart.previewDx = 5;
+  commitSceneStateMove(uc, uc.dragStart);
+  assert.deepEqual(ben.stateOffset, { x: 35, y: 60, scale: 1.5, ax: 50, ay: 200 });
+
+  // Several layers move as a plain offset.
+  uc.selectedLayerIds = ["ben", "bg"];
+  uc.dragStart = {};
+  assert.ok(beginSceneStateMove(uc), "a multi-selection moves in the state");
+  assert.deepEqual(uc.dragStart.stateMoveLayerIds, ["ben", "bg"]);
+  assert.equal(uc.dragStart.depthScale, null);
 });

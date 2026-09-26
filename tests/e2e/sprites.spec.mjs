@@ -82,19 +82,19 @@ test("sprite set: create, add presets, generate missing in one undo step, switch
   expect(Math.abs(state.anchor.x - (bbox.x + bbox.width / 2))).toBeLessThanOrEqual(2);
   expect(Math.abs(state.anchor.y - (bbox.y + bbox.height))).toBeLessThanOrEqual(2);
 
-  // Presets: 15 variants, all but neutral empty.
+  // Presets: the base plus 15 empty expressions (neutral included, #6).
   await page.locator(`${PANEL} [data-sprite-action="add-presets"]`).click();
   state = await sprite(page, id);
-  expect(state.variants).toHaveLength(15);
-  expect(state.variants.filter((variant) => variant.status === "empty")).toHaveLength(14);
+  expect(state.variants).toHaveLength(16);
+  expect(state.variants.filter((variant) => variant.status === "empty")).toHaveLength(15);
 
   // Face area, then Generate missing.
   await dragFace(page);
   await expect.poll(async () => (await sprite(page, id)).faceRect).not.toBeNull();
   const undoBefore = (await stack(page)).undo;
   await page.locator(`${PANEL} [data-sprite-action="generate-missing"]`).click();
-  await expect.poll(async () => (await sprite(page, id)).variants.filter((variant) => variant.status === "ready").length, { timeout: 60_000 }).toBe(15);
-  expect(draws).toHaveLength(14);
+  await expect.poll(async () => (await sprite(page, id)).variants.filter((variant) => variant.status === "ready").length, { timeout: 60_000 }).toBe(16);
+  expect(draws).toHaveLength(15);
   expect(draws.every((body) => body.mode === "inpaint" && body.mask)).toBe(true);
   expect((await stack(page)).undo).toBe(undoBefore + 1);
   state = await sprite(page, id);
@@ -119,9 +119,9 @@ test("sprite set: create, add presets, generate missing in one undo step, switch
 
   // One undo restores the empty variants; redo brings them back.
   await undo(page);
-  await expect.poll(async () => (await sprite(page, id)).variants.filter((variant) => variant.status === "empty").length).toBe(14);
+  await expect.poll(async () => (await sprite(page, id)).variants.filter((variant) => variant.status === "empty").length).toBe(15);
   await undo(page, true);
-  await expect.poll(async () => (await sprite(page, id)).variants.filter((variant) => variant.status === "ready").length).toBe(15);
+  await expect.poll(async () => (await sprite(page, id)).variants.filter((variant) => variant.status === "ready").length).toBe(16);
 
   // Switching keeps the alpha bbox identical across variants.
   const crop = await hook(page, "getLayerCrop", id);
@@ -163,7 +163,7 @@ test("sprite set: create, add presets, generate missing in one undo step, switch
   await page.waitForTimeout(2500); // standalone persistence is debounced
   await page.reload({ waitUntil: "domcontentloaded" });
   await openUnicanvas(page, { navigate: false });
-  await expect.poll(async () => (await sprite(page, id))?.variants.length ?? 0, { timeout: 30_000 }).toBe(15);
+  await expect.poll(async () => (await sprite(page, id))?.variants.length ?? 0, { timeout: 30_000 }).toBe(16);
   const reloaded = await sprite(page, id);
   expect(reloaded.activeVariantId).toBe(saved.activeVariantId);
   expect(reloaded.rect).toEqual(saved.rect);

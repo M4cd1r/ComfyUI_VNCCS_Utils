@@ -54,6 +54,7 @@ import {
   shadowLengthFactor,
 } from "./vnccs_unicanvas_scene_place.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { normalizeStateOffset, stateOffsetPoint, stateOffsetRect, stateOffsetRestRect } from "./vnccs_unicanvas_state_offset.mjs";
 import { currentNormalPass, isImageLayer } from "./vnccs_unicanvas_pose_state.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 // Import cycle with the layer tools (they list this module's menu entries): only functions and
@@ -213,8 +214,11 @@ export function castShadowStrength(light) {
 /** A layer's live scene-state offset (vnccs_unicanvas_states.mjs); render time only. */
 function stateOffsetOf(uc, layer) {
   const offset = typeof uc.getLayerStateOffset === "function" ? uc.getLayerStateOffset(layer) : null;
-  return { x: offset?.x || 0, y: offset?.y || 0 };
+  return normalizeStateOffset(offset);
 }
+
+/** A cache key part for a state placement (move and depth scale). */
+const offsetKey = (offset) => [offset.x, offset.y, offset.scale ?? 1, offset.ax ?? 0, offset.ay ?? 0].join(":");
 
 function sourceLayerOf(uc, layer) {
   const id = layer?.shadow?.sourceLayerId;
@@ -229,14 +233,15 @@ function transformDraftOf(uc, source) {
 }
 
 /**
- * What the source's silhouette depends on: its pixels and scene-state offset, or, while a Free
- * Transform is open on it, the draft's frame (so the shadow follows the live preview, #19).
+ * What the source's silhouette depends on: its pixels and scene-state offset (move and depth
+ * scale), or, while a Free Transform is open on it, the draft's frame (so the shadow follows the
+ * live preview, #19).
  */
 export function shadowSilhouetteKey(uc, source) {
   const draft = transformDraftOf(uc, source);
   if (draft?.quad) return JSON.stringify([source.id, "transform", draft.quad, draft.mesh || null, draft.sourceBounds || null]);
   const offset = stateOffsetOf(uc, source);
-  return `${source.id}:${source.pixelRevision ?? 0}:${offset.x}:${offset.y}`;
+  return `${source.id}:${source.pixelRevision ?? 0}:${offsetKey(offset)}`;
 }
 
 /**
@@ -432,7 +437,7 @@ function shadowKey(uc, layer, source) {
   const preview = uc.getLayerMovePreview(source);
   const ownOffset = stateOffsetOf(uc, layer);
   return JSON.stringify([
-    shadowSilhouetteKey(uc, source), ownOffset.x, ownOffset.y,
+    shadowSilhouetteKey(uc, source), offsetKey(ownOffset),
     preview ? [preview.dx || 0, preview.dy || 0, preview.scale || 1, preview.anchor?.x ?? 0, preview.anchor?.y ?? 0] : null,
     normalizeShadow(layer.shadow), normalizeSceneLight(uc.sceneLight), uc.scenePerspective?.horizonY ?? null,
     uc.origin.x, uc.origin.y, layer.canvas.width, layer.canvas.height,
@@ -783,11 +788,11 @@ function characterPlacement(uc, layer) {
   const measured = measureLayerCharacter(uc, layer);
   if (!measured) return null;
   const offset = stateOffsetOf(uc, layer);
-  const r = measured.rect;
-  const x = Math.floor(r.x + offset.x), y = Math.floor(r.y + offset.y);
+  const r = stateOffsetRect(offset, measured.rect);
+  const x = Math.floor(r.x), y = Math.floor(r.y);
   return {
-    rect: { x, y, width: Math.ceil(r.x + offset.x + r.width) - x, height: Math.ceil(r.y + offset.y + r.height) - y },
-    feet: { x: measured.feet.x + offset.x, y: measured.feet.y + offset.y },
+    rect: { x, y, width: Math.ceil(r.x + r.width) - x, height: Math.ceil(r.y + r.height) - y },
+    feet: stateOffsetPoint(offset, measured.feet),
   };
 }
 
@@ -1292,8 +1297,9 @@ export function acceptHarmonizeStaging(uc, staging) {
   if (uc._harmonizePanel?.layer === layer) closeHarmonizePanel(uc, true);
   const before = uc.createLayerPixelSnapshot(layer);
   prepareLayerPixels(uc, layer);
-  const offset = stateOffsetOf(uc, layer);
-  const target = { x: region.x - uc.origin.x - offset.x, y: region.y - uc.origin.y - offset.y, width: region.width, height: region.height };
+  // The shown region back in the layer's stored pixels (state move and depth scale undone).
+  const rest = stateOffsetRestRect(stateOffsetOf(uc, layer), region);
+  const target = { x: rest.x - uc.origin.x, y: rest.y - uc.origin.y, width: rest.width, height: rest.height };
   const ctx = uc.configureImageContext(layer.canvas.getContext("2d"));
   ctx.save();
   ctx.clearRect(target.x, target.y, target.width, target.height);

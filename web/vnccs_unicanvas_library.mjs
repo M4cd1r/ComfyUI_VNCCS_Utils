@@ -17,9 +17,15 @@
  *   props); with the scene's depth scale on (Plan 08) a character is sized for that ground row.
  * - The settings popover gets "Save generation preset to library".
  *
- * Not built yet, because their plans are not merged: sprite sets on characters (Plan 03, #6),
- * the "From library" source of the pose character reference card and default mesh morphs
- * (Plan 01, #4), and the reserved `skin` kind. A character is inserted as a raster layer.
+ * - The pose character reference card lists library characters as a third source
+ *   (`{ source: "library", assetId, assetScope, name, dataURL }`); binding one also sets its
+ *   identity prompt and applies its default mesh morphs (taken from the baked mannequin a
+ *   character layer came from) to that mannequin.
+ * - Background assets keep the depth map estimated for their pixels (`data.depth`), and an
+ *   insert seeds the depth cache with it.
+ * - Characters saved from a sprite layer (Plan 03, #6) carry their sprite set (`data.spriteSet`,
+ *   every variant a PNG blob) and insert as a sprite layer with all variants; other characters
+ *   insert as raster layers. The reserved `skin` kind is not built yet.
  *
  * The widget only calls installUniCanvasLibrary(); the layer menu and the settings popover read
  * `uc.layerMenuExtensions` / `uc.library`.
@@ -27,7 +33,7 @@
 
 import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { expectedHeightAt, isPerspectiveCalibrated, layerHeightFactor, normalizeScenePerspective, editScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { cachedBackgroundDepth, expectedHeightAt, isPerspectiveCalibrated, layerHeightFactor, normalizeScenePerspective, editScenePerspective, seedBackgroundDepth } from "./vnccs_unicanvas_scene_place.mjs";
 import { serializePose } from "./vnccs_unicanvas_pose_state.mjs";
 import { PROJECTS_BASE } from "./vnccs_unicanvas_project.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
@@ -74,6 +80,7 @@ const KIND_CATEGORIES = Object.freeze({ character: "Characters", background: "Ba
 export function saveableKinds(layer) {
   if (!layer || isMaskSectionLayer(layer) || layer.type === "group" || layer.type === "panorama") return [];
   if (layer.type === "pose") return ["pose"];
+  if (layer.type === "sprite") return ["character"];
   const meta = normalizeLayerMeta(layer.meta);
   const raster = ["character", "prop", "background"];
   const suggested = (meta.origin === "asset" && raster.includes(meta.assetKind) && meta.assetKind)
@@ -174,6 +181,62 @@ export function absolutePerspective(relative, rect) {
   };
 }
 
+/**
+ * A character asset's sprite set placed over the world `rect` (integers): the rect-space anchor
+ * and face area scale with it, variant pixels keep their stored resolution (they are drawn
+ * scaled). `urlOf(ref)` turns a stored pixel ref (a blob ref from the server) into a loadable
+ * URL; data URLs pass through.
+ */
+export function placedSpriteSet(stored, rect, urlOf = (ref) => ref) {
+  if (!stored?.rect || !Array.isArray(stored.variants)) return null;
+  const set = clone(stored);
+  const next = { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) };
+  const sx = next.width / Math.max(1, Number(stored.rect.width) || 1), sy = next.height / Math.max(1, Number(stored.rect.height) || 1);
+  if (set.anchor) set.anchor = { x: Number(set.anchor.x) * sx, y: Number(set.anchor.y) * sy };
+  if (set.faceRect) {
+    const face = set.faceRect;
+    set.faceRect = { x: Math.round(face.x * sx), y: Math.round(face.y * sy), width: Math.max(1, Math.round(face.width * sx)), height: Math.max(1, Math.round(face.height * sy)) };
+  }
+  set.rect = next;
+  for (const variant of set.variants) {
+    if (!variant || variant.dataURL == null) continue;
+    const url = typeof variant.dataURL === "string" && variant.dataURL.startsWith("data:") ? variant.dataURL : urlOf(variant.dataURL);
+    if (url) variant.dataURL = url;
+    else delete variant.dataURL;
+  }
+  delete set.sourceLayerId;
+  return set;
+}
+
+/**
+ * The mesh morphs a character asset applies to a mannequin it is bound to: the finite numbers
+ * and booleans of a Pose Studio mesh (`age`, `height`, `weight`, proportions...), or null.
+ */
+export function normalizeMeshMorphs(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!/^[a-z][a-z0-9_]{0,63}$/i.test(key)) continue;
+    if (typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))) out[key] = item;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * The mannequin mesh behind a character layer, for its asset's default mesh morphs: a sprite
+ * set or a layer made from a baked pose layer (`sourceLayerId` / `meta.derivedFrom`) points at
+ * that pose layer and its mannequin (`characterId` / `meta.character.id`).
+ */
+export function mannequinMeshOf(layers, layer) {
+  const sourceId = layer?.sprite?.sourceLayerId || normalizeLayerMeta(layer?.meta).derivedFrom || null;
+  const source = sourceId ? (layers || []).find((item) => item.id === sourceId) : null;
+  const characters = Array.isArray(source?.pose?.studio?.characters) ? source.pose.studio.characters : null;
+  if (!characters?.length) return null;
+  const id = layer?.sprite?.characterId || normalizeLayerMeta(layer?.meta).character?.id || null;
+  const mannequin = (id && characters.find((item) => String(item?.id) === String(id))) || (characters.length === 1 ? characters[0] : null);
+  return normalizeMeshMorphs(mannequin?.mesh);
+}
+
 // ---------------------------------------------------------------------------
 // HTTP client
 // ---------------------------------------------------------------------------
@@ -246,6 +309,12 @@ function refreshWidget(uc) {
 
 /** The pixels of a layer for an asset: its hi-res source when present, else its alpha crop. */
 function layerImage(uc, layer) {
+  if (layer.type === "sprite" && layer.sprite?.rect && uc.sprites) {
+    // A sprite set: the active variant at its stored resolution over the set's rect.
+    uc.sprites.syncFromCanvas(layer);
+    const active = layer.sprite.variants.find((variant) => variant.id === layer.sprite.activeVariantId);
+    if (active?.pixels) return { dataURL: active.pixels.toDataURL("image/png"), rect: { ...layer.sprite.rect } };
+  }
   if (layer.hiresCanvas && layer.hiresRect) {
     return { dataURL: layer.hiresCanvas.toDataURL("image/png"), rect: uc.normalizeLayerWorldRect(layer.hiresRect) };
   }
@@ -270,11 +339,20 @@ export function layerAssetData(uc, layer, kind, previous = {}) {
   if (kind === "character") {
     data.identityPrompt = typeof previous?.identityPrompt === "string" ? previous.identityPrompt : (meta.prompt || "");
     data.heightFactor = layerHeightFactor(layer);
-    data.meshMorphs = previous?.meshMorphs ?? null;
+    data.meshMorphs = mannequinMeshOf(uc.layers, layer) ?? normalizeMeshMorphs(previous?.meshMorphs);
     data.spriteSet = previous?.spriteSet ?? null;
+    if (layer.type === "sprite" && layer.sprite?.rect && uc.sprites) {
+      data.spriteSet = uc.sprites.serialize(layer);
+      // The feet of the set are the asset's anchor, so a drop puts them on the drop point.
+      const { rect, anchor } = layer.sprite;
+      data.anchor = normalizeAnchor({ x: anchor.x / rect.width, y: anchor.y / rect.height }, kind);
+    }
   }
   if (kind === "background") {
     data.perspective = relativePerspective(uc.scenePerspective, image.rect) ?? previous?.perspective ?? null;
+    // The depth estimated for these pixels (Estimate from background, occluders) travels along,
+    // so inserting the background does not run the depth model again.
+    data.depth = cachedBackgroundDepth(uc, layer) ?? (previous?.depth || null);
   }
   if (kind === "pose") {
     if (!layer.pose) throw new Error("the layer has no pose");
@@ -379,6 +457,20 @@ export async function insertAsset(uc, asset, point) {
   }
 
   if (!uc.ensureWorldRectBounds(rect, 0)) throw new Error("the drop point is outside the canvas limits");
+  if (kind === "character" && data.spriteSet && uc.sprites) {
+    // A character with a sprite set comes in as a sprite layer holding every variant.
+    const placed = placedSpriteSet(data.spriteSet, rect, (ref) => assetBlobUrl(scope, projectId, ref));
+    const sprite = placed && await uc.sprites.loadSet(placed);
+    if (uc._disposed) return null;
+    if (sprite?.variants?.some((variant) => variant.pixels)) {
+      const layer = uc.addLayer("sprite", asset.name, true, true, createLayerMeta("asset", meta));
+      uc.sprites.attachSet(layer, sprite);
+      uc.autoFileLayer?.(layer);
+      refreshWidget(uc);
+      uc.setStatus(`Inserted character "${asset.name}" with ${sprite.variants.length} sprite variant${sprite.variants.length === 1 ? "" : "s"}${scale !== 1 ? " (depth scaled)" : ""}`);
+      return layer;
+    }
+  }
   let layer;
   if (kind === "background") {
     // Backgrounds go under everything: one snapshot entry covers the insert and the reorder.
@@ -395,12 +487,54 @@ export async function insertAsset(uc, asset, point) {
   // Category folders (issue #17): the move joins the add's undo entry when auto-file is on.
   if (kind !== "background") uc.autoFileLayer?.(layer);
   refreshWidget(uc);
+  if (kind === "background" && data.depth?.depthDataURL) {
+    const ref = data.depth.depthDataURL;
+    const url = typeof ref === "string" && ref.startsWith("data:") ? ref : assetBlobUrl(scope, projectId, ref);
+    seedBackgroundDepth(uc, layer, data.depth, url);
+  }
   if (kind === "background" && data.perspective && !isPerspectiveCalibrated(uc.scenePerspective)) {
     const absolute = absolutePerspective(data.perspective, rect);
     if (absolute) editScenePerspective(uc, (next) => Object.assign(next, absolute));
   }
   uc.setStatus(`Inserted ${ASSET_KIND_LABELS[kind]?.toLowerCase() || "asset"} "${asset.name}"${scale !== 1 ? " (depth scaled)" : ""}`);
   return layer;
+}
+
+/** Character assets of both scopes (the project one only inside a project), for the pose card. */
+export async function listLibraryCharacters(uc, client = uc.library?.client) {
+  const projectId = currentProjectId(uc);
+  const scopes = projectId ? ["project", "global"] : ["global"];
+  const out = [];
+  for (const scope of scopes) {
+    try {
+      for (const asset of await client.list(scope, projectId, { kind: "character" })) {
+        if (asset?.id) out.push({ id: String(asset.id), scope, name: String(asset.name || "Character") });
+      }
+    } catch (_) { /* one unreachable scope leaves the other listed */ }
+  }
+  return out;
+}
+
+/**
+ * A library character as a pose character reference (`source: "library"`, the image inline
+ * like an upload so generation and bakes read it the same way) plus its identity prompt and
+ * default mesh morphs.
+ */
+export async function libraryCharacterReference(uc, scope, assetId, client = uc.library?.client) {
+  const projectId = currentProjectId(uc);
+  const asset = await client.get(scope, projectId, assetId);
+  if (asset?.kind !== "character") throw new Error("the asset is not a character");
+  const image = await loadAssetImage(uc, scope, projectId, asset.data?.imageDataURL);
+  if (!image) throw new Error("the character has no image");
+  const width = image.naturalWidth || image.width, height = image.naturalHeight || image.height;
+  const scale = Math.min(1, 2048 / Math.max(1, width, height));
+  const canvas = uc._createCanvas(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)));
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+  return {
+    ref: { source: "library", assetId: String(asset.id), assetScope: scope, name: String(asset.name || "Character"), dataURL: canvas.toDataURL("image/png") },
+    prompt: typeof asset.data?.identityPrompt === "string" ? asset.data.identityPrompt : "",
+    meshMorphs: normalizeMeshMorphs(asset.data?.meshMorphs),
+  };
 }
 
 function linkedAsset(layer) {
@@ -427,11 +561,24 @@ export async function updateLayerFromLibrary(uc, layer, client = uc.library?.cli
   const image = await loadAssetImage(uc, link.scope, currentProjectId(uc), data.imageDataURL);
   if (uc._disposed || !uc.layers.includes(layer)) return null;
   const size = data.size?.width > 0 ? data.size : image ? { width: image.naturalWidth || image.width, height: image.naturalHeight || image.height } : null;
-  const current = layer.type === "pose" && layer.pose?.rect ? layer.pose.rect : uc.getLayerWorldBounds(layer);
+  const current = layer.type === "pose" && layer.pose?.rect ? layer.pose.rect
+    : layer.type === "sprite" && layer.sprite?.rect ? layer.sprite.rect : uc.getLayerWorldBounds(layer);
   if (!size || !current) throw new Error("nothing to update");
   const scale = current.height > 0 ? current.height / size.height : 1;
   let rect = anchoredRect(size, anchor, anchorPoint(current, anchor), scale);
   if (Math.abs(scale - 1) < 1e-6) rect = roundRect(rect);
+  if (layer.type === "sprite" && data.spriteSet && uc.sprites) {
+    const placed = placedSpriteSet(data.spriteSet, rect, (ref) => assetBlobUrl(link.scope, currentProjectId(uc), ref));
+    const sprite = placed && await uc.sprites.loadSet(placed);
+    if (uc._disposed || !uc.layers.includes(layer) || !sprite) return null;
+    uc.ensureWorldRectBounds(sprite.rect, 0);
+    const before = uc.createLayerPixelSnapshot(layer);
+    uc.sprites.attachSet(layer, sprite);
+    uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+    refreshWidget(uc);
+    uc.setStatus(`Updated "${layer.name}" from the library`);
+    return asset;
+  }
   const before = uc.createLayerPixelSnapshot(layer);
   if (layer.type === "pose" && data.pose) {
     const poseRect = data.pose.rect || rect;
@@ -866,6 +1013,9 @@ export function installUniCanvasLibrary(uc, { fetchImpl } = {}) {
     get scope() { return panel.effectiveScope; },
     refresh: () => panel.refresh(),
     insert: (asset, point) => insertAsset(uc, asset, point),
+    // Pose character reference card "From library" (vnccs_unicanvas_pose.mjs).
+    listCharacters: () => listLibraryCharacters(uc, client),
+    characterReference: (scope, id) => libraryCharacterReference(uc, scope, id, client),
     openSaveDialog: (layer, point) => openSaveDialog(uc, layer, point),
     // Settings popover: "Asset library" section with the preset save.
     buildSettingsSection(body) {
