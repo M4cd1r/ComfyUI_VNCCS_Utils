@@ -326,7 +326,7 @@ test("params outside the slider ranges are clamped", () => {
 test("the widget, the control panel and the pose editor are wired to the scene module", () => {
   assert.match(widgetSource, /installUniCanvasControlScene\(this\);/);
   assert.match(widgetSource, /entry = this\.controlScene\?\.wrapHistoryEntry\(entry\) \?\? entry;/);
-  assert.match(widgetSource, /payload\.controlSource = this\.controlScene\?\.serialize\(layer\);/);
+  assert.match(widgetSource, /fields\.controlSource = this\.controlScene\?\.serialize\(layer\);/);
   assert.match(widgetSource, /layer\.controlSource = normalizeControlSource\(item\.controlSource\)/);
   assert.match(widgetSource, /async projectPoseLayer\(layer\)/);
   assert.match(controlSource, /uc\.controlScene\?\.renderSection\(panel, layer\);/);

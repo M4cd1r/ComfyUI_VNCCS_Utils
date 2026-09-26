@@ -233,8 +233,10 @@ test("the widget sends control only from the main draw and never composites it",
 });
 
 test("control layers are saved, restored, duplicated and undone like other layers", () => {
-  assert.match(method("serializeLayer("), /if \(isControlLayer\(layer\)\) payload\.control = normalizeControlState\(layer\.control\);/);
-  assert.match(method("async applySerializedState("), /isControlLayer\(item\) && !restoredPanorama \? "control"/);
+  // Flat and panorama layers share serializeLayerKindFields, so control layers survive both.
+  assert.match(method("serializeLayerKindFields("), /if \(isControlLayer\(layer\)\) fields\.control = normalizeControlState\(layer\.control\);/);
+  assert.equal(method("serializeLayer(").match(/this\.serializeLayerKindFields\(layer, includeData\)/g)?.length, 2);
+  assert.match(method("async applySerializedState("), /isControlLayer\(item\) \? "control"/);
   assert.match(method("async applySerializedState("), /layer\.control = normalizeControlState\(item\.control\)/);
   assert.match(method("duplicateActiveLayer() {"), /control: normalizeControlState\(layer\.control\)/);
   // Settings edits are layerProps entries: Object.assign restores `control` on undo and redo.

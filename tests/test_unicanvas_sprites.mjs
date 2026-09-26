@@ -512,7 +512,7 @@ test("the widget only receives hook calls", () => {
   assert.match(widget, /this\.sprites\?\.onTransform\(layer, draft\)/);
   assert.match(widget, /this\.sprites\?\.onStroke\(layer, start, end,/);
   assert.match(widget, /if \(staging\.sprite\) return this\.sprites\?\.acceptStaged\(staging\)/);
-  assert.match(widget, /payload\.sprite = this\.sprites\?\.serialize\(layer, includeData\)/);
+  assert.match(widget, /fields\.sprite = this\.sprites\?\.serialize\(layer, includeData\)/);
   assert.match(widget, /if \(layer\.type === "sprite"\) await this\.sprites\?\.restore\(layer, item\.sprite\)/);
   assert.match(modes, /widget\.sprites\?\.cycleActive\(key === "\." \? 1 : -1\)/);
 });

@@ -4023,6 +4023,8 @@ class UniCanvasWidget {
     if (layer.poseNormalCanvas) { clone.poseNormalCanvas = layer.poseNormalCanvas; clone.poseNormalMeta = layer.poseNormalMeta; }
     // Sprite variants are shared by reference (copy on write).
     Object.assign(clone, this.sprites?.cloneLayerFields(layer));
+    // ControlNet settings and scene source (replaced, never mutated) survive full-snapshot undo.
+    if (isControlLayer(layer)) Object.assign(clone, { control: normalizeControlState(layer.control), controlSource: layer.controlSource });
     this.invalidateLayerCaches(clone);
     return clone;
   }
@@ -6885,7 +6887,8 @@ class UniCanvasWidget {
     const snapshotSettings = this.settings;
     const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
     // ControlNet layer (vnccs_unicanvas_control.mjs): the topmost active one, cropped like the mask.
-    const control = requestPanorama ? null : this.controlLayers?.collectForDraw(inferenceSize, { masked: maskStats.nonzeroAlphaPixels > 0 });
+    // In a panorama its canvas holds the current view, the same one the image and mask come from.
+    const control = this.controlLayers?.collectForDraw(inferenceSize, { masked: maskStats.nonzeroAlphaPixels > 0 });
     if (control?.error) {
       this.drawInProgress = false;
       this.setStatus(control.error, true);
@@ -7861,6 +7864,20 @@ class UniCanvasWidget {
     }
   }
 
+  // Sprite sets and ControlNet layers, in flat and panorama documents alike (#33).
+  serializeLayerKindFields(layer, includeData) {
+    const fields = {};
+    // Sprite set: metadata always, variant pixels only with layer data.
+    if (layer.type === "sprite") fields.sprite = this.sprites?.serialize(layer, includeData);
+    if (isControlLayer(layer)) fields.control = normalizeControlState(layer.control);
+    // The scene source of a ControlNet layer (vnccs_unicanvas_control_scene.mjs); its PNG only with layer data.
+    if (isControlLayer(layer) && layer.controlSource) {
+      fields.controlSource = this.controlScene?.serialize(layer);
+      if (!includeData && fields.controlSource) delete fields.controlSource.image;
+    }
+    return fields;
+  }
+
   serializeLayer(layer, includeData = true) {
     if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
     // Per-character ID pass: state cache only, never workflow metadata.
@@ -7872,6 +7889,7 @@ class UniCanvasWidget {
     if (this.panorama) {
       this.panorama.commitLayer(layer);
       return {
+        ...this.serializeLayerKindFields(layer, includeData),
         pose: serializePose(layer.pose, includeData),
         id: layer.id, name: layer.name, nameSource: layer.nameSource || null, meta: normalizeLayerMeta(layer.meta), type: layer.type, groupId: layer.groupId || null, visible: layer.visible, locked: layer.locked,
         opacity: layer.opacity, blendMode: layer.blendMode || "source-over",
@@ -7908,14 +7926,7 @@ class UniCanvasWidget {
     if (poseId) payload.poseId = poseId;
     if (poseNormal) payload.poseNormal = poseNormal;
     if (bakePixels) payload.bakePixels = bakePixels;
-    // Sprite set: metadata always, variant pixels only with layer data.
-    if (layer.type === "sprite") payload.sprite = this.sprites?.serialize(layer, includeData);
-    if (isControlLayer(layer)) payload.control = normalizeControlState(layer.control);
-    // The scene source of a ControlNet layer (vnccs_unicanvas_control_scene.mjs); its PNG only with layer data.
-    if (isControlLayer(layer) && layer.controlSource) {
-      payload.controlSource = this.controlScene?.serialize(layer);
-      if (!includeData && payload.controlSource) delete payload.controlSource.image;
-    }
+    Object.assign(payload, this.serializeLayerKindFields(layer, includeData));
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -8079,7 +8090,7 @@ class UniCanvasWidget {
           id: item.id || uid(),
           name: item.name || "Layer",
           nameSource: typeof item.nameSource === "string" ? item.nameSource : undefined,
-          type: item.type === "mask" ? "mask" : isControlLayer(item) && !restoredPanorama ? "control" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite && !restoredPanorama ? "sprite"
+          type: item.type === "mask" ? "mask" : isControlLayer(item) ? "control" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite ? "sprite"
             : isPanoramaLayer(item) && panoramaSettings?.baseLayerId === item.id ? "panorama" : "raster",
           pose: item.type === "pose" ? serializePose(item.pose) : undefined,
           visible: item.visible !== false,
