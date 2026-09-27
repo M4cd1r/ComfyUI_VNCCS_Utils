@@ -30,16 +30,16 @@
  * one install call.
  */
 
-import { clamp } from "./vnccs_unicanvas_input_tools.mjs";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs";
-import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
-import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
-import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { canCastShadow, isHarmonizeCharacter } from "./vnccs_unicanvas_harmonize.mjs";
-import { poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
-import { isUniCanvasLayerMenuItemEnabled, isUniCanvasRemoveBgAvailable } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { clamp } from "./vnccs_unicanvas_input_tools.mjs?v=1790495264510";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790495264510";
+import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs?v=1790495264510";
+import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs?v=1790495264510";
+import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs?v=1790495264510";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790495264510";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790495264510";
+import { canCastShadow, isHarmonizeCharacter } from "./vnccs_unicanvas_harmonize.mjs?v=1790495264510";
+import { poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790495264510";
+import { isUniCanvasLayerMenuItemEnabled, isUniCanvasRemoveBgAvailable } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790495264510";
 
 // Small inline stroke icons (14px in the menu): UI_ICONS lives inside
 // vnccs_unicanvas.js and is not exported, so the menu owns its own set.

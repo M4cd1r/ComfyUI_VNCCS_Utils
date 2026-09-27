@@ -31,19 +31,33 @@ if (!mtime) {
 }
 const version = String(Math.floor(mtime));
 
+// Every local import of a UniCanvas module carries the same ?v= query in EVERY web file, so each
+// module resolves to one URL: an entry-only query would load a module twice (once versioned from
+// the entry, once plain from a sibling module) and split its state. Plain .js files are left
+// alone: ComfyUI loads them itself by their plain URL.
+const versionedImport = /(from "\.\/vnccs_(?:unicanvas|custom_select)[^"?]*\.mjs)(?:\?v=\d+)?"/g;
+
+function versionUniCanvasImports(text, nextVersion) {
+  return text.replace(versionedImport, `$1?v=${nextVersion}"`);
+}
+
 const source = await readFile(entryPath, "utf8");
 if (!versionMarker.test(source)) {
   console.error("VNCCS_UNICANVAS_VERSION marker missing from", entryPath);
   process.exit(1);
 }
 const current = source.match(versionMarker)[1];
-if (current === version) {
-  console.log("Version already up to date:", version);
-  process.exit(0);
+let touched = 0;
+for (const entry of await readdir(webDir, { withFileTypes: true })) {
+  if (!entry.isFile() || !/\.(js|mjs)$/.test(entry.name)) continue;
+  const full = path.join(webDir, entry.name);
+  const text = await readFile(full, "utf8");
+  let next = versionUniCanvasImports(text, version);
+  if (full === entryPath) next = next.replace(versionMarker, `const VNCCS_UNICANVAS_VERSION = "${version}";`);
+  if (next !== text) {
+    await writeFile(full, next, "utf8");
+    touched += 1;
+  }
 }
-let next = source.replace(versionMarker, `const VNCCS_UNICANVAS_VERSION = "${version}";`);
-// Keep the cache-busting query on every local module import in sync with the
-// version constant, so a bumped entry always pulls fresh modules.
-next = next.replace(/(from "\.\/vnccs_[^"?]+)\?v=\d+/g, `$1?v=${version}`);
-await writeFile(entryPath, next, "utf8");
-console.log("Bumped VNCCS_UNICANVAS_VERSION:", current, "->", version, "(imports re-versioned)");
+console.log(current === version ? "Version already up to date:" : "Bumped VNCCS_UNICANVAS_VERSION:",
+  current === version ? version : `${current} -> ${version}`, `(${touched} file(s) re-versioned)`);

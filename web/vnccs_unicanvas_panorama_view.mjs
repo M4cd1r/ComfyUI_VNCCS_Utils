@@ -1,7 +1,7 @@
 // Panorama view session (#33): the globe button of the panorama layer opens it, the camera
 // controls and the canvas move the view live inside it, and it ends with Save (one history
 // entry), Cancel (the view from before the session) or stays open after Reset (initial view).
-import { PANORAMA_DEFAULT_CAMERA, PANORAMA_VIEW_HISTORY_KIND, panoramaView, samePanoramaView } from "./vnccs_unicanvas_panorama.mjs";
+import { PANORAMA_DEFAULT_CAMERA, PANORAMA_VIEW_HISTORY_KIND, panoramaView, samePanoramaView } from "./vnccs_unicanvas_panorama.mjs?v=1790495264510";
 
 export class PanoramaViewSession {
   constructor(widget) {

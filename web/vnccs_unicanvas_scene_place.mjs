@@ -28,10 +28,10 @@
  * serialize / history hooks exported here.
  */
 
-import { groupChainOf, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
-import { feetPlacement, isZeroStateOffset, stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs";
-import { finiteOrNull } from "./vnccs_unicanvas_util.mjs";
+import { groupChainOf, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790495264510";
+import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790495264510";
+import { feetPlacement, isZeroStateOffset, stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs?v=1790495264510";
+import { finiteOrNull } from "./vnccs_unicanvas_util.mjs?v=1790495264510";
 
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
 export const PERSPECTIVE_TOOL = "perspective";

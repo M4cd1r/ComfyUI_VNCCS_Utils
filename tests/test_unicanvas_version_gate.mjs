@@ -72,3 +72,22 @@ test("deleting any layer records history so undo restores it", () => {
   assert.ok(!/type === "pose"[\s\S]{0,120}?recordHistoryBefore/.test(del),
     "history recording must not be limited to pose layers");
 });
+
+test("every web module imports UniCanvas modules with the entry's version, so each loads once", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const version = entrySource.match(/const VNCCS_UNICANVAS_VERSION = "(\d+)"/)[1];
+  const webDir = path.join(root, "web");
+  let checked = 0;
+  for (const name of await readdir(webDir)) {
+    if (!/\.(js|mjs)$/.test(name)) continue;
+    const source = await readFile(path.join(webDir, name), "utf8");
+    for (const [, target, query] of source.matchAll(/from "\.\/(vnccs_(?:unicanvas|custom_select)[^"?]*\.mjs)(\?[^"]*)?"/g)) {
+      // A plain import next to the entry's versioned one would load a second module instance.
+      assert.equal(query, `?v=${version}`, `${name} must import ${target} with ?v=${version}`);
+      checked += 1;
+    }
+  }
+  assert.ok(checked > 40, "the whole UniCanvas import graph is covered");
+  const bump = await readFile(path.join(root, "scripts/bump_unicanvas_version.mjs"), "utf8");
+  assert.ok(bump.includes("versionUniCanvasImports(text, version)"), "the bump script re-versions every web file");
+});

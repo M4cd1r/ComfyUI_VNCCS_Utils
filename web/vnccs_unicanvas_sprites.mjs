@@ -33,17 +33,17 @@
  * controller onto the widget like the other install* modules.
  */
 
-import { alphaBounds, dilateAlpha } from "./vnccs_unicanvas_bake.mjs";
-import { isImageRef, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
-import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
-import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
-import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { applyHomography, draftPlacement, draftRestBounds, homographyFromUnitSquare, invertAffine, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
-import { createSpriteSurface, normalizeSpriteCamera } from "./vnccs_unicanvas_sprites_panorama.mjs";
-import { cloneJson, uniqueId } from "./vnccs_unicanvas_util.mjs";
-import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
+import { alphaBounds, dilateAlpha } from "./vnccs_unicanvas_bake.mjs?v=1790495264510";
+import { isImageRef, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790495264510";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs?v=1790495264510";
+import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs?v=1790495264510";
+import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs?v=1790495264510";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790495264510";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790495264510";
+import { applyHomography, draftPlacement, draftRestBounds, homographyFromUnitSquare, invertAffine, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs?v=1790495264510";
+import { createSpriteSurface, normalizeSpriteCamera } from "./vnccs_unicanvas_sprites_panorama.mjs?v=1790495264510";
+import { cloneJson, uniqueId } from "./vnccs_unicanvas_util.mjs?v=1790495264510";
+import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs?v=1790495264510";
 
 export const SPRITE_LAYER_TYPE = "sprite";
 export const SPRITE_SCHEMA_VERSION = 1;

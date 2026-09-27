@@ -25,8 +25,8 @@ import {
   findKeySegment,
   finiteNumber,
 } from "./vnccs_animation_core.mjs";
-import { stateOffsetMatrix } from "./vnccs_unicanvas_state_offset.mjs";
-import { fnv1a } from "./vnccs_unicanvas_util.mjs";
+import { stateOffsetMatrix } from "./vnccs_unicanvas_state_offset.mjs?v=1790495264510";
+import { fnv1a } from "./vnccs_unicanvas_util.mjs?v=1790495264510";
 
 export const TIMELINE_SCHEMA_VERSION = 1;
 export const TIMELINE_HISTORY_KIND = "timeline";

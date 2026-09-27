@@ -22,9 +22,9 @@
  * onto the widget like installUniCanvasLayerTools.
  */
 
-import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
-import { isImageLayer } from "./vnccs_unicanvas_pose_state.mjs";
-import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790495264510";
+import { isImageLayer } from "./vnccs_unicanvas_pose_state.mjs?v=1790495264510";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790495264510";
 
 export const GROUP_LAYER_TYPE = "group";
 export const PASS_THROUGH = "pass-through";

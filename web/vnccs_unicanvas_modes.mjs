@@ -7,14 +7,14 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { renderExportFrame } from "./vnccs_unicanvas_animation_export.mjs";
-import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
-import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
-import { isUniCanvasEnabled, isUniCanvasToolEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
-import { isUniCanvasModalOpen, isUniCanvasTextTarget, routeUniCanvasCapturedKey, uniCanvasHistoryKeyAction } from "./vnccs_unicanvas_history_keys.mjs";
-import { isUniCanvasFeatureAvailable, isUniCanvasStandalone, markUniCanvasStandaloneNode } from "./vnccs_unicanvas_surface.mjs";
-import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
+import { renderExportFrame } from "./vnccs_unicanvas_animation_export.mjs?v=1790495264510";
+import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790495264510";
+import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs?v=1790495264510";
+import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs?v=1790495264510";
+import { isUniCanvasEnabled, isUniCanvasToolEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790495264510";
+import { isUniCanvasModalOpen, isUniCanvasTextTarget, routeUniCanvasCapturedKey, uniCanvasHistoryKeyAction } from "./vnccs_unicanvas_history_keys.mjs?v=1790495264510";
+import { isUniCanvasFeatureAvailable, isUniCanvasStandalone, markUniCanvasStandaloneNode } from "./vnccs_unicanvas_surface.mjs?v=1790495264510";
+import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790495264510";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 

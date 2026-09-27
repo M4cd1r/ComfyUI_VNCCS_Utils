@@ -16,7 +16,7 @@
  * No import-time side effects and no ComfyUI app import, so it runs in `node --test`.
  */
 
-import { isUniCanvasEnabled, UNICANVAS_FEATURE_TOGGLES } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { isUniCanvasEnabled, UNICANVAS_FEATURE_TOGGLES } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790495264510";
 
 /** Marker on the stub node the standalone tab constructs its widget with. */
 export const UNICANVAS_STANDALONE_NODE_FLAG = "vnccsUniCanvasStandalone";

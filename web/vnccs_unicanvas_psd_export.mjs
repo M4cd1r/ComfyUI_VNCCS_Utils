@@ -9,7 +9,7 @@
  * (or null to skip it).
  */
 
-import { buildLayerTree, groupCompositeOperation, isGroupLayer, isIsolatedGroup, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { buildLayerTree, groupCompositeOperation, isGroupLayer, isIsolatedGroup, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790495264510";
 
 // Canvas globalCompositeOperation -> ag-psd blend mode name.
 const COMPOSITE_TO_PSD = Object.freeze({

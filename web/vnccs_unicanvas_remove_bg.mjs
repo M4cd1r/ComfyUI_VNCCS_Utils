@@ -13,7 +13,7 @@
 import {
   filterUniCanvasChoices, isUniCanvasFamilyEnabled, isUniCanvasLoaderEnabled, isUniCanvasRemoveBgMethodEnabled, pickEnabledUniCanvasChoice,
   syncUniCanvasSelectOptions,
-} from "./vnccs_unicanvas_feature_toggles.mjs";
+} from "./vnccs_unicanvas_feature_toggles.mjs?v=1790495264510";
 
 export const REMOVE_BG_METHODS = [
   ["edit", "Edit model"],

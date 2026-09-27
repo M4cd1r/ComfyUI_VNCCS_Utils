@@ -2,40 +2,40 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790452128483";
-import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs?v=1790452128483";
-import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs?v=1790452128483";
-import { installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs?v=1790452128483";
+import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790495264510";
+import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs?v=1790495264510";
+import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs?v=1790495264510";
+import { installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs?v=1790495264510";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
   panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION,
-  PANORAMA_VIEW_HISTORY_KIND, applyPanoramaViewHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790452128483";
-import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vnccs_unicanvas_panorama_panel.mjs?v=1790452128483";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790452128483";
-import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790452128483";
-import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790452128483";
-import { installUniCanvasSceneStates, normalizeStateOffset, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs?v=1790452128483";
-import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs?v=1790452128483";
-import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs?v=1790452128483";
-import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs?v=1790452128483";
-import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs?v=1790452128483";
-import { applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs?v=1790452128483";
-import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs?v=1790452128483";
-import { installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs?v=1790452128483";
-import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs?v=1790452128483";
-import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs?v=1790452128483";
-import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs?v=1790452128483";
-import { installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs?v=1790452128483";
-import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790452128483";
-import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs?v=1790452128483";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs?v=1790452128483";
-import { AUTO_FILE_SETTING, installUniCanvasFiling, resolveAutoFile } from "./vnccs_unicanvas_filing.mjs?v=1790452128483";
+  PANORAMA_VIEW_HISTORY_KIND, applyPanoramaViewHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790495264510";
+import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vnccs_unicanvas_panorama_panel.mjs?v=1790495264510";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790495264510";
+import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790495264510";
+import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790495264510";
+import { installUniCanvasSceneStates, normalizeStateOffset, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs?v=1790495264510";
+import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs?v=1790495264510";
+import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs?v=1790495264510";
+import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs?v=1790495264510";
+import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs?v=1790495264510";
+import { applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs?v=1790495264510";
+import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs?v=1790495264510";
+import { installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs?v=1790495264510";
+import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs?v=1790495264510";
+import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs?v=1790495264510";
+import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs?v=1790495264510";
+import { installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs?v=1790495264510";
+import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790495264510";
+import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs?v=1790495264510";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs?v=1790495264510";
+import { AUTO_FILE_SETTING, installUniCanvasFiling, resolveAutoFile } from "./vnccs_unicanvas_filing.mjs?v=1790495264510";
 import {
   pickRenderLodScale, clearRenderLodCaches, RENDER_LOD_OVERSAMPLE, PLAYBACK_LOD_OVERSAMPLE, PLAYBACK_LOD_CACHE_KEY,
-} from "./vnccs_unicanvas_render_lod.mjs?v=1790452128483";
-import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs?v=1790452128483";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790452128483";
+} from "./vnccs_unicanvas_render_lod.mjs?v=1790495264510";
+import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs?v=1790495264510";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790495264510";
 import {
   TRANSFORM_MODE_LABELS,
   applyHomography,
@@ -67,22 +67,22 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./vnccs_unicanvas_transform.mjs?v=1790452128483";
+} from "./vnccs_unicanvas_transform.mjs?v=1790495264510";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./vnccs_unicanvas_presets.mjs?v=1790452128483";
+} from "./vnccs_unicanvas_presets.mjs?v=1790495264510";
 import {
   installUniCanvasWidgetModes,
   readUniCanvasStandaloneSetting,
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./vnccs_unicanvas_modes.mjs?v=1790452128483";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790452128483";
-import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs?v=1790452128483";
-import { installUniCanvasControlScene, normalizeControlSource } from "./vnccs_unicanvas_control_scene.mjs?v=1790452128483";
-import { applyUniCanvasSurface } from "./vnccs_unicanvas_surface.mjs?v=1790452128483";
+} from "./vnccs_unicanvas_modes.mjs?v=1790495264510";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790495264510";
+import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs?v=1790495264510";
+import { installUniCanvasControlScene, normalizeControlSource } from "./vnccs_unicanvas_control_scene.mjs?v=1790495264510";
+import { applyUniCanvasSurface } from "./vnccs_unicanvas_surface.mjs?v=1790495264510";
 import {
   bindUniCanvasFeatureToggles,
   buildUniCanvasToggleSettings,
@@ -98,10 +98,10 @@ import {
   syncUniCanvasSelectOptions,
   uniCanvasRequestOverrides,
   uniCanvasRequestSettings,
-} from "./vnccs_unicanvas_feature_toggles.mjs?v=1790452128483";
-import { escapeHtml, randomId, stagePopoverBottom } from "./vnccs_unicanvas_util.mjs?v=1790452128483";
-import { runExclusiveGeneration, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs?v=1790452128483";
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790452128483";
+} from "./vnccs_unicanvas_feature_toggles.mjs?v=1790495264510";
+import { escapeHtml, randomId, stagePopoverBottom } from "./vnccs_unicanvas_util.mjs?v=1790495264510";
+import { runExclusiveGeneration, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs?v=1790495264510";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790495264510";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -114,7 +114,7 @@ import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConv
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1790452128483";
+const VNCCS_UNICANVAS_VERSION = "1790495264510";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";

@@ -15,11 +15,11 @@
  * The widget only calls installUniCanvasHistory() and a few `widget.generationHistory?.` hooks.
  */
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
-import { blobUrl, dehydrateValue } from "./vnccs_unicanvas_project.mjs";
-import { createLayerMeta, metaFromStagingSnapshot } from "./vnccs_unicanvas_provenance.mjs";
-import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790495264510";
+import { isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790495264510";
+import { blobUrl, dehydrateValue } from "./vnccs_unicanvas_project.mjs?v=1790495264510";
+import { createLayerMeta, metaFromStagingSnapshot } from "./vnccs_unicanvas_provenance.mjs?v=1790495264510";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs?v=1790495264510";
 
 export const HISTORY_KINDS = Object.freeze(["generate", "bake", "sprite", "harmonize", "remove_bg", "color_match"]);
 export const HISTORY_KIND_LABELS = Object.freeze({

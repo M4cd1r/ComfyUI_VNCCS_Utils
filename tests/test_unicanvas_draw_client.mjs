@@ -59,7 +59,7 @@ test("the generation lock covers GENERATE and the batch count, and is released o
 test("bake, sprites and harmonize use the shared draw client and lock", () => {
   for (const name of ["vnccs_unicanvas_bake.mjs", "vnccs_unicanvas_sprites.mjs", "vnccs_unicanvas_harmonize.mjs"]) {
     const source = read(name);
-    assert.match(source, /from "\.\/vnccs_unicanvas_draw_client\.mjs"/, name);
+    assert.match(source, /from "\.\/vnccs_unicanvas_draw_client\.mjs(\?v=\d+)?"/, name);
     assert.match(source, /requestDirectDraw\(/, name);
     assert.doesNotMatch(source, /uc\.drawInProgress = |uc\.drawBtn\.disabled = /, name);
     assert.doesNotMatch(source, /fetch\([A-Z_]*DRAW_ROUTE/, name);
