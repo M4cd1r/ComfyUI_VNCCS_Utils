@@ -26,7 +26,11 @@ test("staleness gate: the entry auto-reloads when served code differs from the r
 test("build info: commit id and file version are exposed to the settings popover and console", () => {
   assert.match(initSource, /@PromptServer\.instance\.routes\.get\("\/vnccs\/unicanvas\/build_info"\)/,
     "the backend must expose the build_info route");
-  assert.match(initSource, /git", "rev-parse", "--short", "HEAD"/,
+  assert.match(initSource, /commit = _vnccs_read_git_commit\(/,
+    "the build info must carry the git commit id");
+  assert.ok(!/import subprocess/.test(initSource), "the commit is read from .git files, never by spawning git");
+  assert.match(initSource, /"gitdir:"[\s\S]*"commondir"[\s\S]*"packed-refs"/,
+
     "the build info must carry the git commit id");
   const settings = entrySource.slice(entrySource.indexOf("openUniCanvasSettings() {"), entrySource.indexOf("openUniCanvasSettings() {") + 8000);
   assert.match(settings, /vnccs-uc-build-info/, "the settings popover must show the build identity");

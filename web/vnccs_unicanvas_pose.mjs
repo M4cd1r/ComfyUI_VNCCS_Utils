@@ -136,9 +136,9 @@ export class UniCanvasPoseEditor {
         // The Scene page's camera sliders are the capture-framing controls: applying them
         // re-seeds the persisted framing (and snaps the inspection view onto it). Free
         // navigation (orbit / pan / wheel) never runs through here.
-        const applyCameraToViewer = studio.applyCameraToViewer.bind(studio);
+        const applyCameraToViewer = studio.applyCameraToViewer;
         studio.applyCameraToViewer = (...args) => {
-            applyCameraToViewer(...args);
+            applyCameraToViewer.apply(studio, args);
             if (this.initialized) this.saveCaptureFraming();
         };
         studio.container.classList.add("vnccs-uc-pose-root");
