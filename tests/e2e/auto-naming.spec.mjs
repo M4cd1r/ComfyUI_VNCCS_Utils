@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
 import { importImageLayer, openUnicanvas, setLayerNaming } from "./helpers/app.mjs";
@@ -155,4 +157,38 @@ test("auto-filing puts an imported layer into its category folder and undo remov
   await undo(page);
   const after = await stack(page);
   expect(after.layers.some((item) => item.id === imported.id || item.id === folder.id)).toBe(false);
+});
+
+test("rules + model: an import keeps its name and is filed by the model's category; Auto-name asks the model again", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error));
+  let reply = { name: "Ignored For Imports", category: "Characters", parsed: true };
+  const naming$ = await stubNaming(page, () => reply);
+  await openUnicanvas(page);
+  await setLayerNaming(page, { level: "model", autoFile: true });
+
+  // "upload-7" matches no rules keyword, so the model is asked for its category only.
+  const dir = join(tmpdir(), "vnccs-naming-e2e");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "upload-7.png");
+  writeFileSync(file, readFileSync(FIXTURE));
+  const imported = await newLeafAfter(page, () => importImageLayer(page, file));
+  expect(await naming(page, imported.id)).toMatchObject({ name: "upload-7", nameSource: "import", groupId: null });
+  await naming$.release();
+  await expect.poll(async () => (await naming(page, imported.id)).groupId).not.toBeNull();
+  const filed = await stack(page);
+  const folder = filed.layers.find((item) => item.id === filed.layers.find((layer) => layer.id === imported.id).groupId);
+  expect(folder).toMatchObject({ type: "group", name: "Characters" });
+  expect(await naming(page, imported.id)).toMatchObject({ name: "upload-7", nameSource: "import" });
+  expect(naming$.requests[0].layers.map((item) => item.id)).toEqual([imported.id]);
+
+  // Auto-name hands the layer back to the rules and the model, which now names it.
+  reply = { name: "Blue Figure", category: "Characters", parsed: true };
+  await row(page, imported.id).click({ button: "right" });
+  await page.locator('.vnccs-uc-layer-menu [data-menu-item="auto-name"]').click();
+  await naming$.release();
+  await expect.poll(async () => (await naming(page, imported.id)).name).toBe("Blue Figure");
+  expect((await naming(page, imported.id)).nameSource).toBe("auto");
+  expect(naming$.requests).toHaveLength(2);
+  expect(errors).toEqual([]);
 });

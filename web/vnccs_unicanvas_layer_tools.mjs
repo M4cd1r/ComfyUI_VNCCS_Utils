@@ -733,6 +733,7 @@ function openLayerContextMenu(uc, layer, e) {
     const entry = document.createElement("button");
     entry.type = "button";
     entry.textContent = item.label;
+    entry.dataset.menuItem = item.id;
     entry.style.cssText = "text-align:left; padding:6px 10px; border:0; border-radius:6px; background:transparent; color:#e8e8f0; cursor:pointer;";
     entry.addEventListener("pointerenter", () => { entry.style.background = "rgba(255,255,255,.08)"; });
     entry.addEventListener("pointerleave", () => { entry.style.background = "transparent"; });
