@@ -711,6 +711,234 @@ function readStandalonePersistedStateValue() {
   }
 }
 
+/**
+ * Read-only E2E hook (tests/e2e): full-resolution layer pixels, a deep clone of a live pose
+ * layer's layer.pose and other state for assertions. The standalone tab publishes it as
+ * globalThis.__VNCCS_UC_E2E__; specs build the same view of a workflow node's widget by
+ * importing this module. No behavior change.
+ */
+export function createUniCanvasE2EHook(widget) {
+  return {
+    listLayers: () => (widget.layers || []).map((l) => ({ id: l.id, type: l.type, groupId: l.groupId || null, name: l.name })),
+    // ControlNet from the scene (#46): the stored source of a control layer, without its pixels.
+    getControlSource: (layerId) => {
+      const source = (widget.layers || []).find((l) => l.id === layerId)?.controlSource;
+      return source ? { type: source.type, bbox: { ...source.bbox }, hasImage: Boolean(source.image), params: JSON.parse(JSON.stringify(source.params)), linked: source.linked, handEdited: source.handEdited, poseLayerIds: [...source.poseLayerIds] } : null;
+    },
+    // Layer groups (Plan 05): stack structure, selection and the export composite.
+    getLayerStack: () => ({
+      activeLayerId: widget.activeLayerId,
+      selectedLayerIds: [...(widget.selectedLayerIds || [])],
+      layers: (widget.layers || []).map((l) => ({
+        id: l.id, type: l.type, name: l.name, groupId: l.groupId || null, visible: l.visible, locked: l.locked,
+        opacity: l.opacity, blendMode: l.blendMode, collapsed: l.collapsed === true,
+      })),
+      undo: widget.undoStack?.length ?? 0,
+    }),
+    getCompositePixels: () => {
+      const out = document.createElement("canvas");
+      out.width = widget.size.width;
+      out.height = widget.size.height;
+      widget.drawFlattenedLayers(out.getContext("2d", { willReadFrequently: true }));
+      return { width: out.width, height: out.height, origin: { ...widget.origin }, dataURL: out.toDataURL("image/png") };
+    },
+    getLayerPixels: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      if (!layer?.canvas) return null;
+      return {
+        width: layer.canvas.width,
+        height: layer.canvas.height,
+        dataURL: layer.canvas.toDataURL("image/png"),
+      };
+    },
+    // Asset library (Plan 10.4): a layer's visible pixels (alpha crop) with their world rect.
+    getLayerCrop: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      const crop = layer?.canvas ? widget.getLayerAlphaBounds(layer) : null;
+      if (!crop) return null;
+      return {
+        rect: { x: widget.origin.x + crop.x, y: widget.origin.y + crop.y, width: crop.width, height: crop.height },
+        dataURL: widget.cloneCanvasCrop(layer.canvas, crop).toDataURL("image/png"),
+      };
+    },
+    // Sprite sets (issue #6): the set's metadata and one variant's pixels (rect size).
+    getSpriteState: (layerId) => widget.sprites?.describe(layerId) ?? null,
+    getSpriteVariantPixels: (layerId, variantId) => widget.sprites?.variantDataURL(layerId, variantId) ?? null,
+    // Scene states (issue #7): the state list without thumbnails, and each layer's live offset.
+    getSceneStates: () => {
+      const scene = widget.serializeSceneStates?.() || null;
+      if (!scene) return null;
+      return {
+        ...scene,
+        states: scene.states.map(({ thumbnailDataURL, ...state }) => ({ ...state, hasThumbnail: Boolean(thumbnailDataURL) })),
+        moveScope: widget.getSceneStateMoveScope?.() ?? null,
+        differs: widget.sceneStateDiffers?.() ?? false,
+        view: { ...widget.view },
+        offsets: Object.fromEntries((widget.layers || []).map((l) => [l.id, widget.getLayerStateOffset?.(l) || { x: 0, y: 0 }])),
+      };
+    },
+    getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
+    // Scene timeline (issue #9): dock state, the timeline data and a layer's displayed bounds.
+    getTimeline: () => widget.timelinePanel?.describe() ?? null,
+    // Timeline export (issue #18): the export composite of one frame over the bbox (what an
+    // exported frame at bbox size is), and a test seam that gives a pose layer's first
+    // mannequin a studio animation (snapshot JSON) so playback / preparation can be checked.
+    renderTimelineFrame: (frame) => {
+      const bbox = { ...widget.bbox };
+      const size = { width: Math.max(1, Math.round(bbox.width)), height: Math.max(1, Math.round(bbox.height)) };
+      return renderExportFrame(widget, frame, bbox, size).toDataURL("image/png");
+    },
+    setPoseLayerAnimation: (layerId, animation) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId && l.type === "pose");
+      if (!layer?.pose?.studio || widget.poseEditSession) return false;
+      if (widget.poseEditor?.layer === layer) widget.poseEditor.release();
+      const studio = JSON.parse(JSON.stringify(layer.pose.studio));
+      if (!Array.isArray(studio.characters) || !studio.characters.length) return false;
+      studio.characters[0].animation = JSON.parse(JSON.stringify(animation));
+      studio.timeline = { fps: animation.fps, duration: animation.duration, frameCount: animation.frameCount, currentFrame: 0, loop: animation.loop !== false };
+      layer.pose.studio = studio;
+      widget.requestRender();
+      return true;
+    },
+    getLayerDisplayBounds: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      return layer ? widget.getLayerWorldBounds(layer) : null;
+    },
+    getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
+    // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
+    getLayerMeta: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      return layer ? JSON.parse(JSON.stringify(normalizeLayerMeta(layer.meta))) : null;
+    },
+    getLayerPixelRevision: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      return layer ? (layer.pixelRevision ?? 0) : null;
+    },
+    // Multi-character pose scenes (Plan 01): mannequins, bound references and ID pass stats.
+    getPoseScene: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      if (!layer?.pose) return null;
+      const studioCharacters = Array.isArray(layer.pose.studio?.characters) ? layer.pose.studio.characters : [];
+      const characters = poseStudioCharacters(layer.pose).map((item) => {
+        const ref = poseCharacterRef(layer, item.id);
+        const mesh = studioCharacters.find((entry) => String(entry?.id) === item.id)?.mesh;
+        return { ...item, ref: ref ? { source: ref.source, name: ref.name || null, layerId: ref.layerId || null } : null,
+          prompt: poseCharacterPrompt(layer, item.id), mesh: mesh ? JSON.parse(JSON.stringify(mesh)) : null,
+          transform: studioCharacters.find((entry) => String(entry?.id) === item.id)?.transform || null };
+      });
+      const current = currentPoseId(layer);
+      let idPass = null;
+      if (current) {
+        const { width, height } = current.canvas;
+        // Layer alpha at ID pass resolution, to check that every mask lies inside it.
+        const alphaCanvas = document.createElement("canvas");
+        alphaCanvas.width = width; alphaCanvas.height = height;
+        const actx = alphaCanvas.getContext("2d", { willReadFrequently: true });
+        if (layer.hiresCanvas) actx.drawImage(layer.hiresCanvas, 0, 0, width, height);
+        const alpha = actx.getImageData(0, 0, width, height).data;
+        const masks = characters.map((item) => getPoseCharacterMask(layer, item.id)?.alpha || null);
+        let overlap = 0, outside = 0;
+        for (let pixel = 0; pixel < width * height; pixel += 1) {
+          const owners = masks.filter((mask) => mask?.[pixel]).length;
+          if (owners > 1) overlap += 1;
+          if (owners && alpha[pixel * 4 + 3] === 0) outside += 1;
+        }
+        idPass = { width, height, ids: [...current.meta.ids], counts: masks.map((mask) => (mask ? mask.reduce((sum, value) => sum + (value ? 1 : 0), 0) : 0)), overlap, outside };
+      }
+      return { characters, idPass, hasCharacterRefs: Boolean(layer.pose.characterRefs) };
+    },
+    // Character bake (issue #5): per-character status, the Show mannequin toggle, which
+    // characters have baked pixels, and how many history entries exist.
+    getPoseBake: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      if (!layer?.pose) return null;
+      const characters = poseStudioCharacters(layer.pose).map((item) => ({
+        id: item.id, status: widget.poseBake?.status(layer, item.id) ?? "none",
+        error: layer.pose.bake?.characters?.[item.id]?.error || null,
+      }));
+      return { characters, showMannequin: layer.pose.bake?.showMannequin === true, parts: Object.keys(layer.bakeParts || {}),
+        bakedView: layer._bakeViewBaked === true, undo: widget.undoStack?.length ?? 0 };
+    },
+    // Automatic naming (issue #17): name, nameSource and the category the model answered.
+    getLayerNaming: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      return layer ? { name: layer.name, nameSource: layer.nameSource || null, category: layer.meta?.category || null, groupId: layer.groupId || null } : null;
+    },
+    // Projects (Plan 10.3): the attached project/scene, save status and upload counters.
+    getProjectInfo: () => {
+      const session = widget.projectSession;
+      if (!session) return null;
+      return JSON.parse(JSON.stringify({
+        enabled: session.enabled, projectId: session.projectId, sceneId: session.sceneId, rev: session.rev,
+        status: session.status, name: session.project?.name ?? null, stats: session.stats,
+        scenes: (session.project?.scenes || []).map((scene) => ({ id: scene.id, name: scene.name, order: scene.order })),
+      }));
+    },
+    // Scene placement (Plan 08): perspective, a character's alpha rect and feet, a running
+    // depth-scaled drag, and the view transform to aim pointer events at world points.
+    getScenePerspective: () => JSON.parse(JSON.stringify(normalizeScenePerspective(widget.scenePerspective))),
+    getLayerCharacter: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      const measured = layer ? measureLayerCharacter(widget, layer) : null;
+      return measured ? JSON.parse(JSON.stringify(measured)) : null;
+    },
+    getDepthScaleDrag: () => describeDepthScaleDrag(widget),
+    // Shadows and scene light (Plan 08.2): the light and a layer's normalized `shadow`.
+    getSceneLight: () => JSON.parse(JSON.stringify(normalizeSceneLight(widget.sceneLight))),
+    getLayerShadow: (layerId) => describeShadow((widget.layers || []).find((l) => l.id === layerId)),
+    // Harmonize (Plan 08.3): the open panel's stages, and a synthetic normal pass for a layer
+    // (camera-space normals packed n * 0.5 + 0.5 over a world rect) so specs need no WebGL mannequin.
+    getHarmonize: () => describeHarmonize(widget),
+    setLayerNormalPass: async (layerId, dataURL, rect) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      if (!layer) return false;
+      const image = await widget.loadImage(dataURL);
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth || image.width;
+      canvas.height = image.naturalHeight || image.height;
+      canvas.getContext("2d").drawImage(image, 0, 0);
+      layer.poseNormalCanvas = canvas;
+      layer.poseNormalMeta = { key: layer.type === "pose" ? layer.poseIdMeta?.key ?? null : null, rect: { ...rect } };
+      return true;
+    },
+    // Forces the 2D relight fallback (half resolution while dragging) for the next panel.
+    setHarmonizeCpuRelight: (on) => { if (widget._harmonize) widget._harmonize.forceCpuRelight = Boolean(on); return true; },
+    getView: () => ({ ...widget.view }),
+    // Control sweep (issue #33): history depth, the progress/status line, the generation bbox and
+    // the client point of a world point (to aim pointer events), and a layer's opaque pixel count.
+    getHistoryDepth: () => ({ undo: widget.undoStack?.length ?? 0, redo: widget.redoStack?.length ?? 0 }),
+    getStatusText: () => widget.generationProgress?.querySelector(".vnccs-uc-progress-label")?.textContent ?? "",
+    getBbox: () => ({ ...widget.bbox }),
+    getBrush: () => ({ size: widget.brushSize, opacity: widget.opacity, hardness: widget.brushHardness, fg: widget.fg,
+      snap: widget.snapToGrid === true, resizeMode: widget.resizeTransformMode ?? null, keepAspect: widget.resizeKeepAspect ?? null,
+      transformDraft: Boolean(widget.transformDraft), quad: widget.transformDraft?.quad ? JSON.parse(JSON.stringify(widget.transformDraft.quad)) : null }),
+    worldToClient: (x, y) => {
+      const rect = widget.canvas.getBoundingClientRect();
+      const size = widget.getStageViewportSize();
+      return { x: rect.left + (x * widget.view.scale + widget.view.x) * rect.width / size.width,
+        y: rect.top + (y * widget.view.scale + widget.view.y) * rect.height / size.height };
+    },
+    getLayerAlphaCount: (layerId) => {
+      const canvas = (widget.layers || []).find((l) => l.id === layerId)?.canvas;
+      if (!canvas?.width) return null;
+      const data = canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height).data;
+      let count = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i] >= 8) count += 1;
+      return count;
+    },
+    getActiveTool: () => widget.tool,
+    getLayerPose: (layerId) => {
+      const layer = (widget.layers || []).find((l) => l.id === layerId);
+      // Deep clone: the caller must not be able to mutate layer state.
+      return layer?.pose ? JSON.parse(JSON.stringify(layer.pose)) : null;
+    },
+    // Generation history (Plan 10.5): the settings the panel shows and the staged results.
+    getSettings: () => JSON.parse(JSON.stringify(widget.settings || {})),
+    getStaging: () => (widget.stagingItems || []).map((item) => ({ historyId: item.historyId ?? null, historyIndex: item.historyIndex ?? null })),
+  
+  };
+}
+
 function createStandaloneWidget(UniCanvasWidgetClass) {
   // No node and no workflow: the stub only feeds the existing restore pipeline
   // (hidden unicanvas_state widget) and carries a size hint.
@@ -901,205 +1129,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
     render(container) {
       mountContainer = container;
       if (!widget) widget = createStandaloneWidget(UniCanvasWidgetClass);
-      // Read-only E2E hook (tests/e2e): exposes full-resolution layer pixels
-      // and a deep clone of a live pose layer's layer.pose for assertions.
-      // No behavior change.
-      globalThis.__VNCCS_UC_E2E__ = {
-        listLayers: () => (widget.layers || []).map((l) => ({ id: l.id, type: l.type, groupId: l.groupId || null, name: l.name })),
-        // ControlNet from the scene (#46): the stored source of a control layer, without its pixels.
-        getControlSource: (layerId) => {
-          const source = (widget.layers || []).find((l) => l.id === layerId)?.controlSource;
-          return source ? { type: source.type, bbox: { ...source.bbox }, hasImage: Boolean(source.image), params: JSON.parse(JSON.stringify(source.params)), linked: source.linked, handEdited: source.handEdited, poseLayerIds: [...source.poseLayerIds] } : null;
-        },
-        // Layer groups (Plan 05): stack structure, selection and the export composite.
-        getLayerStack: () => ({
-          activeLayerId: widget.activeLayerId,
-          selectedLayerIds: [...(widget.selectedLayerIds || [])],
-          layers: (widget.layers || []).map((l) => ({
-            id: l.id, type: l.type, name: l.name, groupId: l.groupId || null, visible: l.visible, locked: l.locked,
-            opacity: l.opacity, blendMode: l.blendMode, collapsed: l.collapsed === true,
-          })),
-          undo: widget.undoStack?.length ?? 0,
-        }),
-        getCompositePixels: () => {
-          const out = document.createElement("canvas");
-          out.width = widget.size.width;
-          out.height = widget.size.height;
-          widget.drawFlattenedLayers(out.getContext("2d", { willReadFrequently: true }));
-          return { width: out.width, height: out.height, origin: { ...widget.origin }, dataURL: out.toDataURL("image/png") };
-        },
-        getLayerPixels: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          if (!layer?.canvas) return null;
-          return {
-            width: layer.canvas.width,
-            height: layer.canvas.height,
-            dataURL: layer.canvas.toDataURL("image/png"),
-          };
-        },
-        // Asset library (Plan 10.4): a layer's visible pixels (alpha crop) with their world rect.
-        getLayerCrop: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          const crop = layer?.canvas ? widget.getLayerAlphaBounds(layer) : null;
-          if (!crop) return null;
-          return {
-            rect: { x: widget.origin.x + crop.x, y: widget.origin.y + crop.y, width: crop.width, height: crop.height },
-            dataURL: widget.cloneCanvasCrop(layer.canvas, crop).toDataURL("image/png"),
-          };
-        },
-        // Sprite sets (issue #6): the set's metadata and one variant's pixels (rect size).
-        getSpriteState: (layerId) => widget.sprites?.describe(layerId) ?? null,
-        getSpriteVariantPixels: (layerId, variantId) => widget.sprites?.variantDataURL(layerId, variantId) ?? null,
-        // Scene states (issue #7): the state list without thumbnails, and each layer's live offset.
-        getSceneStates: () => {
-          const scene = widget.serializeSceneStates?.() || null;
-          if (!scene) return null;
-          return {
-            ...scene,
-            states: scene.states.map(({ thumbnailDataURL, ...state }) => ({ ...state, hasThumbnail: Boolean(thumbnailDataURL) })),
-            moveScope: widget.getSceneStateMoveScope?.() ?? null,
-            differs: widget.sceneStateDiffers?.() ?? false,
-            view: { ...widget.view },
-            offsets: Object.fromEntries((widget.layers || []).map((l) => [l.id, widget.getLayerStateOffset?.(l) || { x: 0, y: 0 }])),
-          };
-        },
-        getVnPreview: () => widget.vnPreview?.describe?.() ?? null,
-        // Scene timeline (issue #9): dock state, the timeline data and a layer's displayed bounds.
-        getTimeline: () => widget.timelinePanel?.describe() ?? null,
-        // Timeline export (issue #18): the export composite of one frame over the bbox (what an
-        // exported frame at bbox size is), and a test seam that gives a pose layer's first
-        // mannequin a studio animation (snapshot JSON) so playback / preparation can be checked.
-        renderTimelineFrame: (frame) => {
-          const bbox = { ...widget.bbox };
-          const size = { width: Math.max(1, Math.round(bbox.width)), height: Math.max(1, Math.round(bbox.height)) };
-          return renderExportFrame(widget, frame, bbox, size).toDataURL("image/png");
-        },
-        setPoseLayerAnimation: (layerId, animation) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId && l.type === "pose");
-          if (!layer?.pose?.studio || widget.poseEditSession) return false;
-          if (widget.poseEditor?.layer === layer) widget.poseEditor.release();
-          const studio = JSON.parse(JSON.stringify(layer.pose.studio));
-          if (!Array.isArray(studio.characters) || !studio.characters.length) return false;
-          studio.characters[0].animation = JSON.parse(JSON.stringify(animation));
-          studio.timeline = { fps: animation.fps, duration: animation.duration, frameCount: animation.frameCount, currentFrame: 0, loop: animation.loop !== false };
-          layer.pose.studio = studio;
-          widget.requestRender();
-          return true;
-        },
-        getLayerDisplayBounds: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          return layer ? widget.getLayerWorldBounds(layer) : null;
-        },
-        getPoseBackdrop: () => widget.poseEditor?.backdrop?.describe?.() ?? null,
-        // Provenance (Plan 10): a normalized copy of layer.meta and the runtime pixel revision.
-        getLayerMeta: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          return layer ? JSON.parse(JSON.stringify(normalizeLayerMeta(layer.meta))) : null;
-        },
-        getLayerPixelRevision: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          return layer ? (layer.pixelRevision ?? 0) : null;
-        },
-        // Multi-character pose scenes (Plan 01): mannequins, bound references and ID pass stats.
-        getPoseScene: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          if (!layer?.pose) return null;
-          const studioCharacters = Array.isArray(layer.pose.studio?.characters) ? layer.pose.studio.characters : [];
-          const characters = poseStudioCharacters(layer.pose).map((item) => {
-            const ref = poseCharacterRef(layer, item.id);
-            const mesh = studioCharacters.find((entry) => String(entry?.id) === item.id)?.mesh;
-            return { ...item, ref: ref ? { source: ref.source, name: ref.name || null, layerId: ref.layerId || null } : null,
-              prompt: poseCharacterPrompt(layer, item.id), mesh: mesh ? JSON.parse(JSON.stringify(mesh)) : null,
-              transform: studioCharacters.find((entry) => String(entry?.id) === item.id)?.transform || null };
-          });
-          const current = currentPoseId(layer);
-          let idPass = null;
-          if (current) {
-            const { width, height } = current.canvas;
-            // Layer alpha at ID pass resolution, to check that every mask lies inside it.
-            const alphaCanvas = document.createElement("canvas");
-            alphaCanvas.width = width; alphaCanvas.height = height;
-            const actx = alphaCanvas.getContext("2d", { willReadFrequently: true });
-            if (layer.hiresCanvas) actx.drawImage(layer.hiresCanvas, 0, 0, width, height);
-            const alpha = actx.getImageData(0, 0, width, height).data;
-            const masks = characters.map((item) => getPoseCharacterMask(layer, item.id)?.alpha || null);
-            let overlap = 0, outside = 0;
-            for (let pixel = 0; pixel < width * height; pixel += 1) {
-              const owners = masks.filter((mask) => mask?.[pixel]).length;
-              if (owners > 1) overlap += 1;
-              if (owners && alpha[pixel * 4 + 3] === 0) outside += 1;
-            }
-            idPass = { width, height, ids: [...current.meta.ids], counts: masks.map((mask) => (mask ? mask.reduce((sum, value) => sum + (value ? 1 : 0), 0) : 0)), overlap, outside };
-          }
-          return { characters, idPass, hasCharacterRefs: Boolean(layer.pose.characterRefs) };
-        },
-        // Character bake (issue #5): per-character status, the Show mannequin toggle, which
-        // characters have baked pixels, and how many history entries exist.
-        getPoseBake: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          if (!layer?.pose) return null;
-          const characters = poseStudioCharacters(layer.pose).map((item) => ({
-            id: item.id, status: widget.poseBake?.status(layer, item.id) ?? "none",
-            error: layer.pose.bake?.characters?.[item.id]?.error || null,
-          }));
-          return { characters, showMannequin: layer.pose.bake?.showMannequin === true, parts: Object.keys(layer.bakeParts || {}),
-            bakedView: layer._bakeViewBaked === true, undo: widget.undoStack?.length ?? 0 };
-        },
-        // Automatic naming (issue #17): name, nameSource and the category the model answered.
-        getLayerNaming: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          return layer ? { name: layer.name, nameSource: layer.nameSource || null, category: layer.meta?.category || null, groupId: layer.groupId || null } : null;
-        },
-        // Projects (Plan 10.3): the attached project/scene, save status and upload counters.
-        getProjectInfo: () => {
-          const session = widget.projectSession;
-          if (!session) return null;
-          return JSON.parse(JSON.stringify({
-            enabled: session.enabled, projectId: session.projectId, sceneId: session.sceneId, rev: session.rev,
-            status: session.status, name: session.project?.name ?? null, stats: session.stats,
-            scenes: (session.project?.scenes || []).map((scene) => ({ id: scene.id, name: scene.name, order: scene.order })),
-          }));
-        },
-        // Scene placement (Plan 08): perspective, a character's alpha rect and feet, a running
-        // depth-scaled drag, and the view transform to aim pointer events at world points.
-        getScenePerspective: () => JSON.parse(JSON.stringify(normalizeScenePerspective(widget.scenePerspective))),
-        getLayerCharacter: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          const measured = layer ? measureLayerCharacter(widget, layer) : null;
-          return measured ? JSON.parse(JSON.stringify(measured)) : null;
-        },
-        getDepthScaleDrag: () => describeDepthScaleDrag(widget),
-        // Shadows and scene light (Plan 08.2): the light and a layer's normalized `shadow`.
-        getSceneLight: () => JSON.parse(JSON.stringify(normalizeSceneLight(widget.sceneLight))),
-        getLayerShadow: (layerId) => describeShadow((widget.layers || []).find((l) => l.id === layerId)),
-        // Harmonize (Plan 08.3): the open panel's stages, and a synthetic normal pass for a layer
-        // (camera-space normals packed n * 0.5 + 0.5 over a world rect) so specs need no WebGL mannequin.
-        getHarmonize: () => describeHarmonize(widget),
-        setLayerNormalPass: async (layerId, dataURL, rect) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          if (!layer) return false;
-          const image = await widget.loadImage(dataURL);
-          const canvas = document.createElement("canvas");
-          canvas.width = image.naturalWidth || image.width;
-          canvas.height = image.naturalHeight || image.height;
-          canvas.getContext("2d").drawImage(image, 0, 0);
-          layer.poseNormalCanvas = canvas;
-          layer.poseNormalMeta = { key: layer.type === "pose" ? layer.poseIdMeta?.key ?? null : null, rect: { ...rect } };
-          return true;
-        },
-        // Forces the 2D relight fallback (half resolution while dragging) for the next panel.
-        setHarmonizeCpuRelight: (on) => { if (widget._harmonize) widget._harmonize.forceCpuRelight = Boolean(on); return true; },
-        getView: () => ({ ...widget.view }),
-        getActiveTool: () => widget.tool,
-        getLayerPose: (layerId) => {
-          const layer = (widget.layers || []).find((l) => l.id === layerId);
-          // Deep clone: the caller must not be able to mutate layer state.
-          return layer?.pose ? JSON.parse(JSON.stringify(layer.pose)) : null;
-        },
-        // Generation history (Plan 10.5): the settings the panel shows and the staged results.
-        getSettings: () => JSON.parse(JSON.stringify(widget.settings || {})),
-        getStaging: () => (widget.stagingItems || []).map((item) => ({ historyId: item.historyId ?? null, historyIndex: item.historyIndex ?? null })),
-      };
+      globalThis.__VNCCS_UC_E2E__ = createUniCanvasE2EHook(widget);
       if (!tabWatcher) tabWatcher = watchUniCanvasStandaloneTab(setActive);
       if (!containerObserver && typeof IntersectionObserver === "function") {
         // Belt and braces: hiding/unmounting the tab panel also restores chrome.
