@@ -5,7 +5,6 @@ import {
     POSE_BACKDROP_OFFSET_RADII,
     UniCanvasPoseBackdrop,
     poseBackdropDistance,
-    poseBackdropOverflow,
     poseBackdropSize,
 } from "../web/vnccs_unicanvas_pose_backdrop.mjs";
 
@@ -42,13 +41,11 @@ function rig() {
     return { viewer, mesh, camera, character, backdrop, render, renders, syncs: () => syncs };
 }
 
-test("backdrop geometry helpers: distance behind the target, frustum fill, overflow", () => {
+test("backdrop geometry helpers: distance behind the target and frustum fill", () => {
     assert.equal(poseBackdropDistance(30, 2), 30 + 2 * POSE_BACKDROP_OFFSET_RADII);
     const size = poseBackdropSize(10, 90, 2, 1);
     assert.ok(Math.abs(size.height - 20) < 1e-9 && Math.abs(size.width - 40) < 1e-9);
     assert.equal(poseBackdropSize(10, 90, 1, 2).height, size.height / 2, "camera zoom narrows the frustum");
-    assert.equal(poseBackdropOverflow(10, 1, 20), 0, "a character in front of the backdrop is untouched");
-    assert.equal(poseBackdropOverflow(25, 1, 20), 6);
 });
 
 test("the backdrop faces the camera, fills the view and hides the skydome and grid", () => {
@@ -65,23 +62,23 @@ test("the backdrop faces the camera, fills the view and hides the skydome and gr
     assert.ok(Math.abs(backdrop.plane.scale.y - size.height) < 1e-6);
 });
 
-test("a character pushed behind the backdrop is pulled back onto it; forward moves stay free", () => {
+test("characters are never moved automatically: depth placement is free", () => {
     const { mesh, character, backdrop, render, syncs } = rig();
     render();
     const distance = backdrop.distance;
     character.transform.z = -40;
     mesh.position.set(0, 0, -40);
     render();
-    const after = backdrop.describe().characters[0];
-    assert.ok(Math.abs(after.farEdge - distance) < 1e-6, `far edge ${after.farEdge} must sit on the backdrop ${distance}`);
-    assert.ok(character.transform.z > -40, "the clamp is written back to the studio character transform");
+    assert.equal(character.transform.z, -40, "no clamp writes into the studio character transform");
     assert.ok(Math.abs(character.transform.z - mesh.position.z) < 1e-9);
-    assert.equal(syncs(), 1, "the clamped transform is persisted");
+    assert.equal(syncs(), 0, "nothing to persist: the backdrop never edits a character");
+    assert.ok(backdrop.distance > distance, "the plane re-settles behind the deeper character");
 
     character.transform.z = 20;
     mesh.position.set(0, 0, 20);
     render();
     assert.equal(mesh.position.z, 20, "moving toward the camera (perspective effect) is never limited");
+    assert.ok(backdrop.distance < distance + 40 * POSE_BACKDROP_OFFSET_RADII);
 });
 
 test("scaling the character moves the backdrop with it instead of pushing the character", () => {
@@ -91,7 +88,7 @@ test("scaling the character moves the backdrop with it instead of pushing the ch
     mesh.scale.setScalar(4);
     render();
     assert.ok(backdrop.distance > before);
-    assert.equal(mesh.position.z, 0, "Zoom alone must not trigger the depth clamp");
+    assert.equal(mesh.position.z, 0, "Zoom alone must not move the character");
 });
 
 test("dispose restores the renderer and removes the plane", () => {
@@ -117,11 +114,11 @@ test("orbiting the camera repositions the backdrop and never moves a character",
     assert.equal(syncs(), 0);
     const state = backdrop.describe();
     assert.ok(state.characters[0].farEdge <= state.distance + 1e-6, "the backdrop settles behind the deepest character");
-    // After the orbit, moving the character further back still runs into the backdrop.
+    // After the orbit, pushing the character further back never triggers a correction.
     character.transform.x = 60;
     mesh.position.set(60, 0, 0);
     render();
-    const clamped = backdrop.describe();
-    assert.ok(Math.abs(clamped.characters[0].farEdge - clamped.distance) < 1e-6);
-    assert.ok(mesh.position.x < 60);
+    assert.equal(mesh.position.x, 60);
+    const pushed = backdrop.describe();
+    assert.ok(pushed.distance >= pushed.characters[0].farEdge - 1e-6, "the plane stays behind even a deep character");
 });

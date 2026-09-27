@@ -839,12 +839,9 @@ export class UniCanvasPoseEditor {
         const view = v.camera.view || null;
         if (view) { v.camera.view = null; v.camera.updateProjectionMatrix(); }
         v.camera.updateMatrixWorld?.(true);
-        // The temporary camera move must not let the backdrop depth clamp translate anyone.
-        if (this.backdrop) this.backdrop.suppressClamp = true;
         try {
             return render();
         } finally {
-            if (this.backdrop) this.backdrop.suppressClamp = false;
             if (view) { v.camera.view = view; v.camera.updateProjectionMatrix(); }
             this.applyViewerCamera(inspection);
             // capture() leaves the stored-framing image in the visible buffer (the capture
@@ -1089,17 +1086,6 @@ export class UniCanvasPoseEditor {
         }, 250);
     }
 
-    // A depth clamp moved a character: persist it once per frame, like any other studio edit.
-    scheduleBackdropSync() {
-        if (this.backdropSyncFrame) return;
-        const token = this.token;
-        this.backdropSyncFrame = requestAnimationFrame(() => {
-            this.backdropSyncFrame = null;
-            if (token !== this.token || !this.studio) return;
-            this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
-        });
-    }
-
     async flush() {
         const token = this.token, studio = this.studio;
         await this.ready;
@@ -1303,8 +1289,6 @@ export class UniCanvasPoseEditor {
         this.inspecting = false;
         clearTimeout(this.commitTimer); this.commitTimer = null;
         clearTimeout(this.wheelInspectionTimer); this.wheelInspectionTimer = null;
-        if (this.backdropSyncFrame) cancelAnimationFrame(this.backdropSyncFrame);
-        this.backdropSyncFrame = null;
         this.backdrop?.dispose(); this.backdrop = null; this.meshKey = null;
         this.selectController?.disconnect();
         this.uiAbort?.abort(); this.uiAbort = null;

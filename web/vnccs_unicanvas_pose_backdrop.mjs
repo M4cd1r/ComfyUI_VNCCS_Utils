@@ -5,13 +5,13 @@
  * embedded Pose Studio shows only the mannequin under a free camera: no skydome,
  * grid or capture frame, and the layers below stay visible through the transparent
  * viewport. Those layers act as a flat backdrop - a camera-facing plane with no
- * depth that always fills the view just behind the mannequin. The mannequin can be
- * brought closer to the camera (a stronger perspective / FOV effect) but never
- * pushed behind that plane.
+ * depth that always fills the view just behind the deepest mannequin.
  *
  * The plane only writes depth: its pixels are the 2D layers already drawn under the
  * viewport, so drawing them again in WebGL would double them under the pose layer's
- * opacity and blend mode.
+ * opacity and blend mode. Characters are never moved automatically (no clamp): the
+ * user places them freely in 3D, and the plane just re-settles behind the deepest
+ * one whenever the camera changes.
  */
 
 // How far behind the orbit target the backdrop sits, in multiples of the character radius.
@@ -34,24 +34,12 @@ export function poseBackdropSize(distance, fovDegrees, aspect, zoom = 1) {
   return { width: height * (Number(aspect) || 1), height };
 }
 
-/**
- * How far a character must move toward the camera so its far edge stays in front of
- * the backdrop. `depth` is the camera-space distance of the character center along the
- * view direction; returns 0 when it already fits (moving closer is always allowed).
- */
-export function poseBackdropOverflow(depth, radius, backdropDistance) {
-  const excess = Number(depth) + Math.max(0, Number(radius) || 0) - Number(backdropDistance);
-  return Number.isFinite(excess) && excess > 1e-4 ? excess : 0;
-}
-
 export class UniCanvasPoseBackdrop {
   constructor(editor) {
     this.editor = editor;
     this.viewer = editor.studio.viewer;
     this.THREE = this.viewer.THREE;
     this.bounds = null;
-    this.clamping = false;
-    this.suppressClamp = false;
     const THREE = this.THREE;
     this.plane = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -93,7 +81,7 @@ export class UniCanvasPoseBackdrop {
   }
 
   // Bounding sphere of the active rig, stored unscaled and relative to the mesh origin so a
-  // per-frame clamp needs no vertex walk.
+  // per-frame plane update needs no vertex walk.
   measure() {
     const THREE = this.THREE;
     const mesh = this.viewer.skinnedMesh;
@@ -118,33 +106,23 @@ export class UniCanvasPoseBackdrop {
     // but keeping it out of foreign cameras avoids stray depth.
     this.plane.visible = renderCamera === camera;
     if (renderCamera !== camera || !viewer.orbit) return;
-    const distance = this.updatePlane();
-    // suppressClamp: the editor borrows the live camera for a stored-framing capture. That
-    // temporary camera move must never translate a character - only real character drags
-    // may be clamped (camera moves settle the plane behind the deepest character instead).
-    if (!this.suppressClamp) this.clampCharacters(distance);
+    this.updatePlane();
   }
 
-  // Places the plane for the current camera and returns its distance.
+  // Places the plane for the current camera: just behind the deepest character, so a character
+  // can move closer to the camera (a stronger perspective effect) or deeper into the scene,
+  // and the plane follows instead of ever cropping it. Never moves a character.
   updatePlane() {
     const viewer = this.viewer;
     const camera = viewer.camera;
     if (!this.bounds && viewer.skinnedMesh) this.bounds = this.measure();
-    // Scaling the character (Pose Studio Zoom) moves the backdrop with it; only moving the
-    // character away from the camera runs into the limit.
+    // Scaling the character (Pose Studio Zoom) moves the backdrop with it.
     const scale = Math.max(1e-3, viewer.skinnedMesh?.scale?.x || 1);
     const radius = (this.bounds?.radius || FALLBACK_RADIUS) * scale;
     const base = poseBackdropDistance(camera.position.distanceTo(viewer.orbit.target), radius);
-    // Orbiting or dollying is a camera move, never a character move: when the camera changed,
-    // the backdrop settles behind the deepest character instead of pushing anyone.
     camera.updateMatrixWorld(true);
-    const cameraKey = [...camera.matrixWorld.elements, camera.fov, camera.zoom, camera.aspect].join(",");
-    if (cameraKey !== this.cameraKey) {
-      this.cameraKey = cameraKey;
-      const deepest = Math.max(-Infinity, ...this.measureCharacters().map((item) => item.farEdge));
-      this.extra = Number.isFinite(deepest) ? Math.max(0, deepest - base) : 0;
-    }
-    const distance = base + (this.extra || 0);
+    const deepest = Math.max(-Infinity, ...this.measureCharacters().map((item) => item.farEdge));
+    const distance = base + (Number.isFinite(deepest) ? Math.max(0, deepest - base) : 0);
     const size = poseBackdropSize(distance, camera.fov, camera.aspect, camera.zoom);
     this.plane.position.set(0, 0, -distance);
     this.plane.scale.set(size.width, size.height, 1);
@@ -168,53 +146,6 @@ export class UniCanvasPoseBackdrop {
     });
   }
 
-  clampCharacters(distance) {
-    if (this.clamping) return;
-    for (const { mesh, active, id, depth, radius, forward } of this.measureCharacters()) {
-      const excess = poseBackdropOverflow(depth, radius, distance);
-      if (!excess) continue;
-      const shift = forward.clone().multiplyScalar(-excess);
-      this.clamping = true;
-      try {
-        if (active) this.moveActiveCharacter(shift);
-        else this.movePassiveCharacter(mesh, id, shift);
-      } finally {
-        this.clamping = false;
-      }
-    }
-  }
-
-  // Write the clamp back through Pose Studio's own character transform so it persists.
-  moveActiveCharacter(shift) {
-    const studio = this.editor.studio;
-    const character = studio.getActiveCharacter?.();
-    const transform = character?.transform;
-    if (!transform) {
-      this.viewer.skinnedMesh.position.add(shift);
-      this.viewer.skinnedMesh.updateMatrixWorld(true);
-      return;
-    }
-    transform.x = (Number(transform.x) || 0) + shift.x;
-    transform.y = (Number(transform.y) || 0) + shift.y;
-    transform.z = (Number(transform.z) || 0) + shift.z;
-    // Applies the transform to the mesh directly; the render in progress already sees it.
-    this.viewer.setActiveCharacterAppearance?.({ transform: { ...transform } });
-    this.editor.scheduleBackdropSync?.();
-  }
-
-  movePassiveCharacter(mesh, id, shift) {
-    const studio = this.editor.studio;
-    const character = studio.characters?.find?.((item) => String(item.id) === String(id));
-    if (character?.transform) {
-      character.transform.x = (Number(character.transform.x) || 0) + shift.x;
-      character.transform.y = (Number(character.transform.y) || 0) + shift.y;
-      character.transform.z = (Number(character.transform.z) || 0) + shift.z;
-    }
-    mesh.position.add(shift);
-    mesh.updateMatrixWorld(true);
-    this.editor.scheduleBackdropSync?.();
-  }
-
   // Read-only snapshot for tests: backdrop distance and each character's far-edge depth.
   describe() {
     const characters = this.measureCharacters().map(({ active, depth, radius, farEdge }) => ({
@@ -228,7 +159,6 @@ export class UniCanvasPoseBackdrop {
   // A new mesh (character or morph change) needs fresh bounds.
   invalidate() {
     this.bounds = null;
-    this.cameraKey = null;
   }
 
   dispose() {
