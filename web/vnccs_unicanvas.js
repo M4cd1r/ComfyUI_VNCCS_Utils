@@ -1977,7 +1977,9 @@ class UniCanvasWidget {
       if (this.tool === "pose") this.setTool("move");
       return;
     }
-    if (this.tool === "pose" && this.poseEditSession?.layerId !== layer.id) this.beginPoseEditSession(layer);
+    if (this.tool === "pose" && this.poseEditSession?.layerId !== layer.id) {
+      if (!this.beginPoseEditSession(layer)) { this.setTool("move"); return; }
+    }
     this.poseEditor ||= new UniCanvasPoseEditor(this);
     try {
       if (this.panorama && layer.pose.panoramaCamera) {
@@ -2039,6 +2041,12 @@ class UniCanvasWidget {
   }
 
   beginPoseEditSession(layer) {
+    // A rotated timeline frame cannot be matched by the pose editor's axis-aligned rect (6e):
+    // the 3D session and the pixels would project differently. Edit on the rest frame.
+    if (poseFrameRotated(this.getLayerRenderTransform(layer))) {
+      this.setStatus("Go to the rest frame to edit the pose", true);
+      return false;
+    }
     this.poseEditSession = {
       layerId: layer.id,
       before: this.createLayerPixelSnapshot(layer),
@@ -2050,6 +2058,7 @@ class UniCanvasWidget {
     this.requestRender();
     this.updateHistoryButtons();
     this.setStatus("Editing pose - Save pose (Enter) or Cancel when done. Ctrl+Z / Ctrl+Y undo and redo pose changes.");
+    return true;
   }
 
   // Leaving the Pose tool keeps the edit: one undo step for the whole session.

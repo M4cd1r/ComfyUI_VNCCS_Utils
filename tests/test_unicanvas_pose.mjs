@@ -101,6 +101,9 @@ function selectionHarness() {
     for (const name of ["syncCursorStyle", "renderToolSettings", "renderSamPanel", "updateSamControls", "updateHud", "updateContextCursor",
         "updateToolPreviewOverlay", "updateLayerListActiveState", "syncActiveLayerControls", "renderLayerList"]) host[name] = noop;
     host.toolNeedsCanvasRender = () => false;
+    // Session and transform entry points read the render placement; identity unless a test says otherwise.
+    host.getLayerRenderTransform = () => [1, 0, 0, 1, 0, 0];
+    host.getLayerStateOffset = () => ({ x: 0, y: 0 });
     host.getModelBase = () => "qwen_image_edit"; host.getInferenceSize = () => ({ width:512, height:512 });
     host.drawBtn = { disabled:false };
     host.createLayerPixelSnapshot = item => ({ id: item.id, pose: JSON.parse(JSON.stringify(item.pose || null)) });
@@ -297,10 +300,13 @@ test("the pose editor session view follows the layer's scene-state offset (#7)",
     close(offsets.at(-1)[2], 500 - (800 / rh) * (rx + rw / 2));
     close(offsets.at(-1)[3], -(800 / rh) * ry);
     close(offsets.at(-1)[4], 1000 * 800 / rh);
-    // A scaled timeline frame cannot be matched by the 3D surface; the identity fallback holds.
+    // Full parity (6e): a scaled timeline frame moves AND sizes the capture-frame region exactly
+    // like the layer pixels render.
     matrix = [1.5, 0, 0, 1.5, 400, 400];
     editor.layout();
-    assert.deepEqual(state.posePlacedRect({ x: 1, y: 2, width: 3, height: 4 }), { x: 1, y: 2, width: 3, height: 4 });
+    const [sx, sy, sw, sh] = [1.5 * 10 + 400, 1.5 * 20 + 400, 400 * 1.5, 600 * 1.5].map(value => value * 2);
+    close(offsets.at(-1)[2], 500 - (800 / sh) * (sx + sw / 2));
+    close(offsets.at(-1)[3], -(800 / sh) * sy);
 });
 
 test("pose controls stay inside the resized stage and never replace the generation panel", () => {
@@ -630,6 +636,34 @@ test("pose layers refuse rotate, skew, distort and edge (aspect) drags of the tr
     assert.equal(host.startTransformGesture({ x: 150, y: 150 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
     assert.match(String(calls.find(call => call[0] === "status" && /rest frame/.test(call[1]))?.[1] || ""), /rest frame/);
     assert.equal(layer.pose.rect.width, 200, "nothing moved");
+});
+
+test("posePlacedRect maps the rect through the full render transform, like the pixels (6e)", () => {
+    const rect = { x: 10, y: 20, width: 400, height: 600 };
+    // No matrix, no offset: the rest rect itself.
+    assert.equal(JSON.stringify(state.posePlacedRect(rect)), JSON.stringify(rect));
+    // Translation-only matrix: a plain move (the pre-6e behavior).
+    assert.equal(JSON.stringify(state.posePlacedRect(rect, [1, 0, 0, 1, 30, -12])),
+        JSON.stringify({ x: 40, y: 8, width: 400, height: 600 }));
+    // A timeline scale frame translates AND sizes the placement.
+    assert.equal(JSON.stringify(state.posePlacedRect(rect, [2, 0, 0, 2, 100, 50])),
+        JSON.stringify({ x: 120, y: 90, width: 800, height: 1200 }));
+    // A scene-state depth scale passed as an offset only (anchored on the feet).
+    const placed = state.posePlacedRect(rect, null, { x: 10, y: 5, scale: 2, ax: 10, ay: 620 });
+    // m = [2,0,0,2, 10 - ax, 5 - ay]; the feet anchor moves by (10, 5) and the rect scales 2x.
+    assert.equal(JSON.stringify(placed), JSON.stringify({ x: 20, y: 2 * 20 + 5 - 620, width: 800, height: 1200 }));
+    // A rotated frame collapses to its axis-aligned bounds; editing refuses it.
+    const rotated = state.posePlacedRect({ x: 0, y: 0, width: 100, height: 10 }, [0, 1, -1, 0, 100, 0]);
+    assert.equal(JSON.stringify(rotated), JSON.stringify({ x: 90, y: 0, width: 10, height: 100 }));
+});
+
+test("a rotated timeline frame refuses the pose session until the rest frame", () => {
+    const { host, layer, calls } = selectionHarness();
+    host.getLayerRenderTransform = () => [0.7, 0.7, -0.7, 0.7, 10, 10];
+    host.editPoseLayer(layer);
+    assert.equal(host.tool, "move", "the Pose tool falls back instead of opening a lying session");
+    assert.ok(!host.poseEditSession);
+    assert.match(String(calls.find(call => call[0] === "status")?.[1] || ""), /rest frame/);
 });
 
 test("captures run on the persisted framing; existing layers keep their saved framing", async () => {

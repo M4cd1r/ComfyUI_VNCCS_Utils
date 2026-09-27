@@ -32,17 +32,27 @@ export function serializePose(pose, includeData = true) {
 }
 
 /**
- * Where a pose layer's live editor surface sits in world space: `pose.rect` moved like the layer
- * renders it. A translation-only render transform (scene-state offset, timeline position keys)
- * moves the surface with it; a scaled or rotated timeline frame cannot be matched by the 3D
- * surface, so only the scene-state offset applies there.
+ * Where a pose layer's live editor surface sits in world space: `pose.rect` transformed exactly
+ * like the layer renders it (6e). The full translate+scale of the render transform - a
+ * scene-state offset with its depth scale, or a timeline position/scale frame - maps the rect to
+ * where its pixels show, so the session view and the pixels agree. A rotated frame collapses to
+ * its axis-aligned bounds here; editing refuses it instead (poseFrameRotated).
  */
 export function posePlacedRect(rect, matrix = null, stateOffset = null) {
-    const translation = Array.isArray(matrix) && matrix.length >= 6 && Math.abs(matrix[0] - 1) < 1e-9
-        && Math.abs(matrix[1]) < 1e-9 && Math.abs(matrix[2]) < 1e-9 && Math.abs(matrix[3] - 1) < 1e-9;
-    const dx = translation ? Number(matrix[4]) || 0 : Number(stateOffset?.x) || 0;
-    const dy = translation ? Number(matrix[5]) || 0 : Number(stateOffset?.y) || 0;
-    return { ...rect, x: rect.x + dx, y: rect.y + dy };
+    let m = Array.isArray(matrix) && matrix.length >= 6 ? matrix : null;
+    if (!m && stateOffset && (stateOffset.x || stateOffset.y || stateOffset.scale)) {
+        const scale = Number(stateOffset.scale) > 0 ? Number(stateOffset.scale) : 1;
+        const x = Number(stateOffset.x) || 0, y = Number(stateOffset.y) || 0;
+        const ax = Number(stateOffset.ax) || 0, ay = Number(stateOffset.ay) || 0;
+        m = [scale, 0, 0, scale, x + ax * (1 - scale), y + ay * (1 - scale)];
+    }
+    if (!m) return { ...rect };
+    // Axis-aligned bounds of the placed rect (matches transformRectBounds on the host side).
+    const corners = [[rect.x, rect.y], [rect.x + rect.width, rect.y], [rect.x, rect.y + rect.height], [rect.x + rect.width, rect.y + rect.height]]
+        .map(([x, y]) => ({ x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] }));
+    const xs = corners.map(point => point.x), ys = corners.map(point => point.y);
+    const x = Math.min(...xs), y = Math.min(...ys);
+    return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
 /**
