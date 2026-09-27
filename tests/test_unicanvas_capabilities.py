@@ -137,7 +137,7 @@ def test_minimax_h3_is_a_reference_to_video_model_used_for_stills():
 
 def test_pose_edit_support_is_declared():
     supported = {module.key for module in _families() if module.capabilities.supports_pose_edit}
-    assert supported == {"qwen_image_edit", "flux_klein"}
+    assert supported == {"qwen_image_edit", "flux_klein", "minimax_h3", "qwen_image21"}
 
 
 def test_default_loaders_are_declared():

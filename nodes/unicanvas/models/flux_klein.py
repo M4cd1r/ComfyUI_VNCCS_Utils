@@ -9,7 +9,13 @@ import torch
 
 from ..comfy_bridge import _call_node_method
 from ..debug import _conditioning_debug, _latent_debug, _uc_log
+from ..loras import LoraRequirement
 from ..pipeline import UniCanvasNodeStep, UniCanvasPipeline, _run_pipeline_steps
+from ..pose_studio_loras import (
+    POSE_STUDIO_LORA_NAME_SETTING,
+    POSE_STUDIO_LORA_STRENGTH_SETTING,
+    pose_studio_lora_requirement,
+)
 from ..progress import _set_draw_progress
 from ..sampling import _ensure_direct_sampling_prompt_context, _suppress_direct_sampling_comfy_progress
 from .base import UniCanvasModelModule
@@ -23,6 +29,10 @@ FLUX_KLEIN_DEFAULTS = {
     "clip_name": "qwen_3_8b_fp8mixed.safetensors",
     "vae_name": "flux2-vae.safetensors",
     "clip_type": "flux2",
+    # Pose Studio LoRA (pose_studio_loras.py): "auto" resolves to the highest
+    # installed version while pose layers are drawn.
+    POSE_STUDIO_LORA_NAME_SETTING: "",
+    POSE_STUDIO_LORA_STRENGTH_SETTING: 1.0,
     "sampler": "euler",
     "sampler_name": "euler",
     "scheduler": "simple",
@@ -143,6 +153,7 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
         ),
     )
     pipeline: UniCanvasPipeline = FLUX_KLEIN_PIPELINE
+    lora_requirements: tuple[LoraRequirement, ...] = (pose_studio_lora_requirement("flux_klein"),)
 
     def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
         encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")

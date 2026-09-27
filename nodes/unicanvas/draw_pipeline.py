@@ -44,7 +44,10 @@ if TYPE_CHECKING:
 
 MASKED_MODES = frozenset({"inpaint", "outpaint"})
 # Settings every draw may carry that are only needed until sampling finishes.
-COMMON_SCRATCH_KEYS = ("_pose_edit_images",)
+# _pose_edit_active gates the families' Pose Studio LoRA requirement
+# (pose_studio_loras.POSE_EDIT_ACTIVE_SETTING); kept literal here to avoid
+# pulling the feature module into the shared pipeline import.
+COMMON_SCRATCH_KEYS = ("_pose_edit_images", "_pose_edit_active")
 
 
 def _save_temp_image(image: Image.Image, prefix: str = "VNCCS_UniCanvas") -> dict[str, str]:

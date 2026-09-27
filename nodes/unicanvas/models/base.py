@@ -13,6 +13,7 @@ from ..debug import _latent_debug, _uc_log
 from ..latents import _encode_source_latent, _prepare_masked_generation_latent, _unwrap_latent_samples
 from ..loras import LoraRequirement, _apply_lora_requirements, _apply_lora_stack, _clone_model_clip
 from ..masking import _make_edit_outpaint_reference_rgb, _sample_transparent_outpaint_rgb
+from ..pose_studio_loras import POSE_EDIT_ACTIVE_SETTING
 from ..sampling import _sample_generation_latent_default
 from .capabilities import MediaKind, ModelCapabilities, ModelRole
 
@@ -131,6 +132,10 @@ class UniCanvasModelModule:
         """Pose Studio layers: the pose render and the background are the references; full denoise."""
         ctx.denoise = 1.0
         ctx.settings["denoise"] = 1.0
+        # Gates the families' Pose Studio LoraRequirement. The pose images are
+        # stashed later in the pipeline (prepare_inputs) than the LoRA application
+        # (apply_loras), so the gate must be its own scratch key.
+        ctx.settings[POSE_EDIT_ACTIVE_SETTING] = True
 
     def prepare_draw_assets(self, ctx: DrawContext) -> None:
         """Load family extras (patches, ControlNets) right after the base models."""
@@ -303,10 +308,22 @@ def _reference_image_slots(image_tensor: Any, gen_settings: dict[str, Any] | Non
     preserved: a reference in socket position N always occupies slot N+1.
     Shared by the MiniMax H3 (<Picture N>) and Qwen-Image-2.1 (<image N>)
     modules.
+
+    While a Pose Studio edit runs (``_pose_edit_images`` is set) the generic
+    contract takes over for every family: slot 1 is the pose render (image1),
+    slot 2 the background with the character (image2), and the VNCSS Config
+    reference images drop out for that draw - the pose contract owns the slots.
     """
     from ...vncss_config import REFERENCE_INPUTS
 
     slots: dict[int, Any] = {}
+    pose_images = (gen_settings or {}).get("_pose_edit_images")
+    if pose_images:
+        if len(pose_images) > 0:
+            slots[1] = pose_images[0]
+        if len(pose_images) > 1:
+            slots[2] = pose_images[1]
+        return slots
     if image_tensor is not None:
         slots[1] = image_tensor
     external_refs = ((gen_settings or {}).get("_external") or {}).get("references") or {}

@@ -11,6 +11,11 @@ import torch
 from ..comfy_bridge import _call_node_method
 from ..debug import _conditioning_debug, _latent_debug, _tensor_debug, _uc_log
 from ..loras import LoraRequirement
+from ..pose_studio_loras import (
+    POSE_STUDIO_LORA_NAME_SETTING,
+    POSE_STUDIO_LORA_STRENGTH_SETTING,
+    pose_studio_lora_requirement,
+)
 from ..sampling import _sample_generation_latent_default
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import ModelCapabilities, PromptGuide, ReferenceInputs
@@ -33,6 +38,10 @@ QWEN_IMAGE_EDIT_DEFAULTS = {
     "denoise": 1.0,
     "qwen_lora_name": "",
     "qwen_lora_strength": 0.0,
+    # Pose Studio LoRA (pose_studio_loras.py): "auto" resolves to the highest
+    # installed version while pose layers are drawn.
+    POSE_STUDIO_LORA_NAME_SETTING: "",
+    POSE_STUDIO_LORA_STRENGTH_SETTING: 1.0,
     "qwen_2511": True,
     "qwen_target_vl_size": 384,
     "qwen_instruction": (
@@ -94,6 +103,7 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
             clip_strength=0.0,
             description="Qwen-Image-Edit-2511 Lightning 4-step",
         ),
+        pose_studio_lora_requirement("qwen_image_edit"),
     )
 
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
@@ -132,12 +142,15 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         draw_id: str = "unknown",
     ) -> tuple[Any, Any]:
         reference = image_tensor
-        vl_references = gen_settings.get("_pose_edit_images") or [image_tensor]
-        if gen_settings.get("_pose_edit_images"):
-            reference = vl_references[0]
+        pose_references = gen_settings.get("_pose_edit_images")
+        if pose_references:
+            reference = pose_references[0]
+            vl_references = list(pose_references)
+        else:
+            vl_references = [image_tensor]
         draw_mode = str(gen_settings.get("draw_mode") or "")
         mask = gen_settings.get("_qwen_edit_mask")
-        if not gen_settings.get("_pose_edit_images") and draw_mode in {"inpaint", "outpaint"} and torch.is_tensor(mask):
+        if not pose_references and draw_mode in {"inpaint", "outpaint"} and torch.is_tensor(mask):
             pixel_mask = torch.nn.functional.interpolate(
                 mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).float(),
                 size=(reference.shape[1], reference.shape[2]),
@@ -158,9 +171,13 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
                 },
             )
 
-        for slot, value in sorted(_reference_image_slots(image_tensor, gen_settings).items()):
-            if slot != 1 and torch.is_tensor(value):
-                vl_references.append(value)
+        # External references fill the slots after the working area. During a
+        # pose edit the generic slots carry the two pose images instead
+        # (models/base.py::_reference_image_slots) and other references drop out.
+        if not pose_references:
+            for slot, value in sorted(_reference_image_slots(image_tensor, gen_settings).items()):
+                if slot != 1 and torch.is_tensor(value):
+                    vl_references.append(value)
         positive, negative, latent = self._encode_qwen_edit(
             clip=gen_settings.get("_qwen_edit_clip"),
             vae=vae,
