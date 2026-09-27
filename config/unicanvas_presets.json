@@ -369,5 +369,52 @@
         }
       ]
     }
-  ]
+  ],
+  "pose_studio_loras": {
+    "qwen_image_edit": {
+      "label": "Qwen Edit",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
+      "hf_dir": "models/loras/qwen/VNCCS",
+      "match": "^VNCCS_QIE2511_PoseStudio_ART_V(?P<v>\\d+(?:\\.\\d+)*)\\.safetensors$",
+      "baseline": {
+        "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_PoseStudio_ART_V6.safetensors",
+        "revision": "e9748913dccc42dfaa0c69d999db399b908af014",
+        "version": "6"
+      }
+    },
+    "flux_klein": {
+      "label": "Klein9b",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
+      "hf_dir": "models/loras/Klein9b",
+      "match": "^VNCCS_PoseStudioKlein9b_V(?P<v>\\d+(?:\\.\\d+)*)\\.safetensors$",
+      "baseline": {
+        "hf_path": "models/loras/Klein9b/VNCCS_PoseStudioKlein9b_V2.5.safetensors",
+        "revision": "e9748913dccc42dfaa0c69d999db399b908af014",
+        "version": "2.5"
+      }
+    },
+    "minimax_h3": {
+      "label": "MiniMax H3",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
+      "hf_dir": "models/loras/MiniMaxH3/VNCCS",
+      "match": "^VNCCS_PoseStudioH3_V(?P<v>\\d+(?:\\.\\d+)*)\\.safetensors$",
+      "local_match": ["^H3_PoseStudioV(?P<v>\\d+(?:\\.\\d+)*)\\.safetensors$"],
+      "baseline": {
+        "hf_path": "models/loras/MiniMaxH3/VNCCS/VNCCS_PoseStudioH3_V1.safetensors",
+        "revision": "e9748913dccc42dfaa0c69d999db399b908af014",
+        "version": "1"
+      }
+    },
+    "qwen_image21": {
+      "label": "Qwen Image 2.1",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
+      "hf_dir": "models/loras/QI2.1/VNCCS",
+      "match": "^VNCCS_QI2_PoseStudioV(?P<v>\\d+(?:\\.\\d+)*)\\.safetensors$",
+      "baseline": {
+        "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV1.1.safetensors",
+        "revision": "e9748913dccc42dfaa0c69d999db399b908af014",
+        "version": "1.1"
+      }
+    }
+  }
 }
