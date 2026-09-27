@@ -510,7 +510,8 @@ test("the widget only receives hook calls", () => {
   assert.match(widget, /\.\.\.this\.sprites\?\.snapshot\(layer\)/);
   assert.match(widget, /this\.sprites\?\.restoreSnapshot\(layer, snapshot\)/);
   assert.match(widget, /Object\.assign\(clone, this\.sprites\?\.cloneLayerFields\(layer\)\)/);
-  assert.match(widget, /if \(entry\.kind === SPRITE_VARIANT_HISTORY_KIND\) this\.sprites\?\.applyVariantHistory\(entry, direction\)/);
+  const sprites = fs.readFileSync(new URL("../web/vnccs_unicanvas_sprites.mjs", import.meta.url), "utf8");
+  assert.match(sprites, /uc\.registerHistoryKind\?\.\(SPRITE_VARIANT_HISTORY_KIND, \(entry, direction\) => uc\.sprites\?\.applyVariantHistory\(entry, direction\)\)/);
   assert.match(widget, /this\.sprites\?\.onMove\(layer, source, dx, dy\)/);
   assert.match(widget, /this\.sprites\?\.onTransform\(layer, draft\)/);
   assert.match(widget, /this\.sprites\?\.onStroke\(layer, start, end,/);

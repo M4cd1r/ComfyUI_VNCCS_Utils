@@ -24,6 +24,7 @@
 
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
 import { uniCanvasSurface } from "./vnccs_unicanvas_surface.mjs";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
 export const PROJECTS_BASE = "/vnccs/unicanvas/projects";
 export const PROJECT_POINTER_KEY = "vnccs-unicanvas-standalone-project";
@@ -745,7 +746,11 @@ export class UniCanvasProjectSession {
       this.afterSceneApplied();
       void this.request("PATCH", this.projectPath(), { json: { activeSceneId: sceneId } }).then((project) => {
         if (project?.id === this.projectId) this.project = { ...project, scenes: this.project.scenes };
-      }).catch(() => {});
+      }).catch((err) => {
+        // The scene is open; only the project's remembered active scene is stale.
+        console.warn("[VNCCS UniCanvas] Saving the active scene failed", err);
+        this.widget.setStatus?.("[VNCCS UniCanvas] The project could not remember this scene as the active one; it reopens on the previous scene.", true);
+      });
     }
     return ok;
   }
@@ -932,11 +937,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 function button(label, className, onClick, title = label) {
@@ -974,8 +975,9 @@ async function runAction(widget, label, action) {
 function closeSceneMenu(widget) {
   widget._vnccsSceneMenu?.remove();
   widget._vnccsSceneMenu = null;
-  if (widget._vnccsSceneMenuOutside) document.removeEventListener("pointerdown", widget._vnccsSceneMenuOutside, true);
-  widget._vnccsSceneMenuOutside = null;
+  // Aborting removes the menu's document listener, whichever way the menu closes.
+  widget._vnccsSceneMenuAbort?.abort();
+  widget._vnccsSceneMenuAbort = null;
 }
 
 function openSceneMenu(widget, session, scene, event) {
@@ -1005,10 +1007,11 @@ function openSceneMenu(widget, session, scene, event) {
   menu.style.top = `${event.clientY}px`;
   document.body.appendChild(menu);
   widget._vnccsSceneMenu = menu;
-  widget._vnccsSceneMenuOutside = (e) => {
+  const abort = new AbortController();
+  widget._vnccsSceneMenuAbort = abort;
+  document.addEventListener("pointerdown", (e) => {
     if (!menu.contains(e.target)) closeSceneMenu(widget);
-  };
-  document.addEventListener("pointerdown", widget._vnccsSceneMenuOutside, true);
+  }, { capture: true, signal: abort.signal });
 }
 
 function renderProjectBar(widget, session) {
@@ -1269,6 +1272,8 @@ export function installUniCanvasProjects(widget, options = {}) {
   if (!widget || widget.projectSession) return widget?.projectSession;
   const session = new UniCanvasProjectSession(widget, options);
   widget.projectSession = session;
+  // The scene menu lives on document.body, outside the widget's DOM.
+  widget.onDispose?.(() => closeSceneMenu(widget));
   if (typeof document !== "undefined" && widget.side) {
     ensureStyles();
     const bar = buildProjectBar(widget, session);

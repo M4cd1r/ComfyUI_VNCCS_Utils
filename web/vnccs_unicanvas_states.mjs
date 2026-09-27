@@ -1151,6 +1151,10 @@ function buildStatesSection(uc) {
 export function installUniCanvasSceneStates(uc) {
   if (!uc || uc._vnccsSceneStatesInstalled) return uc;
   uc._vnccsSceneStatesInstalled = true;
+  // Layer properties and the state list; the state code refreshes what it changed.
+  for (const kind of SCENE_STATE_HISTORY_KINDS) {
+    uc.registerHistoryKind?.(kind, (entry, direction) => uc.applySceneStateHistory?.(entry, direction), { isolated: true });
+  }
   uc.sceneStates = emptySceneStates();
   uc._sceneThumbCache = new Map();
   uc._sceneKnownLayerIds = null;

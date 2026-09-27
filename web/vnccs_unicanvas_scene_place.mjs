@@ -31,6 +31,7 @@
 import { groupChainOf, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { feetPlacement, isZeroStateOffset, stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs";
+import { finiteOrNull } from "./vnccs_unicanvas_util.mjs";
 
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
 export const PERSPECTIVE_TOOL = "perspective";
@@ -50,10 +51,7 @@ const PANORAMA_TOOLTIP = "Not available in panorama mode";
 const PERSPECTIVE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 9h20"/><path d="M12 9 3 21"/><path d="M12 9 21 21"/><path d="M12 9v12"/><path d="M6.5 15h11"/><circle cx="18" cy="4.5" r="1.6"/><path d="M18 6.1v2"/></svg>`;
 const DEPTH_SCALE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 7h20"/><circle cx="7" cy="9.6" r="1"/><path d="M7 10.6v2.2"/><circle cx="16" cy="12.4" r="2"/><path d="M16 14.4v5.4"/><path d="M4 21h16"/></svg>`;
 
-function finite(value) {
-  const number = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
-  return typeof number === "number" && Number.isFinite(number) ? number : null;
-}
+const finite = finiteOrNull;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -1099,6 +1097,8 @@ function updatePanoramaAvailability(uc) {
 
 export function installUniCanvasScenePlace(uc) {
   if (!uc || uc._scenePlace) return uc;
+  uc.registerHistoryKind?.(SCENE_PERSPECTIVE_HISTORY_KIND, (entry, direction) => applyScenePerspectiveHistory(uc, entry, direction));
+  uc.registerHistoryKind?.(SCENE_LIGHT_HISTORY_KIND, (entry, direction) => applySceneLightHistory(uc, entry, direction));
   uc.scenePerspective = normalizeScenePerspective(uc.scenePerspective);
   uc.sceneLight = normalizeSceneLight(uc.sceneLight);
   uc._scenePlace = {

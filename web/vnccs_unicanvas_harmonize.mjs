@@ -60,6 +60,8 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 // Import cycle with the layer tools (they list this module's menu entries): only functions and
 // constants read at call time cross it.
 import { COLOR_MATCH_METHODS, COLOR_MATCH_ROUTE, COLOR_MATCH_STRENGTH_MAX, placeInHost } from "./vnccs_unicanvas_layer_tools.mjs";
+import { escapeHtml, finiteOrNull } from "./vnccs_unicanvas_util.mjs";
+import { drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
 
 export const SHADOW_KINDS = Object.freeze(["contact", "cast"]);
 export const SHADOW_LAYER_HISTORY_KIND = "shadowLayer";
@@ -81,10 +83,7 @@ export const SHADOW_PARAM_SPECS = Object.freeze({
   ]),
 });
 
-function finite(value) {
-  const number = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
-  return typeof number === "number" && Number.isFinite(number) ? number : null;
-}
+const finite = finiteOrNull;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -621,7 +620,6 @@ export const AI_MASK_BAND = 8;
 export const AI_BBOX_TOLERANCE = 0.05;
 export const OCCLUDER_DEFAULT_MARGIN = 0.03;
 export const RELIGHT_DEFAULT_STRENGTH = 0.6;
-const DRAW_ROUTE = "/vnccs/unicanvas/draw";
 const SEGMENT_ROUTE = "/vnccs/unicanvas/segment";
 const AI_LONG_SIDE = 1024;
 
@@ -1216,10 +1214,9 @@ export async function runAiHarmonize(uc, layer) {
   const imageCanvas = exportRegion(uc, region, size);
   const prompt = resolveHarmonizePrompt(uc.settings);
   const settings = { ...uc.makeSettingsPayload(), positive: prompt, denoise: 1 };
-  const debugId = `harmonize-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const debugId = drawDebugId("harmonize");
   const original = placementBox(placement);
-  uc.drawInProgress = true;
-  if (uc.drawBtn) uc.drawBtn.disabled = true;
+  setGenerationLock(uc, true);
   uc.startDrawProgressPolling?.(debugId);
   uc.setStatus(`${label} running on ${layer.name}...`);
   const snapshot = buildStagingSnapshot(settings, { mode: "harmonize", bbox: region });
@@ -1229,17 +1226,10 @@ export async function runAiHarmonize(uc, layer) {
     targetLayerId: layer.id, imageCanvas, maskCanvas,
   }) || null;
   try {
-    const res = await fetch(DRAW_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode: "inpaint", image: imageCanvas.toDataURL("image/png"), mask: maskCanvas.toDataURL("image/png"), source_empty: false,
-        bbox: region, inference_size: size, output_size: { width: region.width, height: region.height }, debug_id: debugId, settings,
-      }),
+    const { images } = await requestDirectDraw({
+      mode: "inpaint", image: imageCanvas.toDataURL("image/png"), mask: maskCanvas.toDataURL("image/png"), source_empty: false,
+      bbox: region, inference_size: size, output_size: { width: region.width, height: region.height }, debug_id: debugId, settings,
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
     if (!images.length) throw new Error("the model returned no image");
     const stagedItems = [];
     let rejected = 0;
@@ -1274,8 +1264,7 @@ export async function runAiHarmonize(uc, layer) {
     if (!uc._disposed) uc.setStatus(`${label} failed: ${err.message || err}`, true);
   } finally {
     uc.stopDrawProgressPolling?.();
-    uc.drawInProgress = false;
-    if (uc.drawBtn) uc.drawBtn.disabled = false;
+    setGenerationLock(uc, false);
   }
   return undefined;
 }
@@ -1487,9 +1476,6 @@ const HARMONIZE_LIGHT_SLIDERS = [
 ];
 const COLOR_METHOD_LABELS = { local_lab: "Local (follows the colors around each part)", reinhard_lab_gpu: "Global LAB mean / contrast" };
 
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[<>&"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[ch]);
-}
 
 function formatLight(spec, value) {
   return spec.unit ? `${Math.round(value)}${spec.unit}` : Number(value).toFixed(2);
@@ -1695,6 +1681,8 @@ export function harmonizeLightTarget(uc) {
 export function installUniCanvasHarmonize(uc) {
   if (!uc || uc._harmonize) return uc;
   uc._harmonize = { paramGesture: null, occluderBusy: false, forceCpuRelight: false };
+  uc.registerHistoryKind?.(SHADOW_LAYER_HISTORY_KIND, (entry, direction) => applyShadowLayerHistory(uc, entry, direction));
+  uc.registerHistoryKind?.(OCCLUDER_LAYER_HISTORY_KIND, (entry, direction) => applyOccluderLayerHistory(uc, entry, direction));
   uc.addShadowLayer = (source, kind) => addShadowLayer(uc, source, kind);
   uc.detachShadowLayer = (layer) => detachShadowLayer(uc, layer);
   uc.openHarmonizePanel = (layer, point) => openHarmonizePanel(uc, layer, point);

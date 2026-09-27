@@ -22,6 +22,7 @@
  */
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { clamp, finite } from "./vnccs_unicanvas_util.mjs";
 
 export const CONTROL_LAYER_TYPE = "control";
 export const CONTROL_OVERLAY_COLOR = "rgba(72, 196, 255, 0.55)";
@@ -31,8 +32,6 @@ export const isControlLayer = (layer) => layer?.type === CONTROL_LAYER_TYPE;
 // Layers listed in the mask section (never grouped, never image content).
 export const isMaskSectionLayer = (layer) => layer?.type === "mask" || layer?.type === CONTROL_LAYER_TYPE;
 
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-const finite = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
 
 // Frontend ControlNet declaration: the backend descriptor wins, the registry entry is the fallback
 // (before /assets answered). Both normalize to one shape.

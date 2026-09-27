@@ -171,13 +171,14 @@ test("skin rects map into the frame and overlap checks work", () => {
     assert.equal(rectsIntersect({ x: 0, y: 0, width: 10, height: 10 }, { x: 10, y: 0, width: 5, height: 5 }), false);
 });
 
-test("the overlay pass lives only in render(): never in flatten, export or payload code", () => {
+test("the overlay pass lives only in render(): never in flatten, export or payload code", async () => {
     assert.match(method(widget, "render() {"), /this\.vnPreview\?\.drawOverlay\(ctx, w, h\)/);
     for (const signature of ["drawFlattenedLayers(", "makeExportCanvas(", "_buildDrawPayload(", "flattenLayersToMaster(", "buildSerializedState("]) {
         assert.doesNotMatch(method(widget, signature), /vnPreview|vn_preview/, signature);
     }
     assert.equal((widget.match(/drawOverlay\(/g) || []).length, 1);
-    assert.match(method(widget, "applyHistoryEntry("), /vnPreviewFrame/);
+    const preview = await readFile(new URL("../web/vnccs_unicanvas_vn_preview.mjs", import.meta.url), "utf8");
+    assert.match(preview, /uc\.registerHistoryKind\?\.\("vnPreviewFrame", \(entry, direction\) => uc\.vnPreview\?\.applyFrameHistory\(entry, direction\)\)/);
     assert.match(modes, /lower === "p" && widget\.vnPreview/);
     assert.match(modes, /getVnPreview:/);
 });

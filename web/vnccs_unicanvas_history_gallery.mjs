@@ -19,6 +19,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { blobUrl, dehydrateValue } from "./vnccs_unicanvas_project.mjs";
 import { createLayerMeta, metaFromStagingSnapshot } from "./vnccs_unicanvas_provenance.mjs";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
 export const HISTORY_KINDS = Object.freeze(["generate", "bake", "sprite", "harmonize", "remove_bg", "color_match"]);
 export const HISTORY_KIND_LABELS = Object.freeze({
@@ -582,11 +583,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 function button(widget, label, className, onClick, title = label) {
@@ -965,6 +962,7 @@ export function installUniCanvasHistory(widget, options = {}) {
   if (!widget || widget.generationHistory) return widget?.generationHistory;
   const history = new UniCanvasHistory(widget, options);
   widget.generationHistory = history;
+  widget.registerHistoryKind?.(HISTORY_SETTINGS_HISTORY_KIND, (entry, direction) => widget.generationHistory?.applySettingsHistory(entry, direction));
   const slot = typeof document === "undefined" ? null : historyButtonSlot(widget);
   if (slot) {
     ensureStyles();

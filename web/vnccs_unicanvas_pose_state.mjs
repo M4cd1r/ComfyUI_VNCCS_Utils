@@ -1,10 +1,11 @@
 /** Serializable pose layer contracts shared by the canvas and editor host. */
+import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs";
 // Articulated mannequin mid-pose: filled head and joints read as a posable figure at tool size.
 export const POSE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle class="fill" cx="12" cy="3.7" r="2.5"/><rect class="fill" x="9.7" y="7" width="4.6" height="7.4" rx="2.3"/><path stroke-width="2.4" d="M10.4 8.4 7 6.4 5.8 2.9M13.6 8.4l3.2 2.9 2.9 1.4M10.8 13.8l-1.6 4-1 3.6M13.2 13.8l1.7 3.9 1.3 3.5"/><circle class="fill" cx="7" cy="6.4" r="1.4"/><circle class="fill" cx="16.8" cy="11.3" r="1.4"/><circle class="fill" cx="9.2" cy="17.8" r="1.4"/><circle class="fill" cx="14.9" cy="17.7" r="1.4"/></svg>';
 // A panorama layer is an image layer that holds the equirectangular source (vnccs_unicanvas_panorama.mjs).
 // Sprite layers (vnccs_unicanvas_sprites.mjs) keep their active variant in `canvas`.
 export const isImageLayer = layer => layer?.type === "raster" || layer?.type === "pose" || layer?.type === "panorama" || layer?.type === "sprite";
-const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
+const clone = cloneJson;
 
 /**
  * A character reference that carries its image inline: an upload (or a VNCCS character) and a
@@ -193,14 +194,7 @@ export function reconcilePoseCharacterRefs(pose, previous, next) {
  * apart even where antialiasing blends two neighbours, so each pixel maps back to one character. */
 export const POSE_ID_COLORS = Object.freeze([[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]);
 
-function hashString(text) {
-    let hash = 0x811c9dc5;
-    for (let index = 0; index < text.length; index++) {
-        hash ^= text.charCodeAt(index);
-        hash = Math.imul(hash, 0x01000193);
-    }
-    return (hash >>> 0).toString(16);
-}
+const hashString = fnv1aHex;
 
 /** Changes whenever the mannequins, the camera or the layer rect change. */
 export function poseIdKey(pose) {

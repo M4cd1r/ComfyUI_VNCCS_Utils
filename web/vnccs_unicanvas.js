@@ -5,7 +5,7 @@
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
 import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs";
 import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs";
-import { SPRITE_VARIANT_HISTORY_KIND, installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
+import { installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
@@ -15,18 +15,18 @@ import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vn
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
-import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs";
+import { installUniCanvasSceneStates, normalizeStateOffset, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs";
 import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs";
 import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs";
-import { TIMELINE_HISTORY_KIND, applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
+import { applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
-import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
-import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, OCCLUDER_LAYER_HISTORY_KIND, SHADOW_LAYER_HISTORY_KIND, applyOccluderLayerHistory, applyShadowLayerHistory, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
+import { installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
 import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs";
-import { HISTORY_SETTINGS_HISTORY_KIND, installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
+import { installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
@@ -95,6 +95,8 @@ import {
   uniCanvasRequestOverrides,
   uniCanvasRequestSettings,
 } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { escapeHtml, randomId } from "./vnccs_unicanvas_util.mjs";
+import { runExclusiveGeneration, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -528,7 +530,7 @@ function enableUniCanvasGraphNavigationForwarding(root) {
   }, { capture: true, passive: false });
 }
 
-const uid = () => `uc_${Math.random().toString(36).slice(2, 10)}`;
+const uid = () => randomId("uc");
 const MASK_OVERLAY_COLOR = "rgba(255, 143, 163, 0.48)";
 const STAGE_MIN_SCALE = 0.1;
 const STAGE_MAX_SCALE = 20;
@@ -943,6 +945,10 @@ class UniCanvasWidget {
     this.presetDownloadTimer = null;
     this.presetPickerOpen = false;
     this._disposed = false;
+    // Feature cleanups registered with onDispose(), run by dispose() (last registered first).
+    this._disposers = [];
+    // History kinds owned by feature modules (registerHistoryKind), applied by applyHistoryEntry.
+    this.historyHandlers = new Map();
     this._eventAbortController = null;
     this.settings = makeDefaultUniCanvasSettings();
     if (!this.settings.preset_runtime_settings || typeof this.settings.preset_runtime_settings !== "object") {
@@ -3145,7 +3151,7 @@ class UniCanvasWidget {
   }
 
   _escape(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    return escapeHtml(value);
   }
 
   resize() {
@@ -4207,6 +4213,14 @@ class UniCanvasWidget {
     this.setStatus("Redo");
   }
 
+  // A feature module owns its history kinds: `apply(entry, direction)` restores one entry
+  // ("undo" or "redo"). By default the widget then refreshes layers, panels and sync as after any
+  // layer change; `isolated` kinds (timeline, scene states) refresh what they changed themselves.
+  registerHistoryKind(kind, apply, { isolated = false } = {}) {
+    if (!kind || typeof apply !== "function") return;
+    (this.historyHandlers ||= new Map()).set(kind, { apply, isolated });
+  }
+
   applyHistoryEntry(entry, direction) {
     if (!entry?.kind) return;
     if (entry.kind === "historyGroup") {
@@ -4215,20 +4229,11 @@ class UniCanvasWidget {
       for (const child of entries) this.applyHistoryEntry(child, direction);
       return;
     }
-    if (entry.kind === TIMELINE_HISTORY_KIND) {
+    const handler = this.historyHandlers?.get(entry.kind);
+    if (handler?.isolated) {
       this.historyRestoring = true;
       try {
-        this.timelinePanel?.applyHistory(entry, direction);
-      } finally {
-        this.historyRestoring = false;
-      }
-      return;
-    }
-    if (SCENE_STATE_HISTORY_KINDS.has(entry.kind)) {
-      // Scene states (vnccs_unicanvas_states.mjs): layer properties and the state list.
-      this.historyRestoring = true;
-      try {
-        this.applySceneStateHistory?.(entry, direction);
+        handler.apply(entry, direction);
       } finally {
         this.historyRestoring = false;
       }
@@ -4279,7 +4284,6 @@ class UniCanvasWidget {
     }
     // A staged result accepted into a new layer or into its own layer (bake, sprite, harmonize).
     if (entry.acceptedItem) void this.generationHistory?.onAcceptHistory(entry, direction);
-    if (entry.kind === HISTORY_SETTINGS_HISTORY_KIND) this.generationHistory?.applySettingsHistory(entry, direction);
     if (entry.kind === "addLayer") {
       if (direction === "undo") {
         this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
@@ -4291,12 +4295,9 @@ class UniCanvasWidget {
       this.invalidateLayerCaches(entry.layer);
     }
     if (entry.kind === PANORAMA_VIEW_HISTORY_KIND) applyPanoramaViewHistory(this, entry, direction);
-    if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
-    if (entry.kind === SPRITE_VARIANT_HISTORY_KIND) this.sprites?.applyVariantHistory(entry, direction);
-    if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
-    if (entry.kind === SCENE_LIGHT_HISTORY_KIND) applySceneLightHistory(this, entry, direction);
-    if (entry.kind === SHADOW_LAYER_HISTORY_KIND) applyShadowLayerHistory(this, entry, direction);
-    if (entry.kind === OCCLUDER_LAYER_HISTORY_KIND) applyOccluderLayerHistory(this, entry, direction);
+    // Feature kinds (VN preview frame, sprite variants, scene perspective / light, shadow and
+    // occluder layers, history settings) are registered by their installers.
+    handler?.apply(entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
@@ -5148,9 +5149,12 @@ class UniCanvasWidget {
             height: visibleWorldRect.height / scale,
           };
         }
-        if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
-        else this.drawRasterLayerVisible(ctx, layer);
-        if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
+        try {
+          if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
+          else this.drawRasterLayerVisible(ctx, layer);
+        } finally {
+          if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
+        }
       }
       ctx.restore();
     }, this._groupScratchPool);
@@ -5302,11 +5306,14 @@ class UniCanvasWidget {
       ctx.translate(offset.x, offset.y);
       if (visible) this._visibleWorldRectForRender = { ...visible, x: visible.x - offset.x, y: visible.y - offset.y };
     }
-    if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
-    else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
-    if (offset.x || offset.y) {
-      this._visibleWorldRectForRender = visible;
-      ctx.restore();
+    try {
+      if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+      else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+    } finally {
+      if (offset.x || offset.y) {
+        this._visibleWorldRectForRender = visible;
+        ctx.restore();
+      }
     }
   }
 
@@ -5330,10 +5337,13 @@ class UniCanvasWidget {
       const saved = this._visibleWorldRectForRender;
       // The source crop is the visible rect mapped back into the layer's rest space.
       this._visibleWorldRectForRender = visibleWorld ? transformRectBounds(inverse, visibleWorld) : null;
-      if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
-      else if (this._visibleWorldRectForRender) this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
-      else ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
-      this._visibleWorldRectForRender = saved;
+      try {
+        if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+        else if (this._visibleWorldRectForRender) this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+        else ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
+      } finally {
+        this._visibleWorldRectForRender = saved;
+      }
     }
     ctx.restore();
   }
@@ -6946,8 +6956,7 @@ class UniCanvasWidget {
     } else {
       this.startDrawProgressPolling(debugId);
     }
-    this.drawBtn.disabled = true;
-    if (this.batchInput) this.batchInput.disabled = true;
+    this.setGenerationLock(true);
     let performance = "";
     try {
       if (configLinked) {
@@ -6986,13 +6995,21 @@ class UniCanvasWidget {
       this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
     } finally {
       this.stopDrawProgressPolling();
-      this.drawInProgress = false;
-      this.drawBtn.disabled = false;
-      if (this.batchInput) this.batchInput.disabled = false;
+      this.setGenerationLock(false);
       window.setTimeout(() => {
         if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
       }, 1800);
     }
+  }
+
+  // One generation at a time: GENERATE, bakes, sprite variants and AI harmonize share this lock
+  // (vnccs_unicanvas_draw_client.mjs); it also disables the controls that start a generation.
+  setGenerationLock(on) {
+    setGenerationLock(this, on);
+  }
+
+  runExclusiveGeneration(work) {
+    return runExclusiveGeneration(this, work);
   }
 
   imageResultToURL(image) {
@@ -8441,7 +8458,7 @@ class UniCanvasWidget {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
-    }).catch(() => {});
+    }).catch((err) => console.warn("[VNCCS UniCanvas] Debug mode toggle failed", err));
   }
 
   openUniCanvasSettings() {
@@ -8614,6 +8631,25 @@ class UniCanvasWidget {
     document.addEventListener("pointerdown", this._vnccsSettingsOutside, true);
   }
 
+  // Features register their own teardown (popovers, menus, timers) instead of the widget
+  // knowing each one. A cleanup registered after disposal runs at once.
+  onDispose(cleanup) {
+    if (typeof cleanup !== "function") return;
+    if (this._disposed) {
+      this._runDisposer(cleanup);
+      return;
+    }
+    this._disposers.push(cleanup);
+  }
+
+  _runDisposer(cleanup) {
+    try {
+      cleanup();
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] A feature cleanup failed during disposal", err);
+    }
+  }
+
   dispose() {
     this.poseEditor?.dispose();
     if (this._disposed) return;
@@ -8623,6 +8659,7 @@ class UniCanvasWidget {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
     this._disposed = true;
+    for (const cleanup of this._disposers.splice(0).reverse()) this._runDisposer(cleanup);
     teardownUniCanvasWidgetModes(this);
     this._vnccsTogglesOff?.();
     this._vnccsTogglesOff = null;

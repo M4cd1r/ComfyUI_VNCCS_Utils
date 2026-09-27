@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  alphaBounds, bakePickerGroups, bakePoseHash, bakeRefHash, bakeRemoveBgRequest, bakeSettingsPayload, bakeStatus, bakeWorkingRect, boxWithin,
+  alphaBounds, BAKE_FAMILIES, bakeFamilies, bakePickerGroups, bakePoseHash, bakeRefHash, bakeRemoveBgRequest, bakeSettingsPayload, bakeStatus, bakeWorkingRect, boxWithin,
   collectBakeCandidates, dilateAlpha, expandBox, extentBeyond, generateBakeLabel, installUniCanvasCharacterBake,
   keepOverlappingComponents, normalizePoseBake, orderBakeParts, refreshBakeStatuses, resolveBakeModel, scaleBakeWithPlacement, subtractAlpha,
 } from "../web/vnccs_unicanvas_bake.mjs";
@@ -349,4 +349,22 @@ test("the layer row's Show mannequin button toggles both ways (the row is update
   click();
   assert.equal(layer.pose.bake.showMannequin, false);
   assert.equal(toggle.textContent, "Show mannequin");
+});
+
+test("the bake families come from the backend descriptors' supports_pose_edit, with the fixed list as fallback", () => {
+  assert.deepEqual(bakeFamilies(null), BAKE_FAMILIES);
+  assert.deepEqual(bakeFamilies(new Map()), BAKE_FAMILIES);
+  const qie = { key: "qwen_image_edit", capabilities: { label: "Qwen Edit", supports_pose_edit: true } };
+  const klein = { key: "flux_klein", capabilities: { label: "Flux Klein", supports_pose_edit: true } };
+  const sdxl = { key: "sdxl", capabilities: { label: "SDXL", supports_pose_edit: false } };
+  const fresh = { key: "new_edit", capabilities: { label: "New Edit", supports_pose_edit: true } };
+  // Backend registry order (klein before qie) and alias duplicates keep the known order and labels.
+  const index = new Map([["sdxl", sdxl], ["flux_klein", klein], ["klein", klein], ["new_edit", fresh], ["qwen_image_edit", qie]]);
+  assert.deepEqual(bakeFamilies(index), [["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"], ["new_edit", "New Edit"]]);
+  const families = bakeFamilies(new Map([["new_edit", fresh]]));
+  const presets = [{ id: "n", settings: { generation_mode: "new_edit" } }, { id: "qie", settings: { generation_mode: "qwen_image_edit" } }];
+  assert.deepEqual(bakePickerGroups(presets, { families }).map((group) => group.family), ["new_edit"]);
+  assert.deepEqual(resolveBakeModel({}, { currentBase: "new_edit", presets, families }), { useCurrent: true, family: "new_edit" });
+  assert.match(resolveBakeModel({}, { currentBase: "sdxl", presets: [], families }).error, /needs New Edit:/);
+  assert.match(resolveBakeModel({}, { currentBase: "sdxl", presets: [] }).error, /needs QiE2511 or Klein9b:/);
 });

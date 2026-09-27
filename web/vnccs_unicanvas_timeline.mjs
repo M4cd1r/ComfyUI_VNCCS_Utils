@@ -82,6 +82,7 @@ import {
 } from "./vnccs_unicanvas_timeline_pose.mjs";
 import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs";
 import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
 const STYLE_ID = "vnccs-uc-timeline-styles";
 const LABEL_WIDTH = 180;
@@ -142,11 +143,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 const isTextTarget = (target) => target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
@@ -1453,6 +1450,9 @@ class TimelineController {
   closeMenu() {
     this.menu?.remove();
     this.menu = null;
+    // Removes the menu's document listener, however the menu closed.
+    this.menuAbort?.abort();
+    this.menuAbort = null;
   }
 
   showMenu(e, build) {
@@ -1488,12 +1488,11 @@ class TimelineController {
     menu.style.left = `${Math.max(0, Math.min(host.width - menu.offsetWidth - 4, e.clientX - host.left))}px`;
     menu.style.top = `${Math.max(0, Math.min(host.height - menu.offsetHeight - 4, e.clientY - host.top))}px`;
     this.menu = menu;
-    const dismiss = (event) => {
+    this.menuAbort = new AbortController();
+    document.addEventListener("pointerdown", (event) => {
       if (menu.contains(event.target)) return;
       this.closeMenu();
-      document.removeEventListener("pointerdown", dismiss, true);
-    };
-    document.addEventListener("pointerdown", dismiss, true);
+    }, { capture: true, signal: this.menuAbort.signal });
   }
 
   onBodyContextMenu(e) {
@@ -1643,6 +1642,7 @@ export function installUniCanvasTimeline(uc, { createPoseEditor } = {}) {
   controller.createPoseEditor = createPoseEditor || null;
   uc.timelinePanel = controller;
   if (uc.timeline === undefined) uc.timeline = null;
+  uc.registerHistoryKind?.(TIMELINE_HISTORY_KIND, (entry, direction) => uc.timelinePanel?.applyHistory(entry, direction), { isolated: true });
 
   if (uc.settingsBar && typeof uc._button === "function") {
     controller.button = uc._button(TIMELINE_ICON, "vnccs-uc-icon vnccs-uc-timeline-toggle", () => controller.toggle(), "Timeline (standalone)");

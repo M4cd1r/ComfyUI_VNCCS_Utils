@@ -323,3 +323,23 @@ test("the widget, shortcuts and timeline read the toggles", async () => {
     "the toggle only hides on top of the standalone split");
   assert.ok(!/localStorage\s*[.[]/.test(await read("vnccs_unicanvas_feature_toggles.mjs")), "values live in ComfyUI settings, not localStorage");
 });
+
+test("the family and loader toggles cover exactly the model registries (no drift)", async () => {
+  const widget = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+  const block = (name) => {
+    const start = widget.indexOf(`const ${name} = {`);
+    const end = widget.indexOf("\n};", start);
+    return [...widget.slice(start, end).matchAll(/^  ([a-z0-9_]+): \{$/gm)].map((match) => match[1]).sort();
+  };
+  const toggled = (field) => UNICANVAS_FEATURE_TOGGLES.filter((entry) => entry[field]).map((entry) => entry[field]).sort();
+  const families = toggled("family");
+  assert.deepEqual(toggled("loader"), block("UNICANVAS_MODEL_LOADERS"));
+  for (const key of block("UNICANVAS_MODEL_MODULES")) assert.ok(families.includes(key), `frontend family ${key} has a toggle`);
+  const init = await readFile(new URL("../nodes/unicanvas/models/__init__.py", import.meta.url), "utf8");
+  const backend = [...init.matchAll(/UniCanvasModule\(\s*"([a-z0-9_]+)"/g)].map((match) => match[1]);
+  for (const module of ["minimax_h3", "qwen_image21"]) {
+    const text = await readFile(new URL(`../nodes/unicanvas/models/${module}.py`, import.meta.url), "utf8");
+    backend.push(...[...text.matchAll(/^    key: str = "([a-z0-9_]+)"$/gm)].map((match) => match[1]));
+  }
+  assert.deepEqual(families, [...new Set(backend)].sort(), "every backend family has exactly one toggle");
+});

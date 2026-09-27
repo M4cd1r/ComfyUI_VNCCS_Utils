@@ -281,6 +281,11 @@ test("Alt+digit applies states by index", () => {
   assert.match(modesSource, /applySceneStateByIndex/);
 });
 
+test("scene-state history kinds are registered as isolated kinds by the installer", async () => {
+  const states = await readFile(new URL("../web/vnccs_unicanvas_states.mjs", import.meta.url), "utf8");
+  assert.match(states, /for \(const kind of SCENE_STATE_HISTORY_KINDS\) \{\n\s+uc\.registerHistoryKind\?\.\(kind, \(entry, direction\) => uc\.applySceneStateHistory\?\.\(entry, direction\), \{ isolated: true \}\);/);
+});
+
 test("the widget routes composites, bounds and tools through the state offset", () => {
   for (const pattern of [
     // The render transform (issue #9) is the state offset (a move, or a move and a per-state
@@ -292,7 +297,7 @@ test("the widget routes composites, bounds and tools through the state offset", 
     /getLayerWorldBounds\(layer = this\.activeLayer\) \{[\s\S]{0,160}getLayerRenderTransform/,
     /beginSceneStateMove\?\.\(\)/,
     /commitSceneStateMove\?\.\(this\.dragStart\)/,
-    /SCENE_STATE_HISTORY_KINDS\.has\(entry\.kind\)/,
+    /const handler = this\.historyHandlers\?\.get\(entry\.kind\);\n\s+if \(handler\?\.isolated\)/,
     /sceneStates: this\.serializeSceneStates\?\.\(\) \?\? null/,
     /this\.restoreSceneStates\?\.\(state\.sceneStates\)/,
     /ctx\.translate\(-this\.origin\.x - stateOffset\.x, -this\.origin\.y - stateOffset\.y\)/,

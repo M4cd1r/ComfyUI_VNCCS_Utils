@@ -28,26 +28,23 @@ import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs";
+import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs";
 
+// Offline fallback for the bake families (the families whose backend descriptor sets
+// capabilities.supports_pose_edit) until /assets has loaded; it also gives the known families
+// their short display names and their order.
 export const BAKE_FAMILIES = Object.freeze([["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"]]);
 export const BAKE_STATUSES = Object.freeze(["none", "baked", "stale", "failed"]);
-export const BAKE_DRAW_ROUTE = "/vnccs/unicanvas/draw";
+export const BAKE_DRAW_ROUTE = UNICANVAS_DRAW_ROUTE;
 export const BAKE_REMOVE_BG_ROUTE = "/vnccs/unicanvas/remove_bg";
 // Working rect margin around the pose rect, and crop margin around the solo silhouette.
 export const BAKE_WORK_MARGIN = 0.1;
 export const BAKE_CROP_MARGIN = 0.15;
 
-const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
+const clone = cloneJson;
 
-export function hashText(text) {
-  let hash = 0x811c9dc5;
-  const value = String(text);
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16);
-}
+export const hashText = fnv1aHex;
 
 /* ----------------------------------------------------------------------------------------------
  * State and staleness
@@ -349,8 +346,41 @@ export function collectBakeCandidates(host, { includeStale = true, hasPart = nul
  * model from settings (family, preset, steps / cfg overrides), defaulting to the first ready
  * preset of a bake family.
  */
-export function resolveBakeModel(settings, { currentBase, presets = [], presetReady = () => true, baseOf = (mode) => mode } = {}) {
-  const families = BAKE_FAMILIES.map(([key]) => key);
+/**
+ * The bake families as [key, label] pairs: every backend family descriptor that declares
+ * capabilities.supports_pose_edit (a descriptor index may list one descriptor under several
+ * aliases). Known families keep their fallback label and order; others follow with their own
+ * label. Without descriptors (before /assets loads) the fallback list is used.
+ */
+export function bakeFamilies(descriptors) {
+  const values = descriptors instanceof Map ? [...descriptors.values()] : Array.isArray(descriptors) ? descriptors : Object.values(descriptors || {});
+  const seen = new Set();
+  const found = [];
+  for (const descriptor of values) {
+    const key = descriptor?.key ? String(descriptor.key) : "";
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    if (descriptor.capabilities?.supports_pose_edit) found.push([key, String(descriptor.capabilities?.label || key)]);
+  }
+  if (!found.length) return BAKE_FAMILIES;
+  const rank = (key) => {
+    const index = BAKE_FAMILIES.findIndex(([known]) => known === key);
+    return index < 0 ? BAKE_FAMILIES.length : index;
+  };
+  const fallbackLabel = new Map(BAKE_FAMILIES);
+  return found
+    .map(([key, label], index) => ({ key, label: fallbackLabel.get(key) || label, order: rank(key), index }))
+    .sort((a, b) => a.order - b.order || a.index - b.index)
+    .map(({ key, label }) => [key, label]);
+}
+
+/** "A or B" / "A / B" text for the bake family labels. */
+export function bakeFamilyLabels(families = BAKE_FAMILIES, separator = " or ") {
+  return families.map(([, label]) => label).join(separator);
+}
+
+export function resolveBakeModel(settings, { currentBase, presets = [], presetReady = () => true, baseOf = (mode) => mode, families: bakeList = BAKE_FAMILIES } = {}) {
+  const families = bakeList.map(([key]) => key);
   if (families.includes(currentBase)) return { useCurrent: true, family: currentBase };
   const wanted = families.includes(settings?.bake_model_family) ? settings.bake_model_family : null;
   const ofFamily = (family) => presets.filter((preset) => baseOf(preset?.settings?.generation_mode || preset?.id) === family);
@@ -364,15 +394,15 @@ export function resolveBakeModel(settings, { currentBase, presets = [], presetRe
     if (ready) return { preset: ready, family, ready: true };
     if (wanted && list.length) return { preset: list[0], family, ready: false };
   }
-  return { error: "Character bake needs QiE2511 or Klein9b: choose the Bake model in UniCanvas settings (Character bake)." };
+  return { error: `Character bake needs ${bakeFamilyLabels(bakeList)}: choose the Bake model in UniCanvas settings (Character bake).` };
 }
 
 /**
  * The Bake model picker's menu: one group per bake family that is switched on (the chosen one is
  * kept even when switched off, so the setting stays visible), each with the family's presets.
  */
-export function bakePickerGroups(presets, { baseOf = (mode) => mode, familyEnabled = () => true, current = null } = {}) {
-  return BAKE_FAMILIES
+export function bakePickerGroups(presets, { baseOf = (mode) => mode, familyEnabled = () => true, current = null, families = BAKE_FAMILIES } = {}) {
+  return families
     .filter(([family]) => family === current || familyEnabled(family))
     .map(([family, label]) => ({ family, label, presets: (presets || []).filter((preset) => baseOf(preset?.settings?.generation_mode || preset?.id) === family) }))
     .filter((group) => group.presets.length);
@@ -503,6 +533,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   if (!uc || uc.poseBake) return uc;
   let pending = null;
   let labelTimer = 0;
+  uc.onDispose?.(() => {
+    if (labelTimer) clearTimeout(labelTimer);
+    labelTimer = 0;
+  });
   const busy = new Map(); // layerId -> Set(characterId)
 
   const editingLayer = (layer) => uc.tool === "pose" && uc.poseEditSession?.layerId === layer?.id;
@@ -656,7 +690,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   function bakeModel() {
     const presetReady = (preset) => Boolean(uc.presetStatus?.(preset)?.installed);
     const baseOf = (mode) => modelModule(mode)?.base || mode;
-    return resolveBakeModel(uc.settings, { currentBase: uc.getModelBase(), presets: uc.presets || [], presetReady, baseOf });
+    return resolveBakeModel(uc.settings, { currentBase: uc.getModelBase(), presets: uc.presets || [], presetReady, baseOf, families: bakeFamilies(uc.modelDescriptors) });
   }
 
   /** The cut-out alpha of `crop`, or null when Remove background is switched off. */
@@ -755,7 +789,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const anchors = editor.characterAnchors?.(characterId) || null;
     const defaults = model.useCurrent ? {} : (modelModule(model.family)?.defaults || {});
     const settings = bakeSettingsPayload(uc.makeSettingsPayload(), { model, defaults, positive: inputs.positive, seed, batch });
-    const debugId = `bake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const debugId = drawDebugId("bake");
     // History (vnccs_unicanvas_history_gallery.mjs): the caller finishes the run with its results.
     const historyRun = uc.generationHistory?.beginRun("bake", {
       settings, bbox: work, mode: "bake", inferenceSize: size, outputSize: output, targetLayerId: layer.id,
@@ -771,17 +805,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
 
   /** The bake request and the extraction of each returned image. */
   async function requestBake({ layer, characterId, settings, inputs, work, size, output, rect, anchors, model, seed, debugId, poseHash, refHash }) {
-    const res = await fetch(BAKE_DRAW_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode: "img2img", pose_edit: { image1: inputs.image1, image2: inputs.image2 }, source_empty: false,
-        bbox: work, inference_size: size, output_size: output, debug_id: debugId, settings,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
+    const { images } = await requestDirectDraw({
+      mode: "img2img", pose_edit: { image1: inputs.image1, image2: inputs.image2 }, source_empty: false,
+      bbox: work, inference_size: size, output_size: output, debug_id: debugId, settings,
+    }, { route: BAKE_DRAW_ROUTE });
     if (!images.length) throw new Error("The bake returned no images.");
     if (!uc.layers.includes(layer)) throw new Error("The pose layer was removed while baking.");
     const results = [];
@@ -929,14 +956,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       uc.setStatus(poseCharacterIssues(uc, layer).length ? "Bind a character reference to a mannequin to bake it." : "Every character of this layer is already baked.");
       return;
     }
-    uc.drawInProgress = true;
-    if (uc.drawBtn) uc.drawBtn.disabled = true;
-    let result;
-    try { result = await bakeSequence(candidates); }
-    finally {
-      uc.drawInProgress = false;
-      if (uc.drawBtn) uc.drawBtn.disabled = false;
-    }
+    const result = await runExclusiveGeneration(uc, () => bakeSequence(candidates));
     if (result.entries.length) uc.pushHistoryEntry(result.entries.length === 1 ? result.entries[0] : { kind: "historyGroup", entries: result.entries });
     uc.syncToNode?.();
     uc.renderLayerList();
@@ -961,14 +981,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     // Scene Generate switched off (Settings > VNCCS > UniCanvas): GENERATE runs the scene only.
     const candidates = isUniCanvasEnabled("sceneGenerate") ? collectBakeCandidates(uc, { includeStale: uc.settings.rebake_stale_on_generate !== false, hasPart }) : [];
     if (!candidates.length) return true;
-    uc.drawInProgress = true;
-    if (uc.drawBtn) uc.drawBtn.disabled = true;
-    let result;
-    try { result = await bakeSequence(candidates); }
-    finally {
-      uc.drawInProgress = false;
-      if (uc.drawBtn) uc.drawBtn.disabled = false;
-    }
+    const result = await runExclusiveGeneration(uc, () => bakeSequence(candidates));
     uc.syncToNode?.();
     uc.renderLayerList();
     if (result.error) {
@@ -1239,7 +1252,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       root.replaceChildren();
       if (model.preset && typeof uc.buildPresetCard === "function") root.appendChild(card(model.preset, { head: true, data: { bakePickerToggle: "1" } }));
       else {
-        const head = plainButton(model.useCurrent ? "Current engine (QiE2511 / Klein9b)" : "Choose a Bake model", "vnccs-uc-btn");
+        const head = plainButton(model.useCurrent ? `Current engine (${bakeFamilyLabels(bakeFamilies(uc.modelDescriptors), " / ")})` : "Choose a Bake model", "vnccs-uc-btn");
         head.dataset.bakePickerToggle = "1";
         root.appendChild(head);
       }
@@ -1248,7 +1261,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       const auto = plainButton("Automatic: first ready preset", `vnccs-uc-btn${automatic ? " active" : ""}`);
       auto.dataset.bakePreset = "";
       menu.appendChild(auto);
-      const groups = bakePickerGroups(uc.presets || [], { baseOf, familyEnabled: isUniCanvasFamilyEnabled, current: s.bake_model_family || null });
+      const groups = bakePickerGroups(uc.presets || [], { baseOf, familyEnabled: isUniCanvasFamilyEnabled, current: s.bake_model_family || null, families: bakeFamilies(uc.modelDescriptors) });
       for (const group of groups) {
         const box = document.createElement("div");
         box.className = "vnccs-uc-model-picker-group";
@@ -1263,7 +1276,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
         menu.appendChild(box);
       }
       root.append(menu, note);
-      note.textContent = model.useCurrent ? "The current engine bakes (it is QiE2511 or Klein9b)."
+      note.textContent = model.useCurrent ? `The current engine bakes (it is ${bakeFamilyLabels(bakeFamilies(uc.modelDescriptors))}).`
         : model.error ? model.error : `Bakes use ${model.preset?.label || model.preset?.id}${model.ready ? "" : " (download it first)"}.`;
     };
     root.addEventListener("click", (event) => {

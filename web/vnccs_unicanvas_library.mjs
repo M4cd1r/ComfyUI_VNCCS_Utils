@@ -38,6 +38,7 @@ import { serializePose } from "./vnccs_unicanvas_pose_state.mjs";
 import { PROJECTS_BASE } from "./vnccs_unicanvas_project.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { layerCategory } from "./vnccs_unicanvas_naming_rules.mjs";
+import { cloneJson, ensureStyleTag, escapeHtml } from "./vnccs_unicanvas_util.mjs";
 
 export const LIBRARY_BASE = "/vnccs/unicanvas/library";
 export const ASSET_KINDS = Object.freeze(["character", "background", "prop", "pose", "preset"]);
@@ -53,7 +54,7 @@ export const DEFAULT_ANCHORS = Object.freeze({
 const PRESET_EXCLUDED = /^(remove_bg|auto_name|debug_mode$|vae_chunking$|step_cache$|inpaint_crop_to_mask$|standalone)|_turbo_previous_settings$/;
 const STYLE_ID = "vnccs-unicanvas-library-styles";
 
-const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
+const clone = cloneJson;
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested in tests/test_unicanvas_library.mjs)
@@ -676,11 +677,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 function reportError(uc, label, error) {
@@ -708,9 +705,6 @@ function scopeOptions(uc, selected) {
     <option value="global"${value === "global" ? " selected" : ""}>Global library</option>`;
 }
 
-function escapeHtml(text) {
-  return String(text ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-}
 
 /** "Save to library..." dialog for a layer, or for the generation preset when `layer` is null. */
 export function openSaveDialog(uc, layer, point = null) {
