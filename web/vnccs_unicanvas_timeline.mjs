@@ -269,8 +269,12 @@ class TimelineController {
     };
   }
 
-  /** The render matrix of a layer at the displayed frame (null: rest scene). */
-  layerMatrix(layer, frame = this.viewFrame()) {
+  /**
+   * The render matrix of a layer at the frame being drawn (null: rest scene): the composite frame
+   * while an export or "Generate at frame" composite runs, else the displayed frame. A layer that
+   * sits at rest on the composite frame must not pick up the playhead's transform.
+   */
+  layerMatrix(layer, frame = this.frameFor("composite") ?? this.viewFrame()) {
     if (this.uc._timelineRestPass) return null;
     return this.evaluateLayer(layer, frame)?.matrix || null;
   }

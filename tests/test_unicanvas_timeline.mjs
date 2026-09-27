@@ -274,6 +274,21 @@ test("the timeline controller is standalone only and leaves the rest scene alone
   assert.deepEqual(uc.makeExportCanvas()[0], [1, 0, 0, 1, 40, 0]);
 });
 
+test("a layer at rest on the composite frame does not take the playhead's transform", () => {
+  const { uc } = fakeWidget();
+  const panel = uc.timelinePanel;
+  panel.open = true;
+  const timeline = panel.ensureData();
+  setKey(timeline, "L", "position", 0, [0, 0]);
+  setKey(timeline, "L", "position", 5, [120, 0]);
+  timeline.currentFrame = 5;
+  assert.deepEqual(panel.layerMatrix(uc.layers[0]), [1, 0, 0, 1, 120, 0]);
+  // Exporting frame 0 (rest): the export frame wins over the playhead at frame 5.
+  uc._timelineCompositeFrame = 0;
+  assert.equal(panel.layerMatrix(uc.layers[0]), null);
+  uc._timelineCompositeFrame = null;
+});
+
 test("frame visibility and opacity apply for one render only, groups move their children", () => {
   const { uc, layer } = fakeWidget();
   const panel = uc.timelinePanel;
