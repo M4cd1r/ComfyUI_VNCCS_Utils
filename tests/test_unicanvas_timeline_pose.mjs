@@ -264,3 +264,20 @@ test("the widget installs the timeline with a pose editor factory and the backen
   const pose = readFileSync(new URL("../web/vnccs_unicanvas_pose.mjs", import.meta.url), "utf8");
   assert.match(pose, /async captureAnimationFrames\(layer, frames/);
 });
+
+test("a body gesture keeps its pointer capture on the body after a re-render detached its target", () => {
+  const { panel } = fakeWidget([{ id: "A", type: "raster", name: "A" }]);
+  const listeners = [];
+  const body = {
+    captured: null,
+    contains: () => false, // the key element was removed by renderDock (selectKeys)
+    setPointerCapture(id) { this.captured = id; },
+    addEventListener: (type) => listeners.push(["body", type]),
+    removeEventListener() {},
+  };
+  const detached = { addEventListener: (type) => listeners.push(["key", type]), removeEventListener() {} };
+  panel.body = body;
+  panel.capture({ pointerId: 7, currentTarget: body, target: detached }, () => {}, () => {});
+  assert.equal(body.captured, 7);
+  assert.deepEqual(listeners.map(([on]) => on), ["body", "body", "body"]);
+});

@@ -1239,8 +1239,11 @@ class TimelineController {
   // Body gestures -----------------------------------------------------------------------------
 
   capture(e, move, up) {
-    // The body survives re-renders (only its children are rebuilt), so it holds the capture.
-    const target = this.body?.contains(e.target) ? this.body : e.target;
+    // The body survives re-renders (only its children are rebuilt), so it holds the capture. A
+    // gesture that re-renders before capturing (selecting the key it drags) has already detached
+    // e.target, so a pointerdown dispatched to the body counts as inside it too.
+    const inBody = Boolean(this.body) && (e.currentTarget === this.body || this.body.contains(e.target));
+    const target = inBody ? this.body : e.target;
     try { target.setPointerCapture?.(e.pointerId); } catch (_) { /* synthetic events */ }
     const onMove = (event) => move(event);
     const onUp = (event) => {
