@@ -33,6 +33,18 @@ async function addUniCanvasNode(page) {
     const node = window.LiteGraph.createNode("VNCCS_UniCanvas");
     node.pos = [60, 40];
     window.app.graph.add(node);
+    // Fit the default-size node (1280 x 1280) into the 1280 x 720 viewport: at ComfyUI's default
+    // view its corner bar (settings gear, fullscreen button) lies right of the window.
+    window.app.canvas.ds.scale = 0.5;
+    window.app.canvas.ds.offset = [0, 0];
+    window.app.canvas.setDirty(true, true);
+    // Make the new graph ComfyUI's undo baseline: the inline Ctrl+Z / Ctrl+Y below must reach
+    // ComfyUI, and with the node add still on its undo stack they would reload the graph and
+    // dispose this node (and its widget) under the test.
+    const tracker = window.app.extensionManager?.workflow?.activeWorkflow?.changeTracker;
+    tracker?.checkState?.();
+    if (tracker?.undoQueue) tracker.undoQueue.length = 0;
+    if (tracker?.redoQueue) tracker.redoQueue.length = 0;
     const widget = node.uniCanvasWidget;
     window.__ucSurfaceTest = { node, calls: [] };
     for (const name of ["undo", "redo"]) {
