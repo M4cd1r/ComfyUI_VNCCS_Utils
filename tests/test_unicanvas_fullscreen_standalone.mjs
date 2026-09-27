@@ -237,3 +237,13 @@ test("the standalone tab has no fullscreen toggle", () => {
     const install = region(modesSource, "function installUniCanvasFullscreenButton", "export function showUniCanvasToast");
     assert.ok(install.includes("if (isUniCanvasStandalone(widget)) return;"), "standalone must skip the fullscreen button");
 });
+
+test("standalone tab stacks above the graph UI but below ComfyUI dialogs, tooltips and toasts", () => {
+    // The module imports ComfyUI's app, so the value is read from the source.
+    const UNICANVAS_STANDALONE_Z_INDEX = Number(modesSource.match(/export const UNICANVAS_STANDALONE_Z_INDEX = (\d+);/)?.[1]);
+    // ComfyUI frontend layers: canvas toolbars 1200/1300, graph dialogs 1500, getting-started
+    // screen 1600, dialogs 1700 / PrimeVue modals 1800+, toasts 10000.
+    assert.ok(UNICANVAS_STANDALONE_Z_INDEX > 1500, "above the graph canvas chrome");
+    assert.ok(UNICANVAS_STANDALONE_Z_INDEX < 1600, "below ComfyUI screens and dialogs");
+    assert.match(modesSource, /\.vnccs-uc2-standalone-shell \{[^}]*z-index: \$\{UNICANVAS_STANDALONE_Z_INDEX\}/);
+});

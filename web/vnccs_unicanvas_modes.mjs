@@ -52,9 +52,16 @@ const EXIT_FULLSCREEN_ICON_SVG =
 const TRUE_FULLSCREEN_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M13 7h4a2 2 0 0 1 2 2v4"/><path d="M11 17H7a2 2 0 0 1-2-2v-4"/></svg>';
 
+// The standalone tab sits above ComfyUI's graph chrome (canvas toolbars 1200/1300, graph
+// dialogs 1500) but below ComfyUI's own layers: the getting-started screen (1600), dialogs
+// (1700, PrimeVue modals from 1800), tooltips and toasts. Opening Settings from the tab must
+// show the dialog on top. UniCanvas's own modals and popovers live inside the shell (its own
+// stacking context) and the few it portals to <body> keep their much higher z-index.
+export const UNICANVAS_STANDALONE_Z_INDEX = 1550;
+
 const UNICANVAS_MODE_STYLES = `
 i.${UNICANVAS_SIDEBAR_ICON_CLASS} { display: inline-block; width: 1.6em; height: 1.6em; background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat; }
-.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 2147481000; background: #0e0b12; }
+.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: ${UNICANVAS_STANDALONE_Z_INDEX}; background: #0e0b12; }
 .vnccs-uc2-standalone-shell > .vnccs-unicanvas { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; }
 .vnccs-uc2-config-hint { margin: 2px 8px 0; padding: 6px 8px; border: 1px dashed rgba(255, 143, 163, 0.35); border-radius: 8px; color: #f3c9d2; font-size: 12px; line-height: 1.3; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,

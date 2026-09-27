@@ -93,3 +93,34 @@ test("the last model family cannot be switched off", async ({ page }) => {
   await expect.poll(() => readSetting(page, FAMILY_IDS[0])).toBe(true);
   await expect(page.locator(`${shell} select[data-setting="generation_mode"] option[value="sdxl"]`)).toHaveJSProperty("hidden", false);
 });
+
+// The standalone tab sits above the graph UI but below ComfyUI's dialogs: Settings opened from
+// the sidebar while the tab is open is on top and its UniCanvas switches work there.
+test("ComfyUI Settings opens over the standalone tab and its UniCanvas switch applies", async ({ page }) => {
+  await openUnicanvas(page);
+  const topAt = (selector, point) => page.evaluate(([sel, p]) => Boolean(document.elementFromPoint(p.x, p.y)?.closest(sel)), [selector, point]);
+  const center = (box) => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
+  // The tab covers the graph canvas.
+  const stage = await page.locator(`${shell} canvas.vnccs-uc-stage`).first().boundingBox();
+  expect(await topAt(shell, center(stage))).toBe(true);
+
+  await page.getByRole("button", { name: /^Settings/ }).first().click();
+  const dialogSelector = '[role="dialog"][aria-labelledby="global-settings"]';
+  const dialog = page.locator(dialogSelector);
+  await expect(dialog).toBeVisible();
+  const box = await dialog.boundingBox();
+  expect(await topAt(dialogSelector, center(box))).toBe(true);
+  expect(await topAt(dialogSelector, { x: box.x + 40, y: box.y + 40 })).toBe(true);
+
+  // Switch VN preview off in the dialog; the tab hides its button live.
+  const vnButton = page.locator(`${shell} .vnccs-uc-vnp-toggle`);
+  await expect(vnButton).toBeAttached();
+  await dialog.getByPlaceholder(/Search Settings/).fill("VN preview");
+  const toggle = dialog.locator(`[data-setting-id="${TOGGLES.vnPreview}"] button`).first();
+  await toggle.click();
+  await expect.poll(() => readSetting(page, TOGGLES.vnPreview)).toBe(false);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(vnButton).toBeHidden();
+  expect(await topAt(shell, center(stage))).toBe(true);
+});
