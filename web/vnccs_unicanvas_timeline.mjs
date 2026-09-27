@@ -438,6 +438,7 @@ class TimelineController {
 
   /** Dragging the pose bar moves its time offset live; one history entry on release. */
   beginPoseDrag(e, layerId) {
+    if (!this.data) return;
     const before = this.snapshot();
     const startFrame = this.frameAtClientX(e.clientX);
     const startOffset = poseClipOf(this.data, layerId).offset;
@@ -625,6 +626,14 @@ class TimelineController {
     this.pause();
     this.selected.clear();
     this.uc.timeline = raw ? normalizeTimeline(raw) : null;
+    // A scene without a timeline must not leave the open dock over a null model (its render and
+    // gestures read frameCount on it): the user stays in timeline mode on a fresh empty timeline,
+    // which serialize() keeps out of the scene until something is keyed. A dock that cannot stay
+    // open for the restored document (panorama, feature off) closes instead.
+    if (this.open) {
+      if (!this.isOpen()) this.close();
+      else this.ensureData();
+    }
     this.renderDock();
   }
 
@@ -769,6 +778,7 @@ class TimelineController {
   }
 
   copySelected() {
+    if (!this.data) return false;
     this.clipboard = copyKeys(this.data, this.selectionList());
     if (this.clipboard) this.uc.setStatus?.(`Copied ${this.clipboard.keys.length} key(s)`);
     return Boolean(this.clipboard);
@@ -1017,7 +1027,7 @@ class TimelineController {
   }
 
   syncInspector() {
-    if (!this.inspector) return;
+    if (!this.inspector || !this.data) return;
     const layer = this.keyTarget();
     const timeline = this.data;
     this.inspector.hidden = this.collapsed;
@@ -1080,11 +1090,13 @@ class TimelineController {
   }
 
   xForFrame(frame) {
+    if (!this.data) return 0;
     const last = Math.max(1, this.data.frameCount - 1);
     return (frame / last) * (this.laneWidth() - 10) + 5;
   }
 
   frameAtClientX(clientX) {
+    if (!this.data) return 0;
     const rect = this.body.getBoundingClientRect();
     const x = clientX - rect.left - LABEL_WIDTH - 5;
     const last = Math.max(1, this.data.frameCount - 1);
@@ -1094,6 +1106,7 @@ class TimelineController {
   rows() {
     const uc = this.uc;
     const timeline = this.data;
+    if (!timeline) return [];
     const rows = [{ target: CAMERA_TARGET, label: "Camera", depth: 0, kind: "target" }];
     if (this.expanded.has(CAMERA_TARGET)) {
       for (const property of ["rect", "shake"]) {
@@ -1119,6 +1132,7 @@ class TimelineController {
   renderBody() {
     const timeline = this.data;
     const body = this.body;
+    if (!timeline || !body) return;
     const scrollTop = body.scrollTop;
     body.textContent = "";
     const ruler = document.createElement("div");
@@ -1348,6 +1362,7 @@ class TimelineController {
   beginWorkDrag(e, side) {
     const before = this.snapshot();
     const timeline = this.data;
+    if (!timeline) return;
     this.capture(e, (event) => {
       const frame = this.frameAtClientX(event.clientX);
       if (side === "start") timeline.workArea.start = Math.min(frame, timeline.workArea.end);
@@ -1357,6 +1372,7 @@ class TimelineController {
   }
 
   beginKeyDrag(e, element) {
+    if (!this.data) return;
     let list;
     if (element.dataset.key) list = [{ trackName: element.dataset.track, keyId: element.dataset.key }];
     else list = this.keysAt(element.dataset.aggTarget, Number(element.dataset.frame));
@@ -1402,6 +1418,7 @@ class TimelineController {
   }
 
   beginBoxSelect(e) {
+    if (!this.data) return;
     const bodyRect = this.body.getBoundingClientRect();
     const box = document.createElement("div");
     box.className = "vnccs-uc-tl-box";
@@ -1475,7 +1492,7 @@ class TimelineController {
       if (key.toLowerCase() === "y" || e.shiftKey) this.uc.redo();
       else this.uc.undo();
       handled = true;
-    } else if (key === "ArrowLeft" || key === "ArrowRight") {
+    } else if ((key === "ArrowLeft" || key === "ArrowRight") && this.data) {
       this.setFrame(this.data.currentFrame + (key === "ArrowLeft" ? -1 : 1));
       handled = true;
     }

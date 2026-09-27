@@ -755,13 +755,25 @@ export class UniCanvasProjectSession {
     return ok;
   }
 
+  /**
+   * A scene that was created (or duplicated) but could not be loaded: the session stays on the
+   * previous, saved scene. The tab list is refreshed by the status emit, so the new tab exists
+   * without being shown as active, and the user learns why the canvas did not change. A failed
+   * pre-switch save already reported itself (offline / error with a retry) and is not masked.
+   */
+  sceneOpenFailed(label) {
+    if (this.status === "offline" || this.status === "error") return;
+    this.setStatus("saved", "Saved");
+    this.widget.setStatus?.(`[VNCCS UniCanvas] ${label} was created but could not be opened; the previous scene stays open.`, true);
+  }
+
   async newScene(name = "") {
     await this.ensureProject();
     await this.flush();
     const entry = await this.request("POST", `${this.projectPath()}/scenes`, { json: { name, state: blankSceneState(this.widget) } });
     this.project.scenes.push(entry);
     this.emit();
-    await this.switchScene(entry.id);
+    if (!(await this.switchScene(entry.id))) this.sceneOpenFailed("The new scene");
     return entry;
   }
 
@@ -770,7 +782,7 @@ export class UniCanvasProjectSession {
     const entry = await this.request("POST", `${this.projectPath()}/scenes`, { json: { fromSceneId: sceneId } });
     this.project.scenes.push(entry);
     this.emit();
-    await this.switchScene(entry.id);
+    if (!(await this.switchScene(entry.id))) this.sceneOpenFailed("The scene copy");
     return entry;
   }
 

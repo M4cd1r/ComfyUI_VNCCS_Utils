@@ -232,6 +232,10 @@ test("playback wraps inside the work area when looping and stops otherwise", () 
 
 // Widget controller (no DOM) -------------------------------------------------------------------
 
+// isTextTarget reads the browser's HTMLElement; node has none, and the dock's key handler
+// answers to it even without a DOM.
+globalThis.HTMLElement = globalThis.HTMLElement || class HTMLElement {};
+
 function fakeWidget() {
   const layer = { id: "L", type: "raster", visible: true, opacity: 1, name: "Hero" };
   const group = { id: "G", type: "group", visible: true, opacity: 1, name: "Folder" };
@@ -351,6 +355,36 @@ test("serialize prunes deleted layers and restore round-trips", () => {
   panel.restore(saved);
   assert.deepEqual(evaluateTrack(uc.timeline, "L:position", 3), [1, 2]);
   assert.equal(evaluateTarget(uc.timeline, "L", 3).animated, true);
+});
+
+test("restore(null) with the dock open does not throw and yields a usable empty timeline", () => {
+  const { uc } = fakeWidget();
+  const panel = uc.timelinePanel;
+  panel.open = true; // a scene switch happens while the timeline dock shows
+  setKey(panel.ensureData(), "L", "position", 3, [7, 0]);
+  panel.restore(null); // a scene state without a timeline
+  assert.ok(uc.timeline, "the open dock keeps a timeline model instead of a null one");
+  assert.equal(panel.data, uc.timeline);
+  assert.equal(panel.data.frameCount, 72);
+  assert.deepEqual(Object.keys(panel.data.tracks), []);
+  assert.equal(panel.data.currentFrame, 0);
+  assert.equal(panel.serialize(), null, "an untouched fresh timeline stays out of the saved scene");
+});
+
+test("timeline dock paths tolerate a null model instead of crashing on frameCount", () => {
+  const { uc } = fakeWidget();
+  const panel = uc.timelinePanel;
+  panel.open = true;
+  uc.timeline = null;
+  assert.deepEqual(panel.rows(), []);
+  assert.equal(panel.xForFrame(4), 0);
+  assert.equal(panel.frameAtClientX(120), 0);
+  assert.doesNotThrow(() => panel.syncInspector());
+  assert.doesNotThrow(() => panel.updatePlayhead());
+  assert.doesNotThrow(() => panel.renderDock());
+  assert.doesNotThrow(() => panel.onKeyDown({ key: "ArrowRight", preventDefault() {} }));
+  assert.doesNotThrow(() => panel.onKeyDown({ key: "ArrowLeft", preventDefault() {} }));
+  assert.equal(panel.copySelected(), false);
 });
 
 // Widget wiring (source guards) ----------------------------------------------------------------
