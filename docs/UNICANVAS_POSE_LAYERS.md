@@ -9,27 +9,38 @@ A pose layer is edited only in an explicit session, so outside of it the layer b
 While editing:
 
 - the right sidebar (denoise, masks, layers) is replaced by the pose settings: the **Character reference** section, then the Pose Studio **Body** and **Scene** pages;
-- the view frames the pose rectangle, and a bar at the bottom of the canvas lists the viewport controls (left: joints, right-drag: orbit, middle: pan, wheel: zoom - inspect only, the camera never changes the layer) with **Pose Library**, **Cancel** and **Save pose**;
+- the session viewport covers the whole stage (not just the layer rect), so gizmos, IK effectors and joints at the frame edges keep room; a bar at the bottom lists the viewport controls (right-drag: orbit view, middle: pan, wheel: zoom, plus **Reset view** and the Pose Library, Cancel and Save pose buttons);
 - UniCanvas undo/redo is paused (Pose Studio's own undo works inside the editor).
 
-The embedded camera is **inspection-only**: orbiting, panning and wheel zooming move the editing view so a hand or joint can be examined from any side, but they never alter the layer pixels, the persisted framing or the mannequin. The posed figure stays exactly where it is in the canvas.
+The session view model is "free view while editing, capture frame at the end": orbiting, panning and wheel zooming move the editing view and stay exactly where the user leaves them - nothing snaps back on pointer release. Entering the session moves nothing: the viewport starts with the capture framing mapped one to one onto the layer rect (through a camera view offset), so the mannequin sits exactly where its pixels are, while the rest of the stage stays live around it. While the view is away from the framing, an orange **capture frame** marks the region the layer pixels will use and the 2D stack dims (it is no longer aligned with the rect); **Reset view** (or the Home key) puts the camera back on the framing.
 
-**Save pose** (also Enter or Esc outside a text field) keeps the pose and records the whole session as one undo step; **Cancel** restores the pose and pixels from before the session. Selecting another tool or layer saves as well.
+**Save pose** (also Enter or Esc outside a text field), **Cancel**, or switching tool or layer always restores the UniCanvas view and puts the preview camera back on the capture framing, so re-entering the session starts on the layer's pixels again. Navigation never changes the layer pixels, the persisted framing or the mannequin; only the **Scene** page's camera sliders (yaw, pitch, zoom, offsets) change the framing, as always.
 
 ## Editor
 
 The host imports `PoseStudioWidget` from `web/vnccs_pose_studio.js`. It mounts the actual Body and Scene controls in the right sidebar for the duration of the edit session. The standard UniCanvas model, prompt, settings and Generate panel stays visible and interactive. There are no Poses or Character tabs. No rig, morph, IK, hand, library, lighting or prompt implementation is copied into UniCanvas. The original Pose Library button is in Scene. The shared central action toolbar stays hidden. Pose Library dialogs rise above the UniCanvas toolbox and other controls.
 
-Only the active Pose tool shows its controls and viewport handles. The panels stay mounted when hidden, preserving expanded groups, drafts and scrolling. Body and hand changes update the layer during interaction; camera navigation does not - it only moves the inspection view. The layer can be moved, reordered, hidden, locked, duplicated and deleted. Pixel painting and destructive image transforms require a raster layer; use the shared Pose Studio controls to edit a live scene. Pose Studio output dimensions resize the live layer and, when still aligned, its bbox. Animation scenes retain their tracks; UniCanvas uses the currently selected frame for a still-image generation.
+Only the active Pose tool shows its controls and viewport handles. The panels stay mounted when hidden, preserving expanded groups, drafts and scrolling. Body and hand changes update the layer during interaction; camera navigation does not - it only moves the inspection view. The layer can be moved, reordered, hidden, locked, duplicated and deleted. Pixel painting and destructive image transforms require a raster layer; use the shared Pose Studio controls to edit a live scene. Outside the session the 2D layer tools decide where the mannequin sits in the image: the Move tool translates it, corner handles of the Resize tool scale it non-destructively (below), and **Pose Studio output dimensions** resize the live layer around its rect center and, when still aligned, its bbox. Animation scenes retain their tracks; UniCanvas uses the currently selected frame for a still-image generation.
 
 ## Capture framing versus inspection view
 
 The pose layer separates two cameras:
 
 - The **capture framing** (`pose.viewport`, persisted) is the camera the layer pixels are rendered with. It is seeded when the layer is created from the Pose Studio export camera (and, for layers saved by older versions, from their stored viewport, which keeps their exact look). The **Scene** page's camera sliders (yaw, pitch, zoom, offsets) are the framing controls: moving them re-seeds the framing, and the framing is what Generate, PSD export and the composite always see - deterministic, independent of how the user last orbited.
-- The **inspection view** is session-only: it starts on the capture framing when the editor opens and follows right-drag orbit, middle-drag pan and wheel zoom freely. Leaving the session discards it; nothing navigated is ever persisted or baked.
+- The **inspection view** is session-only: it starts on the capture framing (shown one to one inside the layer rect) and follows right-drag orbit, middle-drag pan and wheel zoom freely. Leaving the session discards it; nothing navigated is ever persisted or baked.
 
-Bone and hand edits render live in the inspection view while the pixels re-capture on the stored framing; each settled gesture ends in one trailing full-quality bake, and the whole session is one UniCanvas undo step on **Save pose**.
+The session viewport renders a window of the framing camera's frustum extended over the whole canvas, so the framing always appears exactly inside the layer rect wherever it sits on screen. The invisible depth plane behind the mannequins follows the deepest character for the current camera; characters are never moved automatically, so depth placement is free.
+
+Bone and hand edits render live in the inspection view while the pixels re-capture on the stored framing; each settled gesture ends in one trailing full-quality bake, and the whole session is one UniCanvas undo step on **Save pose**. Joint projections that feed the pixels (the OpenPose output for pose ControlNet layers and the character head/feet anchors for bakes) are computed on the capture framing, so they match the layer pixels in every view.
+
+## 2D placement outside the session
+
+Outside the session, where the mannequin sits in the image is decided by the 2D layer tools, never by a camera:
+
+- **Move** translates `pose.rect` (and the baked pixels with it), as for any layer.
+- **Resize** with a corner handle scales the layer non-destructively: the drag previews the scaled bitmap live, and on release the rect takes the dragged frame while the capture framing stays (same camera, same aspect), the mannequin re-renders crisply at the new size, and baked characters scale with the rect. The gesture is one undo entry. Rotation, skew, distort, warp and edge (aspect-changing) drags are refused - rasterize the layer for those.
+- On a rotated timeline frame both the session and the scale gesture refuse with "Go to the rest frame to edit the pose": the axis-aligned rect cannot follow a rotated render.
+- The `posePlacedRect` helper maps the rect through the layer's full render transform (scene-state offset with its depth scale, timeline position/scale), so the session view, the transform frame and the pixels always agree.
 
 The hand control popover (spread/grasp/finger sliders and presets) mounts inside the embedded viewport - the hidden Pose Studio center panel does not host it there - so hands stay directly editable: click a hand to open its sliders, or drag the visible finger-joint markers when the popover mode is switched off in Pose Studio settings.
 
@@ -99,4 +110,4 @@ In panorama mode a pose retains its original editing camera. Activating its tool
 
 ## Verification
 
-The focused tests cover shared panel mounting, scroll and keyboard state, bbox geometry, realtime preview updates, transparent capture/helper restoration, asynchronous layer replacement, reference composition/order, cache metadata, both model adapters and node output. The standalone Pose Studio bootstrap and existing frontend/backend suites also cover the reused editor. Actual browser interaction and model inference must be checked on the ComfyUI host.
+The focused tests cover shared panel mounting, scroll and keyboard state, the stage-covering session viewport and its one-to-one capture-framing view offset, alignment feedback (capture frame, dim, Reset view), free-view navigation without persisted changes, the depth-only backdrop, non-destructive pose scaling, render-transform parity, realtime preview updates, transparent capture/helper restoration, asynchronous layer replacement, reference composition/order, cache metadata, both model adapters and node output. The standalone Pose Studio bootstrap and existing frontend/backend suites also cover the reused editor. Actual browser interaction and model inference must be checked on the ComfyUI host.
