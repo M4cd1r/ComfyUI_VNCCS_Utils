@@ -40,7 +40,7 @@ import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { applyHomography, homographyFromUnitSquare, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
+import { applyHomography, draftPlacement, draftRestBounds, homographyFromUnitSquare, invertAffine, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
 import { createSpriteSurface, normalizeSpriteCamera } from "./vnccs_unicanvas_sprites_panorama.mjs";
 import { cloneJson, uniqueId } from "./vnccs_unicanvas_util.mjs";
 import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
@@ -380,24 +380,23 @@ export function outfitMaskAlpha(neutralAlpha, width, height, faceMask, grow) {
 }
 
 /**
- * The world-space map of a transform draft, for points of the layer's stored pixels. Frames
- * without a mesh map exactly; a warp mesh maps through its bounds.
+ * The stored-space map of a transform draft: a point of the layer's stored pixels goes through
+ * the frame (shown space) and back through the inverse placement (scene-state move and depth
+ * scale), so it lands in the stored pixels Apply writes. Frames without a mesh map exactly; a
+ * warp mesh maps through its bounds.
  */
 export function transformPointMap(draft) {
-  const offset = draft?.stateOffset || { x: 0, y: 0 };
-  const sb = { ...draft.sourceBounds, x: draft.sourceBounds.x - offset.x, y: draft.sourceBounds.y - offset.y };
+  const sb = draftRestBounds(draft);
+  const inverse = invertAffine(draftPlacement(draft)) || [1, 0, 0, 1, 0, 0];
+  const unplace = (p) => ({ x: inverse[0] * p.x + inverse[2] * p.y + inverse[4], y: inverse[1] * p.x + inverse[3] * p.y + inverse[5] });
   const matrix = !draft.mesh && homographyFromUnitSquare(draft.quad);
   if (matrix) {
-    return (point) => {
-      const mapped = applyHomography(matrix, (point.x - sb.x) / Math.max(1e-6, sb.width), (point.y - sb.y) / Math.max(1e-6, sb.height));
-      return { x: mapped.x - offset.x, y: mapped.y - offset.y };
-    };
+    return (point) => unplace(applyHomography(matrix, (point.x - sb.x) / Math.max(1e-6, sb.width), (point.y - sb.y) / Math.max(1e-6, sb.height)));
   }
   const shown = transformDraftBounds(draft) || draft.sourceBounds;
-  const to = { x: shown.x - offset.x, y: shown.y - offset.y, width: shown.width, height: shown.height };
-  return (point) => ({
-    x: to.x + (point.x - sb.x) * to.width / Math.max(1e-6, sb.width),
-    y: to.y + (point.y - sb.y) * to.height / Math.max(1e-6, sb.height),
+  return (point) => unplace({
+    x: shown.x + (point.x - sb.x) * shown.width / Math.max(1e-6, sb.width),
+    y: shown.y + (point.y - sb.y) * shown.height / Math.max(1e-6, sb.height),
   });
 }
 
@@ -756,8 +755,8 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     const old = sprite.rect;
     const map = transformPointMap(draft);
     const next = mapBox(map, old);
-    const offset = draft.stateOffset || { x: 0, y: 0 };
-    const sb = { ...draft.sourceBounds, x: draft.sourceBounds.x - offset.x, y: draft.sourceBounds.y - offset.y };
+    const sb = draftRestBounds(draft);
+    const inverse = invertAffine(draftPlacement(draft)) || [1, 0, 0, 1, 0, 0];
     const draftScale = draft.sourceCanvas.width / Math.max(1, sb.width);
     for (const variant of sprite.variants) {
       if (!variant.pixels) continue;
@@ -769,7 +768,8 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       const out = createCanvas(Math.round(next.width * k.x), Math.round(next.height * k.y));
       const ctx = out.getContext("2d");
       ctx.scale(k.x, k.y);
-      ctx.translate(-(next.x + offset.x), -(next.y + offset.y));
+      ctx.translate(-next.x, -next.y);
+      ctx.transform(...inverse); // shown frame -> stored pixels (state move and depth scale undone)
       uc.drawTransformDraft(ctx, { ...draft, sourceCanvas: source }, 48);
       variant.pixels = out;
     }

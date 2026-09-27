@@ -366,8 +366,14 @@ test("the widget routes render, bounds, paint, history and persistence through t
     /this\.timelinePanel\?\.beginMove\(\)/,
     /this\.timelinePanel\?\.commitMove\(this\.dragStart\)/,
     /this\.timelinePanel\?\.keyOpacity\(layer, target\.value, e\.type === "change"\)/,
-    /this\.timelinePanel\?\.blocksPixelTransform\(layer\)/,
+    /keyFrame: this\.timelinePanel\?\.transformKeyFrame\(layer\) \|\| null/,
+    /this\.timelinePanel\?\.commitTransformKeys\(layer, draft\)/,
+    /this\.timelinePanel\?\.keyHandles\.begin\(point, e\)/,
+    /this\.timelinePanel\?\.keyHandles\.update\(point, e\)/,
+    /this\.timelinePanel\?\.keyHandles\.end\(\)/,
+    /this\.timelinePanel\?\.keyHandles\.draw\(ctx\)/,
   ]) assert.match(widget, pattern);
+  assert.doesNotMatch(widget, /blocksPixelTransform/, "Free Transform is no longer locked on keyed frames");
   const timeline = readFileSync(new URL("../web/vnccs_unicanvas_timeline.mjs", import.meta.url), "utf8");
   assert.match(timeline, /uc\.registerHistoryKind\?\.\(TIMELINE_HISTORY_KIND, \(entry, direction\) => uc\.timelinePanel\?\.applyHistory\(entry, direction\), \{ isolated: true \}\)/);
   const modes = readFileSync(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");

@@ -39,6 +39,7 @@ import {
   applyHomography,
   cloneQuad,
   distortQuadCorner,
+  draftPlacement,
   dragMeshSurface,
   flipMesh,
   flipQuad,
@@ -52,6 +53,7 @@ import {
   moveMeshPoint,
   normalizeTransformMode,
   perspectiveQuadCorner,
+  placedQuad,
   quadCenter,
   rectToQuad,
   rotateQuad,
@@ -2126,6 +2128,11 @@ class UniCanvasWidget {
 
   updateContextCursor(point = this.hoverPoint) {
     if (this.isPointerDown) return;
+    const keyHandleCursor = this.timelinePanel?.keyHandles.cursor(point);
+    if (keyHandleCursor) {
+      this.canvas.style.cursor = keyHandleCursor;
+      return;
+    }
     if (this.tool !== "resize") {
       this.syncCursorStyle();
       return;
@@ -3424,6 +3431,8 @@ class UniCanvasWidget {
       }
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.lassoPoints = [point];
+    } else if (this.pointerMode === "move" && !e.altKey && this.timelinePanel?.keyHandles.begin(point, e)) {
+      // Timeline scale / rotation handles: live keys at the playhead (vnccs_unicanvas_timeline_transform.mjs).
     } else if (this.pointerMode === "move" && !e.altKey && this.timelinePanel?.beginMove()) {
       // Timeline mode with auto-key: the drag writes a position key at the playhead.
     } else if (this.pointerMode === "move" && !e.altKey && this.beginSceneStateMove?.()) {
@@ -3514,6 +3523,8 @@ class UniCanvasWidget {
       this.updateLayerMovePreview(point);
     } else if (this.pointerMode === "layer-transform") {
       this.updateTransformDraft(point, e);
+    } else if (this.pointerMode === "timeline-key-handle") {
+      this.timelinePanel?.keyHandles.update(point, e);
     } else if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
       this.drawStroke(this.lastPoint, point);
     }
@@ -3538,7 +3549,9 @@ class UniCanvasWidget {
     if (this.pointerMode === "lasso" && this.lassoPoints.length > 2) {
       this.commitLassoShape();
     }
-    if (this.pointerMode === "layer-move" && this.dragStart?.timelineMove) {
+    if (this.pointerMode === "timeline-key-handle") {
+      this.timelinePanel?.keyHandles.end();
+    } else if (this.pointerMode === "layer-move" && this.dragStart?.timelineMove) {
       this.timelinePanel?.commitMove(this.dragStart);
     } else if (this.pointerMode === "layer-move" && this.dragStart?.stateMove) {
       this.commitSceneStateMove?.(this.dragStart);
@@ -4410,35 +4423,33 @@ class UniCanvasWidget {
   getTransformFrame(layer = this.activeLayer) {
     const draft = this.getLayerTransformDraft(layer);
     if (draft) return draft;
-    const bounds = layer && !layer.locked ? this.getLayerWorldBounds(layer) : null;
-    return bounds ? { quad: rectToQuad(bounds), mesh: null } : null;
+    // The frame the layer shows at: its stored pixels through the render placement (rotated too).
+    const rest = layer && !layer.locked ? this.getLayerRestBounds(layer) : null;
+    return rest ? { quad: placedQuad(rest, this.getLayerRenderTransform(layer)), mesh: null } : null;
   }
 
   beginTransformDraft(layer) {
     if (!layer || layer.locked) return null;
-    if (this.timelinePanel?.blocksPixelTransform(layer)) {
-      this.setStatus("Free Transform edits the rest pixels: scale / rotate in the timeline, or go to a frame where the layer is at rest", true);
-      return null;
-    }
-    if (this.getLayerStateOffset(layer).scale) {
-      this.setStatus("This scene state shows the layer depth-scaled: Free Transform edits the stored pixels, so use it in a state without a scale", true);
-      return null;
-    }
     const existing = this.getLayerTransformDraft(layer);
     if (existing) return existing;
     if (this.transformDraft) return null; // another layer's transform is still open
     const source = this.createTransformSource(layer);
     if (!source?.canvas || !source.bounds) return null;
-    // The draft works where the layer shows (scene-state offset included); Apply writes back.
-    const stateOffset = this.getLayerStateOffset(layer);
-    source.bounds = { ...source.bounds, x: source.bounds.x + stateOffset.x, y: source.bounds.y + stateOffset.y };
+    // The draft works where the layer shows: its placement is the render transform (scene-state
+    // move and depth scale, or the timeline frame). Apply writes the stored pixels back through
+    // the inverse placement - or, on a keyed timeline frame with auto-key, writes keys instead.
+    const placement = this.getLayerRenderTransform(layer);
+    const quad = placedQuad(source.bounds, placement);
     this.transformDraft = {
-      stateOffset,
+      placement,
+      keyFrame: this.timelinePanel?.transformKeyFrame(layer) || null,
       layerId: layer.id,
       before: source.before,
       sourceCanvas: source.canvas,
-      sourceBounds: { ...source.bounds },
-      quad: rectToQuad(source.bounds),
+      restBounds: { ...source.bounds },
+      sourceBounds: transformRectBounds(placement, source.bounds),
+      startQuad: cloneQuad(quad),
+      quad,
       mesh: null,
       sliders: null,
       kind: this.resizeTransformMode,
@@ -4574,7 +4585,7 @@ class UniCanvasWidget {
       const angle = action === "rotate-180" ? Math.PI : (action === "rotate-cw" ? Math.PI / 2 : -Math.PI / 2);
       this.setTransformFrame(draft, rotateQuad(quad, quadCenter(quad), angle), { fromQuad: quad, fromMesh: mesh });
     } else if (action === "reset") {
-      this.setTransformFrame(draft, rectToQuad(draft.sourceBounds), { mesh: null });
+      this.setTransformFrame(draft, cloneQuad(draft.startQuad) || rectToQuad(draft.sourceBounds), { mesh: null });
     }
     this.renderToolSettings();
     this.updateContextCursor();
@@ -4632,16 +4643,28 @@ class UniCanvasWidget {
       this.cancelTransformDraft();
       return;
     }
+    if (draft.keyFrame) {
+      // A keyed timeline frame: the frame becomes position / scale / rotation keys, pixels stay.
+      this.transformDraft = null;
+      this.timelinePanel?.commitTransformKeys(layer, draft);
+      this.renderToolSettings();
+      this.updateTransformControls();
+      this.requestRender();
+      return;
+    }
     const shown = transformDraftBounds(draft, 32);
     if (!shown) return;
-    const stateOffset = draft.stateOffset || { x: 0, y: 0 };
-    const bounds = { ...shown, x: shown.x - stateOffset.x, y: shown.y - stateOffset.y };
+    const inverse = invertMatrix(draftPlacement(draft));
+    if (!inverse) return;
+    // The stored pixels' rect: the shown frame through the inverse placement.
+    const bounds = transformRectBounds(inverse, shown);
     if (!this.ensureWorldBounds(bounds.x, bounds.y, 256, false)) return;
     if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256, false)) return;
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
     ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
     ctx.save();
-    ctx.translate(-this.origin.x - stateOffset.x, -this.origin.y - stateOffset.y);
+    ctx.translate(-this.origin.x, -this.origin.y);
+    ctx.transform(...inverse);
     this.drawTransformDraft(ctx, draft, 48);
     ctx.restore();
     this.sprites?.onTransform(layer, draft);
@@ -5163,6 +5186,7 @@ class UniCanvasWidget {
     this.drawShapeDraft(ctx);
     this.drawLassoDraft(ctx);
     this.drawResizeOverlay(ctx);
+    this.timelinePanel?.keyHandles.draw(ctx);
     if (this.panorama) ctx.restore();
     this.drawBbox(ctx);
     this.timelinePanel?.drawCameraOverlay(ctx);

@@ -143,6 +143,106 @@ test("timeline: keys, scrub, hold, auto-key off, seeded blink, undo and reload",
   expect((await timeline(page)).timeline.fps).toBe(saved.fps);
 });
 
+/** Client coordinates of a world point on the stage. */
+async function client(page, point) {
+  const view = await hook(page, "getView");
+  const box = await page.locator(STAGE).first().boundingBox();
+  const size = await page.locator(STAGE).first().evaluate((canvas) => ({ width: canvas.clientWidth, height: canvas.clientHeight }));
+  return {
+    x: box.x + (view.x + point.x * view.scale) * (box.width / size.width),
+    y: box.y + (view.y + point.y * view.scale) * (box.height / size.height),
+  };
+}
+
+/** A keyed hero layer, moved right by 200 world px at frame 20 (the playhead ends there). */
+async function keyedHero(page) {
+  await openUnicanvas(page);
+  const hero = await newLayerAfter(page, () => page.locator(`${shell} [title="Add raster"]`).first().click());
+  await drawRect(page, 0.30, 0.40, 0.40, 0.70);
+  const rest = await bounds(page, hero.id);
+  await openTimeline(page);
+  const x = page.locator(`${DOCK} [data-tl="field-x"]`);
+  for (const [frame, value] of [[0, "0"], [20, "200"]]) {
+    await setFrame(page, frame);
+    await x.fill(value);
+    await x.dispatchEvent("input");
+    await x.dispatchEvent("change");
+  }
+  return { hero, rest };
+}
+
+test("timeline: Free Transform on an offset frame writes keys, one undo step (#33)", async ({ page }) => {
+  const { hero, rest } = await keyedHero(page);
+  const shown = await bounds(page, hero.id);
+  expect(Math.abs(shown.x - (rest.x + 200))).toBeLessThanOrEqual(1);
+  const pixelsBefore = await hook(page, "getLayerPixelRevision", hero.id);
+
+  // Drag the frame's bottom-right corner outward: the draft opens on the frame the layer shows at.
+  await page.locator(`${shell} .vnccs-uc-tool[data-tool="resize"]`).click();
+  const corner = await client(page, { x: shown.x + shown.width, y: shown.y + shown.height });
+  const target = await client(page, { x: shown.x + shown.width * 2, y: shown.y + shown.height * 2 });
+  await page.mouse.move(corner.x, corner.y);
+  await page.mouse.down();
+  await page.mouse.move(target.x, target.y, { steps: 8 });
+  await page.mouse.up();
+  await page.locator(`${shell} [title="Apply transform"]`).first().click();
+
+  // Keys at frame 20, pixels untouched, and the layer shows scaled at the playhead.
+  const tracks = (await timeline(page)).timeline.tracks;
+  expect(tracks[`${hero.id}:scale`].keys.map((key) => key.frame)).toEqual([20]);
+  expect(await hook(page, "getLayerPixelRevision", hero.id)).toBe(pixelsBefore);
+  const scaled = await bounds(page, hero.id);
+  expect(scaled.width).toBeGreaterThan(shown.width * 1.5);
+  // Frame 0 is still at rest.
+  await setFrame(page, 0);
+  expect(Math.abs((await bounds(page, hero.id)).width - rest.width)).toBeLessThanOrEqual(1);
+
+  // One Ctrl+Z removes the whole transform.
+  await page.locator(DOCK).focus();
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await timeline(page)).timeline.tracks[`${hero.id}:scale`]).toBeUndefined();
+  expect((await timeline(page)).timeline.tracks[`${hero.id}:position`].keys.map((key) => key.frame)).toEqual([0, 20]);
+});
+
+test("timeline: scale and rotation handles key live during the drag, one entry on release (#33)", async ({ page }) => {
+  const { hero } = await keyedHero(page);
+  await page.locator(`${shell} .vnccs-uc-tool[data-tool="move"]`).click();
+  const shown = await bounds(page, hero.id);
+
+  // Scale: the corner handle; the layer grows before the pointer is released (realtime rule).
+  const corner = await client(page, { x: shown.x + shown.width, y: shown.y + shown.height });
+  await page.mouse.move(corner.x, corner.y);
+  await page.mouse.down();
+  await page.mouse.move(corner.x + 60, corner.y + 10, { steps: 6 });
+  const during = await bounds(page, hero.id);
+  expect(during.width).toBeGreaterThan(shown.width + 5);
+  expect((await timeline(page)).timeline.tracks[`${hero.id}:scale`].keys.map((key) => key.frame)).toEqual([20]);
+  await page.mouse.up();
+  const scale = (await timeline(page)).timeline.tracks[`${hero.id}:scale`].keys[0].value;
+  expect(scale[0]).toBeGreaterThan(1);
+  expect(scale[0]).toBeCloseTo(scale[1], 6);
+
+  // Rotation: the knob above the top edge (28 screen px), dragged a quarter turn to the right.
+  const framed = await bounds(page, hero.id);
+  const view = await hook(page, "getView");
+  const knob = await client(page, { x: framed.x + framed.width / 2, y: framed.y - 28 / view.scale });
+  await page.mouse.move(knob.x, knob.y);
+  await page.mouse.down();
+  await page.mouse.move(knob.x + 80, knob.y + 120, { steps: 8 });
+  const rotating = (await timeline(page)).timeline.tracks[`${hero.id}:rotation`];
+  expect(rotating.keys.map((key) => key.frame)).toEqual([20]);
+  expect(Math.abs(rotating.keys[0].value)).toBeGreaterThan(5);
+  await page.mouse.up();
+
+  // Each gesture is one history entry: two Ctrl+Z remove rotation, then scale.
+  await page.locator(DOCK).focus();
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await timeline(page)).timeline.tracks[`${hero.id}:rotation`]).toBeUndefined();
+  expect((await timeline(page)).timeline.tracks[`${hero.id}:scale`]).toBeTruthy();
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await timeline(page)).timeline.tracks[`${hero.id}:scale`]).toBeUndefined();
+});
+
 
 // Plan 06.2 (#18): animation export and pose animation. The export routes are stubbed with
 // page.route (nothing is encoded); pose frames are real mannequin renders on the CPU lane.

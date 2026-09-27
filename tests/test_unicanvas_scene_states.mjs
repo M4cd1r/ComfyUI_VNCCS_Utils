@@ -301,7 +301,11 @@ test("the widget routes composites, bounds and tools through the state offset", 
     /const handler = this\.historyHandlers\?\.get\(entry\.kind\);\n\s+if \(handler\?\.isolated\)/,
     /sceneStates: this\.serializeSceneStates\?\.\(\) \?\? null/,
     /this\.restoreSceneStates\?\.\(state\.sceneStates\)/,
-    /ctx\.translate\(-this\.origin\.x - stateOffset\.x, -this\.origin\.y - stateOffset\.y\)/,
+    // Free Transform works where the layer shows (state move and depth scale) and Apply writes
+    // the stored pixels back through the inverse placement.
+    /const placement = this\.getLayerRenderTransform\(layer\);\n\s+const quad = placedQuad\(source\.bounds, placement\);/,
+    /const inverse = invertMatrix\(draftPlacement\(draft\)\);/,
+    /ctx\.translate\(-this\.origin\.x, -this\.origin\.y\);\n\s+ctx\.transform\(\.\.\.inverse\);/,
   ]) {
     assert.match(widgetSource, pattern);
   }
