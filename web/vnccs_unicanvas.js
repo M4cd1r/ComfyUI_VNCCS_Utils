@@ -187,8 +187,11 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-layer-opacity { display:grid; grid-template-columns:auto minmax(72px,1fr) 38px; gap:7px; align-items:center; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-layer-opacity .vnccs-uc-range { width:100%; }
 .vnccs-uc-layer-opacity-value { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; }
-.vnccs-uc-layers-top-actions { padding:6px; border-bottom:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
-.vnccs-uc-layers-top-actions .vnccs-uc-btn { width:100%; }
+.vnccs-uc-layers-top-actions { padding:6px; border-bottom:1px solid var(--uc-border); display:flex; flex-direction:row; align-items:center; gap:6px; }
+.vnccs-uc-layers-top-actions .vnccs-uc-btn { flex:1 1 auto; min-width:0; display:inline-flex; align-items:center; justify-content:center; gap:5px; padding:0 6px; }
+.vnccs-uc-layers-top-actions .vnccs-uc-btn svg { width:14px; height:14px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+.vnccs-uc-layers-top-actions .vnccs-uc-btn span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vnccs-uc-layers-top-actions .vnccs-uc-icon { flex:0 0 auto; }
 .vnccs-uc-pose-editing .vnccs-uc-side > :not(.vnccs-uc-pose-side) { display:none !important; }
 .vnccs-uc-layer[data-layer-type="pose"], .vnccs-uc-layer[data-layer-type="panorama"] { grid-template-columns:34px minmax(0,1fr) 28px 28px 28px; }
 .vnccs-uc-layer { display:grid; grid-template-columns:34px minmax(0,1fr) 28px 28px; gap:6px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
@@ -1224,10 +1227,13 @@ class UniCanvasWidget {
         <option value="luminosity">Luminosity</option>
       </select>
       <label class="vnccs-uc-layer-opacity">Opacity <input class="vnccs-uc-range" type="range" min="0" max="1" step="0.01" data-layer-control="opacity"><span class="vnccs-uc-layer-opacity-value"></span></label>`;
+    // One row of actions: [New group] [Organize] [Import image]. The group and filing modules
+    // prepend their icon buttons before the import button, which fills the remaining width.
+    const IMPORT_IMAGE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 5-5 3 3 3-3 3 3"/></svg>`;
     this.layersTopActions = document.createElement("div");
     this.layersTopActions.className = "vnccs-uc-layers-top-actions";
     this.layersTopActions.append(
-      this._button("Import Image", "vnccs-uc-btn", () => this.fileInput.click(), "Import image")
+      this._button(`${IMPORT_IMAGE_ICON}<span>Import Image</span>`, "vnccs-uc-btn", () => this.fileInput.click(), "Import image")
     );
     this.flattenLayersFooter = document.createElement("div");
     this.flattenLayersFooter.className = "vnccs-uc-layers-footer";

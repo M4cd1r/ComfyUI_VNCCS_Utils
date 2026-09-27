@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { createGroupLayer } from "../web/vnccs_unicanvas_groups.mjs";
+import { createGroupLayer, restoreGroupStructure } from "../web/vnccs_unicanvas_groups.mjs";
 import {
     CANONICAL_FOLDER_ORDER,
     applyFilingPlan,
     autoFileLayer,
     filingTarget,
+    installUniCanvasFiling,
+    organizeLayers,
     planFiling,
 } from "../web/vnccs_unicanvas_filing.mjs";
 import {
@@ -367,4 +369,182 @@ test("occluders are named \"Occluder - <object>\" and the model only names the o
     assert.equal(modelLayerName(occluder, " wooden table "), "Occluder - wooden table");
     assert.equal(modelLayerName(occluder, "Occluder - fence"), "Occluder - fence");
     assert.equal(modelLayerName(raster("p"), "Cat"), "Cat");
+});
+
+// Organize dialog (T4): the widget's modal is stubbed with just enough DOM for the preview.
+class FakeElement {
+    constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.style = {}; }
+    setAttribute(name, value) { this[name] = value; }
+    append(...nodes) { this.children.push(...nodes); }
+    appendChild(node) { this.children.push(node); return node; }
+    addEventListener() {}
+    focus() {}
+    remove() {}
+}
+
+const findNode = (node, predicate, seen = new Set()) => {
+    if (seen.has(node)) return null;
+    seen.add(node);
+    if (predicate(node)) return node;
+    for (const child of node.children || []) {
+        const hit = findNode(child, predicate, seen);
+        if (hit) return hit;
+    }
+    return null;
+};
+
+function organizeWidget(settings = {}) {
+    const uc = {
+        settings,
+        layers: [],
+        undoStack: [],
+        activeLayerId: null,
+        transformDraft: null,
+        panorama: null,
+        container: new FakeElement("div"),
+        statuses: [],
+        setStatus(text) { this.statuses.push(text); },
+        normalizeLayerOrder() {},
+        renderLayerList() {},
+        requestRender() {},
+        syncLightStateToWidget() {},
+        scheduleFullSync() {},
+        refreshLayerRow() {},
+        pushHistoryEntry(entry) { this.undoStack.push(entry); },
+        autoNaming: { categorizeUnfiled: async () => {} },
+        _button(label, className, onClick, title) {
+            const button = new FakeElement("button");
+            button.label = label;
+            button.onClick = onClick;
+            return button;
+        },
+    };
+    return uc;
+}
+
+async function withOrganizeDialog(uc, { rename = true, cancel = false } = {}) {
+    const previous = globalThis.document;
+    globalThis.document = {
+        createElement: (tag) => new FakeElement(tag),
+        createTextNode: (text) => ({ text }),
+        activeElement: null,
+    };
+    try {
+        const pending = organizeLayers(uc);
+        await new Promise((resolve) => setTimeout(resolve, 0)); // let the naming pass build the dialog
+        const overlay = uc.container.children[0];
+        if (!overlay) return pending; // Organize returned before the preview (nothing to do)
+        if (cancel) findNode(overlay, (node) => node.label === "Cancel").onClick();
+        else {
+            if (!rename) findNode(overlay, (node) => node.dataset?.organizeRename !== undefined).checked = false;
+            findNode(overlay, (node) => node.dataset?.organizeApply !== undefined).onClick();
+        }
+        return pending;
+    } finally {
+        globalThis.document = previous;
+    }
+}
+
+const organizeStack = () => {
+    const imp = raster("imp", "import", { name: "Rain" }); // an import name is never replaced
+    imp.nameSource = "import";
+    const auto = raster("p1", "paint", { name: "Layer 1" }); // rules name: Paint 1
+    auto.nameSource = "auto";
+    const user = raster("p2", "paint", { name: "Mine" }); // a user name is never replaced
+    user.nameSource = "user";
+    return [imp, auto, user];
+};
+
+test("Organize names only the auto layers and renames plus files as one undo step", async () => {
+    const uc = organizeWidget({ auto_naming: "rules" });
+    const model = raster("p3", "paint", { name: "Layer 3" });
+    model.nameSource = "auto";
+    uc.layers.push(...organizeStack(), model);
+    // The model round trip (categorizeUnfiled) renames and categorizes like requestNames does.
+    uc.autoNaming.categorizeUnfiled = async () => {
+        model.name = "Wooden Chair";
+        model.meta.category = "Props";
+    };
+    assert.equal(await withOrganizeDialog(uc), true);
+    assert.equal(uc.layers.find((item) => item.id === "p1").name, "Paint 1");
+    assert.equal(uc.layers.find((item) => item.id === "p1").nameSource, "auto");
+    assert.equal(uc.layers.find((item) => item.id === "imp").name, "Rain");
+    assert.equal(uc.layers.find((item) => item.id === "imp").nameSource, "import");
+    assert.equal(uc.layers.find((item) => item.id === "p2").name, "Mine");
+    assert.equal(uc.layers.find((item) => item.id === "p2").nameSource, "user");
+    assert.equal(uc.statuses.at(-1), "Organized 4 layers into folders and renamed 2 layers");
+    assert.equal(uc.undoStack.length, 1, "renames and moves are one undo step");
+    const entry = uc.undoStack[0];
+    assert.equal(entry.kind, "groupStructure");
+    assert.deepEqual(entry.names.map((change) => [change.id, change.before.name, change.after.name]),
+        [["p1", "Layer 1", "Paint 1"], ["p3", "Layer 3", "Wooden Chair"]]);
+    // Undo: the structure snapshot drops the created folders; the name records restore the names.
+    const restored = restoreGroupStructure(uc.layers, entry.before);
+    assert.ok(!restored.some((item) => item.type === "group"), "undo drops the created folders");
+    const byId = new Map(restored.map((item) => [item.id, item]));
+    assert.equal(byId.get("p1").groupId, null);
+    assert.equal(byId.get("p1").name, "Paint 1", "the structure restore alone keeps the new name");
+    for (const change of entry.names) {
+        const layer = byId.get(change.id);
+        layer.name = change.before.name;
+        layer.nameSource = change.before.nameSource;
+    }
+    assert.equal(byId.get("p1").name, "Layer 1", "the name records restore the old name");
+});
+
+test("the registered groupStructure kind applies an Organize entry's names on undo and redo", () => {
+    const uc = organizeWidget({});
+    const handlers = {};
+    uc.registerHistoryKind = (kind, apply) => { handlers[kind] = apply; };
+    uc.layers.push(...organizeStack());
+    installUniCanvasFiling(uc);
+    const auto = uc.layers.find((item) => item.id === "p1");
+    const entry = { kind: "groupStructure", names: [{ id: "p1", before: { name: "Layer 1", nameSource: "auto" }, after: { name: "Paint 1", nameSource: "auto" } }] };
+    auto.name = "Paint 1";
+    handlers.groupStructure(entry, "undo");
+    assert.equal(auto.name, "Layer 1");
+    handlers.groupStructure(entry, "redo");
+    assert.equal(auto.name, "Paint 1");
+    handlers.groupStructure({ kind: "groupStructure" }, "undo");
+    assert.equal(auto.name, "Paint 1", "entries without name records are untouched");
+});
+
+test("unchecking Rename layers keeps the names and only files the layers", async () => {
+    const uc = organizeWidget({ auto_naming: "rules" });
+    uc.layers.push(...organizeStack());
+    assert.equal(await withOrganizeDialog(uc, { rename: false }), true);
+    assert.equal(uc.layers.find((item) => item.id === "p1").name, "Layer 1", "the rules rename was reverted");
+    assert.equal(uc.undoStack.length, 1);
+    assert.equal(uc.undoStack[0].names, undefined);
+    assert.ok(uc.layers.find((item) => item.id === "p1").groupId, "the move still applied");
+});
+
+test("cancelling the Organize dialog reverts the auto names and records nothing", async () => {
+    const uc = organizeWidget({ auto_naming: "rules" });
+    uc.layers.push(...organizeStack());
+    assert.equal(await withOrganizeDialog(uc, { cancel: true }), false);
+    assert.equal(uc.undoStack.length, 0);
+    assert.equal(uc.layers.find((item) => item.id === "p1").name, "Layer 1");
+    assert.equal(uc.layers.find((item) => item.id === "p1").groupId, null);
+});
+
+test("auto naming off: Organize files without renaming anything", async () => {
+    const uc = organizeWidget({ auto_naming: "off" });
+    uc.layers.push(...organizeStack());
+    assert.equal(await withOrganizeDialog(uc), true);
+    assert.equal(uc.layers.find((item) => item.id === "p1").name, "Layer 1");
+    assert.equal(uc.undoStack[0].names, undefined);
+    assert.equal(uc.statuses.at(-1), "Organized 3 layers into folders");
+});
+
+test("Organize with every layer filed changes nothing (auto layers included)", async () => {
+    const uc = organizeWidget({ auto_naming: "rules" });
+    const folder = createGroupLayer({ id: "fx", name: "Effects" });
+    const auto = raster("p1", "paint", { name: "Layer 1", groupId: "fx" });
+    auto.nameSource = "auto";
+    uc.layers.push(folder, auto);
+    assert.equal(await withOrganizeDialog(uc), false);
+    assert.equal(uc.statuses.at(-1), "Organize: every layer is already in a folder");
+    assert.equal(uc.undoStack.length, 0);
+    assert.equal(auto.name, "Layer 1", "filed layers are not renamed either");
 });
