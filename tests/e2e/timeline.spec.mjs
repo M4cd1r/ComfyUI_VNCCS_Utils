@@ -162,7 +162,9 @@ async function client(page, point) {
 async function keyedHero(page) {
   await openUnicanvas(page);
   const hero = await newLayerAfter(page, () => page.locator(`${shell} [title="Add raster"]`).first().click());
-  await drawRect(page, 0.30, 0.40, 0.40, 0.70);
+  // High on the stage: the open dock covers its lower part (1280x720), and the corner and
+  // rotation handles must stay clickable above it.
+  await drawRect(page, 0.30, 0.20, 0.40, 0.50);
   const rest = await bounds(page, hero.id);
   await openTimeline(page);
   const x = page.locator(`${DOCK} [data-tl="field-x"]`);
@@ -197,9 +199,12 @@ test("timeline: Free Transform on an offset frame writes keys, one undo step (#3
   expect(await hook(page, "getLayerPixelRevision", hero.id)).toBe(pixelsBefore);
   const scaled = await bounds(page, hero.id);
   expect(scaled.width).toBeGreaterThan(shown.width * 1.5);
-  // Frame 0 is still at rest.
+  // Frame 0 keeps its own position key (at rest). The new scale track has one key, and a
+  // single key holds on every frame (the timeline's rule, see the first spec), so frame 0
+  // shows the same size: only the keys the transform wrote changed.
   await setFrame(page, 0);
-  expect(Math.abs((await bounds(page, hero.id)).width - rest.width)).toBeLessThanOrEqual(1);
+  expect((await timeline(page)).timeline.tracks[`${hero.id}:position`].keys[0]).toMatchObject({ frame: 0, value: [0, 0] });
+  expect(Math.abs((await bounds(page, hero.id)).width - scaled.width)).toBeLessThanOrEqual(1);
 
   // One Ctrl+Z removes the whole transform.
   await page.locator(DOCK).focus();
@@ -213,11 +218,13 @@ test("timeline: scale and rotation handles key live during the drag, one entry o
   await page.locator(`${shell} .vnccs-uc-tool[data-tool="move"]`).click();
   const shown = await bounds(page, hero.id);
 
-  // Scale: the corner handle; the layer grows before the pointer is released (realtime rule).
-  const corner = await client(page, { x: shown.x + shown.width, y: shown.y + shown.height });
+  // Scale: a corner handle; the layer grows before the pointer is released (realtime rule). The
+  // scale is uniform around the feet, so the top-right corner (far from them) gives a moderate
+  // factor that keeps the rotation knob on the stage.
+  const corner = await client(page, { x: shown.x + shown.width, y: shown.y });
   await page.mouse.move(corner.x, corner.y);
   await page.mouse.down();
-  await page.mouse.move(corner.x + 60, corner.y + 10, { steps: 6 });
+  await page.mouse.move(corner.x + 30, corner.y - 20, { steps: 6 });
   const during = await bounds(page, hero.id);
   expect(during.width).toBeGreaterThan(shown.width + 5);
   expect((await timeline(page)).timeline.tracks[`${hero.id}:scale`].keys.map((key) => key.frame)).toEqual([20]);

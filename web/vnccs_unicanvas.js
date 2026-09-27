@@ -99,7 +99,7 @@ import {
   uniCanvasRequestOverrides,
   uniCanvasRequestSettings,
 } from "./vnccs_unicanvas_feature_toggles.mjs";
-import { escapeHtml, randomId } from "./vnccs_unicanvas_util.mjs";
+import { escapeHtml, randomId, stagePopoverBottom } from "./vnccs_unicanvas_util.mjs";
 import { runExclusiveGeneration, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
@@ -540,6 +540,8 @@ function enableUniCanvasGraphNavigationForwarding(root) {
 const uid = () => randomId("uc");
 const MASK_OVERLAY_COLOR = "rgba(255, 143, 163, 0.48)";
 const STAGE_MIN_SCALE = 0.1;
+// Bottom-anchored stage popovers clear the timeline dock (vnccs_unicanvas_util.mjs).
+const STAGE_POPOVER_BOTTOM = stagePopoverBottom(12);
 const STAGE_MAX_SCALE = 20;
 const STAGE_FIT_PADDING_PX = 48;
 const STAGE_SCALE_FACTOR = 0.999;
@@ -5637,7 +5639,7 @@ class UniCanvasWidget {
     this.stagingControls.style.left = "50%";
     this.stagingControls.style.right = "";
     this.stagingControls.style.top = "";
-    this.stagingControls.style.bottom = "12px";
+    this.stagingControls.style.bottom = STAGE_POPOVER_BOTTOM;
     this.stagingControls.style.width = "";
     this.stagingControls.style.transform = "translateX(-50%)";
     if (this.stagingCount) this.stagingCount.textContent = `${this.activeStagingIndex + 1}/${this.stagingItems.length}`;
@@ -5661,7 +5663,7 @@ class UniCanvasWidget {
     this.transformControls.style.left = "50%";
     this.transformControls.style.right = "";
     this.transformControls.style.top = "";
-    this.transformControls.style.bottom = "12px";
+    this.transformControls.style.bottom = STAGE_POPOVER_BOTTOM;
     this.transformControls.style.width = "";
     this.transformControls.style.transform = "translateX(-50%)";
     if (this.transformLabel) this.transformLabel.textContent = TRANSFORM_MODE_LABELS[this.transformDraft.kind] || "Transform";
@@ -5677,7 +5679,7 @@ class UniCanvasWidget {
     this.samPanel.style.left = "50%";
     this.samPanel.style.right = "";
     this.samPanel.style.top = "";
-    this.samPanel.style.bottom = "12px";
+    this.samPanel.style.bottom = STAGE_POPOVER_BOTTOM;
     this.samPanel.style.width = "";
     this.samPanel.style.transform = "translateX(-50%)";
     this.renderSamPanel();

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   clamp, cloneJson, escapeHtml, finite, finiteOrNull, fnv1a, fnv1aHex, randomId, rectsIntersect, uniqueId,
+  setStageBottomInset, stagePopoverBottom, STAGE_BOTTOM_INSET_VAR,
 } from "../web/vnccs_unicanvas_util.mjs";
 import { hashText } from "../web/vnccs_unicanvas_bake.mjs";
 import { hashString } from "../web/vnccs_unicanvas_timeline_core.mjs";
@@ -59,4 +60,20 @@ test("cloneJson, rectsIntersect and id helpers", () => {
   const first = uniqueId("var"), second = uniqueId("var");
   assert.match(first, /^var_[0-9a-z]+_[0-9a-z]+$/);
   assert.notEqual(first, second);
+});
+
+test("stage popovers clear the timeline dock through the bottom inset variable", () => {
+  assert.equal(stagePopoverBottom(12), `calc(12px + var(${STAGE_BOTTOM_INSET_VAR}, 0px) / var(--vnccs-uc-ui-scale, 1))`);
+  const props = new Map();
+  const element = { style: { setProperty: (k, v) => props.set(k, v), removeProperty: (k) => props.delete(k) } };
+  setStageBottomInset(element, 219.6);
+  assert.equal(props.get(STAGE_BOTTOM_INSET_VAR), "220px");
+  setStageBottomInset(element, 0);
+  assert.equal(props.has(STAGE_BOTTOM_INSET_VAR), false);
+  setStageBottomInset(null, 10); // no stage: no-op
+  // The staging, transform and SAM popovers all use it; the timeline dock publishes it.
+  const widget = read("vnccs_unicanvas.js");
+  assert.equal((widget.match(/style\.bottom = STAGE_POPOVER_BOTTOM;/g) || []).length, 3);
+  assert.doesNotMatch(widget, /style\.bottom = "12px"/);
+  assert.match(read("vnccs_unicanvas_timeline.mjs"), /setStageBottomInset\(this\.uc\.stageWrap/);
 });

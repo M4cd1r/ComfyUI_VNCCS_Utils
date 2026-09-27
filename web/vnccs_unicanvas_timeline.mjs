@@ -84,7 +84,7 @@ import {
 import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs";
 import { TimelineKeyHandles, commitTransformKeys, layerKeyContext } from "./vnccs_unicanvas_timeline_transform.mjs";
 import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
-import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
+import { ensureStyleTag, setStageBottomInset } from "./vnccs_unicanvas_util.mjs";
 
 const STYLE_ID = "vnccs-uc-timeline-styles";
 const LABEL_WIDTH = 180;
@@ -839,8 +839,15 @@ class TimelineController {
     this.open = false;
     this.closeMenu();
     if (this.dock) this.dock.hidden = true;
+    this.syncStageInset();
     this.syncButton();
     this.uc.requestRender();
+  }
+
+  /** The open dock's height as the stage's bottom inset: stage popovers stay above it. */
+  syncStageInset() {
+    const open = this.dock && !this.dock.hidden;
+    setStageBottomInset(this.uc.stageWrap, open ? this.dock.offsetHeight : 0);
   }
 
   syncButton() {
@@ -1061,6 +1068,7 @@ class TimelineController {
     if (!this.dock || this.dock.hidden) return;
     const height = this.collapsed ? COLLAPSED_HEIGHT : this.height;
     this.dock.style.height = `${height}px`;
+    this.syncStageInset();
     this.body.hidden = this.collapsed;
     this.syncHeader();
     this.syncInspector();
@@ -1443,6 +1451,7 @@ class TimelineController {
     this.capture(e, (event) => {
       this.height = clamp(startHeight + (startY - event.clientY), MIN_DOCK_HEIGHT, MAX_DOCK_HEIGHT);
       this.dock.style.height = `${this.height}px`;
+      this.syncStageInset();
     }, () => this.renderDock());
   }
 
@@ -1660,6 +1669,7 @@ class TimelineController {
     this.exportDialog?.remove();
     this.poseFrames.clear();
     this.dock?.remove();
+    setStageBottomInset(this.uc.stageWrap, 0);
   }
 }
 

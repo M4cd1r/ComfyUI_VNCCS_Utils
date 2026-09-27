@@ -61,3 +61,25 @@ export const randomId = (prefix) => `${prefix}_${Math.random().toString(36).slic
 let uniqueCounter = 0;
 /** An id unique within the page: `${prefix}_<time>_<counter><4 random chars>`. */
 export const uniqueId = (prefix) => `${prefix}_${Date.now().toString(36)}_${(uniqueCounter++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+/**
+ * Stage overlays docked to the bottom of the stage (the timeline dock) publish their height on
+ * the stage wrap as this CSS variable, so the bottom-anchored popovers (staging, transform
+ * Apply / Cancel, SAM) sit above them instead of behind.
+ */
+export const STAGE_BOTTOM_INSET_VAR = "--vnccs-uc-stage-bottom-inset";
+
+/**
+ * CSS `bottom` of a stage popover `gapPx` above the docked overlays. The popovers are zoomed by
+ * the UI scale, which scales their own lengths, so the inset (unzoomed px) is divided back.
+ */
+export function stagePopoverBottom(gapPx = 12) {
+  return `calc(${gapPx}px + var(${STAGE_BOTTOM_INSET_VAR}, 0px) / var(--vnccs-uc-ui-scale, 1))`;
+}
+
+/** Publishes (or clears, with a falsy height) the bottom inset on a stage wrap element. */
+export function setStageBottomInset(element, heightPx) {
+  if (!element?.style) return;
+  if (heightPx > 0) element.style.setProperty(STAGE_BOTTOM_INSET_VAR, `${Math.round(heightPx)}px`);
+  else element.style.removeProperty(STAGE_BOTTOM_INSET_VAR);
+}
