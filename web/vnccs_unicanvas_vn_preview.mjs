@@ -19,7 +19,8 @@
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
+import { ensureStyleTag, finite, rectsIntersect } from "./vnccs_unicanvas_util.mjs";
 
 export const VN_PREVIEW_PRESETS = Object.freeze([
   { id: "16x9_1080", label: "16:9 - 1920x1080", width: 1920, height: 1080 },
@@ -92,10 +93,6 @@ export function defaultVnPreviewState() {
   };
 }
 
-function finite(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
 
 export function normalizeFrameRect(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -317,10 +314,7 @@ export function fitAspect(rect, aspect) {
   return { x: rect.x + (width - w) / 2, y: rect.y + (height - h) / 2, width: w, height: h };
 }
 
-export function rectsIntersect(a, b) {
-  if (!a || !b) return false;
-  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-}
+export { rectsIntersect };
 
 /** Skin units per reference pixel: skins are authored at `designResolution` and scale to fit. */
 export function skinUnitsForPreset(skin, preset) {
@@ -653,11 +647,7 @@ const VN_PREVIEW_CSS = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById("vnccs-uc-vnp-styles")) return;
-  const style = document.createElement("style");
-  style.id = "vnccs-uc-vnp-styles";
-  style.textContent = VN_PREVIEW_CSS;
-  document.head.appendChild(style);
+  ensureStyleTag("vnccs-uc-vnp-styles", VN_PREVIEW_CSS);
 }
 
 let measureCanvas = null;
@@ -764,8 +754,8 @@ export class VnPreviewController {
     const state = this.state;
     this.lastLayout = null;
     this.lastFlagged = [];
-    // Switched off in Settings > VNCCS > UniCanvas: hidden, the saved overlay state stays.
-    if (!state.enabled || !isUniCanvasEnabled("vnPreview")) return;
+    // Switched off in Settings > VNCCS > UniCanvas, or on the node surface: hidden, the saved overlay state stays.
+    if (!state.enabled || !isUniCanvasFeatureAvailable(this.uc, "vnPreview")) return;
     const frameWorld = this.frameRect(state);
     const frame = this.worldToScreen(frameWorld);
     ctx.save();
@@ -840,7 +830,7 @@ export class VnPreviewController {
   }
 
   beginGesture(e) {
-    if (e.button !== 0 || this.uc.isPointerDown || !isUniCanvasEnabled("vnPreview")) return false;
+    if (e.button !== 0 || this.uc.isPointerDown || !isUniCanvasFeatureAvailable(this.uc, "vnPreview")) return false;
     const screen = this.uc.canvasPointFromEvent(e);
     const handle = this.hitFrame(screen);
     if (!handle) return false;
@@ -1014,7 +1004,9 @@ export class VnPreviewController {
     if (!this.popover) return;
     this.popover.remove();
     this.popover = null;
-    document.removeEventListener("pointerdown", this.outsideHandler, true);
+    // Removes the popover's document listener.
+    this.popoverAbort?.abort();
+    this.popoverAbort = null;
   }
 
   openPopover() {
@@ -1080,12 +1072,12 @@ export class VnPreviewController {
     uc.anchorPopoverTo?.(panel, this.button, uc.container);
     installCustomSelects(panel);
     this.popover = panel;
-    this.outsideHandler = (event) => {
+    this.popoverAbort = new AbortController();
+    document.addEventListener("pointerdown", (event) => {
       if (panel.contains(event.target) || this.button.contains(event.target)) return;
       if (event.target?.closest?.(".vnccs-custom-select-menu")) return;
       this.closePopover();
-    };
-    document.addEventListener("pointerdown", this.outsideHandler, true);
+    }, { capture: true, signal: this.popoverAbort.signal });
   }
 
   onButtonClick() {
@@ -1100,6 +1092,8 @@ export function installUniCanvasVnPreview(uc) {
   ensureStyles();
   const controller = new VnPreviewController(uc);
   uc.vnPreview = controller;
+  uc.onDispose?.(() => controller.closePopover());
+  uc.registerHistoryKind?.("vnPreviewFrame", (entry, direction) => uc.vnPreview?.applyFrameHistory(entry, direction));
 
   if (uc.settingsBar && typeof uc._button === "function") {
     controller.button = uc._button(SPEECH_ICON, "vnccs-uc-icon vnccs-uc-vnp-toggle", () => controller.onButtonClick(), "VN preview (P)");

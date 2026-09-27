@@ -3,6 +3,11 @@ import { setStandaloneSidebar } from "./helpers/app.mjs";
 
 const TAB = ".vnccs-unicanvas-sidebar-icon";
 
+// The other specs open the standalone tab: switch it back on for them.
+test.afterEach(async ({ page }) => {
+  await setStandaloneSidebar(page, true);
+});
+
 test("the standalone Unicanvas sidebar tab is opt-in and follows the ComfyUI setting live", async ({ page }) => {
   await setStandaloneSidebar(page, false);
   await page.goto("/", { waitUntil: "domcontentloaded" });

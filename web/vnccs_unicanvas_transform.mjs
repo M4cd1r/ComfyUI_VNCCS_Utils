@@ -35,6 +35,42 @@ export function isEdgeHandle(handle) {
   return Object.prototype.hasOwnProperty.call(EDGE_CORNERS, handle);
 }
 
+// ---------------------------------------------------------------------------
+// Placement: the draft works where the layer SHOWS. `draft.placement` is the render-time affine
+// matrix [a, b, c, d, e, f] from the stored (rest) pixels to the shown frame: a scene-state
+// offset, a per-state depth scale, or a timeline frame. Older drafts carry only `stateOffset`.
+// ---------------------------------------------------------------------------
+
+const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+
+const applyAffine = (m, p) => ({ x: m[0] * p.x + m[2] * p.y + m[4], y: m[1] * p.x + m[3] * p.y + m[5] });
+
+export function invertAffine(m) {
+  const det = m[0] * m[3] - m[1] * m[2];
+  if (!det) return null;
+  return [m[3] / det, -m[1] / det, -m[2] / det, m[0] / det, (m[2] * m[5] - m[3] * m[4]) / det, (m[1] * m[4] - m[0] * m[5]) / det];
+}
+
+/** The rest -> shown matrix of a draft (identity without a placement). */
+export function draftPlacement(draft) {
+  if (Array.isArray(draft?.placement) && draft.placement.length === 6) return draft.placement;
+  const offset = draft?.stateOffset;
+  return offset && (offset.x || offset.y) ? [1, 0, 0, 1, offset.x || 0, offset.y || 0] : IDENTITY;
+}
+
+/** The stored pixels' rect of a draft (its rest bounds, before the placement). */
+export function draftRestBounds(draft) {
+  if (draft?.restBounds) return draft.restBounds;
+  const offset = draft?.stateOffset || { x: 0, y: 0 };
+  const sb = draft?.sourceBounds;
+  return sb ? { ...sb, x: sb.x - (offset.x || 0), y: sb.y - (offset.y || 0) } : null;
+}
+
+/** A rest rect's four corners through an affine placement (a rotated frame stays rotated). */
+export function placedQuad(rect, matrix = IDENTITY) {
+  return mapQuad(rectToQuad(rect), (p) => applyAffine(matrix, p));
+}
+
 export function cloneQuad(quad) {
   return quad ? Object.fromEntries(QUAD_KEYS.map((key) => [key, { x: quad[key].x, y: quad[key].y }])) : null;
 }

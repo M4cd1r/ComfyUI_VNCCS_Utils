@@ -7,7 +7,7 @@
  * results (staged images, discarded ones included) as content-addressed blobs. Accepting a staged
  * result flags it `accepted` with the layer it became; undoing the accept clears the flag again.
  *
- * The History gallery (a button in the project bar) lists the records newest first with filters
+ * The History gallery (a button next to the Library tab) lists the records newest first with filters
  * (scene, kind, accepted only, model family, prompt text) and per record: Restore settings (one
  * undo entry), Re-run with the same or a new seed, Place any result as a layer, Show the layer a
  * result became, and an A/B compare slider between two results.
@@ -16,8 +16,10 @@
  */
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
 import { blobUrl, dehydrateValue } from "./vnccs_unicanvas_project.mjs";
 import { createLayerMeta, metaFromStagingSnapshot } from "./vnccs_unicanvas_provenance.mjs";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
 export const HISTORY_KINDS = Object.freeze(["generate", "bake", "sprite", "harmonize", "remove_bg", "color_match"]);
 export const HISTORY_KIND_LABELS = Object.freeze({
@@ -43,6 +45,12 @@ export function historySettingsSnapshot(settings = {}) {
     out[key] = value && typeof value === "object" ? JSON.parse(JSON.stringify(value)) : value;
   }
   return out;
+}
+
+/** Whether `rect` lies entirely inside `frame` (world rects). */
+export function rectInside(rect, frame) {
+  return Boolean(rect && frame) && rect.x >= frame.x && rect.y >= frame.y
+    && rect.x + rect.width <= frame.x + frame.width && rect.y + rect.height <= frame.y + frame.height;
 }
 
 function rectOf(value) {
@@ -100,6 +108,14 @@ export function buildHistoryRecord({
   };
 }
 
+/**
+ * The history item of a result that was applied without staging (Bake characters, Generate
+ * missing sprites): it is recorded accepted, as the layer it went into.
+ */
+export function autoAcceptedHistoryItem({ img, seed, rect, layerId }) {
+  return { img, snapshot: { seed }, bbox: rect ? { ...rect } : null, accepted: true, layerId: layerId || null };
+}
+
 export function recordPrompt(record) {
   return String(record?.snapshot?.prompt ?? record?.settings?.positive ?? "");
 }
@@ -130,9 +146,12 @@ export function filterHistoryRecords(records, { sceneId = "", kind = "", accepte
     .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
 }
 
-/** The distinct model families of `records`, for the family filter. */
-export function historyFamilies(records) {
-  return [...new Set((records || []).map(recordFamily).filter(Boolean))].sort();
+/**
+ * The distinct model families of `records`, for the family filter. `isEnabled` drops families
+ * switched off in Settings > VNCCS > UniCanvas; their records stay listed under "All models".
+ */
+export function historyFamilies(records, isEnabled = () => true) {
+  return [...new Set((records || []).map(recordFamily).filter(Boolean))].filter((family) => isEnabled(family)).sort();
 }
 
 /** Settings to apply for Restore / Re-run: the snapshot over the current settings. */
@@ -208,6 +227,9 @@ class HistoryRun {
       item.historyIndex = index;
       return {
         imageDataURL: item.imageDataURL || canvasDataURL(item.img),
+        // Auto-accepted results (Bake characters, Generate missing sprites) know their layer already.
+        accepted: item.accepted === true,
+        layerId: item.accepted === true ? item.layerId || null : null,
         seed: item.snapshot?.seed,
         width: item.img?.naturalWidth || item.img?.width || item.displaySize?.width,
         height: item.img?.naturalHeight || item.img?.height || item.displaySize?.height,
@@ -244,8 +266,9 @@ class HistoryRun {
 }
 
 export class UniCanvasHistory {
-  constructor(widget, { now, digest } = {}) {
+  constructor(widget, { now, digest, modelModule } = {}) {
     this.widget = widget;
+    this.modelModule = typeof modelModule === "function" ? modelModule : null;
     this.now = now || (() => Date.now());
     this.digest = digest || null;
     this.pending = new Map();
@@ -361,13 +384,34 @@ export class UniCanvasHistory {
     return this.patchResult(item.historyId, item.historyIndex, { accepted: true, layerId: layer?.id || null });
   }
 
-  /** Hook: an acceptStaging history entry was undone or redone. */
+  /**
+   * Hook: a history entry that accepted a staged result (`entry.acceptedItem`) was undone or
+   * redone: acceptStaging (a new layer) or layerPixels (a bake, sprite or harmonize result written
+   * into its own layer).
+   */
   onAcceptHistory(entry, direction) {
     const item = entry?.acceptedItem;
     if (!item?.historyId) return null;
     return direction === "undo"
       ? this.patchResult(item.historyId, item.historyIndex, { accepted: false, layerId: null })
-      : this.patchResult(item.historyId, item.historyIndex, { accepted: true, layerId: entry.layer?.id || null });
+      : this.patchResult(item.historyId, item.historyIndex, { accepted: true, layerId: entry.layer?.id || entry.layerId || null });
+  }
+
+  /**
+   * Accepting a staged result into an existing layer (bake, sprite, harmonize): the pixels entry
+   * carries the staged item so undo / redo flip the record's accept flag, and the record learns the
+   * layer now.
+   */
+  acceptIntoLayer(entry, staging, layer) {
+    if (!entry || !staging?.historyId) return entry;
+    void this.onStagingAccepted(staging, layer);
+    return { ...entry, acceptedItem: staging };
+  }
+
+  /** The family registry key of a recorded generation_mode (aliases resolved by the widget). */
+  familyKey(family) {
+    const key = this.modelModule?.(family)?.key;
+    return key || family;
   }
 
   // -- gallery actions -------------------------------------------------------------------------
@@ -430,28 +474,35 @@ export class UniCanvasHistory {
     const widget = this.widget;
     const result = record?.results?.[index];
     if (!result) throw new Error("No such result");
-    if (widget.panorama) throw new Error("History results cannot be placed into a panorama");
+    const panorama = widget.panorama;
     const img = await widget.loadImage(this.resultUrl(result));
+    if (widget.panorama !== panorama) throw new Error("The document changed while the result was loading");
     const rect = result.rect || record.bbox || {
       x: widget.bbox.x, y: widget.bbox.y, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height,
     };
     const placement = widget.normalizeLayerWorldRect ? widget.normalizeLayerWorldRect(rect) : rect;
-    if (!widget.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return null;
-    if (!widget.ensureWorldBounds(placement.x, placement.y, 128)) return null;
+    if (!panorama && !widget.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return null;
+    if (!panorama && !widget.ensureWorldBounds(placement.x, placement.y, 128)) return null;
     const previousActiveLayerId = widget.activeLayerId;
     const meta = record.kind === "generate" && record.snapshot
       ? metaFromStagingSnapshot({ ...record.snapshot, seed: result.seed ?? record.snapshot.seed })
       : createLayerMeta("import", { sourceName: `History: ${HISTORY_KIND_LABELS[record.kind] || record.kind}`, historyId: record.id });
     const layer = widget.addLayer("raster", null, false, true, meta);
-    const hires = document.createElement("canvas");
-    hires.width = Math.max(1, img.naturalWidth || img.width);
-    hires.height = Math.max(1, img.naturalHeight || img.height);
-    widget.configureImageContext(hires.getContext("2d")).drawImage(img, 0, 0);
-    layer.hiresCanvas = hires;
-    layer.hiresRect = { ...placement };
-    widget.configureImageContext(layer.canvas.getContext("2d"))
-      .drawImage(hires, placement.x - widget.origin.x, placement.y - widget.origin.y, placement.width, placement.height);
-    widget.invalidateLayerCaches(layer);
+    if (panorama) {
+      // A panorama takes the result into the current view: at its rect when that lies inside
+      // the view (results generated in a panorama), otherwise fitted into it (#24).
+      panorama.placeImage(layer, img, rectInside(placement, widget.bbox) ? placement : null);
+    } else {
+      const hires = document.createElement("canvas");
+      hires.width = Math.max(1, img.naturalWidth || img.width);
+      hires.height = Math.max(1, img.naturalHeight || img.height);
+      widget.configureImageContext(hires.getContext("2d")).drawImage(img, 0, 0);
+      layer.hiresCanvas = hires;
+      layer.hiresRect = { ...placement };
+      widget.configureImageContext(layer.canvas.getContext("2d"))
+        .drawImage(hires, placement.x - widget.origin.x, placement.y - widget.origin.y, placement.width, placement.height);
+      widget.invalidateLayerCaches(layer);
+    }
     widget.pushHistoryEntry({ kind: "addLayer", layer, previousActiveLayerId });
     widget.renderLayerList();
     widget.requestRender();
@@ -500,7 +551,7 @@ export class UniCanvasHistory {
 // ---------------------------------------------------------------------------
 
 const STYLES = `
-.vnccs-uc-history-open { height:24px !important; padding:0 8px !important; font-size:12px; align-self:flex-start; }
+.vnccs-uc-project-bar .vnccs-uc-history-open { height:24px !important; padding:0 8px !important; font-size:12px; align-self:flex-start; }
 .vnccs-uc-modal.vnccs-uc-history-gallery { width:min(980px, 94%); max-height:88%; display:flex; flex-direction:column; gap:10px; }
 .vnccs-uc-history-filters { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
 .vnccs-uc-history-filters input[type="search"] { flex:1 1 160px; min-width:100px; }
@@ -532,11 +583,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 function button(widget, label, className, onClick, title = label) {
@@ -872,7 +919,9 @@ export function openHistoryGallery(widget, history = widget.generationHistory) {
 
   const render = () => {
     fillSelect(sceneSelect, (session.project?.scenes || []).map((scene) => [scene.id, scene.name || "Scene"]), "All scenes");
-    fillSelect(familySelect, historyFamilies(records).map((family) => [family, family]), "All models");
+    // Switched-off families leave the filter; their records stay under "All models".
+    const familyOn = (family) => isUniCanvasFamilyEnabled(history.familyKey(family));
+    fillSelect(familySelect, historyFamilies(records, familyOn).map((family) => [family, family]), "All models");
     renderGrid();
     renderDetail();
   };
@@ -897,16 +946,29 @@ export function openHistoryGallery(widget, history = widget.generationHistory) {
   return overlay;
 }
 
-/** Installs history on a widget (called from the UniCanvas constructor, after projects). */
+/**
+ * Where the History button goes: right after the Library tab (vnccs_unicanvas_library.mjs), else
+ * the project bar when the library tabs are missing.
+ */
+export function historyButtonSlot(widget) {
+  const tabs = widget?.container?.querySelector?.(".vnccs-uc-library-tabs");
+  if (tabs) return { parent: tabs, className: "vnccs-uc-library-tab vnccs-uc-history-open" };
+  const bar = widget?._vnccsProjectBar;
+  return bar ? { parent: bar, className: "vnccs-uc-btn vnccs-uc-history-open" } : null;
+}
+
+/** Installs history on a widget (called from the UniCanvas constructor, after projects and the library). */
 export function installUniCanvasHistory(widget, options = {}) {
   if (!widget || widget.generationHistory) return widget?.generationHistory;
   const history = new UniCanvasHistory(widget, options);
   widget.generationHistory = history;
-  const bar = widget._vnccsProjectBar;
-  if (typeof document !== "undefined" && bar) {
+  widget.registerHistoryKind?.(HISTORY_SETTINGS_HISTORY_KIND, (entry, direction) => widget.generationHistory?.applySettingsHistory(entry, direction));
+  const slot = typeof document === "undefined" ? null : historyButtonSlot(widget);
+  if (slot) {
     ensureStyles();
-    const open = button(widget, "History", "vnccs-uc-btn vnccs-uc-history-open", () => openHistoryGallery(widget, history), "Every generation run of this project");
-    bar.appendChild(open);
+    const open = button(widget, "History", slot.className, () => openHistoryGallery(widget, history), "Every generation run of this project");
+    open.dataset.historyOpen = "";
+    slot.parent.appendChild(open);
     widget._vnccsHistoryButton = open;
   }
   return history;

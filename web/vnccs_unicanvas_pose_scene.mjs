@@ -18,8 +18,9 @@ import { MAX_POSE_STUDIO_CHARACTERS, nextCharacterColor, nextCharacterId, nextCh
 import { getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { cloneJson } from "./vnccs_unicanvas_util.mjs";
 
-const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
+const clone = cloneJson;
 const newId = () => (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`);
 const sameJSON = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
@@ -252,7 +253,10 @@ export function mergePoseLayers(uc, ids = uc.selectedLayerIds, createEditor = nu
   const editor = uc.poseEditor || createEditor?.();
   if (editor) {
     uc.poseEditor = editor;
-    void editor.activate(merged, { show: false }).then(() => editor.commit()).catch(() => {});
+    void editor.activate(merged, { show: false }).then(() => editor.commit()).catch((err) => {
+      console.warn("[VNCCS UniCanvas] Rendering the merged pose layer failed", err);
+      uc.setStatus?.(`Merged ${merged.name}, but its preview could not be rendered: open it in the pose editor to refresh it.`, true);
+    });
   }
   return merged;
 }

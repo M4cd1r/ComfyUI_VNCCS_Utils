@@ -10,7 +10,10 @@
  * The seed is not user-facing: the backend draws a fresh one for every run.
  */
 
-import { filterUniCanvasChoices, isUniCanvasFamilyEnabled, isUniCanvasRemoveBgMethodEnabled, pickEnabledUniCanvasChoice } from "./vnccs_unicanvas_feature_toggles.mjs";
+import {
+  filterUniCanvasChoices, isUniCanvasFamilyEnabled, isUniCanvasLoaderEnabled, isUniCanvasRemoveBgMethodEnabled, pickEnabledUniCanvasChoice,
+  syncUniCanvasSelectOptions,
+} from "./vnccs_unicanvas_feature_toggles.mjs";
 
 export const REMOVE_BG_METHODS = [
   ["edit", "Edit model"],
@@ -26,7 +29,7 @@ export const REMOVE_BG_DEFAULT_PROMPT = "Remove the background, and output a PNG
 // Viggle v0.2.1 turbo: Remove bg runs it by default at 6 steps (about 9 s on a 4090).
 const REMOVE_BG_TURBO_LORA = "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors";
 const REMOVE_BG_TURBO_STEPS = 6;
-const EDIT_LOADERS = [
+export const REMOVE_BG_EDIT_LOADERS = [
   ["diffusion_model", "Diffusion Model"],
   ["gguf", "GGUF"],
 ];
@@ -40,12 +43,37 @@ export function resolveRemoveBgSelection(settings) {
   const source = settings || {};
   const raw = String(source.remove_bg_model || "birefnet");
   // A method switched off in Settings > VNCCS > UniCanvas gives way to the first allowed one; with
-  // none allowed the saved method stays (bakes and sprites still cut out with it).
+  // none allowed the saved method stays for the panel (automatic cut-outs ask
+  // automaticRemoveBgRequest, which refuses it).
   const method = pickEnabledUniCanvasChoice(raw === "qi21" ? "edit" : raw, REMOVE_BG_METHODS, isUniCanvasRemoveBgMethodEnabled);
   const editModel = REMOVE_BG_EDIT_MODES.some(([key]) => key === source.remove_bg_edit_model)
     ? source.remove_bg_edit_model
     : REMOVE_BG_EDIT_MODES[0][0];
   return { method, editModel };
+}
+
+// Backends that run without user input, in fallback order (SAM 3 needs keep points).
+const AUTOMATIC_REMOVE_BG_METHODS = ["birefnet", "rembg", "edit"];
+
+/**
+ * The request fields for an automatic cut-out (character bake, outfit sprites): the saved method,
+ * interactive SAM 3 replaced by the first enabled automatic backend. Null when Remove background
+ * (or every usable method) is switched off in Settings > VNCCS > UniCanvas: the caller then keeps
+ * its own silhouette instead of calling the backend.
+ */
+export function automaticRemoveBgRequest(settings) {
+  const { method, editModel } = resolveRemoveBgSelection(settings);
+  const resolved = method === "sam3" ? AUTOMATIC_REMOVE_BG_METHODS.find(isUniCanvasRemoveBgMethodEnabled) : method;
+  if (!resolved || !isUniCanvasRemoveBgMethodEnabled(resolved)) return null;
+  return { method: resolved, edit_model: editModel, edit_settings: resolved === "edit" ? removeBgEditSettings(settings, editModel) : undefined };
+}
+
+/** The Edit-model loader to show: the saved one, else the family default, else the first enabled one. */
+export function removeBgEditLoader(stored, fallback) {
+  const saved = stored === "gguf" || stored === "diffusion_model" ? stored : null;
+  if (saved) return saved;
+  const preferred = fallback === "gguf" ? "gguf" : "diffusion_model";
+  return pickEnabledUniCanvasChoice(preferred, REMOVE_BG_EDIT_LOADERS, isUniCanvasLoaderEnabled);
 }
 
 /** Only what the user set for this family; the backend fills the rest from the family defaults. */
@@ -112,7 +140,7 @@ export function buildRemoveBgSettings(settings, ui) {
   const withCurrent = (list, value) => (value && !list.includes(value) ? [value, ...list] : list)
     .map((name) => [name, name || "None"]);
 
-  const loader = makeSelect(EDIT_LOADERS, "diffusion_model");
+  const loader = makeSelect(REMOVE_BG_EDIT_LOADERS, "diffusion_model");
   const diffusionModel = makeSelect([], "");
   const ggufModel = makeSelect([], "");
   const ggufArch = makeSelect([], "");
@@ -161,7 +189,9 @@ export function buildRemoveBgSettings(settings, ui) {
     for (const row of editRows) show(row, isEdit);
     if (!isEdit) return;
     show(modeRow, REMOVE_BG_EDIT_MODES.length > 1);
-    loader.value = effective("model_loader") === "gguf" ? "gguf" : "diffusion_model";
+    loader.value = removeBgEditLoader(stored().model_loader, familyDefaults(mode.value)?.model_loader);
+    // Loaders switched off in Settings > VNCCS > UniCanvas leave the list; the saved one stays visible.
+    syncUniCanvasSelectOptions(loader, isUniCanvasLoaderEnabled, loader.value);
     const gguf = loader.value === "gguf";
     show(diffusionRow, !gguf);
     show(ggufRow, gguf);

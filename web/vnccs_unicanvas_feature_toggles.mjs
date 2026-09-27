@@ -9,7 +9,8 @@
  * "Off" hides, it never deletes: the entry's selectors are hidden by one generated stylesheet
  * (every open widget, node and standalone alike, live), its tools / layer-menu items / shortcuts
  * are refused, and the modules that could download something ask `isUniCanvasEnabled` first.
- * Existing layers and saved settings are never touched.
+ * A switched-off feature does not run either: `uniCanvasRequestSettings` turns it off in every
+ * generation request. Existing layers and saved settings are never touched.
  *
  * The module has no import-time side effects and does not import the ComfyUI app, so it runs in
  * `node --test`; the extension binds the app with `bindUniCanvasFeatureToggles(app)`.
@@ -33,6 +34,11 @@ const family = (key, label, tooltip, extra = {}) => ({ key: `family_${key}`, gro
 const loader = (key, label, tooltip) => ({ key: `loader_${key}`, group: "ModelLoaders", loader: key, label, tooltip });
 const tool = (key, label, tooltip) => ({ key: `tool_${key}`, group: "Tools", tools: [key], label, tooltip });
 
+function spectrumOffOverrides(settings) {
+  const spectrum = settings?.spectrum;
+  return spectrum && typeof spectrum === "object" && spectrum.enabled ? { spectrum: { ...spectrum, enabled: false } } : null;
+}
+
 /**
  * Registry entry: { key, group, label, tooltip, requires?, hide?, tools?, menu?, family?, loader?,
  * removeBgMethod?, autoNameModel?, settingsSections? }. Every entry is on by default.
@@ -40,6 +46,8 @@ const tool = (key, label, tooltip) => ({ key: `tool_${key}`, group: "Tools", too
  * - tools: toolbar tools refused (the widget falls back to Move) and hidden.
  * - menu: layer context-menu item ids hidden.
  * - settingsSections: gear-popover sections left out.
+ * - requestOverrides(settings): the settings keys that turn the feature off in a generation request
+ *   (the saved settings keep it, so switching the entry back on restores it).
  */
 export const UNICANVAS_FEATURE_TOGGLES = Object.freeze([
   // Model families (frontend UNICANVAS_MODEL_MODULES + Qwen-Image 2.1).
@@ -91,12 +99,12 @@ export const UNICANVAS_FEATURE_TOGGLES = Object.freeze([
   { key: "sceneGenerate", group: "Features", label: "Scene Generate", requires: ["characterBake"],
     tooltip: "GENERATE bakes the pose characters first, then the scene. Needs Character bake.",
     hide: [".vnccs-uc-bake-count"] },
-  { key: "sceneStates", group: "Features", label: "Scene states", tooltip: "The States panel and Alt+1..9.",
+  { key: "sceneStates", group: "Features", label: "Scene states", tooltip: "The States panel and Alt+1..9 (standalone only).",
     hide: [".vnccs-uc-states"] },
   { key: "timeline", group: "Features", label: "Timeline and export", requires: ["sceneStates"],
     tooltip: "The timeline dock and video export (standalone only). Needs Scene states.",
     hide: ["[data-timeline-toggle]"] },
-  { key: "vnPreview", group: "Features", label: "VN preview", tooltip: "The visual-novel frame overlay (P).",
+  { key: "vnPreview", group: "Features", label: "VN preview", tooltip: "The visual-novel frame overlay (P, standalone only).",
     hide: [".vnccs-uc-vnp-toggle"] },
   { key: "groundPlane", group: "Features", label: "Ground plane and depth scaling", tools: ["perspective"],
     tooltip: "The Perspective tool (G) and depth-scaled moves.", hide: ["[data-scene-depth-scale]"] },
@@ -115,14 +123,15 @@ export const UNICANVAS_FEATURE_TOGGLES = Object.freeze([
     tooltip: "Fill a ControlNet layer from the scene (depth, canny, lineart, pose). Needs ControlNet layers.",
     hide: ["[data-control-scene]"], menu: ["control-from-scene", "control-pose-from-layer"] },
   { key: "qwen21Spectrum", group: "Features", label: "Qwen-Image 2.1 Spectrum / turbo", requires: ["family_qwen_image21"],
-    tooltip: "The Spectrum and turbo LoRA panel. Needs the Qwen-Image 2.1 family.", hide: [".vnccs-uc-qwen21-panel"] },
+    tooltip: "The Spectrum and turbo LoRA panel; Spectrum saved in a scene does not run while off. Needs the Qwen-Image 2.1 family.",
+    hide: [".vnccs-uc-qwen21-panel"], requestOverrides: spectrumOffOverrides },
   // Projects and history.
-  { key: "projects", group: "Projects", label: "Projects and scenes", tooltip: "The project and scene bar. The document is still saved.",
+  { key: "projects", group: "Projects", label: "Projects and scenes", tooltip: "The project and scene bar (standalone only). The document is still saved.",
     hide: [".vnccs-uc-project-bar", ".vnccs-uc-project-chip"] },
   { key: "library", group: "Projects", label: "Asset library", tooltip: "The Library tab and Save / Update / Push to library.",
     hide: ['[data-library-tab="library"]'], menu: ["library-save", "library-update", "library-push"], settingsSections: ["library"] },
   { key: "history", group: "Projects", label: "Generation history", requires: ["projects"],
-    tooltip: "The History gallery of a project. Needs Projects and scenes.", hide: [".vnccs-uc-history-open"] },
+    tooltip: "The History gallery of a project (standalone only). Needs Projects and scenes.", hide: [".vnccs-uc-history-open"] },
   // Background removal.
   { key: "removeBackground", group: "BackgroundRemoval", label: "Remove background",
     tooltip: "The whole feature: layer menu entries and settings.", menu: ["remove-bg", "remove-bg-prompt"], settingsSections: ["remove_bg"] },
@@ -240,6 +249,25 @@ export function isUniCanvasNamingModelAvailable() {
   return isUniCanvasEnabled("autoLayerNames") && [...AUTO_NAME_KEYS.keys()].some(isUniCanvasAutoNameModelEnabled);
 }
 
+/** The settings keys that keep every switched-off feature from running, e.g. { spectrum: {..., enabled: false} }. */
+export function uniCanvasRequestOverrides(settings) {
+  const overrides = {};
+  if (!settings || typeof settings !== "object") return overrides;
+  for (const entry of UNICANVAS_FEATURE_TOGGLES) {
+    if (entry.requestOverrides && !isUniCanvasEnabled(entry.key)) Object.assign(overrides, entry.requestOverrides(settings));
+  }
+  return overrides;
+}
+
+/**
+ * A generation request's settings with every switched-off feature turned off (in place on the copy
+ * the caller passes; returned for chaining). The widget's saved settings are never touched.
+ */
+export function uniCanvasRequestSettings(settings) {
+  if (!settings || typeof settings !== "object") return settings;
+  return Object.assign(settings, uniCanvasRequestOverrides(settings));
+}
+
 /** [value, label] pairs the user may pick; `current` stays so a saved value shows as it is. */
 export function filterUniCanvasChoices(pairs, isOn, current = undefined) {
   return (pairs || []).filter(([value]) => isOn(value) || (current !== undefined && value === current));
@@ -342,10 +370,11 @@ function showToggleToast(appRef, message) {
 }
 
 function writeSetting(appRef, id, value) {
+  const refused = (err) => console.warn(`[VNCCS UniCanvas] Setting ${id} was not saved`, err);
   try {
     const store = appRef?.extensionManager?.setting;
-    if (typeof store?.set === "function") return Promise.resolve(store.set(id, value)).catch(() => {});
-    if (typeof appRef?.ui?.settings?.setSettingValue === "function") return Promise.resolve(appRef.ui.settings.setSettingValue(id, value)).catch(() => {});
+    if (typeof store?.set === "function") return Promise.resolve(store.set(id, value)).catch(refused);
+    if (typeof appRef?.ui?.settings?.setSettingValue === "function") return Promise.resolve(appRef.ui.settings.setSettingValue(id, value)).catch(refused);
   } catch (_) {
     // A refused write leaves the stored value; the reader still never reports all families off.
   }

@@ -631,7 +631,12 @@ test("Pose Studio enforces four-character maximum and one-character minimum", ()
         /this\.characters\.length\s*>=\s*MAX_POSE_STUDIO_CHARACTERS[\s\S]*return false;/,
     );
     assert.match(addMethod, /const slot = nextCharacterSlot\(this\.characters, requestedSlot\)/);
-    assert.match(addMethod, /color: nextCharacterColor\(this\.characters, slot\)/);
+    // The new mannequin itself is built by createSceneCharacter (shared with library scene poses).
+    assert.match(addMethod, /this\.createSceneCharacter\(slot, /);
+    const createStart = poseStudioSource.indexOf("createSceneCharacter(slot, initialTransform) {");
+    const createMethod = poseStudioSource.slice(createStart, poseStudioSource.indexOf("\n    async addCharacter", createStart));
+    assert.notEqual(createStart, -1);
+    assert.match(createMethod, /color: nextCharacterColor\(this\.characters, slot\)/);
     assert.match(addMethod, /this\.characters\.sort\(\(left, right\) => left\.slot - right\.slot\)/);
 
     const deleteStart = addEnd;

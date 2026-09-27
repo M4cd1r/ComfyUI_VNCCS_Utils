@@ -264,3 +264,42 @@ test("the widget installs the timeline with a pose editor factory and the backen
   const pose = readFileSync(new URL("../web/vnccs_unicanvas_pose.mjs", import.meta.url), "utf8");
   assert.match(pose, /async captureAnimationFrames\(layer, frames/);
 });
+
+test("a body gesture keeps its pointer capture on the body after a re-render detached its target", () => {
+  const { panel } = fakeWidget([{ id: "A", type: "raster", name: "A" }]);
+  const listeners = [];
+  const body = {
+    captured: null,
+    contains: () => false, // the key element was removed by renderDock (selectKeys)
+    setPointerCapture(id) { this.captured = id; },
+    addEventListener: (type) => listeners.push(["body", type]),
+    removeEventListener() {},
+  };
+  const detached = { addEventListener: (type) => listeners.push(["key", type]), removeEventListener() {} };
+  panel.body = body;
+  panel.capture({ pointerId: 7, currentTarget: body, target: detached }, () => {}, () => {});
+  assert.equal(body.captured, 7);
+  assert.deepEqual(listeners.map(([on]) => on), ["body", "body", "body"]);
+});
+
+test("a render while the hidden editor steps the layer's studio keeps the frames prepared so far", async () => {
+  const layer = poseLayer();
+  const { uc, panel } = fakeWidget([layer]);
+  panel.open = true;
+  panel.ensureData().fps = 12;
+  const saved = layer.pose.studio;
+  panel.createPoseEditor = null;
+  uc.poseEditor = {
+    async captureAnimationFrames(target, frames, { onFrame }) {
+      // Like the real editor: the live studio replaces the layer's studio while frames render.
+      target.pose.studio = { ...saved, characters: [{ id: 0, animation: animation(12, 12, { loop: false }) }] };
+      for (const frame of frames) {
+        onFrame(frame, canvas(`${target.id}${frame}`));
+        uc.render(); // the page renders between frames
+      }
+      target.pose.studio = saved;
+    },
+  };
+  assert.equal(await panel.preparePoseFrames({ start: 0, end: 3 }), 4);
+  assert.deepEqual(panel.describe().poseFrames.layers.P, [0, 1, 2, 3]);
+});

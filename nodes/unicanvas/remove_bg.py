@@ -18,7 +18,7 @@ import numpy as np
 from PIL import Image
 
 from .constants import _MAX_UPLOAD_BYTES
-from .imaging import _decode_data_url, _encode_png_data_url, _uc_image_to_rgb_tensor, _uc_rgba_tensor_to_image
+from .imaging import ImageTooLargeError, _decode_data_url, _encode_png_data_url, _uc_image_to_rgb_tensor, _uc_rgba_tensor_to_image
 from .models.registry import UNICANVAS_MODEL_MODULES, _get_unicanvas_model_module
 from .rembg_onnx import remove_background_rembg
 from .sampling import _ensure_direct_sampling_prompt_context
@@ -76,10 +76,8 @@ def _uc_decode_keep_mask(raw: Any, size: tuple[int, int]) -> Image.Image | None:
         raise ValueError(UC_REMOVE_BG_KEEP_TOO_LARGE)
     try:
         mask = _decode_data_url(raw, "RGBA", max_pixels=max(1, size[0] * size[1]))
-    except ValueError as exc:
-        if "too large" in str(exc):
-            raise ValueError(UC_REMOVE_BG_KEEP_TOO_LARGE) from exc
-        raise ValueError(UC_REMOVE_BG_KEEP_INVALID.format(error=exc)) from exc
+    except ImageTooLargeError as exc:
+        raise ValueError(UC_REMOVE_BG_KEEP_TOO_LARGE) from exc
     except Exception as exc:
         raise ValueError(UC_REMOVE_BG_KEEP_INVALID.format(error=exc)) from exc
     if mask.size != tuple(size):

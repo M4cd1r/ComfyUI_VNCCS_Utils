@@ -4,6 +4,7 @@
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { SCENARIOS } from "./evidence-scenarios.mjs";
 
 const args = process.argv.slice(2);
 const opt = Object.fromEntries(args.reduce((acc, cur, i) => {
@@ -43,7 +44,17 @@ await page.goto(baseURL, { waitUntil: "domcontentloaded" });
 await page.waitForFunction(() => window.app?.graph && window.LiteGraph, null, { timeout: 60_000 });
 await page.waitForTimeout(2_000);
 for (let i = 0; i < 3; i += 1) await page.keyboard.press("Escape");
-if (topic === "config-override") {
+const scenario = SCENARIOS[topic];
+if (scenario) {
+  // Registered scenarios (evidence-scenarios.mjs) open their own surface.
+  // Settings a scenario changes on the server are restored even when a step fails.
+  try {
+    await scenario.run(page, { baseURL });
+  } catch (error) {
+    await scenario.cleanup?.(page, { baseURL });
+    throw error;
+  }
+} else if (topic === "config-override") {
   // Graph scenario: a VNCSS Config node linked to a UniCanvas node.
   await page.evaluate(() => {
     const { app, LiteGraph } = window;
@@ -96,34 +107,6 @@ if (topic === "scene-states") {
   await page.locator(".vnccs-uc-layer .vnccs-uc-thumb").first().click();
   await page.waitForTimeout(500);
 }
-if (topic === "timeline") {
-  // Scene timeline (#9), standalone only: an imported image with "Enter from left" at frame 0,
-  // scrubbed to the middle of the move with the layer row expanded.
-  await page.locator('[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon').first().click();
-  await page.waitForTimeout(2_000);
-  const [chooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.locator('.vnccs-uc2-standalone-shell button[title="Import image"]').first().click(),
-  ]);
-  await chooser.setFiles(resolve(import.meta.dirname, "fixtures", "character.png"));
-  await page.waitForTimeout(2_500);
-  await page.locator(".vnccs-uc2-standalone-shell [data-timeline-toggle]").first().click();
-  const row = page.locator(".vnccs-uc2-standalone-shell [data-timeline-dock] .vnccs-uc-tl-row.active .vnccs-uc-tl-label").first();
-  await row.click({ button: "right" });
-  await page.locator('[data-tl-action="preset-enterLeft"]').first().click();
-  await page.locator(".vnccs-uc2-standalone-shell [data-timeline-dock] .vnccs-uc-tl-row.active [data-expand]").first().click();
-  const frame = page.locator('.vnccs-uc2-standalone-shell [data-timeline-dock] [data-tl="frame"]').first();
-  await frame.fill("6");
-  await frame.dispatchEvent("input");
-  await page.waitForTimeout(800);
-}
-if (topic === "multi-character") {
-  // A pose layer with two mannequins: the Character reference card lists one row per mannequin.
-  await page.locator('.vnccs-uc-layers-section [title="Add pose layer"]').click();
-  await page.waitForTimeout(25_000);
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
-  await page.waitForTimeout(5_000);
-}
 if (topic === "character-bake") {
   // A pose layer with a bound character: the reference card shows the bake chip and Bake button,
   // and GENERATE announces the pending bake ("+1 bake").
@@ -151,7 +134,9 @@ if (topic === "vn-preview") {
   await page.keyboard.press("Enter");
   await page.waitForTimeout(1_000);
   await page.locator('[title="VN preview (P)"]').first().click();
-  await page.mouse.click(3, 3);
+  // Close the popover with a click on the empty top bar (the page corner is ComfyUI's workflow tab).
+  const bar = await page.locator(".vnccs-uc-bottom").first().boundingBox();
+  await page.mouse.click(bar.x + bar.width / 2, bar.y + 6);
   await page.locator('.vnccs-uc-tool[data-tool="move"]').click();
   const box = await page.locator("canvas.vnccs-uc-stage").first().boundingBox();
   const vn = await page.evaluate(() => globalThis.__VNCCS_UC_E2E__.getVnPreview());
@@ -230,7 +215,6 @@ const shots = {
   // phases, which keeps the before/after crops aligned.
   "settings-panel": ".vnccs-unicanvas",
   "pose-editor": ".vnccs-unicanvas",
-  "multi-character": ".vnccs-unicanvas",
   "character-bake": ".vnccs-unicanvas",
   "vn-preview": ".vnccs-unicanvas",
   "placement-harmonize": ".vnccs-unicanvas",
@@ -239,27 +223,18 @@ const shots = {
   "history-gallery": ".vnccs-unicanvas",
   "config-override": "body",
   "icons": "body",
-  "auto-naming": ".vnccs-uc2-standalone-shell",
 };
 // The settings popover exists only once the gear is clicked. The crop still frames
 // the pre-change popover, which the old code parked at the widget's top-left.
-if (topic === "settings-panel") await page.locator('[title="Settings"]').first().click();
-// Automatic naming (issue #17): two painted layers named by rules, then the Organize preview.
-if (topic === "auto-naming") {
-  await page.locator('[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon').first().click();
-  const shell = page.locator(".vnccs-uc2-standalone-shell");
-  await shell.locator(".vnccs-uc-left").waitFor({ timeout: 30_000 });
-  for (let i = 0; i < 2; i += 1) await shell.locator('[title="Add raster"]').first().click();
-  await shell.locator("[data-organize-layers]").click();
-  await shell.locator(".vnccs-uc-organize").waitFor();
-}
-const target = page.locator(shots[topic] || ".vnccs-uc-left").first();
+if (topic === "settings-panel") await page.locator('.vnccs-uc-gear').first().click();
+const target = page.locator(scenario?.shot || shots[topic] || ".vnccs-uc-left").first();
 // Fixed page crops keep both phases aligned where the subject spans several roots.
 const clips = {
   icons: { x: 0, y: 0, width: 420, height: 760 },
   "config-override": { x: 0, y: 40, width: 700, height: 960 },
 };
-if (clips[topic]) await page.screenshot({ path: resolve(outDir, `${phase}.png`), clip: clips[topic] });
+const clip = scenario?.clip || clips[topic];
+if (clip) await page.screenshot({ path: resolve(outDir, `${phase}.png`), clip });
 else await target.screenshot({ path: resolve(outDir, `${phase}.png`) });
 const geometry = await target.evaluate((el, measureSelector) => {
   // Measure what the topic changes: the settings popover. Before the anchoring
@@ -274,9 +249,9 @@ const geometry = await target.evaluate((el, measureSelector) => {
   "settings-panel": ".vnccs-uc-settings-popover",
   "config-override": ".vnccs-config-ui",
   icons: ".vnccs-uc-tools",
-  "auto-naming": ".vnccs-uc-organize",
   "history-gallery": ".vnccs-uc-history-gallery",
-}[topic] || null);
+}[topic] || scenario?.measure || null);
+await scenario?.cleanup?.(page, { baseURL });
 await writeFile(resolve(outDir, `${phase}.geometry.json`), JSON.stringify(geometry, null, 2));
 await browser.close();
 console.log(`captured ${phase}.png for ${topic}`);

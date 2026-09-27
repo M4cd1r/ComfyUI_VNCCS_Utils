@@ -198,5 +198,64 @@ class RouteTests(unittest.TestCase):
         )
 
 
+class _FakeWeb:
+    class StreamResponse:
+        pass
+
+    @staticmethod
+    def json_response(payload, status=200):
+        return status, payload
+
+
+class _Request:
+    def __init__(self, payload=None, bad_json=False, match_info=None):
+        self._payload = payload
+        self._bad_json = bad_json
+        self.can_read_body = payload is not None or bad_json
+        self.headers = {}
+        self.match_info = match_info or {}
+
+    async def json(self):
+        if self._bad_json:
+            raise ValueError("Expecting value")
+        return self._payload
+
+
+class RouteBehaviourTests(ExportTestCase):
+    def setUp(self):
+        super().setUp()
+        table = export.animation_export_routes(_FakeWeb, lambda request, size: True)
+        self.routes = {(method, path.rsplit("/animation/", 1)[1]): handler for method, path, handler in table}
+
+    def call(self, key, request):
+        import asyncio
+
+        return asyncio.run(self.routes[key](request))
+
+    def test_client_errors_map_to_4xx(self):
+        status, body = self.call(("POST", "begin"), _Request(bad_json=True))
+        self.assertEqual(status, 400)
+        self.assertIn("JSON object", body["error"])
+        status, body = self.call(("POST", "begin"), _Request({"format": "avi"}))
+        self.assertEqual(status, 400)
+        status, body = self.call(("GET", "status/{job_id}"), _Request(match_info={"job_id": "0" * 32}))
+        self.assertEqual(status, 404)
+
+    def test_a_cancelled_encode_answers_409(self):
+        status, job = self.call(("POST", "begin"), _Request({"format": "gif", "fps": 12, "width": 48, "height": 32, "frame_count": 1}))
+        self.assertEqual(status, 200)
+        self.call(("POST", "frames"), _Request({"job_id": job["job_id"], "start": 0, "frames": [_data_url(_frame(0))]}))
+        with mock.patch.dict(export._JOBS[job["job_id"]], {"cancelled": True}):
+            status, body = self.call(("POST", "end"), _Request({"job_id": job["job_id"]}))
+        self.assertEqual((status, body.get("cancelled")), (409, True))
+
+    def test_status_expires_abandoned_jobs(self):
+        job_id = export.begin_animation_export({"format": "gif", "fps": 12, "width": 48, "height": 32, "frame_count": 2})["job_id"]
+        export._JOBS[job_id]["touched"] -= export.JOB_TTL_SECONDS + 1
+        with self.assertRaises(export.AnimationExportError):
+            export.animation_export_status(job_id)
+        self.assertEqual(os.listdir(os.path.join(self.temp, "vnccs_unicanvas_animation")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

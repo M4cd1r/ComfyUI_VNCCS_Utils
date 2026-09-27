@@ -554,7 +554,12 @@
     "point_a": "fingertip_r",
     "b": 1,
     "point_b": "fingertip_r",
-    "tolerance": 2.3
+    "tolerance": 2.3,
+    "offset": [
+     0.119,
+     -0.007,
+     -1.223
+    ]
    }
   ]
  },

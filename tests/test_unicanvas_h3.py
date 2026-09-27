@@ -473,6 +473,36 @@ def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
     assert image.shape == (1, 8, 8, 3)
 
 
+def test_export_state_applies_switched_off_feature_overrides(monkeypatch):
+    """A feature switched off in the UniCanvas settings (Spectrum) does not run on the queued path."""
+    from nodes.unicanvas import node as uc
+    from nodes.vncss_config import VNCCS_Config
+
+    captured = {}
+
+    def fake_draw(payload):
+        captured.update(payload)
+        return {"images": [], "mask": None, "tensor": torch.zeros(1, 8, 8, 3)}
+
+    monkeypatch.setattr(uc, "_run_unicanvas_draw", fake_draw)
+    config = VNCCS_Config().execute('{"loras": [], "edit_model": False}', model="M", clip="C", vae="V")[0]
+    spectrum = {"enabled": True, "chebyshev_degree": 4}
+    state = {
+        "state_id": "s1",
+        "layers": [],
+        "settings": {
+            "draw_id": "draw-queued",
+            "generation_mode": "qwen_image21",
+            "spectrum": spectrum,
+            "queued_draw": {"mode": "txt2img", "settings_overrides": {"spectrum": {**spectrum, "enabled": False}}},
+        },
+    }
+    uc.VNCCS_UniCanvas().export_state(json.dumps(state), config=config, unique_id="9")
+    assert captured["gen_settings"]["spectrum"] == {"enabled": False, "chebyshev_degree": 4}
+    assert captured["gen_settings"]["generation_mode"] == "qwen_image21"
+    assert spectrum["enabled"] is True
+
+
 @pytest.mark.parametrize(
     "settings",
     [

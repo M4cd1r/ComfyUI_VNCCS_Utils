@@ -5,6 +5,8 @@ import * as THREE from "../../web/three.module.js";
 import { PoseViewerCore } from "../../web/vnccs_pose_studio_core.js";
 import * as characters from "../../web/vnccs_pose_characters.mjs";
 import * as animation from "../../web/vnccs_pose_animation.mjs";
+import * as interactions from "../../web/vnccs_pose_interactions.mjs";
+import * as contacts from "../../web/vnccs_pose_contacts.mjs";
 import { HAND_PRESETS } from "../../web/vnccs_hand_presets.js";
 import * as openpose from "../../web/vnccs_openpose_import.js";
 import { isLikelyVideoFile } from "../../web/vnccs_video_import.mjs";
@@ -52,7 +54,7 @@ export class Element {
 export function createScene({ skinned = false } = {}) {
     const frames = new Map(), timers = new Map(); let id = 0;
     const document = { createElement: tag => new Element(tag), createDocumentFragment: () => new Element(), body: new Element(), activeElement: null };
-    const context = { ...characters, ...animation, ...openpose, isLikelyVideoFile, HAND_PRESETS, console, document, window: {}, Blob,
+    const context = { ...characters, ...animation, ...interactions, ...contacts, ...openpose, isLikelyVideoFile, HAND_PRESETS, console, document, window: {}, Blob,
         getComputedStyle: element => ({ width: `${element.width}px`, height: `${element.height}px` }),
         localStorage: { getItem: () => null, setItem: noop },
         requestAnimationFrame: fn => { frames.set(++id, fn); return id; }, cancelAnimationFrame: id => frames.delete(id),
@@ -101,7 +103,7 @@ export function createScene({ skinned = false } = {}) {
     }
     morph();
     viewer.options.onViewportRender = () => w.radarRedraw?.();
-    viewer.options.captureHistoryContext = () => ({ mesh: { ...w.meshParams }, transform: { ...w.getActiveCharacter().transform }, cameraParams: w.currentCameraParams(), prompt: w.getPosePrompt() });
+    viewer.options.captureHistoryContext = (options = {}) => ({ ...(options.scene ? { scene: w.captureSceneHistory() } : {}), mesh: { ...w.meshParams }, transform: { ...w.getActiveCharacter().transform }, cameraParams: w.currentCameraParams(), prompt: w.getPosePrompt() });
     viewer.options.onHistoryRestore = pose => w.restoreImageHistory(pose);
     viewer.options.onPoseChange = () => { w.updateRotationSliders(); w.syncToNode(); };
     w.createSliderField("Zoom", "cam_zoom", 0.1, 7, 0.01, 1, w.exportParams, true);

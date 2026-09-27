@@ -11,7 +11,8 @@
  *    the draw with `_timelineCompositeFrame` set.
  *  - Auto-key (default on): a move-tool drag, the dock's value fields and the layer opacity slider
  *    write keys at the playhead. With auto-key off the move tool and opacity edit the rest scene
- *    as before and a chip says so.
+ *    as before and a chip says so. Scale / rotation handles on the canvas and Free Transform on
+ *    a keyed frame write keys too (vnccs_unicanvas_timeline_transform.mjs).
  *  - History: every key gesture, preset insert, effect change or setting change is one `timeline`
  *    entry (the whole timeline before / after; it is small JSON). Scrubbing and playback add none.
  *  - Pose layers (issue #18): an animated pose layer gets a "Pose animation" row (drag it to move
@@ -81,7 +82,9 @@ import {
   studioFramesForRange,
 } from "./vnccs_unicanvas_timeline_pose.mjs";
 import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs";
-import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { TimelineKeyHandles, commitTransformKeys, layerKeyContext } from "./vnccs_unicanvas_timeline_transform.mjs";
+import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
+import { ensureStyleTag, setStageBottomInset } from "./vnccs_unicanvas_util.mjs";
 
 const STYLE_ID = "vnccs-uc-timeline-styles";
 const LABEL_WIDTH = 180;
@@ -142,11 +145,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 const isTextTarget = (target) => target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
@@ -171,16 +170,18 @@ class TimelineController {
     this.button = null;
     this.poseFrames = new PoseFrameCache();
     this.preparing = null;
+    this.capturing = null; // { layerId, hash } while the hidden editor renders that layer's frames
     this.exportDialog = null;
     this.createPoseEditor = null;
+    this.keyHandles = new TimelineKeyHandles(this);
   }
 
   // Availability and data ---------------------------------------------------------------------
 
   get data() { return this.uc.timeline; }
 
-  // Standalone only, and only while Settings > VNCCS > UniCanvas > Timeline and export is on.
-  isAvailable() { return this.uc.standalone === true && isUniCanvasEnabled("timeline"); }
+  // Standalone only (vnccs_unicanvas_surface.mjs), and only while Settings > VNCCS > UniCanvas > Timeline and export is on.
+  isAvailable() { return isUniCanvasFeatureAvailable(this.uc, "timeline"); }
 
   isOpen() { return this.open && this.isAvailable() && !this.uc.panorama; }
 
@@ -229,25 +230,33 @@ class TimelineController {
     return rect ? { x: rect.x + rect.width / 2, y: rect.y + rect.height } : { x: 0, y: 0 };
   }
 
+  /**
+   * The keyed state of every animated target of the layer's chain at `frame`, outermost group
+   * first and the layer itself last: `[{ item, state, transform: { state, anchor } }]`.
+   */
+  chainTransforms(layer, frame) {
+    const timeline = this.data;
+    if (!timeline) return [];
+    const chain = [...groupChainOf(this.uc.layers, layer)].reverse();
+    chain.push(layer);
+    const out = [];
+    for (const item of chain) {
+      if (!targetHasAnimation(timeline, item.id)) continue;
+      const state = evaluateTarget(timeline, item.id, frame);
+      const needsAnchor = state.sx !== 1 || state.sy !== 1 || state.rotation;
+      out.push({ item, state, transform: state.animated ? { state, anchor: needsAnchor ? this.anchorOf(item) : { x: 0, y: 0 } } : null });
+    }
+    return out;
+  }
+
   /** The evaluated frame of one layer: { matrix, opacity, visible, variant, blur, animated } or null. */
   evaluateLayer(layer, frame) {
     const timeline = this.data;
     if (!timeline || frame === null || frame === undefined || !layer || layer.type === "mask") return null;
-    // Outermost group first, the layer itself last.
-    const chain = [...groupChainOf(this.uc.layers, layer)].reverse();
-    chain.push(layer);
-    let any = false;
-    const items = [];
-    let own = null;
-    for (const item of chain) {
-      if (!targetHasAnimation(timeline, item.id)) continue;
-      const state = evaluateTarget(timeline, item.id, frame);
-      if (item === layer) own = state;
-      if (!state.animated) continue;
-      any = true;
-      const needsAnchor = state.sx !== 1 || state.sy !== 1 || state.rotation;
-      items.push({ state, anchor: needsAnchor ? this.anchorOf(item) : { x: 0, y: 0 } });
-    }
+    const chain = this.chainTransforms(layer, frame);
+    const own = chain.find((entry) => entry.item === layer)?.state || null;
+    const items = chain.filter((entry) => entry.transform).map((entry) => entry.transform);
+    let any = items.length > 0;
     const pose = this.poseFrame(layer, frame);
     if (pose) any = true;
     if (!any) return null;
@@ -269,8 +278,12 @@ class TimelineController {
     };
   }
 
-  /** The render matrix of a layer at the displayed frame (null: rest scene). */
-  layerMatrix(layer, frame = this.viewFrame()) {
+  /**
+   * The render matrix of a layer at the frame being drawn (null: rest scene): the composite frame
+   * while an export or "Generate at frame" composite runs, else the displayed frame. A layer that
+   * sits at rest on the composite frame must not pick up the playhead's transform.
+   */
+  layerMatrix(layer, frame = this.frameFor("composite") ?? this.viewFrame()) {
     if (this.uc._timelineRestPass) return null;
     return this.evaluateLayer(layer, frame)?.matrix || null;
   }
@@ -333,9 +346,18 @@ class TimelineController {
     const entry = this.poseClip(layer);
     if (!entry || entry.baked || !entry.clip.enabled) return null;
     const studioFrame = studioFrameFor(frame, entry.info, entry.clip, this.data.fps);
-    const found = this.poseFrames.nearest(layer.id, poseLayerHash(layer), studioFrame);
+    const found = this.poseFrames.nearest(layer.id, this.poseHashOf(layer), studioFrame);
     if (!found?.canvas) return null;
     return { canvas: found.canvas, frame: found.frame, exact: found.frame === studioFrame };
+  }
+
+  /**
+   * The pose hash frames of a layer are cached under. While the hidden editor renders a layer's
+   * frames it steps that layer's live studio state, so its hash changes transiently; a render in
+   * between must not treat the frames already prepared as stale (that dropped them).
+   */
+  poseHashOf(layer) {
+    return this.capturing?.layerId === layer.id ? this.capturing.hash : poseLayerHash(layer);
   }
 
   /** Studio frames still missing for scene frames start..end, per animated pose layer. */
@@ -375,6 +397,7 @@ class TimelineController {
       try {
         for (const { layer, hash, frames } of work) {
           if (cancelled?.()) break;
+          this.capturing = { layerId: layer.id, hash };
           await editor.captureAnimationFrames(layer, frames, {
             cancelled,
             onFrame: (frame, canvas) => {
@@ -389,6 +412,7 @@ class TimelineController {
         return done;
       } finally {
         this.preparing = null;
+        this.capturing = null;
         this.renderDock();
         uc.requestRender();
       }
@@ -464,9 +488,23 @@ class TimelineController {
     return { ...base, x: base.x + Math.cos(angle) * shake, y: base.y + Math.sin(angle * 1.7) * shake };
   }
 
-  /** Pixel tools keep working on rest pixels; a free transform on a moved frame would not. */
-  blocksPixelTransform(layer) {
-    return Boolean(this.isOpen() && layer && this.evaluateLayer(layer, this.viewFrame()));
+  /**
+   * Free Transform on a frame where the layer is keyed away from rest, with auto-key on: the key
+   * context the draft writes back to on Apply (vnccs_unicanvas_timeline_transform.mjs), else null
+   * (the draft edits the stored pixels through the frame's placement).
+   */
+  transformKeyFrame(layer) {
+    if (!this.isOpen() || !this.autoKey || !layer || layer.locked || layer.type === "mask" || isGroupLayer(layer)) return null;
+    const frame = this.viewFrame();
+    if (!this.evaluateLayer(layer, frame)?.matrix) return null;
+    return layerKeyContext(this, layer, frame);
+  }
+
+  /** Apply of a keyed Free Transform draft: keys at the playhead, one history entry. */
+  commitTransformKeys(layer, draft) {
+    if (!draft?.keyFrame || !layer) return null;
+    this.pause();
+    return commitTransformKeys(this, layer, draft, draft.keyFrame);
   }
 
   /** World point -> the layer's rest pixels (inverse frame transform). */
@@ -510,10 +548,13 @@ class TimelineController {
   }
 
   pause() {
+    const wasPlaying = this.playing;
     this.playing = false;
     if (this.playRaf) cancelAnimationFrame(this.playRaf);
     this.playRaf = 0;
     this.syncHeader();
+    // Playback draws a lighter frame; the paused frame renders at full quality.
+    if (wasPlaying) this.uc.requestRender?.();
   }
 
   togglePlay() {
@@ -798,8 +839,15 @@ class TimelineController {
     this.open = false;
     this.closeMenu();
     if (this.dock) this.dock.hidden = true;
+    this.syncStageInset();
     this.syncButton();
     this.uc.requestRender();
+  }
+
+  /** The open dock's height as the stage's bottom inset: stage popovers stay above it. */
+  syncStageInset() {
+    const open = this.dock && !this.dock.hidden;
+    setStageBottomInset(this.uc.stageWrap, open ? this.dock.offsetHeight : 0);
   }
 
   syncButton() {
@@ -1020,6 +1068,7 @@ class TimelineController {
     if (!this.dock || this.dock.hidden) return;
     const height = this.collapsed ? COLLAPSED_HEIGHT : this.height;
     this.dock.style.height = `${height}px`;
+    this.syncStageInset();
     this.body.hidden = this.collapsed;
     this.syncHeader();
     this.syncInspector();
@@ -1239,8 +1288,11 @@ class TimelineController {
   // Body gestures -----------------------------------------------------------------------------
 
   capture(e, move, up) {
-    // The body survives re-renders (only its children are rebuilt), so it holds the capture.
-    const target = this.body?.contains(e.target) ? this.body : e.target;
+    // The body survives re-renders (only its children are rebuilt), so it holds the capture. A
+    // gesture that re-renders before capturing (selecting the key it drags) has already detached
+    // e.target, so a pointerdown dispatched to the body counts as inside it too.
+    const inBody = Boolean(this.body) && (e.currentTarget === this.body || this.body.contains(e.target));
+    const target = inBody ? this.body : e.target;
     try { target.setPointerCapture?.(e.pointerId); } catch (_) { /* synthetic events */ }
     const onMove = (event) => move(event);
     const onUp = (event) => {
@@ -1399,6 +1451,7 @@ class TimelineController {
     this.capture(e, (event) => {
       this.height = clamp(startHeight + (startY - event.clientY), MIN_DOCK_HEIGHT, MAX_DOCK_HEIGHT);
       this.dock.style.height = `${this.height}px`;
+      this.syncStageInset();
     }, () => this.renderDock());
   }
 
@@ -1434,6 +1487,9 @@ class TimelineController {
   closeMenu() {
     this.menu?.remove();
     this.menu = null;
+    // Removes the menu's document listener, however the menu closed.
+    this.menuAbort?.abort();
+    this.menuAbort = null;
   }
 
   showMenu(e, build) {
@@ -1469,12 +1525,11 @@ class TimelineController {
     menu.style.left = `${Math.max(0, Math.min(host.width - menu.offsetWidth - 4, e.clientX - host.left))}px`;
     menu.style.top = `${Math.max(0, Math.min(host.height - menu.offsetHeight - 4, e.clientY - host.top))}px`;
     this.menu = menu;
-    const dismiss = (event) => {
+    this.menuAbort = new AbortController();
+    document.addEventListener("pointerdown", (event) => {
       if (menu.contains(event.target)) return;
       this.closeMenu();
-      document.removeEventListener("pointerdown", dismiss, true);
-    };
-    document.addEventListener("pointerdown", dismiss, true);
+    }, { capture: true, signal: this.menuAbort.signal });
   }
 
   onBodyContextMenu(e) {
@@ -1614,6 +1669,7 @@ class TimelineController {
     this.exportDialog?.remove();
     this.poseFrames.clear();
     this.dock?.remove();
+    setStageBottomInset(this.uc.stageWrap, 0);
   }
 }
 
@@ -1624,6 +1680,7 @@ export function installUniCanvasTimeline(uc, { createPoseEditor } = {}) {
   controller.createPoseEditor = createPoseEditor || null;
   uc.timelinePanel = controller;
   if (uc.timeline === undefined) uc.timeline = null;
+  uc.registerHistoryKind?.(TIMELINE_HISTORY_KIND, (entry, direction) => uc.timelinePanel?.applyHistory(entry, direction), { isolated: true });
 
   if (uc.settingsBar && typeof uc._button === "function") {
     controller.button = uc._button(TIMELINE_ICON, "vnccs-uc-icon vnccs-uc-timeline-toggle", () => controller.toggle(), "Timeline (standalone)");

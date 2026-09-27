@@ -227,6 +227,24 @@ test("bbox editor geometry follows pan and zoom and clips outside the canvas", (
     layer.locked = true; editor.layout(); assert.equal(editor.sidePanel.inert, true);
 });
 
+test("the pose editor surface follows the layer's scene-state offset (#7)", () => {
+    const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
+    host.view = { x: 0, y: 0, scale: 2 };
+    let matrix = [1, 0, 0, 1, 30, -12];
+    host.getLayerStateOffset = () => ({ x: 30, y: -12 });
+    host.getLayerRenderTransform = () => matrix;
+    editor.layout();
+    const style = editor.studio.canvasContainer.style;
+    assert.equal(parseFloat(style.left), 320 + (10 + 30) * 2);
+    assert.equal(parseFloat(style.top), 40 + (20 - 12) * 2);
+    assert.equal(parseFloat(style.width), 800, "the offset never resizes the surface");
+    // A scaled timeline frame cannot be matched by the 3D surface: the state offset still applies.
+    matrix = [1.5, 0, 0, 1.5, 400, 400];
+    editor.layout();
+    assert.equal(parseFloat(style.left), 320 + (10 + 30) * 2);
+    assert.deepEqual(state.posePlacedRect({ x: 1, y: 2, width: 3, height: 4 }), { x: 1, y: 2, width: 3, height: 4 });
+});
+
 test("pose controls stay inside the resized stage and never replace the generation panel", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     const generationPanel = new Element(), generate = new Element("button");
@@ -298,6 +316,26 @@ test("uploaded character is fitted into image2 and workflow metadata excludes it
     assert.equal(metadata.character.dataURL, undefined);
     assert.equal(full.character.dataURL, layer.pose.character.dataURL);
     full.rect.x += 100; assert.equal(layer.pose.rect.x, 10);
+});
+
+test("the VNCCS character list falls back to empty when fetch is missing or fails, and caches the result", async () => {
+    // No fetch in the context at all: a synchronous ReferenceError must not escape as a rejection.
+    // Arrays come from the vm realm, so compare copies made in this realm.
+    const load = async editor => [...await editor.loadVnccsCharacters()];
+    const missing = harness();
+    assert.deepEqual(await load(missing.editor), []);
+    const failing = harness();
+    failing.context.fetch = async () => { throw new Error("offline"); };
+    assert.deepEqual(await load(failing.editor), []);
+    const { editor, context } = harness();
+    let calls = 0;
+    context.fetch = async url => {
+        calls++; assert.equal(url, "/vnccs/context_lists");
+        return { ok: true, json: async () => ({ characters: ["Ann", "", 7] }) };
+    };
+    assert.deepEqual(await load(editor), ["Ann", "7"]);
+    assert.deepEqual(await load(editor), ["Ann", "7"]);
+    assert.equal(calls, 1, "the list is fetched once per widget");
 });
 
 test("live viewport changes refresh layer pixels before a gesture commits without PNG encoding", () => {

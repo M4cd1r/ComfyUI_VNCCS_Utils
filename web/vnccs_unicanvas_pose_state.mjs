@@ -1,24 +1,48 @@
 /** Serializable pose layer contracts shared by the canvas and editor host. */
+import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs";
 // Articulated mannequin mid-pose: filled head and joints read as a posable figure at tool size.
 export const POSE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle class="fill" cx="12" cy="3.7" r="2.5"/><rect class="fill" x="9.7" y="7" width="4.6" height="7.4" rx="2.3"/><path stroke-width="2.4" d="M10.4 8.4 7 6.4 5.8 2.9M13.6 8.4l3.2 2.9 2.9 1.4M10.8 13.8l-1.6 4-1 3.6M13.2 13.8l1.7 3.9 1.3 3.5"/><circle class="fill" cx="7" cy="6.4" r="1.4"/><circle class="fill" cx="16.8" cy="11.3" r="1.4"/><circle class="fill" cx="9.2" cy="17.8" r="1.4"/><circle class="fill" cx="14.9" cy="17.7" r="1.4"/></svg>';
 // A panorama layer is an image layer that holds the equirectangular source (vnccs_unicanvas_panorama.mjs).
 // Sprite layers (vnccs_unicanvas_sprites.mjs) keep their active variant in `canvas`.
 export const isImageLayer = layer => layer?.type === "raster" || layer?.type === "pose" || layer?.type === "panorama" || layer?.type === "sprite";
-const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
+const clone = cloneJson;
+
+/**
+ * A character reference that carries its image inline: an upload (or a VNCCS character) and a
+ * library character (`source: "library"`, vnccs_unicanvas_library.mjs). Both keep the pixels in
+ * the state cache only and are drawn the same way.
+ */
+export const isImageRef = ref => ref?.source === "upload" || ref?.source === "library";
+const sameImageRef = (a, b) => isImageRef(a) && isImageRef(b) && a.source === b.source
+    && (a.source === "library" ? a.assetId === b.assetId : a.name === b.name);
 
 export function serializePose(pose, includeData = true) {
     if (!pose) return undefined;
     const result = clone(pose);
-    if (!includeData && result.character?.source === "upload") delete result.character.dataURL;
+    if (!includeData && isImageRef(result.character)) delete result.character.dataURL;
     // Per-character references follow the same rule: uploaded pixels live in the state cache only.
     for (const ref of Object.values(result.characterRefs || {})) {
-        if (!includeData && ref?.source === "upload") delete ref.dataURL;
+        if (!includeData && isImageRef(ref)) delete ref.dataURL;
     }
     if (!includeData && result.studio?.background_url?.startsWith("data:")) {
         delete result.studio.background_url;
         result.backgroundCached = true;
     }
     return result;
+}
+
+/**
+ * Where a pose layer's live editor surface sits in world space: `pose.rect` moved like the layer
+ * renders it. A translation-only render transform (scene-state offset, timeline position keys)
+ * moves the surface with it; a scaled or rotated timeline frame cannot be matched by the 3D
+ * surface, so only the scene-state offset applies there.
+ */
+export function posePlacedRect(rect, matrix = null, stateOffset = null) {
+    const translation = Array.isArray(matrix) && matrix.length >= 6 && Math.abs(matrix[0] - 1) < 1e-9
+        && Math.abs(matrix[1]) < 1e-9 && Math.abs(matrix[2]) < 1e-9 && Math.abs(matrix[3] - 1) < 1e-9;
+    const dx = translation ? Number(matrix[4]) || 0 : Number(stateOffset?.x) || 0;
+    const dy = translation ? Number(matrix[5]) || 0 : Number(stateOffset?.y) || 0;
+    return { ...rect, x: rect.x + dx, y: rect.y + dy };
 }
 
 export function poseLayerBelow(layers, layer) {
@@ -79,6 +103,25 @@ export function setPoseCharacterRef(pose, characterId, ref) {
     else delete pose.characterRefs[id];
 }
 
+/**
+ * A library character's default mesh morphs on one mannequin: its `mesh` takes the morph
+ * values (other mesh keys stay); the top-level `mesh` mirror follows when that mannequin is the
+ * studio's active one. Returns true when anything changed.
+ */
+export function applyMannequinMeshMorphs(pose, characterId, morphs) {
+    const characters = pose?.studio?.characters;
+    if (!morphs || !Array.isArray(characters)) return false;
+    const id = String(characterId);
+    const target = characters.find(item => String(item?.id) === id);
+    if (!target) return false;
+    const next = { ...(target.mesh || {}), ...morphs };
+    if (JSON.stringify(next) === JSON.stringify(target.mesh || {})) return false;
+    target.mesh = next;
+    const activeId = String(pose.studio.active_character_id ?? poseStudioCharacters(pose)[0].id);
+    if (activeId === id) pose.studio.mesh = { ...next };
+    return true;
+}
+
 export function setPoseCharacterPrompt(pose, characterId, prompt) {
     if (!pose) return;
     const id = String(characterId), text = String(prompt || "").trim();
@@ -92,6 +135,7 @@ export function setPoseCharacterPrompt(pose, characterId, prompt) {
 
 function referenceIssue(host, layer, character) {
     if (character?.source === "upload") return character.dataURL ? null : "The character image is missing. Upload it again.";
+    if (character?.source === "library") return character.dataURL ? null : "The library character image is missing. Pick it again.";
     if (character?.source === "layer") {
         return host.layers.some(item => item.id === character.layerId && item !== layer && isImageLayer(item))
             ? null : "The character layer no longer exists. Choose another character image.";
@@ -150,14 +194,7 @@ export function reconcilePoseCharacterRefs(pose, previous, next) {
  * apart even where antialiasing blends two neighbours, so each pixel maps back to one character. */
 export const POSE_ID_COLORS = Object.freeze([[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]);
 
-function hashString(text) {
-    let hash = 0x811c9dc5;
-    for (let index = 0; index < text.length; index++) {
-        hash ^= text.charCodeAt(index);
-        hash = Math.imul(hash, 0x01000193);
-    }
-    return (hash >>> 0).toString(16);
-}
+const hashString = fnv1aHex;
 
 /** Changes whenever the mannequins, the camera or the layer rect change. */
 export function poseIdKey(pose) {
@@ -338,6 +375,31 @@ export function posePromptMapping(entries, total = entries.length) {
     }).join(", ").replace(/^t/, "T") + ".";
 }
 
+/**
+ * The prompt line that ties image2 to the mannequins of a layer with 2+ mannequins. With 2+
+ * bound references it is the column mapping (posePromptMapping). With one bound reference
+ * (a legacy layer that only has `pose.character`, or a layer where one mannequin is bound)
+ * image2 shows that single person, so the line says which mannequin it is. Either way the
+ * unbound mannequins are named as not in image2 (with their identity prompt, if any), so the
+ * model does not give them the referenced identity.
+ */
+export function posePromptMappingForLayer(layer) {
+    const characters = poseStudioCharacters(layer?.pose);
+    if (characters.length < 2) return "";
+    const words = POSITION_WORDS[characters.length];
+    if (!words) return "";
+    const order = poseCharacterScreenOrder(layer).map((id, position) => ({
+        id, position, ref: poseCharacterRef(layer, id), prompt: poseCharacterPrompt(layer, id),
+    }));
+    const bound = order.filter(entry => entry.ref), unbound = order.filter(entry => !entry.ref);
+    if (!bound.length) return "";
+    const describe = entry => `the character ${words[entry.position]}${entry.prompt ? ` (${entry.prompt})` : ""}`;
+    const head = bound.length >= 2 ? posePromptMapping(bound, characters.length).replace(/\.$/, "")
+        : `${describe(bound[0])} is the person in image2`.replace(/^t/, "T");
+    const tail = unbound.map(entry => `${describe(entry)} is not in image2`);
+    return `${[head, ...tail].join("; ")}.`;
+}
+
 /** Bound references in left-to-right screen order, when a layer has 2+ mannequins and 2+ references. */
 export function poseMultiReferences(layer) {
     const characters = poseStudioCharacters(layer?.pose);
@@ -386,7 +448,7 @@ export async function composePoseReference(host, layer, size, { rect = host.bbox
                 host.drawRasterLayerToWorldRect(ctx, selected, bounds, fit(bounds.width, bounds.height, box));
                 ctx.restore();
             }
-        } else if (character?.source === "upload") {
+        } else if (isImageRef(character)) {
             if (!character.dataURL) throw new Error("The character image is missing. Load it again.");
             const image = await host.loadImage(character.dataURL);
             const target = fit(image.width, image.height, box);
@@ -417,13 +479,12 @@ export function mergePoseCache(live, cached) {
         result.studio = { ...result.studio, background_url: cached.studio.background_url };
         delete result.backgroundCached;
     }
-    if (result.character?.source === "upload" && !result.character.dataURL
-        && cached?.character?.source === "upload" && cached.character.name === result.character.name) {
+    if (isImageRef(result.character) && !result.character.dataURL && sameImageRef(result.character, cached?.character)) {
         result.character.dataURL = cached.character.dataURL;
     }
     for (const [id, ref] of Object.entries(result.characterRefs || {})) {
         const stored = cached?.characterRefs?.[id];
-        if (ref?.source === "upload" && !ref.dataURL && stored?.source === "upload" && stored.name === ref.name) ref.dataURL = stored.dataURL;
+        if (isImageRef(ref) && !ref.dataURL && sameImageRef(ref, stored)) ref.dataURL = stored.dataURL;
     }
     return result;
 }

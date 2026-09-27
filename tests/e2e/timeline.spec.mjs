@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { importImageLayer, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { noisePng } from "./helpers/png.mjs";
 
 // Plan 06 (#9): the scene timeline. Standalone only; no GPU. One raster "character" drawn with
 // the rect tool is keyed at two frames and scrubbed; bounds come from the read-only E2E hook.
@@ -143,18 +147,139 @@ test("timeline: keys, scrub, hold, auto-key off, seeded blink, undo and reload",
   expect((await timeline(page)).timeline.fps).toBe(saved.fps);
 });
 
+/** Client coordinates of a world point on the stage. */
+async function client(page, point) {
+  const view = await hook(page, "getView");
+  const box = await page.locator(STAGE).first().boundingBox();
+  const size = await page.locator(STAGE).first().evaluate((canvas) => ({ width: canvas.clientWidth, height: canvas.clientHeight }));
+  return {
+    x: box.x + (view.x + point.x * view.scale) * (box.width / size.width),
+    y: box.y + (view.y + point.y * view.scale) * (box.height / size.height),
+  };
+}
+
+/** A keyed hero layer, moved right by 200 world px at frame 20 (the playhead ends there). */
+async function keyedHero(page) {
+  await openUnicanvas(page);
+  const hero = await newLayerAfter(page, () => page.locator(`${shell} [title="Add raster"]`).first().click());
+  // High on the stage: the open dock covers its lower part (1280x720), and the corner and
+  // rotation handles must stay clickable above it.
+  await drawRect(page, 0.30, 0.20, 0.40, 0.50);
+  const rest = await bounds(page, hero.id);
+  await openTimeline(page);
+  const x = page.locator(`${DOCK} [data-tl="field-x"]`);
+  for (const [frame, value] of [[0, "0"], [20, "200"]]) {
+    await setFrame(page, frame);
+    await x.fill(value);
+    await x.dispatchEvent("input");
+    await x.dispatchEvent("change");
+  }
+  return { hero, rest };
+}
+
+test("timeline: Free Transform on an offset frame writes keys, one undo step (#33)", async ({ page }) => {
+  const { hero, rest } = await keyedHero(page);
+  const shown = await bounds(page, hero.id);
+  expect(Math.abs(shown.x - (rest.x + 200))).toBeLessThanOrEqual(1);
+  const pixelsBefore = await hook(page, "getLayerPixelRevision", hero.id);
+
+  // Drag the frame's bottom-right corner outward: the draft opens on the frame the layer shows at.
+  await page.locator(`${shell} .vnccs-uc-tool[data-tool="resize"]`).click();
+  const corner = await client(page, { x: shown.x + shown.width, y: shown.y + shown.height });
+  const target = await client(page, { x: shown.x + shown.width * 2, y: shown.y + shown.height * 2 });
+  await page.mouse.move(corner.x, corner.y);
+  await page.mouse.down();
+  await page.mouse.move(target.x, target.y, { steps: 8 });
+  await page.mouse.up();
+  await page.locator(`${shell} [title="Apply transform"]`).first().click();
+
+  // Keys at frame 20, pixels untouched, and the layer shows scaled at the playhead.
+  const tracks = (await timeline(page)).timeline.tracks;
+  expect(tracks[`${hero.id}:scale`].keys.map((key) => key.frame)).toEqual([20]);
+  expect(await hook(page, "getLayerPixelRevision", hero.id)).toBe(pixelsBefore);
+  const scaled = await bounds(page, hero.id);
+  expect(scaled.width).toBeGreaterThan(shown.width * 1.5);
+  // Frame 0 keeps its own position key (at rest). The new scale track has one key, and a
+  // single key holds on every frame (the timeline's rule, see the first spec), so frame 0
+  // shows the same size: only the keys the transform wrote changed.
+  await setFrame(page, 0);
+  expect((await timeline(page)).timeline.tracks[`${hero.id}:position`].keys[0]).toMatchObject({ frame: 0, value: [0, 0] });
+  expect(Math.abs((await bounds(page, hero.id)).width - scaled.width)).toBeLessThanOrEqual(1);
+
+  // One Ctrl+Z removes the whole transform.
+  await page.locator(DOCK).focus();
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await timeline(page)).timeline.tracks[`${hero.id}:scale`]).toBeUndefined();
+  expect((await timeline(page)).timeline.tracks[`${hero.id}:position`].keys.map((key) => key.frame)).toEqual([0, 20]);
+});
+
+test("timeline: scale and rotation handles key live during the drag, one entry on release (#33)", async ({ page }) => {
+  const { hero } = await keyedHero(page);
+  await page.locator(`${shell} .vnccs-uc-tool[data-tool="move"]`).click();
+  const shown = await bounds(page, hero.id);
+
+  // Scale: a corner handle; the layer grows before the pointer is released (realtime rule). The
+  // scale is uniform around the feet, so the top-right corner (far from them) gives a moderate
+  // factor that keeps the rotation knob on the stage.
+  const corner = await client(page, { x: shown.x + shown.width, y: shown.y });
+  await page.mouse.move(corner.x, corner.y);
+  await page.mouse.down();
+  await page.mouse.move(corner.x + 30, corner.y - 20, { steps: 6 });
+  const during = await bounds(page, hero.id);
+  expect(during.width).toBeGreaterThan(shown.width + 5);
+  expect((await timeline(page)).timeline.tracks[`${hero.id}:scale`].keys.map((key) => key.frame)).toEqual([20]);
+  await page.mouse.up();
+  const scale = (await timeline(page)).timeline.tracks[`${hero.id}:scale`].keys[0].value;
+  expect(scale[0]).toBeGreaterThan(1);
+  expect(scale[0]).toBeCloseTo(scale[1], 6);
+
+  // Rotation: the knob above the top edge (28 screen px), dragged a quarter turn to the right.
+  const framed = await bounds(page, hero.id);
+  const view = await hook(page, "getView");
+  const knob = await client(page, { x: framed.x + framed.width / 2, y: framed.y - 28 / view.scale });
+  await page.mouse.move(knob.x, knob.y);
+  await page.mouse.down();
+  await page.mouse.move(knob.x + 80, knob.y + 120, { steps: 8 });
+  const rotating = (await timeline(page)).timeline.tracks[`${hero.id}:rotation`];
+  expect(rotating.keys.map((key) => key.frame)).toEqual([20]);
+  expect(Math.abs(rotating.keys[0].value)).toBeGreaterThan(5);
+  await page.mouse.up();
+
+  // Each gesture is one history entry: two Ctrl+Z remove rotation, then scale.
+  await page.locator(DOCK).focus();
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await timeline(page)).timeline.tracks[`${hero.id}:rotation`]).toBeUndefined();
+  expect((await timeline(page)).timeline.tracks[`${hero.id}:scale`]).toBeTruthy();
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await timeline(page)).timeline.tracks[`${hero.id}:scale`]).toBeUndefined();
+});
+
 
 // Plan 06.2 (#18): animation export and pose animation. The export routes are stubbed with
 // page.route (nothing is encoded); pose frames are real mannequin renders on the CPU lane.
 
-async function readPixels(page, dataUrls) {
-  return page.evaluate(async (urls) => Promise.all(urls.map(async (url) => {
-    const bitmap = await createImageBitmap(await (await fetch(url)).blob());
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(bitmap, 0, 0);
-    return { width: bitmap.width, height: bitmap.height, data: Array.from(ctx.getImageData(0, 0, bitmap.width, bitmap.height).data) };
-  })), dataUrls);
+/**
+ * Compares two PNG data URLs in the page (1024 px frames are too large to ship as arrays):
+ * both sizes, the number of differing RGBA values and whether `a` has any opaque pixel.
+ */
+async function comparePixels(page, a, b) {
+  return page.evaluate(async ([first, second]) => {
+    const read = async (url) => {
+      const bitmap = await createImageBitmap(await (await fetch(url)).blob());
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmap, 0, 0);
+      return { width: bitmap.width, height: bitmap.height, data: ctx.getImageData(0, 0, bitmap.width, bitmap.height).data };
+    };
+    const [x, y] = await Promise.all([read(first), read(second)]);
+    let diff = Math.abs(x.data.length - y.data.length);
+    let opaque = false;
+    for (let i = 0; i < Math.min(x.data.length, y.data.length); i += 1) {
+      if (x.data[i] !== y.data[i]) diff += 1;
+      if (i % 4 === 3 && x.data[i] > 0) opaque = true;
+    }
+    return { a: { width: x.width, height: x.height }, b: { width: y.width, height: y.height }, diff, opaque };
+  }, [a, b]);
 }
 
 test("timeline export: a PNG sequence streams N ordered frames equal to the scrubbed frames", async ({ page }) => {
@@ -211,14 +336,12 @@ test("timeline export: a PNG sequence streams N ordered frames equal to the scru
   for (const k of [0, 3, 5]) {
     await setFrame(page, k);
     const scrubbed = await hook(page, "renderTimelineFrame", (await timeline(page)).timeline.currentFrame);
-    const [exported, expected] = await readPixels(page, [received[k], scrubbed]);
-    expect(exported.width).toBe(expected.width);
-    expect(exported.height).toBe(expected.height);
-    expect(exported.data).toEqual(expected.data);
+    const compared = await comparePixels(page, received[k], scrubbed);
+    expect(compared.a).toEqual(compared.b);
+    expect(compared.diff, `export frame ${k} equals scrubbed frame ${k}`).toBe(0);
   }
   // Frames differ where the layer moved.
-  const [first, last] = await readPixels(page, [received[0], received[5]]);
-  expect(first.data).not.toEqual(last.data);
+  expect((await comparePixels(page, received[0], received[5])).diff).toBeGreaterThan(0);
   expect(hero.id).toBeTruthy();
 });
 
@@ -270,14 +393,51 @@ test("timeline pose animation: prepared frames play and the last cached frame sh
   // Frame 9 is missing: the last cached frame (3) shows, identical to scene frame 3.
   await setFrame(page, 9);
   expect((await timeline(page)).poseDisplay[pose.id]).toMatchObject({ studioFrame: 9, shownFrame: 3 });
-  const [held, three] = await readPixels(page, [await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 3)]);
-  expect(held.data).toEqual(three.data);
-  expect(held.data.some((value, index) => index % 4 === 3 && value > 0)).toBe(true);
+  const held = await comparePixels(page, await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 3));
+  expect(held.a).toEqual(held.b);
+  expect(held.diff).toBe(0);
+  expect(held.opaque).toBe(true);
 
   // Prepare pose frames fills the rest; frame 9 now shows its own render.
   await control(page, "prepare-pose").click();
   await expect.poll(async () => (await timeline(page)).poseFrames.layers[pose.id]?.length ?? 0, { timeout: 120_000 }).toBe(12);
   expect((await timeline(page)).poseDisplay[pose.id]).toMatchObject({ studioFrame: 9, shownFrame: 9 });
-  const [nine, zero] = await readPixels(page, [await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 0)]);
-  expect(nine.data).not.toEqual(zero.data);
+  expect((await comparePixels(page, await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 0))).diff).toBeGreaterThan(0);
+});
+
+test("timeline playback draws a lighter frame and pausing renders the frame at full quality", async ({ page }) => {
+  // A large noise image, zoomed out below 50 %: playback samples it from a half-size copy, so a
+  // paused stage that kept the playback frame would differ from a full-quality render.
+  const dir = join(tmpdir(), "vnccs-timeline-e2e");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "noise-1600.png");
+  writeFileSync(file, noisePng(1600, 7, 1200));
+  await openUnicanvas(page);
+  await importImageLayer(page, file);
+  const box = await page.locator(STAGE).first().boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  for (let i = 0; i < 6; i += 1) await page.mouse.wheel(0, 240);
+  await page.mouse.move(box.x + 2, box.y + 2);
+  await openTimeline(page);
+  const rotation = control(page, "field-rotation");
+  for (const [frame, value] of [[0, "0"], [71, "20"]]) {
+    await setFrame(page, frame);
+    await rotation.fill(value);
+    await rotation.dispatchEvent("input");
+    await rotation.dispatchEvent("change");
+  }
+  await setFrame(page, 0);
+  const stagePixels = () => page.evaluate(async (selector) => {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return document.querySelector(selector).toDataURL("image/png");
+  }, STAGE);
+
+  await control(page, "play").click();
+  await page.waitForTimeout(2_500); // the playback copies build on idle time within the first second
+  await control(page, "play").click();
+  const paused = await stagePixels();
+  const frame = (await timeline(page)).timeline.currentFrame;
+  expect(frame).toBeGreaterThan(0);
+  await setFrame(page, frame); // a plain full-quality render of the same frame
+  expect(await stagePixels()).toBe(paused);
 });

@@ -11,6 +11,7 @@ from PIL import Image
 
 from .comfy_bridge import find_loaded_module, import_loaded_submodule
 from .helper_models import ensure_helper_model_file
+from .helper_runtime import helper_torch_device
 from .imaging import _decode_data_url, _encode_png_data_url
 from .locks import _COMFY_MODEL_OP_LOCK, _MODEL_CACHE_LOCK
 
@@ -28,18 +29,6 @@ SAM3_FALLBACK_NOTE = (
     "SAM 3 code not found (install comfyui-easy-sam3 or another node that ships the sam3 package); "
     "used SAM2 Large instead."
 )
-
-
-def _torch_device() -> torch.device:
-    try:
-        import comfy.model_management as model_management
-
-        device = model_management.get_torch_device()
-    except Exception:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if getattr(device, "type", None) not in {"cpu", "cuda"}:
-        device = torch.device("cpu")
-    return device
 
 
 def _sam3_code() -> tuple[Any, Any] | None:
@@ -71,7 +60,7 @@ def _load_sam3_model() -> tuple[Any, Any]:
         raise RuntimeError(SAM3_FALLBACK_NOTE)
     build_model, processor_cls = code
     checkpoint = ensure_helper_model_file("sam3")
-    device = _torch_device()
+    device = helper_torch_device()
     model = build_model(
         device=device.type,
         eval_mode=True,
@@ -129,7 +118,7 @@ def _load_sam_model(model_key: str) -> tuple[Any, Any, Any]:
         model = Sam2Model.from_pretrained(model_id)
         processor = Sam2Processor.from_pretrained(model_id)
 
-    device = _torch_device()
+    device = helper_torch_device()
     model.to(device)
     model.eval()
     cached = (model, processor, device)

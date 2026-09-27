@@ -103,6 +103,15 @@ class _Routes:
     def post(self, path):
         return self._add("POST", path)
 
+    def put(self, path):
+        return self._add("PUT", path)
+
+    def patch(self, path):
+        return self._add("PATCH", path)
+
+    def delete(self, path):
+        return self._add("DELETE", path)
+
 
 class _Request:
     def __init__(self, payload):

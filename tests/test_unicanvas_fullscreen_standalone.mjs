@@ -7,6 +7,8 @@ import test from "node:test";
 // Windows checkouts (see tests/test_unicanvas_frontend.mjs for the contrast).
 const modesSource = await readFile(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
 const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+// The text-field and modal checks live with the undo / redo key capture.
+const historyKeysSource = await readFile(new URL("../web/vnccs_unicanvas_history_keys.mjs", import.meta.url), "utf8");
 
 // Handler-region scoping: assertions run against the named region only, so they
 // cannot pass on unrelated code elsewhere in the file.
@@ -38,7 +40,7 @@ test("fullscreen installs window capture-phase keyboard isolation", () => {
         assert.ok(body.includes("modalOwnsKey(event)"), `${handler} must defer Enter/Escape to an open modal`);
     }
 
-    assert.ok(modesSource.includes("input, textarea, select, [contenteditable]"),
+    assert.ok(historyKeysSource.includes("input, textarea, select, [contenteditable]"),
         "text targets are input/textarea/select/[contenteditable] per spec 5");
     for (const type of ["keydown", "keyup", "keypress"]) {
         const removal = new RegExp(`window\\.removeEventListener\\("${type}",\\s*state\\.onKey[^,]*,\\s*true\\)`);
@@ -63,10 +65,10 @@ test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc",
     }
 
     const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
-    assert.ok(/lower === "z"/.test(shortcuts), "history shortcut must be Z");
-    assert.ok(shortcuts.includes("event.ctrlKey || event.metaKey"), "history shortcut must use Ctrl/Cmd");
-    assert.ok(shortcuts.includes("widget.undo()") && shortcuts.includes("widget.redo()"), "undo/redo must be wired");
-    assert.ok(shortcuts.includes("event.shiftKey"), "Ctrl+Shift+Z must redo");
+    // Undo / redo live in the history key capture; inline on the node they stay with ComfyUI.
+    assert.ok(!shortcuts.includes("widget.undo()") && !shortcuts.includes("widget.redo()"),
+        "the inline shortcut map must not take undo / redo from ComfyUI");
+    assert.ok(historyKeysSource.includes("undo") && historyKeysSource.includes("redo"), "undo/redo must be wired in the capture");
     assert.ok(shortcuts.includes('key === "["') && shortcuts.includes('key === "]"'), "brush size keys [ and ]");
     assert.ok(shortcuts.includes('key === "Tab"'), "Tab toggles panel visibility");
     assert.ok(shortcuts.includes('key === "Escape"'), "Esc exits fullscreen");
@@ -81,7 +83,7 @@ test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc",
 test("open widget modals keep their Enter/Escape keyboard contract in fullscreen", () => {
     assert.ok(modesSource.includes('const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape")'),
         "Enter/Escape must be deferred to the modal while one is open");
-    assert.ok(modesSource.includes(".vnccs-uc-modal-overlay"), "the modal overlay must be detected");
+    assert.ok(historyKeysSource.includes(".vnccs-uc-modal-overlay"), "the modal overlay must be detected");
     const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
     assert.ok(shortcuts.includes("isUniCanvasModalOpen(widget)"), "an open modal must keep the keyboard");
     assert.ok(shortcuts.indexOf("isUniCanvasModalOpen(widget)") < shortcuts.indexOf('key === "Escape"'),
@@ -233,5 +235,15 @@ test("Save to output saves the bbox crop and reports the result in a toast", () 
 
 test("the standalone tab has no fullscreen toggle", () => {
     const install = region(modesSource, "function installUniCanvasFullscreenButton", "export function showUniCanvasToast");
-    assert.ok(install.includes("if (widget.standalone) return;"), "standalone must skip the fullscreen button");
+    assert.ok(install.includes("if (isUniCanvasStandalone(widget)) return;"), "standalone must skip the fullscreen button");
+});
+
+test("standalone tab stacks above the graph UI but below ComfyUI dialogs, tooltips and toasts", () => {
+    // The module imports ComfyUI's app, so the value is read from the source.
+    const UNICANVAS_STANDALONE_Z_INDEX = Number(modesSource.match(/export const UNICANVAS_STANDALONE_Z_INDEX = (\d+);/)?.[1]);
+    // ComfyUI frontend layers: canvas toolbars 1200/1300, graph dialogs 1500, getting-started
+    // screen 1600, dialogs 1700 / PrimeVue modals 1800+, toasts 10000.
+    assert.ok(UNICANVAS_STANDALONE_Z_INDEX > 1500, "above the graph canvas chrome");
+    assert.ok(UNICANVAS_STANDALONE_Z_INDEX < 1600, "below ComfyUI screens and dialogs");
+    assert.match(modesSource, /\.vnccs-uc2-standalone-shell \{[^}]*z-index: \$\{UNICANVAS_STANDALONE_Z_INDEX\}/);
 });

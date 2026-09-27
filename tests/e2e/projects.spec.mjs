@@ -2,9 +2,9 @@ import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { crc32, deflateSync } from "node:zlib";
 import { test, expect } from "@playwright/test";
 import { importImageLayer, openUnicanvas, setLayerNaming } from "./helpers/app.mjs";
+import { noisePng } from "./helpers/png.mjs";
 
 // Plan 10.3 (#22): the standalone tab saves into a project (incremental blob uploads, scene tabs),
 // and the document survives reloads, scene switches and large states. No GPU: the draw route is
@@ -19,7 +19,8 @@ const layers = (page) => hook(page, "listLayers");
 
 async function snapshot(page) {
   const out = {};
-  for (const layer of await layers(page)) out[layer.id] = (await hook(page, "getLayerPixels", layer.id)).dataURL;
+  // A layer still loading after a reload has no canvas yet: null, so a poll keeps waiting.
+  for (const layer of await layers(page)) out[layer.id] = (await hook(page, "getLayerPixels", layer.id))?.dataURL ?? null;
   return out;
 }
 
@@ -52,36 +53,6 @@ async function createProject(page, name) {
   await input.press("Enter");
   await expect(page.locator(`${SHELL} .vnccs-uc-project-name span`)).toHaveText(name, { timeout: 30_000 });
   return project(page);
-}
-
-// A PNG of random RGBA noise (incompressible): `size`^2 * 4 bytes of payload.
-function noisePng(size, seed) {
-  const raw = Buffer.alloc((size * 4 + 1) * size);
-  let state = seed >>> 0;
-  for (let i = 0; i < raw.length; i += 1) {
-    if (i % (size * 4 + 1) === 0) { raw[i] = 0; continue; }
-    state = (state * 1664525 + 1013904223) >>> 0;
-    raw[i] = (i % 4 === 0) ? 255 : state >>> 24; // opaque alpha keeps the pixels exact through canvas
-  }
-  const chunk = (type, data) => {
-    const length = Buffer.alloc(4);
-    length.writeUInt32BE(data.length);
-    const body = Buffer.concat([Buffer.from(type), data]);
-    const crc = Buffer.alloc(4);
-    crc.writeUInt32BE(crc32(body));
-    return Buffer.concat([length, body, crc]);
-  };
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(size, 0);
-  header.writeUInt32BE(size, 4);
-  header[8] = 8;
-  header[9] = 6;
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", header),
-    chunk("IDAT", deflateSync(raw, { level: 1 })),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
 }
 
 test("projects: create, save a painted and generated scene, restore it after a reload", async ({ page, request }) => {
@@ -236,5 +207,26 @@ test("projects: an existing standalone document is migrated into a project", asy
   await openUnicanvas(page, { navigate: false });
   await expect.poll(async () => (await project(page))?.projectId, { timeout: 30_000 }).toBe(info.projectId);
   await expect.poll(() => snapshot(page), { timeout: 30_000 }).toEqual(expected);
+  await page.request.delete(`/vnccs/unicanvas/projects/${info.projectId}`);
+});
+
+test("projects: the project browser stays inside the widget and scrolls with many projects", async ({ page }) => {
+  // 150 listed projects (stubbed list): the grid scrolls inside a modal that fits the widget.
+  const many = Array.from({ length: 150 }, (_, i) => ({ id: `prj_many_${i}`, name: `Many ${i}`, updatedAt: 1_700_000_000 + i, sceneCount: 1 }));
+  await page.route("**/vnccs/unicanvas/projects", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ json: { projects: many } })
+    : route.fallback()));
+  await openUnicanvas(page);
+  await createProject(page, `E2E browser ${Date.now()}`);
+  const info = await project(page);
+  await page.locator(`${SHELL} .vnccs-uc-project-name`).click();
+  const browser = page.locator(`${SHELL} .vnccs-uc-project-browser`);
+  await expect(browser.locator(".vnccs-uc-project-card")).toHaveCount(150);
+  const [modal, widget] = [await browser.boundingBox(), await page.locator(`${SHELL} .vnccs-unicanvas`).boundingBox()];
+  expect(modal.y).toBeGreaterThanOrEqual(widget.y);
+  expect(modal.y + modal.height).toBeLessThanOrEqual(widget.y + widget.height);
+  const grid = await browser.locator(".vnccs-uc-project-grid").evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight }));
+  expect(grid.scroll).toBeGreaterThan(grid.client);
+  await page.keyboard.press("Escape");
   await page.request.delete(`/vnccs/unicanvas/projects/${info.projectId}`);
 });

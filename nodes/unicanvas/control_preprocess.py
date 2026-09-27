@@ -23,8 +23,6 @@ Pose control images are drawn in the browser from the pose layers (no model), so
 
 from __future__ import annotations
 
-import base64
-import io
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -33,6 +31,7 @@ import numpy as np
 from PIL import Image
 
 from .helper_models import ensure_helper_model_file
+from .helper_runtime import gray_png, helper_torch_device, normalize_unit
 from .locks import _COMFY_MODEL_OP_LOCK
 
 
@@ -88,33 +87,13 @@ def _float_param(params: dict[str, Any], name: str, default: float, low: float, 
     return min(high, max(low, value))
 
 
-def gray_png(values: np.ndarray, encoding: str = "gray8") -> str:
-    """A 0..1 float array as a grayscale PNG data URL (8 or 16 bit)."""
-    clipped = np.clip(np.nan_to_num(np.asarray(values, dtype=np.float64)), 0.0, 1.0)
-    if encoding == "gray16":
-        image = Image.fromarray(np.round(clipped * 65535.0).astype(np.uint16))
-    else:
-        image = Image.fromarray(np.round(clipped * 255.0).astype(np.uint8), mode="L")
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
-def _normalize(values: np.ndarray) -> np.ndarray:
-    array = np.nan_to_num(np.asarray(values, dtype=np.float64))
-    low, high = (float(array.min()), float(array.max())) if array.size else (0.0, 0.0)
-    return (array - low) / (high - low) if high > low else np.zeros_like(array)
-
-
 # --- depth -----------------------------------------------------------------------------------
 
 
 def _depth_preprocess(image: Image.Image, _params: dict[str, Any]) -> tuple[np.ndarray, str, str]:
     from . import depth
 
-    with _COMFY_MODEL_OP_LOCK:
-        values = depth._predict_depth(image)
-    return _normalize(values), "gray16", depth.DEPTH_MODEL_KEY
+    return normalize_unit(depth.predict_depth(image)), "gray16", depth.DEPTH_MODEL_KEY
 
 
 # --- canny -----------------------------------------------------------------------------------
@@ -181,20 +160,6 @@ def _lineart_generator():
     return Generator()
 
 
-def _torch_device():
-    import torch
-
-    try:
-        import comfy.model_management as model_management
-
-        device = model_management.get_torch_device()
-    except Exception:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if getattr(device, "type", None) not in {"cpu", "cuda"}:
-        device = torch.device("cpu")
-    return device
-
-
 def _load_lineart_model():
     with _MODEL_LOCK:
         cached = _MODEL.get(LINEART_MODEL_KEY)
@@ -205,7 +170,7 @@ def _load_lineart_model():
         path = ensure_helper_model_file(LINEART_MODEL_KEY)
         model = _lineart_generator()
         model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
-        device = _torch_device()
+        device = helper_torch_device()
         _MODEL[LINEART_MODEL_KEY] = (model.to(device).eval(), device)
         return _MODEL[LINEART_MODEL_KEY]
 

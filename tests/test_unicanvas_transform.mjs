@@ -28,7 +28,9 @@ import {
   transformDraftBounds,
   translateQuad,
 } from "../web/vnccs_unicanvas_transform.mjs";
-import { pickRenderLodScale } from "../web/vnccs_unicanvas_render_lod.mjs";
+import {
+  pickRenderLodScale, clearRenderLodCaches, RENDER_LOD_CACHE_KEYS, RENDER_LOD_OVERSAMPLE, PLAYBACK_LOD_OVERSAMPLE, PLAYBACK_LOD_CACHE_KEY,
+} from "../web/vnccs_unicanvas_render_lod.mjs";
 
 const near = (actual, expected, eps = 1e-6) => assert.ok(Math.abs(actual - expected) <= eps, `${actual} != ${expected}`);
 const nearPoint = (p, q, eps = 1e-6) => { near(p.x, q.x, eps); near(p.y, q.y, eps); };
@@ -149,4 +151,22 @@ test("inactive layers never render from a LOD copy smaller than the screen needs
   assert.equal(pickRenderLodScale(0.4), 0.5, "never below the target");
   assert.equal(pickRenderLodScale(0.2), 0.25);
   assert.equal(pickRenderLodScale(0.01), 0.0625);
+});
+
+test("timeline playback draws from a screen-density LOD; still frames keep the oversampled one", () => {
+  // A 1080p document fitted into a ~990 px stage (view scale 0.44, dpr 1).
+  assert.equal(pickRenderLodScale(0.44 * RENDER_LOD_OVERSAMPLE), 1, "still frame: full resolution");
+  assert.equal(pickRenderLodScale(0.44 * PLAYBACK_LOD_OVERSAMPLE), 0.5, "playback: half resolution, still >= the screen");
+  assert.ok(PLAYBACK_LOD_OVERSAMPLE >= 1, "playback never samples below the screen density");
+  assert.notEqual(PLAYBACK_LOD_CACHE_KEY, "_renderLodCache", "playback keeps its own cache so pausing does not rebuild");
+});
+
+test("a pixel change clears every LOD cache, the playback one included", async () => {
+  const layer = Object.fromEntries(RENDER_LOD_CACHE_KEYS.map((key) => [key, { canvas: {} }]));
+  assert.ok(RENDER_LOD_CACHE_KEYS.includes(PLAYBACK_LOD_CACHE_KEY));
+  clearRenderLodCaches(layer);
+  for (const key of RENDER_LOD_CACHE_KEYS) assert.equal(layer[key], null, key);
+  clearRenderLodCaches(null);
+  const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /_renderLodCache = null/, "invalidation goes through clearRenderLodCaches");
 });

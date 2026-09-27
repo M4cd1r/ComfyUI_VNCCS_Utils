@@ -60,12 +60,35 @@ export const camera = (page) => page.evaluate(() => {
   return s ? { yaw: s.yaw, pitch: s.pitch, roll: s.roll, fov: s.fov } : null;
 });
 
-/** Rotate through the orbit control's keyboard bindings (5 degrees per press). */
-export async function rotate(page, key, presses) {
+export const viewPanel = (page) => root(page).locator("[data-panorama-panel]");
+
+/** Open the panorama view mode through the panorama layer's globe button (#33). */
+export async function openPanoramaView(page) {
+  if (await viewPanel(page).isVisible()) return;
+  const id = await page.evaluate(() => ucWidget().panorama.settings.baseLayerId);
+  await root(page).locator(`[data-layer-id="${id}"] button[title="Edit panorama view"]`).click();
+  await expect(viewPanel(page)).toBeVisible();
+}
+
+/** Leave the view mode with its Save, Cancel or Reset button. */
+export async function panoramaViewAction(page, action) {
+  await viewPanel(page).locator(`button[data-panorama-action="${action}"]`).click();
+}
+
+/**
+ * Rotate through the orbit control's keyboard bindings (5 degrees per press) inside the view
+ * mode, then Save (one history entry) unless `save` is false.
+ */
+export async function rotate(page, key, presses, { save = true } = {}) {
+  await openPanoramaView(page);
   const orbit = root(page).locator(".vnccs-uc-panorama-orbit");
   await orbit.focus();
   for (let i = 0; i < presses; i += 1) await page.keyboard.press(key);
   await page.waitForTimeout(50);
+  if (save) {
+    await panoramaViewAction(page, "save");
+    await expect(viewPanel(page)).toBeHidden();
+  }
 }
 
 export async function selectTool(page, tool) {

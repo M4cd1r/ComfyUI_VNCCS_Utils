@@ -634,21 +634,36 @@
     "point_a": "palm_l",
     "b": 1,
     "point_b": "palm_r",
-    "tolerance": 0.6
+    "tolerance": 0.6,
+    "offset": [
+     0.565,
+     0.139,
+     0
+    ]
    },
    {
     "a": 0,
     "point_a": "palm_r",
     "b": 1,
     "point_b": "spine",
-    "tolerance": 1.6
+    "tolerance": 1.6,
+    "offset": [
+     -0.631,
+     -1.051,
+     -0.854
+    ]
    },
    {
     "a": 1,
     "point_a": "palm_l",
     "b": 0,
     "point_b": "shoulder_r",
-    "tolerance": 1
+    "tolerance": 1,
+    "offset": [
+     -0.324,
+     -0.866,
+     -0.11
+    ]
    }
   ]
  },

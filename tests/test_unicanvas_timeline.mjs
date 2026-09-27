@@ -274,6 +274,21 @@ test("the timeline controller is standalone only and leaves the rest scene alone
   assert.deepEqual(uc.makeExportCanvas()[0], [1, 0, 0, 1, 40, 0]);
 });
 
+test("a layer at rest on the composite frame does not take the playhead's transform", () => {
+  const { uc } = fakeWidget();
+  const panel = uc.timelinePanel;
+  panel.open = true;
+  const timeline = panel.ensureData();
+  setKey(timeline, "L", "position", 0, [0, 0]);
+  setKey(timeline, "L", "position", 5, [120, 0]);
+  timeline.currentFrame = 5;
+  assert.deepEqual(panel.layerMatrix(uc.layers[0]), [1, 0, 0, 1, 120, 0]);
+  // Exporting frame 0 (rest): the export frame wins over the playhead at frame 5.
+  uc._timelineCompositeFrame = 0;
+  assert.equal(panel.layerMatrix(uc.layers[0]), null);
+  uc._timelineCompositeFrame = null;
+});
+
 test("frame visibility and opacity apply for one render only, groups move their children", () => {
   const { uc, layer } = fakeWidget();
   const panel = uc.timelinePanel;
@@ -346,13 +361,21 @@ test("the widget routes render, bounds, paint, history and persistence through t
     /installUniCanvasTimeline\(this, \{ createPoseEditor: /,
     /getLayerRenderTransform\(layer\) \{/,
     /const start = this\.alignCoordForTool\(this\.layerPointFromWorld\(layer, a\), this\.brushSize\);/,
-    /entry\.kind === TIMELINE_HISTORY_KIND/,
+    /if \(handler\?\.isolated\)/,
     /this\.timelinePanel\?\.restore\(state\.timeline\)/,
     /this\.timelinePanel\?\.beginMove\(\)/,
     /this\.timelinePanel\?\.commitMove\(this\.dragStart\)/,
     /this\.timelinePanel\?\.keyOpacity\(layer, target\.value, e\.type === "change"\)/,
-    /this\.timelinePanel\?\.blocksPixelTransform\(layer\)/,
+    /keyFrame: this\.timelinePanel\?\.transformKeyFrame\(layer\) \|\| null/,
+    /this\.timelinePanel\?\.commitTransformKeys\(layer, draft\)/,
+    /this\.timelinePanel\?\.keyHandles\.begin\(point, e\)/,
+    /this\.timelinePanel\?\.keyHandles\.update\(point, e\)/,
+    /this\.timelinePanel\?\.keyHandles\.end\(\)/,
+    /this\.timelinePanel\?\.keyHandles\.draw\(ctx\)/,
   ]) assert.match(widget, pattern);
+  assert.doesNotMatch(widget, /blocksPixelTransform/, "Free Transform is no longer locked on keyed frames");
+  const timeline = readFileSync(new URL("../web/vnccs_unicanvas_timeline.mjs", import.meta.url), "utf8");
+  assert.match(timeline, /uc\.registerHistoryKind\?\.\(TIMELINE_HISTORY_KIND, \(entry, direction\) => uc\.timelinePanel\?\.applyHistory\(entry, direction\), \{ isolated: true \}\)/);
   const modes = readFileSync(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
   assert.match(modes, /key === " " && widget\.timelinePanel\?\.togglePlay\(\)/);
   assert.match(modes, /getTimeline:/);

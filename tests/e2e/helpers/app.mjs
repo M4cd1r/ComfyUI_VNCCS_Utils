@@ -38,6 +38,17 @@ export async function openUnicanvas(page, { navigate = true } = {}) {
   await expect(page.locator(".vnccs-uc2-standalone-shell .vnccs-uc-left")).toBeVisible({ timeout: 30_000 });
 }
 
+/**
+ * An "outside" click that closes UniCanvas popovers: the empty middle of the stage's top bar.
+ * Not a page corner - ComfyUI's workflow tab sits there beside the standalone tab, and its
+ * hover preview (a ComfyUI popover, above the tab) would then cover the widget.
+ */
+export async function clickOutsidePopovers(page) {
+  const bar = page.locator(".vnccs-uc2-standalone-shell .vnccs-uc-bottom").first();
+  const box = await bar.boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + Math.min(6, box.height / 2));
+}
+
 /** Import an image file as a raster layer through the Layers "Import Image" button. */
 export async function importImageLayer(page, filePath) {
   const [chooser] = await Promise.all([
@@ -74,7 +85,7 @@ export async function poseLayer(page) {
  */
 export async function setLayerNaming(page, { level, autoFile } = {}) {
   const shell = ".vnccs-uc2-standalone-shell";
-  await page.locator(`${shell} [title="UniCanvas settings"]`).first().click();
+  await page.locator(`${shell} .vnccs-uc-gear`).first().click();
   const panel = page.locator(".vnccs-uc-settings-popover");
   await expect(panel).toHaveCount(1);
   const section = panel.locator("details.vnccs-uc-settings-section", { has: page.locator("summary", { hasText: "Layer names" }) });
@@ -83,4 +94,16 @@ export async function setLayerNaming(page, { level, autoFile } = {}) {
   if (autoFile !== undefined) await section.getByLabel("Auto-file new layers into folders").setChecked(autoFile, { force: true });
   await panel.locator('button:has-text("Close")').click();
   await expect(panel).toHaveCount(0);
+}
+
+/**
+ * Add a mannequin in the embedded Pose Studio: the slot buttons sit in the "Characters" section
+ * of the pose side "Scene" tab, which starts collapsed. `slot` is 1-based ("Add Character 2").
+ */
+export async function addPoseCharacter(page, slot) {
+  const side = page.locator(".vnccs-uc-pose-side");
+  await side.getByRole("tab", { name: "Scene" }).click();
+  const section = side.locator(".vnccs-ps-characters-section");
+  if (await section.evaluate((el) => el.classList.contains("collapsed"))) await section.locator(".vnccs-ps-section-header").click();
+  await side.locator(`[aria-label="Add Character ${slot}"]`).click();
 }

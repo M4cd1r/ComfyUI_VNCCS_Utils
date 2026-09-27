@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openUnicanvas } from "./helpers/app.mjs";
+import { importImageLayer, openUnicanvas, setLayerNaming } from "./helpers/app.mjs";
 
 // Plan 10.4 (#23): the asset library. Save layers as character / prop / background assets from the
 // layer menu, insert them into another scene (click and drag onto the canvas) and see a global
@@ -60,6 +60,7 @@ async function clientPoint(page, world) {
 
 test("library: save a character, insert it into another scene with equal pixels, drag-insert at the drop point", async ({ page, request }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // the spec counts inserted layers
   const created = await createProject(page, `E2E library ${Date.now()}`);
   await importImageLayer(page, CHARACTER);
   const source = await topRaster(page);
@@ -124,6 +125,8 @@ test("library: backgrounds and props round-trip, and a global asset shows up in 
   // A second project sees the global prop, and inserting it gives the same pixels.
   const second = await createProject(page, `E2E library B ${Date.now()}`);
   await openLibrary(page, "global");
+  // The kind filter is panel state and survives the project switch: show every kind again.
+  await page.locator(`${SHELL} .vnccs-uc-library [data-kind=""]`).click();
   const card = page.locator(`${SHELL} .vnccs-uc-library-card[data-asset-id="${propMeta.assetId}"]`);
   await expect(card).toBeVisible({ timeout: 15_000 });
   await card.click();

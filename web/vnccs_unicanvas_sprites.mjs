@@ -2,23 +2,29 @@
  * VNCCS UniCanvas sprite sets (Plan 03, issue #6).
  *
  * A sprite layer (`type: "sprite"`) holds a named set of pixel-aligned variants of one character
- * (expressions, outfits, poses) and shows one of them at a time. Every variant is stored at the
- * size of one shared world rect with one shared anchor, so switching never makes the character
- * jump.
+ * (expressions, outfits, poses) and shows one of them at a time. Every variant covers one shared
+ * world rect with one shared anchor, so switching never makes the character jump.
  *
  *  - State: `layer.sprite = { schemaVersion, characterId, characterName, anchor, rect,
- *    activeVariantId, variants[], faceRect, sourceLayerId?, paintAll }`. `rect` is in world
- *    pixels, `anchor` and `faceRect` in rect space. A variant is `{ id, name, kind, prompt, seed,
- *    status, pixels (runtime canvas, rect size), createdAt, meta }`; ready variants serialize as
- *    `dataURL` crops.
+ *    activeVariantId, baseVariantId, variants[], faceRect, sourceLayerId?, paintAll }`. `rect` is
+ *    in world pixels, `anchor` and `faceRect` in rect space (world units). A variant is `{ id,
+ *    name, kind, prompt, seed, status, pixels (runtime canvas), createdAt, meta }`; ready
+ *    variants serialize as `dataURL` crops. `baseVariantId` names the source pixels ("neutral").
+ *  - Resolution: variant pixels are stored at their source resolution (a bake's inference
+ *    resolution), capped at SPRITE_MAX_SIDE on the long side and never below the canvas, and are
+ *    scaled to `rect` when drawn. Sets saved at canvas resolution load as they are.
  *  - `layer.canvas` is always the active variant drawn at `rect`, so every existing reader
  *    (render, flatten, export, generation composite, thumbnails) works unchanged. Paint lands in
- *    the canvas and is copied into the active variant whenever a pixel snapshot is taken
- *    (`syncFromCanvas`), so every tool that records a `layerPixels` entry edits the variant.
+ *    the canvas and is merged into the active variant whenever a pixel snapshot is taken
+ *    (`syncFromCanvas`): only the pixels that changed are replaced, so an edit never blurs the
+ *    rest of a high-resolution variant.
  *  - Variant canvases are never drawn into once stored: an edit replaces the canvas (copy on
  *    write), so history snapshots share them by reference.
  *  - A move only changes `rect`; a transform maps `rect`, `anchor`, `faceRect` and the other
  *    variants through the same frame.
+ *  - Panorama documents: the rect is measured from the sprite's anchor camera and the layer's
+ *    pixels live on the sphere; every canvas access goes through the sprite surface
+ *    (vnccs_unicanvas_sprites_panorama.mjs).
  *  - Generation reuses the draw route with an inpaint mask: expressions repaint `faceRect` over the
  *    neutral variant and keep its alpha, outfits repaint the body and take their alpha from the
  *    background remover, re-anchored on the feet.
@@ -28,19 +34,23 @@
  */
 
 import { alphaBounds, dilateAlpha } from "./vnccs_unicanvas_bake.mjs";
-import { poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
-import { resolveRemoveBgSelection, removeBgEditSettings } from "./vnccs_unicanvas_remove_bg.mjs";
+import { isImageRef, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
+import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { applyHomography, homographyFromUnitSquare, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
+import { applyHomography, draftPlacement, draftRestBounds, homographyFromUnitSquare, invertAffine, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
+import { createSpriteSurface, normalizeSpriteCamera } from "./vnccs_unicanvas_sprites_panorama.mjs";
+import { cloneJson, uniqueId } from "./vnccs_unicanvas_util.mjs";
+import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
 
 export const SPRITE_LAYER_TYPE = "sprite";
 export const SPRITE_SCHEMA_VERSION = 1;
 export const SPRITE_VARIANT_HISTORY_KIND = "spriteVariant";
 export const SPRITE_VARIANT_KINDS = Object.freeze(["expression", "outfit", "pose", "custom"]);
 export const SPRITE_VARIANT_STATUSES = Object.freeze(["empty", "ready", "failed"]);
-export const SPRITE_DRAW_ROUTE = "/vnccs/unicanvas/draw";
+export const SPRITE_DRAW_ROUTE = UNICANVAS_DRAW_ROUTE;
 export const SPRITE_REMOVE_BG_ROUTE = "/vnccs/unicanvas/remove_bg";
 // faceRect margin around a baked headRect, rect margin around the source alpha, and how much
 // context around faceRect an expression request sees.
@@ -48,6 +58,9 @@ export const SPRITE_FACE_MARGIN = 0.15;
 export const SPRITE_RECT_MARGIN = 0.04;
 export const SPRITE_FACE_CONTEXT = 0.5;
 export const NEUTRAL_VARIANT = "neutral";
+// Variants are stored at their source resolution up to this long side, and scaled to the
+// shared rect when drawn.
+export const SPRITE_MAX_SIDE = 2048;
 
 export const SPRITE_EXPRESSION_PRESETS = Object.freeze([
   ["neutral", "a neutral, calm"],
@@ -67,9 +80,8 @@ export const SPRITE_EXPRESSION_PRESETS = Object.freeze([
   ["sleepy", "a sleepy, drowsy"],
 ].map(([name, phrase]) => Object.freeze({ name, phrase })));
 
-const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
-let idCounter = 0;
-export const newVariantId = () => `var_${Date.now().toString(36)}_${(idCounter++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const clone = cloneJson;
+export const newVariantId = () => uniqueId("var");
 
 /* ----------------------------------------------------------------------------------------------
  * Prompts
@@ -134,15 +146,22 @@ export function normalizeSpriteState(raw) {
   const anchor = raw?.anchor && finite(raw.anchor.x) && finite(raw.anchor.y)
     ? { x: Number(raw.anchor.x), y: Number(raw.anchor.y) } : { x: rect.width / 2, y: rect.height };
   const active = variants.find((item) => item.id === raw?.activeVariantId) ? String(raw.activeVariantId) : variants[0].id;
+  // The base variant (the source pixels every other variant is generated from). Sets saved
+  // before the field existed use their first variant named "neutral".
+  const base = variants.find((item) => item.id === raw?.baseVariantId)
+    || variants.find((item) => item.name === NEUTRAL_VARIANT) || variants[0];
   const sprite = {
     schemaVersion: SPRITE_SCHEMA_VERSION,
     characterId: typeof raw?.characterId === "string" && raw.characterId ? raw.characterId : null,
     characterName: String(raw?.characterName || "Character").slice(0, 120),
-    anchor, rect, activeVariantId: active, variants,
+    anchor, rect, activeVariantId: active, baseVariantId: base.id, variants,
     faceRect: intRect(raw?.faceRect) ? clampBox(intRect(raw.faceRect), rect.width, rect.height) : null,
     paintAll: raw?.paintAll === true,
   };
   if (typeof raw?.sourceLayerId === "string" && raw.sourceLayerId) sprite.sourceLayerId = raw.sourceLayerId;
+  // Panorama documents: the camera the rect is measured from (vnccs_unicanvas_sprites_panorama.mjs).
+  const camera = normalizeSpriteCamera(raw?.panoramaCamera);
+  if (camera) sprite.panoramaCamera = camera;
   return sprite;
 }
 
@@ -153,6 +172,7 @@ export function snapshotSprite(sprite) {
     ...sprite,
     rect: { ...sprite.rect }, anchor: { ...sprite.anchor },
     faceRect: sprite.faceRect ? { ...sprite.faceRect } : null,
+    ...(sprite.panoramaCamera ? { panoramaCamera: { ...sprite.panoramaCamera } } : {}),
     variants: sprite.variants.map((variant) => ({ ...variant, meta: variant.meta ? clone(variant.meta) : undefined })),
   };
 }
@@ -163,6 +183,7 @@ export function serializeSpriteState(sprite, dataURLOf = null) {
   const out = {
     schemaVersion: SPRITE_SCHEMA_VERSION, characterId: sprite.characterId, characterName: sprite.characterName,
     anchor: { ...sprite.anchor }, rect: { ...sprite.rect }, activeVariantId: sprite.activeVariantId,
+    ...(sprite.baseVariantId ? { baseVariantId: sprite.baseVariantId } : {}),
     faceRect: sprite.faceRect ? { ...sprite.faceRect } : null, paintAll: sprite.paintAll === true,
     variants: sprite.variants.map((variant) => {
       const item = { id: variant.id, name: variant.name, kind: variant.kind, prompt: variant.prompt, seed: variant.seed, status: variant.status, createdAt: variant.createdAt };
@@ -173,13 +194,21 @@ export function serializeSpriteState(sprite, dataURLOf = null) {
     }),
   };
   if (sprite.sourceLayerId) out.sourceLayerId = sprite.sourceLayerId;
+  if (sprite.panoramaCamera) out.panoramaCamera = { ...sprite.panoramaCamera };
   return out;
 }
 
 export const readyVariants = (sprite) => (sprite?.variants || []).filter((variant) => variant.status === "ready" && variant.pixels);
 export const missingVariants = (sprite) => (sprite?.variants || []).filter((variant) => variant.status !== "ready");
-export const neutralVariant = (sprite) => (sprite?.variants || []).find((variant) => variant.name === NEUTRAL_VARIANT && variant.status === "ready" && variant.pixels)
-  || readyVariants(sprite)[0] || null;
+const isReady = (variant) => Boolean(variant && variant.status === "ready" && variant.pixels);
+/** The base variant every other one is generated from: the set's base, else a ready "neutral". */
+export const neutralVariant = (sprite) => {
+  const variants = sprite?.variants || [];
+  const base = variants.find((variant) => variant.id === sprite?.baseVariantId);
+  return (isReady(base) ? base : null)
+    || variants.find((variant) => variant.name === NEUTRAL_VARIANT && isReady(variant))
+    || readyVariants(sprite)[0] || null;
+};
 
 /** The ready variant `direction` steps from the active one, wrapping; null when there is none. */
 export function cycleVariantId(sprite, direction = 1) {
@@ -190,9 +219,14 @@ export function cycleVariantId(sprite, direction = 1) {
   return list[((index < 0 ? 0 : index + step) % list.length + list.length) % list.length].id;
 }
 
-/** Preset expressions as empty variants; names already in the set are skipped. */
+/**
+ * All preset expressions as empty variants (issue #6: 15 of them, "neutral" included: a
+ * regenerated calm face next to the base pixels). Names already used by a variant other than
+ * the base are skipped, so adding twice adds nothing.
+ */
 export function presetExpressionVariants(sprite) {
-  const names = new Set((sprite?.variants || []).map((variant) => variant.name));
+  const isBase = (variant) => Boolean(sprite?.baseVariantId) && variant.id === sprite.baseVariantId;
+  const names = new Set((sprite?.variants || []).filter((variant) => !isBase(variant)).map((variant) => variant.name));
   return SPRITE_EXPRESSION_PRESETS.filter((preset) => !names.has(preset.name)).map((preset) => createSpriteVariant({
     name: preset.name, kind: "expression", prompt: expressionInstruction(preset.phrase), meta: { phrase: preset.phrase },
   }));
@@ -346,25 +380,79 @@ export function outfitMaskAlpha(neutralAlpha, width, height, faceMask, grow) {
 }
 
 /**
- * The world-space map of a transform draft, for points of the layer's stored pixels. Frames
- * without a mesh map exactly; a warp mesh maps through its bounds.
+ * The stored-space map of a transform draft: a point of the layer's stored pixels goes through
+ * the frame (shown space) and back through the inverse placement (scene-state move and depth
+ * scale), so it lands in the stored pixels Apply writes. Frames without a mesh map exactly; a
+ * warp mesh maps through its bounds.
  */
 export function transformPointMap(draft) {
-  const offset = draft?.stateOffset || { x: 0, y: 0 };
-  const sb = { ...draft.sourceBounds, x: draft.sourceBounds.x - offset.x, y: draft.sourceBounds.y - offset.y };
+  const sb = draftRestBounds(draft);
+  const inverse = invertAffine(draftPlacement(draft)) || [1, 0, 0, 1, 0, 0];
+  const unplace = (p) => ({ x: inverse[0] * p.x + inverse[2] * p.y + inverse[4], y: inverse[1] * p.x + inverse[3] * p.y + inverse[5] });
   const matrix = !draft.mesh && homographyFromUnitSquare(draft.quad);
   if (matrix) {
-    return (point) => {
-      const mapped = applyHomography(matrix, (point.x - sb.x) / Math.max(1e-6, sb.width), (point.y - sb.y) / Math.max(1e-6, sb.height));
-      return { x: mapped.x - offset.x, y: mapped.y - offset.y };
-    };
+    return (point) => unplace(applyHomography(matrix, (point.x - sb.x) / Math.max(1e-6, sb.width), (point.y - sb.y) / Math.max(1e-6, sb.height)));
   }
   const shown = transformDraftBounds(draft) || draft.sourceBounds;
-  const to = { x: shown.x - offset.x, y: shown.y - offset.y, width: shown.width, height: shown.height };
-  return (point) => ({
-    x: to.x + (point.x - sb.x) * to.width / Math.max(1e-6, sb.width),
-    y: to.y + (point.y - sb.y) * to.height / Math.max(1e-6, sb.height),
+  return (point) => unplace({
+    x: shown.x + (point.x - sb.x) * shown.width / Math.max(1e-6, sb.width),
+    y: shown.y + (point.y - sb.y) * shown.height / Math.max(1e-6, sb.height),
   });
+}
+
+/**
+ * Stored variant resolution, as pixels per world pixel: the source's own density (a bake is
+ * generated at inference resolution, often finer than the canvas), capped so the long side of
+ * the stored pixels stays within SPRITE_MAX_SIDE, and never below the canvas resolution.
+ */
+export function spritePixelDensity(rect, sourceDensity = 1, maxSide = SPRITE_MAX_SIDE) {
+  const density = Number.isFinite(Number(sourceDensity)) && Number(sourceDensity) > 0 ? Number(sourceDensity) : 1;
+  const long = Math.max(1, Number(rect?.width) || 1, Number(rect?.height) || 1);
+  return Math.max(1, Math.min(density, maxSide / long));
+}
+
+export function spritePixelSize(rect, density = 1) {
+  return { width: Math.max(1, Math.round(rect.width * density)), height: Math.max(1, Math.round(rect.height * density)) };
+}
+
+/** Pixels per world pixel of one stored variant canvas over `rect` (x and y). */
+export function variantDensity(pixels, rect) {
+  return {
+    x: pixels ? pixels.width / Math.max(1, rect.width) : 1,
+    y: pixels ? pixels.height / Math.max(1, rect.height) : 1,
+  };
+}
+
+/**
+ * Where an edited canvas-resolution crop differs from what the stored variant showed there
+ * (RGBA arrays of one size): 255 on changed pixels, 0 elsewhere; null when nothing changed.
+ * Fully transparent pixels compare equal whatever their colour.
+ */
+export function editedPixelMask(shown, edited, width, height, threshold = 6) {
+  const mask = new Uint8ClampedArray(width * height);
+  let any = false;
+  for (let pixel = 0, offset = 0; pixel < mask.length; pixel++, offset += 4) {
+    const a = shown[offset + 3], b = edited[offset + 3];
+    if (!a && !b) continue;
+    if (Math.abs(a - b) > threshold || Math.abs(shown[offset] - edited[offset]) > threshold
+      || Math.abs(shown[offset + 1] - edited[offset + 1]) > threshold || Math.abs(shown[offset + 2] - edited[offset + 2]) > threshold) {
+      mask[pixel] = 255;
+      any = true;
+    }
+  }
+  return any ? mask : null;
+}
+
+/** In place: `base` RGBA moves toward `patch` RGBA by `mask` (0..255 per pixel). */
+export function blendMaskedPixels(base, patch, mask) {
+  for (let pixel = 0, offset = 0; pixel < mask.length; pixel++, offset += 4) {
+    const m = mask[pixel];
+    if (!m) continue;
+    if (m === 255) { base.set(patch.subarray(offset, offset + 4), offset); continue; }
+    const t = m / 255;
+    for (let channel = 0; channel < 4; channel++) base[offset + channel] = Math.round(base[offset + channel] + (patch[offset + channel] - base[offset + channel]) * t);
+  }
+  return base;
 }
 
 export function mapBox(map, box) {
@@ -375,9 +463,8 @@ export function mapBox(map, box) {
 }
 
 /** Which layers can become a sprite set, and why not. */
-export function spriteSourceIssue(layer, { panorama = false } = {}) {
+export function spriteSourceIssue(layer) {
   if (!layer) return "Pick a layer first.";
-  if (panorama) return "Sprite sets are not available in panorama documents.";
   if (layer.locked) return "Unlock the layer first.";
   if (layer.type === "raster") return layer.shadow ? "Shadow layers cannot become sprite sets." : null;
   if (layer.type !== "pose") return "Sprite sets are made from raster or baked pose layers.";
@@ -418,6 +505,7 @@ const SPRITE_PANEL_CSS = `
 
 export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   if (!uc || uc.sprites) return uc;
+  uc.registerHistoryKind?.(SPRITE_VARIANT_HISTORY_KIND, (entry, direction) => uc.sprites?.applyVariantHistory(entry, direction));
   let gestureToken = 0;
   let selectedVariantId = null;
   let panel = null;
@@ -459,28 +547,70 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     return canvasFromPixels(data, width, height);
   }
 
-  /** The rect region of the layer canvas (world pixels). */
-  function cropRect(layer, rect = layer.sprite.rect) {
+  // Where the layer's pixels live: `layer.canvas`, or the sphere of a panorama seen from the
+  // sprite's anchor camera (vnccs_unicanvas_sprites_panorama.mjs).
+  const surface = createSpriteSurface(uc, { mapBox, clampBox, unionBox, alphaBounds, alphaOf, readPixels, drawScaled });
+
+  /** The rect region (world pixels) of a layer-sized canvas. */
+  function cropRect(source, rect) {
     const canvas = createCanvas(rect.width, rect.height);
-    canvas.getContext("2d").drawImage(layer.canvas, rect.x - uc.origin.x, rect.y - uc.origin.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    canvas.getContext("2d").drawImage(source, rect.x - uc.origin.x, rect.y - uc.origin.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
     return canvas;
   }
 
+  /** Draws variant pixels scaled to `width` x `height` at (x, y) with one fixed resampling. */
+  function drawScaled(ctx, pixels, x, y, width, height) {
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(pixels, x, y, width, height);
+    ctx.restore();
+  }
+
+  /** Variant pixels as they show over `rect` at canvas resolution (rect size). */
+  function shownPixels(pixels, rect) {
+    const canvas = createCanvas(rect.width, rect.height);
+    drawScaled(canvas.getContext("2d"), pixels, 0, 0, rect.width, rect.height);
+    return canvas;
+  }
+
+  /** Shows `pixels` (any resolution) at the shared rect as the layer's whole content. */
   function drawIntoLayer(layer, pixels) {
-    const ctx = layer.canvas.getContext("2d");
-    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
-    const rect = layer.sprite.rect;
-    if (pixels) ctx.drawImage(pixels, rect.x - uc.origin.x, rect.y - uc.origin.y, rect.width, rect.height);
-    layer.hiresCanvas = null;
-    layer.hiresRect = null;
+    surface.write(layer, pixels, layer.sprite.rect);
+  }
+
+  /**
+   * The active variant after a canvas edit: unchanged pixels keep the stored resolution, changed
+   * ones take the edited canvas pixels (scaled up to the stored resolution).
+   */
+  function mergeEdit(pixels, edited, rect) {
+    if (!pixels || (pixels.width === edited.width && pixels.height === edited.height)) return edited;
+    const { width, height } = edited;
+    const mask = editedPixelMask(readPixels(shownPixels(pixels, rect)), readPixels(edited), width, height);
+    if (!mask) return pixels;
+    const grown = dilateAlpha(mask, width, height, 1);
+    const box = alphaBounds(grown, width, height);
+    if (!box) return pixels;
+    // Only the changed region is resampled, at the stored resolution.
+    const kx = pixels.width / width, ky = pixels.height / height;
+    const region = clampBox({ x: box.x * kx - 1, y: box.y * ky - 1, width: box.width * kx + 2, height: box.height * ky + 2 }, pixels.width, pixels.height);
+    const patch = createCanvas(region.width, region.height);
+    drawScaled(patch.getContext("2d"), edited, -region.x, -region.y, pixels.width, pixels.height);
+    const maskUp = createCanvas(region.width, region.height);
+    drawScaled(maskUp.getContext("2d"), alphaCanvas(grown, width, height), -region.x, -region.y, pixels.width, pixels.height);
+    const out = copyCanvas(pixels);
+    const ctx = out.getContext("2d", { willReadFrequently: true });
+    const image = ctx.getImageData(region.x, region.y, region.width, region.height);
+    blendMaskedPixels(image.data, readPixels(patch), alphaOf(readPixels(maskUp)));
+    ctx.putImageData(image, region.x, region.y);
+    return out;
   }
 
   /** Redraws `layer.canvas` from the active variant; the canvas is then in sync. */
   function drawActive(layer) {
     if (!isSprite(layer)) return;
     drawIntoLayer(layer, activeVariant(layer)?.pixels || null);
-    uc.invalidateLayerCaches(layer);
-    layer.sprite._syncedRevision = layer.pixelRevision;
+    layer.sprite._syncedRevision = surface.syncKey(layer);
   }
 
   function endPreview(layer, { render = true } = {}) {
@@ -499,8 +629,10 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     const dx = old.x - next.x, dy = old.y - next.y;
     for (const variant of sprite.variants) {
       if (!variant.pixels) continue;
-      const canvas = createCanvas(next.width, next.height);
-      canvas.getContext("2d").drawImage(variant.pixels, dx, dy);
+      // Padded at the variant's own resolution.
+      const k = variantDensity(variant.pixels, old);
+      const canvas = createCanvas(Math.round(next.width * k.x), Math.round(next.height * k.y));
+      canvas.getContext("2d").drawImage(variant.pixels, Math.round(dx * k.x), Math.round(dy * k.y));
       variant.pixels = canvas;
     }
     sprite.anchor = { x: sprite.anchor.x + dx, y: sprite.anchor.y + dy };
@@ -515,14 +647,16 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   function syncFromCanvas(layer) {
     if (!isSprite(layer)) return;
     if (layer.sprite._previewId) { endPreview(layer); return; }
-    if (layer.sprite._syncedRevision === layer.pixelRevision) return;
+    const key = surface.syncKey(layer);
+    if (layer.sprite._syncedRevision === key) return;
     const active = activeVariant(layer);
     if (!active) return;
-    const crop = uc.getLayerAlphaBounds(layer);
+    const view = surface.read(layer);
+    const crop = surface.bounds(layer, view);
     if (crop) growRect(layer, { x: crop.x + uc.origin.x, y: crop.y + uc.origin.y, width: crop.width, height: crop.height });
-    active.pixels = cropRect(layer);
+    active.pixels = mergeEdit(active.pixels, cropRect(view, layer.sprite.rect), layer.sprite.rect);
     active.status = "ready";
-    layer.sprite._syncedRevision = layer.pixelRevision;
+    layer.sprite._syncedRevision = key;
   }
 
   function refresh(layer, { sync = true } = {}) {
@@ -532,12 +666,15 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     if (sync) uc.syncToNode?.();
   }
 
-  /** One undoable change of the sprite state (variants, faceRect, ...): a layerPixels entry. */
-  function commitChange(layer, mutate) {
+  /**
+   * One undoable change of the sprite state (variants, faceRect, ...): a layerPixels entry.
+   * `decorate` may extend the entry (an accepted staged result carries its history item).
+   */
+  function commitChange(layer, mutate, decorate = (entry) => entry) {
     const before = uc.createLayerPixelSnapshot(layer);
     const result = mutate();
     if (result === false) return false;
-    uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+    uc.pushHistoryEntry(decorate({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) }));
     refresh(layer);
     return true;
   }
@@ -596,8 +733,6 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     if (!layer.sprite._previewId) syncFromCanvas(layer);
     layer.sprite._previewId = id;
     drawIntoLayer(layer, variant.pixels);
-    uc.invalidateLayerRenderCaches(layer);
-    layer._boundsCache = undefined;
     uc.requestRender();
   }
 
@@ -606,6 +741,8 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   /** A move of the layer's pixels (single or group move): only the rect moves. */
   function onMove(layer, source, dx, dy) {
     if (!isSprite(layer)) return;
+    // The move was measured in the current view; a panorama set is re-anchored to it first.
+    if (!source._spriteRect) surface.reanchor(layer);
     source._spriteRect ||= { ...layer.sprite.rect };
     layer.sprite.rect = { ...source._spriteRect, x: source._spriteRect.x + Math.round(dx), y: source._spriteRect.y + Math.round(dy) };
   }
@@ -613,20 +750,26 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   /** An applied transform: the rect, anchor, faceRect and the other variants follow the frame. */
   function onTransform(layer, draft) {
     if (!isSprite(layer) || !draft?.sourceCanvas || !draft.quad) return;
+    surface.reanchor(layer);
     const sprite = layer.sprite;
     const old = sprite.rect;
     const map = transformPointMap(draft);
     const next = mapBox(map, old);
-    const offset = draft.stateOffset || { x: 0, y: 0 };
-    const sb = { ...draft.sourceBounds, x: draft.sourceBounds.x - offset.x, y: draft.sourceBounds.y - offset.y };
-    const scale = draft.sourceCanvas.width / Math.max(1, sb.width);
+    const sb = draftRestBounds(draft);
+    const inverse = invertAffine(draftPlacement(draft)) || [1, 0, 0, 1, 0, 0];
+    const draftScale = draft.sourceCanvas.width / Math.max(1, sb.width);
     for (const variant of sprite.variants) {
-      if (!variant.pixels || variant.id === sprite.activeVariantId) continue;
-      const source = createCanvas(draft.sourceCanvas.width, draft.sourceCanvas.height);
-      source.getContext("2d").drawImage(variant.pixels, (old.x - sb.x) * scale, (old.y - sb.y) * scale, old.width * scale, old.height * scale);
-      const out = createCanvas(next.width, next.height);
+      if (!variant.pixels) continue;
+      // Every variant, the active one included, is resampled from its own stored resolution.
+      const k = variantDensity(variant.pixels, old);
+      const scale = Math.max(draftScale, k.x);
+      const source = createCanvas(Math.round(sb.width * scale), Math.round(sb.height * scale));
+      drawScaled(source.getContext("2d"), variant.pixels, (old.x - sb.x) * scale, (old.y - sb.y) * scale, old.width * scale, old.height * scale);
+      const out = createCanvas(Math.round(next.width * k.x), Math.round(next.height * k.y));
       const ctx = out.getContext("2d");
-      ctx.translate(-(next.x + offset.x), -(next.y + offset.y));
+      ctx.scale(k.x, k.y);
+      ctx.translate(-next.x, -next.y);
+      ctx.transform(...inverse); // shown frame -> stored pixels (state move and depth scale undone)
       uc.drawTransformDraft(ctx, { ...draft, sourceCanvas: source }, 48);
       variant.pixels = out;
     }
@@ -637,25 +780,45 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       sprite.faceRect = clampBox({ ...face, x: face.x - next.x, y: face.y - next.y }, next.width, next.height);
     }
     sprite.rect = next;
-    // The active variant is copied from the transformed canvas by the history snapshot.
-    sprite._syncedRevision = null;
+    // The canvas shows the active variant transformed at its stored resolution; the history
+    // snapshot's sync then finds nothing changed and keeps that resolution.
+    drawActive(layer);
+  }
+
+  /** A depth-scaled move (vnccs_unicanvas_scene_place.mjs): the rect scales, the pixels stay. */
+  function onDepthScale(layer, map) {
+    if (!isSprite(layer) || !map) return;
+    const sprite = layer.sprite;
+    const old = sprite.rect;
+    const placed = map.rect(old);
+    const next = { x: Math.round(placed.x), y: Math.round(placed.y), width: Math.max(1, Math.round(placed.width)), height: Math.max(1, Math.round(placed.height)) };
+    const sx = next.width / Math.max(1, old.width), sy = next.height / Math.max(1, old.height);
+    sprite.anchor = { x: sprite.anchor.x * sx, y: sprite.anchor.y * sy };
+    if (sprite.faceRect) {
+      sprite.faceRect = clampBox({ x: sprite.faceRect.x * sx, y: sprite.faceRect.y * sy, width: sprite.faceRect.width * sx, height: sprite.faceRect.height * sy }, next.width, next.height);
+    }
+    sprite.rect = next;
+    drawActive(layer);
   }
 
   /** "Paint on all variants": brush and eraser strokes replay on every other ready variant. */
   function onStroke(layer, start, end, { size, opacity, color, erase }) {
     if (!isSprite(layer) || !layer.sprite.paintAll) return;
+    surface.reanchor(layer);
     const sprite = layer.sprite;
     for (const variant of sprite.variants) {
       if (!variant.pixels || variant.status !== "ready" || variant.id === sprite.activeVariantId) continue;
       if (variant._cow !== gestureToken) { variant.pixels = copyCanvas(variant.pixels); variant._cow = gestureToken; }
       const ctx = variant.pixels.getContext("2d");
+      // World points into the variant's own resolution.
+      const k = variantDensity(variant.pixels, sprite.rect);
       ctx.save();
-      ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.lineWidth = size; ctx.globalAlpha = opacity;
+      ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.lineWidth = size * Math.max(k.x, k.y); ctx.globalAlpha = opacity;
       ctx.globalCompositeOperation = erase ? "destination-out" : "source-over";
       ctx.strokeStyle = erase ? "#000" : color;
       ctx.beginPath();
-      ctx.moveTo(start.x - sprite.rect.x, start.y - sprite.rect.y);
-      ctx.lineTo(end.x - sprite.rect.x, end.y - sprite.rect.y);
+      ctx.moveTo((start.x - sprite.rect.x) * k.x, (start.y - sprite.rect.y) * k.y);
+      ctx.lineTo((end.x - sprite.rect.x) * k.x, (end.y - sprite.rect.y) * k.y);
       ctx.stroke();
       ctx.restore();
     }
@@ -674,7 +837,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     layer.sprite = snapshotSprite(stored.sprite);
     layer.sprite._previewId = null;
     // The snapshot's canvas crop is the active variant it was taken with.
-    layer.sprite._syncedRevision = layer.pixelRevision;
+    layer.sprite._syncedRevision = surface.syncKey(layer);
     if (uc.activeLayerId === layer.id) renderPanel();
   }
 
@@ -688,23 +851,32 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     return serializeSpriteState(layer.sprite, includeData ? (variant) => variant.pixels.toDataURL("image/png") : null);
   }
 
-  async function restore(layer, stored) {
+  /** A stored set with its variant pixels loaded (data URLs or blob URLs), not yet on a layer. */
+  async function loadSet(stored) {
     const sprite = normalizeSpriteState(stored);
     for (const variant of sprite.variants) {
       if (variant.dataURL) {
         try {
           const image = await uc.loadImage(variant.dataURL);
-          const canvas = createCanvas(sprite.rect.width, sprite.rect.height);
-          canvas.getContext("2d").drawImage(image, 0, 0, sprite.rect.width, sprite.rect.height);
+          // The stored resolution: the source's for new sets, the rect's for sets saved before.
+          const width = Math.max(1, image.naturalWidth || image.width || sprite.rect.width);
+          const height = Math.max(1, image.naturalHeight || image.height || sprite.rect.height);
+          const canvas = createCanvas(width, height);
+          canvas.getContext("2d").drawImage(image, 0, 0, width, height);
           variant.pixels = canvas;
         } catch (_) { variant.pixels = null; }
         delete variant.dataURL;
       }
     }
+    return sprite;
+  }
+
+  async function restore(layer, stored) {
+    const sprite = await loadSet(stored);
     layer.sprite = sprite;
     const active = activeVariant(layer);
     // Metadata-only states (the node widget) take the active variant from the saved layer pixels.
-    if (active && !active.pixels) active.pixels = cropRect(layer);
+    if (active && !active.pixels) active.pixels = cropRect(layer.canvas, sprite.rect);
     for (const variant of sprite.variants) if (variant.status === "ready" && !variant.pixels) variant.status = "empty";
     sprite._syncedRevision = null;
   }
@@ -720,44 +892,63 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       const dx = rect.x - part.anchor.x, dy = rect.y - part.anchor.y;
       const at = { x: part.rect.x + dx, y: part.rect.y + dy, width: part.rect.width, height: part.rect.height };
       const box = { x: Math.floor(at.x), y: Math.floor(at.y), width: Math.max(1, Math.round(at.width)), height: Math.max(1, Math.round(at.height)) };
-      const canvas = createCanvas(box.width, box.height);
-      canvas.getContext("2d").drawImage(part.surface, at.x - box.x, at.y - box.y, at.width, at.height);
+      // The bake's own resolution (its inference size), not the canvas one.
+      const density = part.surface.width / Math.max(1, part.rect.width);
+      const canvas = createCanvas(box.width * density, box.height * density);
+      drawScaled(canvas.getContext("2d"), part.surface, (at.x - box.x) * density, (at.y - box.y) * density, at.width * density, at.height * density);
       const shift = (value) => value && { ...value, x: value.x + dx, y: value.y + dy };
       return {
-        canvas, box, character,
+        canvas, box, density: canvas.width / box.width, character,
         headRect: shift(entry.headRect), feetPoint: shift(entry.feetPoint),
         ref: poseCharacterRef(layer, character.id),
       };
+    }
+    if (layer.hiresCanvas && layer.hiresRect) {
+      // A hi-res raster (a generated result, a depth-scaled layer) keeps its pixels.
+      const rect = uc.normalizeLayerWorldRect ? uc.normalizeLayerWorldRect(layer.hiresRect) : layer.hiresRect;
+      const box = { x: Math.floor(rect.x), y: Math.floor(rect.y), width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) };
+      const density = layer.hiresCanvas.width / Math.max(1, rect.width);
+      const canvas = createCanvas(box.width * density, box.height * density);
+      drawScaled(canvas.getContext("2d"), layer.hiresCanvas, (rect.x - box.x) * density, (rect.y - box.y) * density, rect.width * density, rect.height * density);
+      return { canvas, box, density: canvas.width / box.width, character: null };
     }
     const crop = uc.getLayerAlphaBounds(layer);
     if (!crop) return null;
     const canvas = createCanvas(crop.width, crop.height);
     canvas.getContext("2d").drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
-    return { canvas, box: { x: crop.x + uc.origin.x, y: crop.y + uc.origin.y, width: crop.width, height: crop.height }, character: null };
+    return { canvas, box: { x: crop.x + uc.origin.x, y: crop.y + uc.origin.y, width: crop.width, height: crop.height }, density: 1, character: null };
   }
 
   /** Layer menu "Create sprite set": raster or baked single-character pose layer. */
   function createFromLayer(layer) {
-    const issue = spriteSourceIssue(layer, { panorama: Boolean(uc.panorama) });
+    const issue = spriteSourceIssue(layer);
     if (issue) { uc.setStatus(issue, true); return null; }
     if (uc.transformDraft) { uc.setStatus("Apply or cancel the active transform first", true); return null; }
     uc.poseEditor?.commit?.();
     if (uc.tool === "pose") uc.finishPoseEdit?.(true);
     const source = sourcePixels(layer);
     const alpha = source && alphaOf(readPixels(source.canvas));
-    const tight = source && alphaBounds(alpha, source.canvas.width, source.canvas.height);
-    if (!tight) { uc.setStatus("The layer has no visible pixels.", true); return null; }
+    const tightPx = source && alphaBounds(alpha, source.canvas.width, source.canvas.height);
+    if (!tightPx) { uc.setStatus("The layer has no visible pixels.", true); return null; }
+    const d = source.density || 1;
+    const tight = { x: Math.floor(tightPx.x / d), y: Math.floor(tightPx.y / d), width: Math.ceil(tightPx.width / d), height: Math.ceil(tightPx.height / d) };
     const mx = Math.round(tight.width * SPRITE_RECT_MARGIN), my = Math.round(tight.height * SPRITE_RECT_MARGIN);
     const rect = { x: source.box.x + tight.x - mx, y: source.box.y + tight.y - my, width: tight.width + 2 * mx, height: tight.height + 2 * my };
     if (!uc.ensureWorldBounds(rect.x, rect.y, 0, true) || !uc.ensureWorldBounds(rect.x + rect.width, rect.y + rect.height, 0, true)) {
       uc.setStatus("The sprite does not fit the canvas.", true);
       return null;
     }
-    const neutral = createCanvas(rect.width, rect.height);
-    neutral.getContext("2d").drawImage(source.canvas, source.box.x - rect.x, source.box.y - rect.y);
-    const anchor = source.feetPoint
-      ? { x: source.feetPoint.x - rect.x, y: source.feetPoint.y - rect.y }
-      : detectSpriteAnchor(alphaOf(readPixels(neutral)), rect.width, rect.height);
+    // Stored at the source's resolution (capped), drawn scaled to the rect.
+    const k = spritePixelDensity(rect, d);
+    const size = spritePixelSize(rect, k);
+    const neutral = createCanvas(size.width, size.height);
+    if (k === d) neutral.getContext("2d").drawImage(source.canvas, Math.round((source.box.x - rect.x) * k), Math.round((source.box.y - rect.y) * k));
+    else drawScaled(neutral.getContext("2d"), source.canvas, (source.box.x - rect.x) * k, (source.box.y - rect.y) * k, source.canvas.width * k / d, source.canvas.height * k / d);
+    const detected = () => {
+      const point = detectSpriteAnchor(alphaOf(readPixels(neutral)), size.width, size.height);
+      return { x: point.x * rect.width / size.width, y: point.y * rect.height / size.height };
+    };
+    const anchor = source.feetPoint ? { x: source.feetPoint.x - rect.x, y: source.feetPoint.y - rect.y } : detected();
     const name = source.character?.name || layer.meta?.character?.name || layer.name || "Character";
     const variant = createSpriteVariant({ name: NEUTRAL_VARIANT, kind: "expression", status: "ready", pixels: neutral,
       prompt: expressionInstruction(SPRITE_EXPRESSION_PRESETS[0].phrase), meta: { phrase: SPRITE_EXPRESSION_PRESETS[0].phrase } });
@@ -768,7 +959,10 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     });
     sprite.variants = [variant];
     sprite.activeVariantId = variant.id;
+    sprite.baseVariantId = variant.id;
     if (source.ref) sprite._ref = source.ref;
+    const camera = surface.cameraFor(layer);
+    if (camera) sprite.panoramaCamera = camera;
 
     const structureBefore = captureGroupStructure(uc.layers);
     const activeBefore = uc.activeLayerId;
@@ -813,9 +1007,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     uc.layers = uc.layers.filter((item) => item !== copy);
     uc.layers.splice(Math.max(0, uc.layers.indexOf(layer)), 0, copy);
     uc.normalizeLayerOrder();
-    const rect = layer.sprite.rect;
-    copy.canvas.getContext("2d").drawImage(variant.pixels, rect.x - uc.origin.x, rect.y - uc.origin.y);
-    uc.invalidateLayerCaches(copy);
+    surface.write(copy, variant.pixels, layer.sprite.rect, layer.sprite.panoramaCamera);
     uc.pushHistoryEntry({ kind: "groupStructure", before: structureBefore, after: captureGroupStructure(uc.layers), activeBefore, activeAfter: copy.id });
     uc.activeLayerId = copy.id;
     uc.selectedLayerIds = [copy.id];
@@ -834,7 +1026,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       const source = findLayer(layer.sprite.sourceLayerId);
       return source?.type === "pose" ? poseCharacterRef(source, layer.sprite.characterId) : null;
     })();
-    if (ref?.source === "upload" && typeof ref.dataURL === "string") return ref.dataURL;
+    if (isImageRef(ref) && typeof ref.dataURL === "string") return ref.dataURL;
     if (ref?.source === "layer") {
       const target = findLayer(ref.layerId);
       const crop = target?.canvas ? uc.getLayerAlphaBounds(target) : null;
@@ -843,13 +1035,14 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     return null;
   }
 
+  /** The cut-out alpha of an outfit result, or null when Remove background is switched off. */
   async function removeBackground(canvas) {
-    const { method, editModel } = resolveRemoveBgSelection(uc.settings);
-    const resolved = method === "sam3" ? "birefnet" : method;
+    const request = automaticRemoveBgRequest(uc.settings);
+    if (!request) return null;
     const res = await fetch(SPRITE_REMOVE_BG_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ method: resolved, edit_model: editModel, edit_settings: resolved === "edit" ? removeBgEditSettings(uc.settings, editModel) : undefined, image: canvas.toDataURL("image/png") }),
+      body: JSON.stringify({ ...request, image: canvas.toDataURL("image/png") }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `Remove background HTTP ${res.status}`);
@@ -869,16 +1062,20 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     if (!variant) throw new Error("The variant no longer exists.");
     const neutral = neutralVariant(sprite);
     if (!neutral?.pixels) throw new Error("The sprite set has no neutral variant.");
-    const size = { width: sprite.rect.width, height: sprite.rect.height };
+    // Everything below runs in the neutral variant's pixel space (its stored resolution).
+    const size = { width: neutral.pixels.width, height: neutral.pixels.height };
+    const k = variantDensity(neutral.pixels, sprite.rect);
+    const toPixels = (box) => clampBox({ x: box.x * k.x, y: box.y * k.y, width: box.width * k.x, height: box.height * k.y }, size.width, size.height);
+    const faceRect = sprite.faceRect ? toPixels(sprite.faceRect) : null;
     const outfit = variant.kind === "outfit" || variant.kind === "pose";
-    if (!outfit && !sprite.faceRect) throw new Error("Drag the face area in the sprite panel first.");
-    const region = outfit ? { x: 0, y: 0, ...size } : sprite.faceRect;
+    if (!outfit && !faceRect) throw new Error("Drag the face area in the sprite panel first.");
+    const region = outfit ? { x: 0, y: 0, ...size } : faceRect;
     const work = outfit ? region : spriteWorkRegion(region, size);
-    const world = { x: sprite.rect.x + work.x, y: sprite.rect.y + work.y, width: work.width, height: work.height };
+    const world = { x: sprite.rect.x + work.x / k.x, y: sprite.rect.y + work.y / k.y, width: work.width / k.x, height: work.height / k.y };
     const inference = uc.getInferenceSize(world);
     const neutralData = readPixels(neutral.pixels);
     const neutralAlpha = alphaOf(neutralData);
-    const face = sprite.faceRect ? featherMaskAlpha(size.width, size.height, sprite.faceRect, spriteFeather(sprite.faceRect)) : null;
+    const face = faceRect ? featherMaskAlpha(size.width, size.height, faceRect, spriteFeather(faceRect)) : null;
     const mask = outfit
       ? outfitMaskAlpha(neutralAlpha, size.width, size.height, face, Math.max(2, Math.round(0.03 * Math.max(size.width, size.height))))
       : featherMaskAlpha(size.width, size.height, region, spriteFeather(region));
@@ -904,46 +1101,55 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     }
     delete settings.queued_draw;
     delete settings.draw_id;
-    const res = await fetch(SPRITE_DRAW_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    // History (vnccs_unicanvas_history_gallery.mjs): the caller finishes the run with its results.
+    const historyRun = uc.generationHistory?.beginRun("sprite", {
+      settings, bbox: world, mode: "sprite", inferenceSize: inference, outputSize: { width: Math.max(64, work.width), height: Math.max(64, work.height) },
+      targetLayerId: layer.id, imageCanvas: image, maskCanvas: maskImage,
+      params: { variantId: String(variantId), variant: variant.name, kind: variant.kind, batch: settings.batch_size },
+    }) || null;
+    try {
+      const { images } = await requestDirectDraw({
         mode: "inpaint", image: image.toDataURL("image/png"), mask: maskImage.toDataURL("image/png"), source_empty: false,
         bbox: world, inference_size: inference, output_size: { width: Math.max(64, work.width), height: Math.max(64, work.height) },
-        debug_id: `sprite-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, settings,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
-    if (!images.length) throw new Error("The generation returned no images.");
-    if (!uc.layers.includes(layer) || !variantOf(layer, variantId)) throw new Error("The sprite layer changed while generating.");
-    const results = [];
-    for (const item of images) {
-      const loaded = await uc.loadImage(uc.resultImageURL(item));
-      const full = copyCanvas(neutral.pixels);
-      const fullCtx = full.getContext("2d");
-      fullCtx.clearRect(work.x, work.y, work.width, work.height);
-      if (outfit) { fullCtx.fillStyle = "#ffffff"; fullCtx.fillRect(work.x, work.y, work.width, work.height); }
-      fullCtx.drawImage(loaded, work.x, work.y, work.width, work.height);
-      let pixels;
-      if (outfit) {
-        const alpha = await removeBackground(full);
-        pixels = compositeOutfitPixels(neutralData, readPixels(full), alpha, face);
-        const anchor = detectSpriteAnchor(alphaOf(pixels), size.width, size.height);
-        pixels = shiftPixels(pixels, size.width, size.height, sprite.anchor.x - anchor.x, sprite.anchor.y - anchor.y);
-      } else {
-        pixels = compositeExpressionPixels(neutralData, readPixels(full), mask);
+        debug_id: drawDebugId("sprite"), settings,
+      }, { route: SPRITE_DRAW_ROUTE });
+      if (!images.length) throw new Error("The generation returned no images.");
+      if (!uc.layers.includes(layer) || !variantOf(layer, variantId)) throw new Error("The sprite layer changed while generating.");
+      const results = [];
+      for (const item of images) {
+        const loaded = await uc.loadImage(uc.resultImageURL(item));
+        const full = copyCanvas(neutral.pixels);
+        const fullCtx = full.getContext("2d");
+        fullCtx.clearRect(work.x, work.y, work.width, work.height);
+        if (outfit) { fullCtx.fillStyle = "#ffffff"; fullCtx.fillRect(work.x, work.y, work.width, work.height); }
+        fullCtx.drawImage(loaded, work.x, work.y, work.width, work.height);
+        let pixels;
+        if (outfit) {
+          // Remove background switched off (Settings > VNCCS > UniCanvas): the outfit mask (the neutral
+          // silhouette grown a little) cuts instead.
+          const alpha = (await removeBackground(full)) ?? mask;
+          pixels = compositeOutfitPixels(neutralData, readPixels(full), alpha, face);
+          const anchor = detectSpriteAnchor(alphaOf(pixels), size.width, size.height);
+          pixels = shiftPixels(pixels, size.width, size.height, sprite.anchor.x * k.x - anchor.x, sprite.anchor.y * k.y - anchor.y);
+        } else {
+          pixels = compositeExpressionPixels(neutralData, readPixels(full), mask);
+        }
+        results.push({ pixels: canvasFromPixels(pixels, size.width, size.height), seed: Number.isFinite(item?.seed) ? item.seed : seed });
       }
-      results.push({ pixels: canvasFromPixels(pixels, size.width, size.height), seed: Number.isFinite(item?.seed) ? item.seed : seed });
+      return { results, rect: { ...sprite.rect }, inference, prompt: settings.positive, historyRun };
+    } catch (error) {
+      historyRun?.fail(error);
+      throw error;
     }
-    return { results, rect: { ...sprite.rect }, inference, prompt: settings.positive };
   }
 
   function applyVariant(layer, variantId, result, prompt) {
     const variant = variantOf(layer, variantId);
     if (!variant) return false;
-    if (result.pixels.width !== layer.sprite.rect.width || result.pixels.height !== layer.sprite.rect.height) return false;
+    // A result fits while the neutral pixels it was composited over keep their size.
+    const neutral = neutralVariant(layer.sprite)?.pixels;
+    const size = neutral || layer.sprite.rect;
+    if (result.pixels.width !== size.width || result.pixels.height !== size.height) return false;
     variant.pixels = result.pixels;
     variant.status = "ready";
     variant.seed = result.seed;
@@ -965,8 +1171,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
   }
 
   function lockDraw(on) {
-    uc.drawInProgress = on;
-    if (uc.drawBtn) uc.drawBtn.disabled = on;
+    setGenerationLock(uc, on);
   }
 
   /** Per-variant Generate / Regenerate: batch results are staged in place over the sprite. */
@@ -986,15 +1191,15 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     progress(`Generating sprite ${variant.name}`, 0.05);
     try {
       const out = await api.requestVariant(layer, variantId, { seed, batch });
-      for (const result of out.results) {
-        uc.addStagingItem({
-          url: result.pixels.toDataURL("image/png"), img: result.pixels, bbox: { ...out.rect },
-          displaySize: { width: out.rect.width, height: out.rect.height }, inferenceSize: out.inference,
-          visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
-          panoramaCamera: null, snapshot: { seed: result.seed, mode: "sprite" },
-          sprite: { layerId: layer.id, variantId, result, prompt: out.prompt },
-        });
-      }
+      const staged = out.results.map((result) => ({
+        url: result.pixels.toDataURL("image/png"), img: result.pixels, bbox: { ...out.rect },
+        displaySize: { width: out.rect.width, height: out.rect.height }, inferenceSize: out.inference,
+        visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
+        panoramaCamera: null, snapshot: { seed: result.seed, mode: "sprite" },
+        sprite: { layerId: layer.id, variantId, result, prompt: out.prompt },
+      }));
+      for (const item of staged) uc.addStagingItem(item);
+      out.historyRun?.finish(staged);
       progress(`Sprite ${variant.name} staged`, 1);
       uc.setStatus(`Sprite ${variant.name} staged: accept, discard or pick another result.`);
     } catch (error) {
@@ -1026,7 +1231,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       drawActive(layer);
       selectedVariantId = info.variantId;
       return true;
-    });
+    }, (entry) => uc.generationHistory?.acceptIntoLayer(entry, staging, layer) ?? entry);
     uc.setStatus(applied ? "Sprite variant accepted." : "The sprite changed size since this result was generated: generate it again.", !applied);
     uc.requestRender();
   }
@@ -1049,7 +1254,12 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
         renderPanel();
         try {
           const out = await api.requestVariant(layer, variant.id, { seed: newSeed(), batch: 1 });
-          if (applyVariant(layer, variant.id, out.results[0], out.prompt)) done++;
+          if (applyVariant(layer, variant.id, out.results[0], out.prompt)) {
+            done++;
+            out.historyRun?.finish([autoAcceptedHistoryItem({ img: out.results[0].pixels, seed: out.results[0].seed, rect: out.rect, layerId: layer.id })]);
+          } else {
+            out.historyRun?.fail(new Error("The sprite changed size while generating."));
+          }
         } catch (failure) {
           markFailed(layer, variant.id, failure);
           error = new Error(`${variant.name}: ${failure.message || failure}`);
@@ -1225,7 +1435,8 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
       item.className = `vnccs-uc-sprite-thumb${variant.id === sprite.activeVariantId ? " active" : ""}${variant.id === selectedVariantId ? " selected" : ""}`;
       item.dataset.spriteVariant = variant.id;
       item.dataset.status = busy.has(variant.id) ? "busy" : variant.status;
-      item.title = `${variant.name} (${busy.has(variant.id) ? "generating" : variant.status})${variant.meta?.error ? `: ${variant.meta.error}` : ""}`;
+      const base = variant.id === sprite.baseVariantId ? ", base" : "";
+      item.title = `${variant.name} (${busy.has(variant.id) ? "generating" : variant.status}${base})${variant.meta?.error ? `: ${variant.meta.error}` : ""}`;
       const thumb = document.createElement("canvas");
       thumb.width = 56; thumb.height = 56;
       drawThumb(thumb, variant.pixels || neutralVariant(sprite)?.pixels || null);
@@ -1312,10 +1523,30 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     { id: "split-variant-to-layer", label: "Split variant to layer", visible: (layer) => isSprite(layer), run: (layer) => splitVariantToLayer(layer) },
   ];
 
+  /** A loaded set (loadSet) becomes the layer's, e.g. a library character: the canvas shows it. */
+  function attachSet(layer, sprite) {
+    if (layer?.type !== SPRITE_LAYER_TYPE || !sprite) return;
+    for (const variant of sprite.variants) if (variant.status === "ready" && !variant.pixels) variant.status = "empty";
+    if (!activeVariant({ sprite })?.pixels) {
+      const ready = readyVariants(sprite)[0];
+      if (ready) sprite.activeVariantId = ready.id;
+    }
+    layer.sprite = sprite;
+    drawActive(layer);
+    if (uc.activeLayerId === layer.id) renderPanel();
+  }
+
   const api = {
-    isSprite, syncFromCanvas, snapshot, restoreSnapshot, cloneLayerFields, serialize, restore, onMove, onTransform, onStroke,
+    isSprite, syncFromCanvas, snapshot, restoreSnapshot, cloneLayerFields, serialize, restore, loadSet, attachSet, onMove, onTransform, onDepthScale, onStroke,
     setActiveVariant, applyVariantHistory, cycleActive, preview, endPreview, createFromLayer, splitVariantToLayer,
     addPresets, addCustom, removeVariant, setPaintAll, stageVariant, generateMissing, acceptStaged, renderPanel,
+    /** Shows the active variant again after something else (a scene state) switched it. */
+    redraw(layer) {
+      if (!isSprite(layer)) return;
+      layer.sprite._previewId = null;
+      drawActive(layer);
+      if (uc.activeLayerId === layer.id) renderPanel();
+    },
     describe(layerId) {
       const layer = findLayer(layerId);
       if (!isSprite(layer)) return null;

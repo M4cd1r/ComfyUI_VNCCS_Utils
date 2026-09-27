@@ -1,9 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { openUnicanvas } from "./helpers/app.mjs";
+import { clickOutsidePopovers, openUnicanvas } from "./helpers/app.mjs";
 
 test("settings open as one larger panel anchored under the gear", async ({ page }) => {
   await openUnicanvas(page);
-  const gear = page.locator('[title="Settings"]').first();
+  const gear = page.locator('.vnccs-uc-gear').first();
   const left = page.locator(".vnccs-uc-left");
   await gear.click();
   const panel = page.locator(".vnccs-uc-settings-popover");
@@ -17,7 +17,7 @@ test("settings open as one larger panel anchored under the gear", async ({ page 
   const overlapsLeft = panelBox.x < leftBox.x + leftBox.width && panelBox.x + panelBox.width > leftBox.x;
   expect(overlapsLeft).toBe(false); // never over the left sidebar
 
-  await page.mouse.click(2, 2); // outside click closes
+  await clickOutsidePopovers(page); // outside click closes
   await expect(panel).toHaveCount(0);
   await gear.click();
   await expect(panel).toHaveCount(1);
@@ -27,7 +27,7 @@ test("settings open as one larger panel anchored under the gear", async ({ page 
 
 test("the settings Close button closes the panel and the gear reopens it", async ({ page }) => {
   await openUnicanvas(page);
-  const gear = page.locator('[title="Settings"]').first();
+  const gear = page.locator('.vnccs-uc-gear').first();
   await gear.click();
   const panel = page.locator(".vnccs-uc-settings-popover");
   await expect(panel).toHaveCount(1);
@@ -45,7 +45,7 @@ test("the settings Close button closes the panel and the gear reopens it", async
 // orphan menu floating over the canvas).
 test("choosing a custom-select option commits the value and keeps the panel open", async ({ page }) => {
   await openUnicanvas(page);
-  await page.locator('[title="Settings"]').first().click();
+  await page.locator('.vnccs-uc-gear').first().click();
   const panel = page.locator(".vnccs-uc-settings-popover");
   await expect(panel).toHaveCount(1);
 
@@ -70,7 +70,7 @@ test("choosing a custom-select option commits the value and keeps the panel open
   // The committed value survives a panel toggle: it reached the widget settings.
   await panel.locator('button:has-text("Close")').click();
   await expect(panel).toHaveCount(0);
-  await page.locator('[title="Settings"]').first().click();
+  await page.locator('.vnccs-uc-gear').first().click();
   await expect(panel.locator("select.vnccs-uc-select:visible").first()).toHaveValue(after);
 });
 
@@ -81,7 +81,7 @@ for (const width of [900, 700, 660]) {
   test(`the settings panel stays off the left sidebar on a ${width}px viewport`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1000 });
     await openUnicanvas(page);
-    await page.locator('[title="Settings"]').first().click();
+    await page.locator('.vnccs-uc-gear').first().click();
     const panel = page.locator(".vnccs-uc-settings-popover");
     await expect(panel).toHaveCount(1);
 

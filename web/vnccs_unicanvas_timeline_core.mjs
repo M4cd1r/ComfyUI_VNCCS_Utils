@@ -25,6 +25,8 @@ import {
   findKeySegment,
   finiteNumber,
 } from "./vnccs_animation_core.mjs";
+import { stateOffsetMatrix } from "./vnccs_unicanvas_state_offset.mjs";
+import { fnv1a } from "./vnccs_unicanvas_util.mjs";
 
 export const TIMELINE_SCHEMA_VERSION = 1;
 export const TIMELINE_HISTORY_KIND = "timeline";
@@ -341,14 +343,7 @@ export function evaluateTrack(timeline, trackId, frame) {
 }
 
 /** Deterministic 32-bit string hash (FNV-1a). */
-export function hashString(text) {
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index++) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
+export const hashString = fnv1a;
 
 /** Mulberry32: a seeded [0, 1) generator. */
 export function seededRandom(seed) {
@@ -517,7 +512,8 @@ export function localMatrix(state, anchor = { x: 0, y: 0 }) {
  * `chain` is `[{ state, anchor }]` ordered outermost group -> layer.
  */
 export function composeLayerMatrix(stateOffset, chain) {
-  let matrix = [1, 0, 0, 1, stateOffset?.x || 0, stateOffset?.y || 0];
+  // The scene-state placement: a move, or a move and a depth scale (vnccs_unicanvas_state_offset.mjs).
+  let matrix = stateOffsetMatrix(stateOffset);
   for (const item of chain || []) {
     if (!item?.state) continue;
     matrix = multiplyMatrices(matrix, localMatrix(item.state, item.anchor));

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { addPoseCharacter, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
 
 // Plan 01 (#4): several mannequins in one pose layer, one reference each, exact per-character
 // masks from the ID pass, and split / merge of pose layers. Nothing here runs inference.
@@ -65,7 +65,7 @@ test("two mannequins bind their own references, get disjoint masks and split int
   expect((await scene(page, pose.id)).hasCharacterRefs).toBe(false);
 
   // Add a second mannequin in the embedded studio: the card switches to one row per mannequin.
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-count`)).toHaveText("1/2 characters bound");
   await uploadFor(page, 1, reference("bob.png", PNG_BLUE));
@@ -104,7 +104,7 @@ test("removing a mannequin drops its reference", async ({ page }) => {
   await openUnicanvas(page);
   await openPoseTool(page);
   const pose = await poseLayer(page);
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
   await uploadFor(page, 1, reference("bob.png", PNG_BLUE));
   await expect.poll(async () => (await scene(page, pose.id)).characters[1]?.ref?.name ?? null).toBe("bob.png");
@@ -117,8 +117,16 @@ test("removing a mannequin drops its reference", async ({ page }) => {
   expect(after.hasCharacterRefs).toBe(false);
 });
 
-// Plan 01.2 (#16): an interaction preset from the Pose Library replaces the scene but keeps each
-// mannequin's reference and body by slot.
+// Plan 01.2 (#16, #33): an interaction preset from the Pose Library poses the layer's mannequins:
+// each keeps its id, reference and body, only pose and placement change.
+async function applyLibraryPose(page, name) {
+  await page.locator(".vnccs-uc-pose-editbar").getByRole("button", { name: "Pose Library" }).click();
+  const item = page.locator(".vnccs-ps-library-item", { hasText: name }).first();
+  await expect(item).toBeVisible({ timeout: 30_000 });
+  await item.click();
+  await page.locator(".vnccs-ps-library-apply").click();
+}
+
 async function setBodySlider(page, label, value) {
   await page.locator(".vnccs-uc-pose-tabs").getByRole("tab", { name: "Body" }).click();
   await page.evaluate(([text, next]) => {
@@ -136,7 +144,7 @@ test("an interaction preset keeps bound references and bodies by slot", async ({
   await openUnicanvas(page);
   await openPoseTool(page);
   const pose = await poseLayer(page);
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
   await uploadFor(page, 0, reference("alice.png", PNG_RED));
   await uploadFor(page, 1, reference("bob.png", PNG_BLUE));
@@ -146,18 +154,68 @@ test("an interaction preset keeps bound references and bodies by slot", async ({
   await expect.poll(async () => (await scene(page, pose.id)).characters[1]?.mesh?.age ?? null, { timeout: 30_000 }).toBe(10);
   const before = await scene(page, pose.id);
 
-  await page.locator(".vnccs-uc-pose-editbar").getByRole("button", { name: "Pose Library" }).click();
-  const item = page.locator(".vnccs-ps-library-item", { hasText: "Handshake" }).first();
-  await expect(item).toBeVisible({ timeout: 30_000 });
-  await item.click();
-  await page.locator(".vnccs-ps-library-apply").click();
+  await applyLibraryPose(page, "Handshake");
 
   await expect.poll(async () => (await scene(page, pose.id)).characters.map((entry) => entry.transform?.x ?? null), { timeout: 60_000 })
     .not.toEqual(before.characters.map((entry) => entry.transform?.x ?? null));
   const after = await scene(page, pose.id);
+  expect(after.characters.map((entry) => entry.id)).toEqual(before.characters.map((entry) => entry.id));
   expect(after.characters.map((entry) => entry.ref?.name)).toEqual(["alice.png", "bob.png"]);
   expect(after.characters.map((entry) => entry.mesh?.age)).toEqual(before.characters.map((entry) => entry.mesh?.age));
   // The child is shorter, so the pair stands closer than the preset's default 5.4 apart.
   const gap = Math.abs(after.characters[1].transform.x - after.characters[0].transform.x);
   expect(gap).toBeLessThan(5.2);
+});
+
+// #33: loading a 2-character pose into a 3-mannequin layer poses the first two in slot order and
+// leaves the third alone; one Undo reverts the whole load.
+test("a multi-character pose sets the active layer's mannequins in order and undoes in one step", async ({ page }) => {
+  await openUnicanvas(page);
+  await openPoseTool(page);
+  const pose = await poseLayer(page);
+  for (const slot of [2, 3]) {
+    await addPoseCharacter(page, slot);
+    await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(slot, { timeout: 30_000 });
+  }
+  await uploadFor(page, 0, reference("alice.png", PNG_RED));
+  await uploadFor(page, 2, reference("carol.png", PNG_BLUE));
+  await expect(page.locator(`${CARD} .vnccs-uc-pose-character-count`)).toHaveText("2/3 characters bound");
+  const before = await scene(page, pose.id);
+
+  await applyLibraryPose(page, "Handshake");
+  await expect.poll(async () => (await scene(page, pose.id)).characters[0].transform?.x ?? null, { timeout: 60_000 }).toBeCloseTo(-2.7, 1);
+  const after = await scene(page, pose.id);
+  expect(after.characters.map((entry) => entry.id)).toEqual(before.characters.map((entry) => entry.id));
+  expect(after.characters.map((entry) => entry.name)).toEqual(before.characters.map((entry) => entry.name));
+  expect(after.characters.map((entry) => entry.ref?.name ?? null)).toEqual(["alice.png", null, "carol.png"]);
+  expect(after.characters[1].transform.x).toBeCloseTo(2.7, 1);
+  expect(after.characters[2].transform).toEqual(before.characters[2].transform);
+
+  await page.locator(`${shell} [title="Undo"]`).first().click();
+  await expect.poll(async () => (await scene(page, pose.id)).characters.map((entry) => entry.transform), { timeout: 30_000 })
+    .toEqual(before.characters.map((entry) => entry.transform));
+  await page.locator(`${shell} [title="Redo"]`).first().click();
+  await expect.poll(async () => (await scene(page, pose.id)).characters.map((entry) => entry.transform), { timeout: 30_000 })
+    .toEqual(after.characters.map((entry) => entry.transform));
+});
+
+test("a pose with more characters than the layer adds the missing mannequins", async ({ page }) => {
+  await openUnicanvas(page);
+  await openPoseTool(page);
+  const pose = await poseLayer(page);
+  const [single] = await Promise.all([page.waitForEvent("filechooser"), page.locator(CARD).getByRole("button", { name: "Upload image" }).first().click()]);
+  await single.setFiles(reference("alice.png", PNG_RED));
+  const before = await scene(page, pose.id);
+  expect(before.characters).toHaveLength(1);
+
+  await applyLibraryPose(page, "Group photo");
+  await expect.poll(async () => (await scene(page, pose.id)).characters.length, { timeout: 60_000 }).toBe(3);
+  const after = await scene(page, pose.id);
+  expect(after.characters[0].id).toBe(before.characters[0].id);
+  expect(after.characters.map((entry) => entry.ref?.name ?? null)).toEqual(["alice.png", null, null]);
+  await expect(page.locator(`${CARD} .vnccs-uc-pose-character-count`)).toHaveText("1/3 characters bound");
+
+  await page.locator(`${shell} [title="Undo"]`).first().click();
+  await expect.poll(async () => (await scene(page, pose.id)).characters.length, { timeout: 30_000 }).toBe(1);
+  expect((await scene(page, pose.id)).characters[0].ref?.name).toBe("alice.png");
 });

@@ -218,6 +218,14 @@ class RemoveBgKeepTests(unittest.TestCase):
         self.assertIn("too large", str(ctx.exception))
         self.assertIsNone(self.remover.seen)
 
+    def test_keep_with_more_pixels_than_the_image_is_too_large(self):
+        # The decoder's ImageTooLargeError maps to the "too large" message, not "invalid".
+        image = _subject_image()
+        with self.assertRaises(ValueError) as ctx:
+            self.run_remove_bg("test_transparent", image, _keep_mask((16, 12), (0, 0, 8, 6)))
+        self.assertEqual(str(ctx.exception), remove_bg.UC_REMOVE_BG_KEEP_TOO_LARGE)
+        self.assertIsNone(self.remover.seen)
+
 
 if __name__ == "__main__":
     unittest.main()

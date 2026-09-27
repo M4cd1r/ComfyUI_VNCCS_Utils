@@ -12,16 +12,20 @@ from PIL import Image
 from .constants import _MAX_PIXELS, _MAX_UPLOAD_BYTES
 
 
+class ImageTooLargeError(ValueError):
+    """A data URL whose bytes or pixel count exceed the limit (a subclass of ValueError)."""
+
+
 def _decode_data_url(data_url: str, mode: str, max_pixels: int = _MAX_PIXELS) -> Image.Image:
     if not isinstance(data_url, str) or not data_url:
         raise ValueError("Missing image data")
     payload = data_url.split(",", 1)[1] if "," in data_url else data_url
     raw = base64.b64decode(payload, validate=False)
     if len(raw) > _MAX_UPLOAD_BYTES:
-        raise ValueError("Image upload is too large")
+        raise ImageTooLargeError("Image upload is too large")
     image = Image.open(io.BytesIO(raw))
     if image.width * image.height > max_pixels:
-        raise ValueError("Image dimensions are too large")
+        raise ImageTooLargeError("Image dimensions are too large")
     return image.convert(mode)
 
 

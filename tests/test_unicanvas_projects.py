@@ -19,7 +19,7 @@ import shutil
 import pytest
 from PIL import Image
 
-from nodes.unicanvas import projects
+from nodes.unicanvas import project_io, projects
 from nodes.unicanvas.projects import ProjectError, ProjectStore
 
 
@@ -145,7 +145,7 @@ def test_gc_keeps_referenced_blobs_and_deletes_old_unreferenced_ones(store):
     history.write_text(json.dumps({"image": {"blob": f"{history_sha}.png"}}))
     old_orphan = store.store_png(pid, _png((1, 2, 3, 255)))
     new_orphan = store.store_png(pid, _png((4, 5, 6, 255)))
-    old = projects._now() - projects.BLOB_GC_MIN_AGE_SECONDS - 60
+    old = project_io.now() - projects.BLOB_GC_MIN_AGE_SECONDS - 60
     for sha in (kept, history_sha, old_orphan):
         os.utime(store.blob_path(pid, sha), (old, old))
     assert store.collect_garbage(pid) == [old_orphan]
@@ -190,6 +190,59 @@ def test_zip_export_then_import_round_trips(store):
     assert again["id"] != pid
 
 
+def _thumb_pixel(store, pid, scene_id, xy=(0, 0)):
+    with Image.open(store.thumb_path(pid, scene_id)) as image:
+        return image.convert("RGBA").getpixel(xy)
+
+
+def test_a_scene_saved_without_a_thumbnail_gets_one_rendered_from_its_layers(store):
+    project = store.create_project("Server thumbs")
+    pid, scene_id = project["id"], project["scenes"][0]["id"]
+    entry = store.put_scene(pid, scene_id, _state((0, 0, 255, 255)))
+    assert entry["thumbnail"] == f"thumbs/{scene_id}.png"
+    assert _thumb_pixel(store, pid, scene_id) == (0, 0, 255, 255)
+    assert store.load_project(pid)["scenes"][0]["thumbnail"] == f"thumbs/{scene_id}.png"
+
+    # A later save without one is the client's throttle: the existing thumbnail stays.
+    store.put_scene(pid, scene_id, _state((0, 255, 0, 255)))
+    assert _thumb_pixel(store, pid, scene_id) == (0, 0, 255, 255)
+    # A client thumbnail always wins.
+    store.put_scene(pid, scene_id, _state(), thumbnail=_data_url(_png((255, 255, 0, 255))))
+    assert _thumb_pixel(store, pid, scene_id) == (255, 255, 0, 255)
+
+
+def test_the_server_thumbnail_reads_blob_refs_and_fits_the_thumbnail_size(store):
+    project = store.create_project("Refs")
+    pid = project["id"]
+    big = _png((10, 20, 30, 255), size=(1024, 512))
+    sha = hashlib.sha256(big).hexdigest()
+    store.put_blob(pid, sha, big)
+    state = _state()
+    state["size"] = {"width": 1024, "height": 512}
+    state["bbox"] = {"x": 0, "y": 0, "width": 1024, "height": 512}
+    crop = {"x": 0, "y": 0, "width": 1024, "height": 512}
+    state["layers"][0].update(crop=crop, dataURL={"blob": f"{sha}.png", "crop": crop})
+    scene = store.create_scene(pid, name="From refs", state=state)
+    assert scene["thumbnail"] == f"thumbs/{scene['id']}.png"
+    with Image.open(store.thumb_path(pid, scene["id"])) as image:
+        assert image.size == (projects.THUMBNAIL_SIZE, projects.THUMBNAIL_SIZE // 2)
+        assert image.convert("RGBA").getpixel((5, 5)) == (10, 20, 30, 255)
+
+
+def test_an_empty_or_unrenderable_scene_still_saves_without_a_thumbnail(store):
+    project = store.create_project("Empty")
+    pid, scene_id = project["id"], project["scenes"][0]["id"]
+    entry = store.put_scene(pid, scene_id, {"layers": []})
+    assert entry["thumbnail"] is None and not os.path.isfile(store.thumb_path(pid, scene_id))
+    hidden = _state()
+    hidden["layers"][0]["visible"] = False
+    assert store.put_scene(pid, scene_id, hidden)["thumbnail"] is None
+    broken = _state()
+    broken["bbox"] = {"x": 0, "y": 0, "width": 100000, "height": 100000}  # over the pixel limit
+    entry = store.put_scene(pid, scene_id, broken)
+    assert entry["thumbnail"] is None and entry["rev"] == 4
+
+
 def test_import_refuses_unsafe_zip_paths(store):
     import zipfile
 
@@ -224,8 +277,8 @@ def test_delete_moves_to_trash_and_purges_after_30_days(store):
     assert store.list_projects() == []
     trashed = os.listdir(store.trash)
     assert len(trashed) == 1 and trashed[0].startswith(project["id"])
-    assert store.purge_trash(now=projects._now() + 29 * 24 * 3600) == 0
-    assert store.purge_trash(now=projects._now() + 31 * 24 * 3600) == 1
+    assert store.purge_trash(now=project_io.now() + 29 * 24 * 3600) == 0
+    assert store.purge_trash(now=project_io.now() + 31 * 24 * 3600) == 1
     assert os.listdir(store.trash) == []
 
 
@@ -289,6 +342,8 @@ def test_routes_map_errors_to_status_codes(user_root):
             self.headers = {}
 
         async def json(self):
+            if isinstance(self._payload, Exception):
+                raise self._payload
             return self._payload
 
         async def read(self):
@@ -314,6 +369,18 @@ def test_routes_map_errors_to_status_codes(user_root):
         status, body = await call("PUT", f"{base}/{{id}}/scenes/{{scene}}", match_info={"id": pid, "scene": sid},
                                   payload={"state": _state(), "ifRev": 1})
         assert status == 409 and body["rev"] == 2
+        status, body = await call("GET", f"{base}/{{id}}/thumbs/{{scene}}", match_info={"id": pid, "scene": "scn_missing"})
+        assert status == 404 and "error" in body
+        # Client errors are 400s, not "storage failed" 500s.
+        status, body = await call("PATCH", f"{base}/{{id}}", match_info={"id": pid},
+                                  payload=json.JSONDecodeError("Expecting value", "{", 1))
+        assert status == 400 and "JSON object" in body["error"]
+        status, body = await call("PATCH", f"{base}/{{id}}", match_info={"id": pid}, payload=[1, 2])
+        assert status == 400 and "JSON object" in body["error"]
+        for bad_rev in ("abc", [1], {"n": 1}):
+            status, body = await call("PUT", f"{base}/{{id}}/scenes/{{scene}}", match_info={"id": pid, "scene": sid},
+                                      payload={"state": _state(), "ifRev": bad_rev})
+            assert status == 400 and "ifRev" in body["error"], bad_rev
         status, data = await call("POST", f"{base}/{{id}}/export", match_info={"id": pid})
         assert status == 200 and data[:2] == b"PK"
 

@@ -23,6 +23,8 @@
  */
 
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { uniCanvasSurface } from "./vnccs_unicanvas_surface.mjs";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
 export const PROJECTS_BASE = "/vnccs/unicanvas/projects";
 export const PROJECT_POINTER_KEY = "vnccs-unicanvas-standalone-project";
@@ -80,6 +82,19 @@ export function saveRetryDelay(attempt) {
 export function migrationProjectName(date = new Date()) {
   const pad = (value) => String(value).padStart(2, "0");
   return `Untitled - ${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * True when a layer's stored pixels are exactly `crop`, `dataURL` and the hires pair, keyed by its
+ * `pixelRevision`, so an unchanged revision may reuse the last blob refs. Pose layers (ID pass,
+ * bake parts), sprite sets (every variant's pixels), ControlNet layers with a scene source (its
+ * PNG) and panorama documents carry more pixels than that, which change without a new revision
+ * and are left out of the metadata-only base state: they are always serialized in full.
+ */
+export function isRevisionCacheable(widget, layer) {
+  if (!layer || widget?.panorama) return false;
+  if (layer.type === "pose" || layer.type === "sprite") return false;
+  return !layer.controlSource;
 }
 
 export function blobUrl(projectId, ref) {
@@ -221,13 +236,14 @@ export class UniCanvasProjectSession {
     this.blocked = false;
     this.lastThumbnailAt = 0;
     this.thumbnailDirty = true;
+    this.thumbnailTimer = null;
     this.status = "idle";
     this.listeners = new Set();
     this.stats = { blobUploads: 0, sceneSaves: 0 };
   }
 
   get mode() {
-    return this.widget?.standalone ? "standalone" : "node";
+    return uniCanvasSurface(this.widget);
   }
 
   get attached() {
@@ -377,7 +393,7 @@ export class UniCanvasProjectSession {
       const cached = this.layerCache.get(layer.id);
       const reusable = cached && revision != null && cached.revision === revision
         && cached.canvas === layer.canvas && cached.hires === (layer.hiresCanvas || null)
-        && layer.type !== "pose" && !widget.panorama;
+        && isRevisionCacheable(widget, layer);
       if (reusable) {
         layers.push({ ...base, ...cached.fields });
         continue;
@@ -393,6 +409,23 @@ export class UniCanvasProjectSession {
     const { projectId: _p, sceneId: _s, ...rest } = meta;
     const state = { ...rest, storage: "project", layers };
     return { state, blobs, cacheUpdates, pixelsChanged };
+  }
+
+  thumbnailDue() {
+    return this.thumbnailDirty && this.now() - this.lastThumbnailAt >= THUMBNAIL_MIN_INTERVAL_MS;
+  }
+
+  /**
+   * A thumbnail that was throttled is sent by a trailing save once the interval has passed, so
+   * the last edit of a session always reaches the project list.
+   */
+  scheduleThumbnail() {
+    if (!this.thumbnailDirty || this.thumbnailTimer || typeof document === "undefined") return;
+    const delay = Math.max(0, THUMBNAIL_MIN_INTERVAL_MS - (this.now() - this.lastThumbnailAt));
+    this.thumbnailTimer = setTimeout(() => {
+      this.thumbnailTimer = null;
+      if (this.active && this.attached && this.thumbnailDirty) void this.save();
+    }, delay);
   }
 
   buildThumbnail() {
@@ -478,7 +511,14 @@ export class UniCanvasProjectSession {
     const sceneId = this.sceneId;
     const { state, blobs, cacheUpdates, pixelsChanged } = await this.buildSceneState();
     const json = JSON.stringify(state);
-    if (json === this.lastSavedJSON) return true;
+    if (pixelsChanged) this.thumbnailDirty = true;
+    // A scene the store has no thumbnail for (a new or migrated scene, one saved while the
+    // thumbnail was throttled) still gets one, even when nothing else changed.
+    const thumbnail = this.thumbnailDue() ? this.buildThumbnail() : null;
+    if (json === this.lastSavedJSON && !thumbnail) {
+      this.scheduleThumbnail();
+      return true;
+    }
     this.setStatus("saving", "Saving...");
     for (const [sha, bytes] of blobs) {
       if (this.knownBlobs.has(sha)) continue;
@@ -486,16 +526,12 @@ export class UniCanvasProjectSession {
       this.stats.blobUploads += 1;
       this.knownBlobs.add(sha);
     }
-    if (pixelsChanged) this.thumbnailDirty = true;
     const payload = { state, ifRev: this.rev };
-    if (this.thumbnailDirty && this.now() - this.lastThumbnailAt >= THUMBNAIL_MIN_INTERVAL_MS) {
-      const thumbnail = this.buildThumbnail();
-      if (thumbnail) {
-        payload.thumbnail = thumbnail;
-        this.lastThumbnailAt = this.now();
-        this.thumbnailDirty = false;
-      }
-    }
+    if (thumbnail) {
+      payload.thumbnail = thumbnail;
+      this.lastThumbnailAt = this.now();
+      this.thumbnailDirty = false;
+    } else this.scheduleThumbnail();
     let entry;
     try {
       entry = await this.request("PUT", `${this.projectPath(projectId)}/scenes/${encodeURIComponent(sceneId)}`, { json: payload });
@@ -528,7 +564,7 @@ export class UniCanvasProjectSession {
     const byId = new Map((stored.layers || []).map((item) => [item?.id, item]));
     for (const layer of this.widget.layers || []) {
       const item = byId.get(layer.id);
-      if (!item || layer.type === "pose" || this.widget.panorama) continue;
+      if (!item || !isRevisionCacheable(this.widget, layer)) continue;
       this.layerCache.set(layer.id, {
         revision: layer.pixelRevision, canvas: layer.canvas, hires: layer.hiresCanvas || null,
         fields: { crop: item.crop ?? null, dataURL: item.dataURL ?? null, hiresRect: item.hiresRect ?? null, hiresDataURL: item.hiresDataURL ?? null },
@@ -591,6 +627,7 @@ export class UniCanvasProjectSession {
         this.lastSavedJSON = "";
       }
       this.thumbnailDirty = !entry.thumbnail;
+      this.scheduleThumbnail();
       this.setStatus("saved", "Saved");
       return true;
     } finally {
@@ -709,7 +746,11 @@ export class UniCanvasProjectSession {
       this.afterSceneApplied();
       void this.request("PATCH", this.projectPath(), { json: { activeSceneId: sceneId } }).then((project) => {
         if (project?.id === this.projectId) this.project = { ...project, scenes: this.project.scenes };
-      }).catch(() => {});
+      }).catch((err) => {
+        // The scene is open; only the project's remembered active scene is stale.
+        console.warn("[VNCCS UniCanvas] Saving the active scene failed", err);
+        this.widget.setStatus?.("[VNCCS UniCanvas] The project could not remember this scene as the active one; it reopens on the previous scene.", true);
+      });
     }
     return ok;
   }
@@ -853,6 +894,8 @@ export class UniCanvasProjectSession {
   dispose() {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    if (this.thumbnailTimer) clearTimeout(this.thumbnailTimer);
+    this.thumbnailTimer = null;
     this.releaseLiveScene();
     this.listeners.clear();
   }
@@ -894,11 +937,7 @@ const STYLES = `
 `;
 
 function ensureStyles() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLES;
-  document.head.appendChild(style);
+  ensureStyleTag(STYLE_ID, STYLES);
 }
 
 function button(label, className, onClick, title = label) {
@@ -936,8 +975,9 @@ async function runAction(widget, label, action) {
 function closeSceneMenu(widget) {
   widget._vnccsSceneMenu?.remove();
   widget._vnccsSceneMenu = null;
-  if (widget._vnccsSceneMenuOutside) document.removeEventListener("pointerdown", widget._vnccsSceneMenuOutside, true);
-  widget._vnccsSceneMenuOutside = null;
+  // Aborting removes the menu's document listener, whichever way the menu closes.
+  widget._vnccsSceneMenuAbort?.abort();
+  widget._vnccsSceneMenuAbort = null;
 }
 
 function openSceneMenu(widget, session, scene, event) {
@@ -967,10 +1007,11 @@ function openSceneMenu(widget, session, scene, event) {
   menu.style.top = `${event.clientY}px`;
   document.body.appendChild(menu);
   widget._vnccsSceneMenu = menu;
-  widget._vnccsSceneMenuOutside = (e) => {
+  const abort = new AbortController();
+  widget._vnccsSceneMenuAbort = abort;
+  document.addEventListener("pointerdown", (e) => {
     if (!menu.contains(e.target)) closeSceneMenu(widget);
-  };
-  document.addEventListener("pointerdown", widget._vnccsSceneMenuOutside, true);
+  }, { capture: true, signal: abort.signal });
 }
 
 function renderProjectBar(widget, session) {
@@ -1231,6 +1272,8 @@ export function installUniCanvasProjects(widget, options = {}) {
   if (!widget || widget.projectSession) return widget?.projectSession;
   const session = new UniCanvasProjectSession(widget, options);
   widget.projectSession = session;
+  // The scene menu lives on document.body, outside the widget's DOM.
+  widget.onDispose?.(() => closeSceneMenu(widget));
   if (typeof document !== "undefined" && widget.side) {
     ensureStyles();
     const bar = buildProjectBar(widget, session);

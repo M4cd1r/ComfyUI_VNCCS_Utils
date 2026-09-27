@@ -3,7 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   migratePanoramaState, normalizePanorama, panoramaLayerSettings, panoramaSettingsFromState, stateHasPanorama,
-  isPanoramaLayer, PANORAMA_STATE_VERSION,
+  isPanoramaLayer, PANORAMA_STATE_VERSION, PANORAMA_VIEW_HISTORY_KIND, PANORAMA_DEFAULT_CAMERA, applyPanoramaViewHistory,
+  panoramaView, samePanoramaView,
 } from "../web/vnccs_unicanvas_panorama.mjs";
 import { isImageLayer } from "../web/vnccs_unicanvas_pose_state.mjs";
 
@@ -90,10 +91,12 @@ async function panelFixture() {
     endCamera() { calls.push("end"); this.settings = this.pendingCamera || this.settings; this.pendingCamera = null; },
     flushCamera() { calls.push("flush"); },
     project() { calls.push("project"); },
+    canRotate() { return this.rotatable !== false; },
   };
   const widget = {
     layers: [{ id: "edit", type: "raster", name: "Paint" }, { id: "base", type: "panorama", name: "Sky" }],
-    activeLayerId: "edit", status: null, synced: 0,
+    activeLayerId: "edit", status: null, synced: 0, history: [],
+    pushHistoryEntry(entry) { this.history.push(entry); },
     setStatus(message) { this.status = message; }, requestRender() {},
     syncLightStateToWidget() { this.synced++; }, scheduleFullSync() {},
     updatePanoramaControls() { panel.update(doc); },
@@ -136,22 +139,107 @@ test("a camera change that cannot start leaves the view and fields unchanged", a
   } finally { restore(); }
 });
 
-test("the panel follows the panorama layer: hidden without one, opened when it becomes active", async () => {
+// --- panorama view session (#33) -------------------------------------------------------------
+
+const slide = (panel, key, ...values) => {
+  const { range } = panel.fields[key];
+  globalThis.document.activeElement = range;
+  for (const value of values) { range.value = String(value); range.fire("input"); }
+  range.fire("change");
+  globalThis.document.activeElement = null;
+};
+
+test("the view panel is hidden until the globe button opens a view session", async () => {
   const { panel, doc, widget, restore } = await panelFixture();
   try {
     panel.update(null);
     assert.equal(panel.element.hidden, true);
     panel.update(doc);
-    assert.equal(panel.element.hidden, false);
-    assert.equal(panel.details.open, false, "an overlay layer is active");
-    assert.match(panel.summary.textContent, /Sky/);
+    assert.equal(panel.element.hidden, true, "a loaded panorama alone does not show its settings");
     widget.activeLayerId = "base"; panel.update(doc);
-    assert.equal(panel.details.open, true); assert.equal(panel.details.classes.has("active"), true);
-    panel.details.open = false; panel.update(doc);
-    assert.equal(panel.details.open, false, "a folded panel stays folded while the layer stays active");
-    widget.activeLayerId = "edit"; panel.update(doc);
-    assert.equal(panel.details.classes.has("active"), false);
+    assert.equal(panel.element.hidden, true, "selecting the panorama layer does not open the view mode");
+    assert.equal(panel.enter(), true);
+    assert.equal(panel.element.hidden, false); assert.equal(panel.details.open, true);
+    assert.match(panel.summary.textContent, /Sky/);
+    assert.deepEqual(Object.keys(panel.actions), ["reset", "cancel", "save"]);
+    panel.actions.save.fire("click");
+    assert.equal(panel.element.hidden, true, "Save leaves the view mode");
   } finally { restore(); }
+});
+
+test("sliders move the view live inside the session and Save records one history entry", async () => {
+  const { panel, doc, widget, calls, restore } = await panelFixture();
+  try {
+    panel.update(doc); panel.enter();
+    slide(panel, "yaw", 20, 35);
+    assert.deepEqual(calls.slice(-4), ["begin", ["set", { yaw: 20 }], ["set", { yaw: 35 }], "end"], "every input event moves the view");
+    slide(panel, "fov", 60);
+    panel.quality.value = "sharp"; panel.quality.fire("change");
+    assert.equal(widget.history.length, 0, "nothing is recorded before Save");
+    const entry = panel.save();
+    assert.equal(widget.history.length, 1); assert.equal(widget.history[0], entry);
+    assert.equal(entry.kind, PANORAMA_VIEW_HISTORY_KIND);
+    assert.deepEqual(entry.before, { yaw: 10, pitch: 0, roll: 0, fov: 90, quality: "balanced" });
+    assert.deepEqual(entry.after, { yaw: 35, pitch: 0, roll: 0, fov: 60, quality: "sharp" });
+    assert.equal(panel.element.hidden, true);
+    panel.enter();
+    assert.equal(panel.save(), null, "an unchanged view adds no history");
+    assert.equal(widget.history.length, 1);
+  } finally { restore(); }
+});
+
+test("Cancel restores the view from before the session; Reset returns to the initial view", async () => {
+  const { panel, doc, widget, restore } = await panelFixture();
+  try {
+    panel.update(doc); panel.enter();
+    slide(panel, "yaw", 70);
+    slide(panel, "pitch", -20);
+    assert.equal(panel.reset(), true);
+    assert.deepEqual([doc.settings.yaw, doc.settings.pitch, doc.settings.roll, doc.settings.fov], [0, 0, 0, 90]);
+    assert.equal(panel.element.hidden, false, "Reset keeps the view mode open");
+    assert.equal(panel.fields.yaw.number.value, "0", "the fields follow the reset view");
+    assert.equal(panel.cancel(), true);
+    assert.equal(doc.settings.yaw, 10); assert.equal(doc.settings.pitch, 0);
+    assert.equal(widget.history.length, 0, "Cancel records nothing");
+    assert.equal(panel.element.hidden, true);
+  } finally { restore(); }
+});
+
+test("a blocked edit keeps the session closed and a replaced document ends it without history", async () => {
+  const { panel, doc, widget, restore } = await panelFixture();
+  try {
+    panel.update(doc);
+    doc.rotatable = false;
+    assert.equal(panel.enter(), false);
+    assert.equal(panel.element.hidden, true);
+    doc.rotatable = true; panel.enter();
+    slide(panel, "yaw", 40);
+    // A blocked restore (an edit in progress) keeps the session open instead of losing the start view.
+    doc.beginCamera = () => false;
+    assert.equal(panel.cancel(), false); assert.equal(panel.element.hidden, false);
+    const replacement = { ...doc, settings: { ...doc.settings } };
+    panel.update(replacement);
+    assert.equal(panel.session.active, false); assert.equal(panel.element.hidden, true);
+    assert.equal(widget.history.length, 0);
+  } finally { restore(); }
+});
+
+test("undo and redo of a saved view move the camera and keep the document settings", () => {
+  const events = [];
+  const doc = { settings: normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, baseLayerId: "base", contentRevision: 5, yaw: 35, fov: 60, quality: "sharp" }),
+    revision: 0, commit() { events.push("commit"); } };
+  const widget = { panorama: doc, clearSamPrompt() { events.push("sam"); }, updatePanoramaControls() { events.push("controls"); } };
+  const entry = { kind: PANORAMA_VIEW_HISTORY_KIND, before: { yaw: 10, pitch: 0, roll: 0, fov: 90, quality: "balanced" }, after: { yaw: 35, pitch: 0, roll: 0, fov: 60, quality: "sharp" } };
+  assert.equal(applyPanoramaViewHistory(widget, entry, "undo"), true);
+  assert.deepEqual([doc.settings.yaw, doc.settings.fov, doc.settings.quality], [10, 90, "balanced"]);
+  assert.equal(doc.settings.baseLayerId, "base"); assert.equal(doc.settings.contentRevision, 5);
+  assert.deepEqual(events, ["commit", "sam", "controls"], "pixels are committed at the old camera first");
+  assert.equal(doc.revision, 1, "late SAM results of the old view are ignored");
+  applyPanoramaViewHistory(widget, entry, "redo");
+  assert.deepEqual([doc.settings.yaw, doc.settings.fov, doc.settings.quality], [35, 60, "sharp"]);
+  assert.equal(applyPanoramaViewHistory({ panorama: null }, entry, "undo"), false);
+  assert.equal(samePanoramaView(panoramaView(doc.settings), entry.after), true);
+  assert.deepEqual(PANORAMA_DEFAULT_CAMERA, { yaw: 0, pitch: 0, roll: 0, fov: 90 });
 });
 
 test("navigation quality and projection are layer settings saved with the document", async () => {

@@ -12,6 +12,8 @@ import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenanc
 import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
 import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { isUniCanvasEnabled, isUniCanvasToolEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { isUniCanvasModalOpen, isUniCanvasTextTarget, syncUniCanvasHistoryKeyCapture, uniCanvasHistoryKeyAction } from "./vnccs_unicanvas_history_keys.mjs";
+import { isUniCanvasFeatureAvailable, isUniCanvasStandalone, markUniCanvasStandaloneNode } from "./vnccs_unicanvas_surface.mjs";
 import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
@@ -50,9 +52,16 @@ const EXIT_FULLSCREEN_ICON_SVG =
 const TRUE_FULLSCREEN_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M13 7h4a2 2 0 0 1 2 2v4"/><path d="M11 17H7a2 2 0 0 1-2-2v-4"/></svg>';
 
+// The standalone tab sits above ComfyUI's graph chrome (canvas toolbars 1200/1300, graph
+// dialogs 1500) but below ComfyUI's own layers: the getting-started screen (1600), dialogs
+// (1700, PrimeVue modals from 1800), tooltips and toasts. Opening Settings from the tab must
+// show the dialog on top. UniCanvas's own modals and popovers live inside the shell (its own
+// stacking context) and the few it portals to <body> keep their much higher z-index.
+export const UNICANVAS_STANDALONE_Z_INDEX = 1550;
+
 const UNICANVAS_MODE_STYLES = `
 i.${UNICANVAS_SIDEBAR_ICON_CLASS} { display: inline-block; width: 1.6em; height: 1.6em; background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat; }
-.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 2147481000; background: #0e0b12; }
+.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: ${UNICANVAS_STANDALONE_Z_INDEX}; background: #0e0b12; }
 .vnccs-uc2-standalone-shell > .vnccs-unicanvas { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; }
 .vnccs-uc2-config-hint { margin: 2px 8px 0; padding: 6px 8px; border: 1px dashed rgba(255, 143, 163, 0.35); border-radius: 8px; color: #f3c9d2; font-size: 12px; line-height: 1.3; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,
@@ -88,6 +97,9 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
 .vnccs-uc-fullscreen .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
+/* Tool settings open beside the toolbar, never over it: the toolbar is 16px + 92px wide at its
+   own zoom, so at half zoom its right edge sits at 54px (+ a gap) in the settings' units. */
+.vnccs-uc-fullscreen .vnccs-uc-tool-settings, body.${UNICANVAS_STANDALONE_BODY_CLASS} .vnccs-uc-tool-settings { --vnccs-uc-tool-settings-left: 66px; }
 `;
 
 export function ensureUniCanvasModeStyles() {
@@ -99,15 +111,8 @@ export function ensureUniCanvasModeStyles() {
   document.head.appendChild(style);
 }
 
-export function isUniCanvasTextTarget(event) {
-  const target = event?.target;
-  return Boolean(target?.closest?.("input, textarea, select, [contenteditable]"));
-}
-
-export function isUniCanvasModalOpen(widget) {
-  // The widget's confirm/prompt modal owns Enter and Escape while it is open.
-  return Boolean(widget?.container?.querySelector(".vnccs-uc-modal-overlay"));
-}
+// Text-field and modal checks live with the undo / redo capture (vnccs_unicanvas_history_keys.mjs).
+export { isUniCanvasModalOpen, isUniCanvasTextTarget };
 
 function isUniCanvasCanvasFocused(widget, event) {
   const target = event?.target;
@@ -166,16 +171,9 @@ export function handleUniCanvasShortcut(widget, event) {
     else widget.cancelTransformDraft?.();
     return true;
   }
-  // Pose editing: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z walk the mannequin's history from anywhere in
-  // the widget (the Pose Studio viewport has focus then, not the canvas).
-  const historyKey = (event.ctrlKey || event.metaKey) && !event.altKey ? key.toLowerCase() : "";
-  if ((historyKey === "z" || historyKey === "y") && widget.tool === "pose" && widget.poseEditSession
-    && widget.container?.contains?.(event.target)) {
-    consumeUniCanvasShortcut(event);
-    if (historyKey === "y" || event.shiftKey) widget.redo();
-    else widget.undo();
-    return true;
-  }
+  // Undo / redo are not handled here. In fullscreen and the standalone tab the history key
+  // capture (vnccs_unicanvas_history_keys.mjs) owns them; inline on the node they stay with
+  // ComfyUI's own undo / redo (m4cd1r, #33).
   // Esc exits fullscreen from anywhere inside the fullscreen (chrome behavior).
   if (key === "Escape" && widget._vnccsFullscreen) {
     consumeUniCanvasShortcut(event);
@@ -196,17 +194,10 @@ export function handleUniCanvasShortcut(widget, event) {
   if (!isUniCanvasCanvasFocused(widget, event)) return false;
   const lower = key.toLowerCase();
   const modifier = event.ctrlKey || event.metaKey;
-  // History: Ctrl+Z / Ctrl+Shift+Z.
-  if (modifier && !event.altKey && (lower === "z" || lower === "y")) {
-    consumeUniCanvasShortcut(event);
-    if (lower === "y" || event.shiftKey) widget.redo();
-    else widget.undo();
-    return true;
-  }
   // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
   // (Alt+digit types other characters on some keyboards).
   const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
-  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex && isUniCanvasEnabled("sceneStates")) {
+  if (event.altKey && !modifier && !event.shiftKey && stateDigit && widget.applySceneStateByIndex && isUniCanvasFeatureAvailable(widget, "sceneStates")) {
     consumeUniCanvasShortcut(event);
     widget.applySceneStateByIndex(Number(stateDigit[1] || stateDigit[0]) - 1);
     return true;
@@ -218,7 +209,7 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   // P toggles the VN preview overlay.
-  if (lower === "p" && widget.vnPreview && isUniCanvasEnabled("vnPreview")) {
+  if (lower === "p" && widget.vnPreview && isUniCanvasFeatureAvailable(widget, "vnPreview")) {
     consumeUniCanvasShortcut(event);
     widget.vnPreview.toggle();
     return true;
@@ -266,23 +257,6 @@ function installUniCanvasShortcuts(widget) {
   widget.container.addEventListener("keydown", (event) => {
     handleUniCanvasShortcut(widget, event);
   });
-  // Pose Studio's WebGL viewport does not take keyboard focus, so while a pose is edited the
-  // history keys arrive on the document. They count when the last click was inside this widget.
-  const controller = new AbortController();
-  widget._vnccsPoseKeysAbort = controller;
-  document.addEventListener("pointerdown", (event) => {
-    widget._vnccsPointerInside = Boolean(widget.container?.contains?.(event.target));
-  }, { capture: true, signal: controller.signal });
-  document.addEventListener("keydown", (event) => {
-    if (!widget.poseEditSession || widget.tool !== "pose" || !widget._vnccsPointerInside) return;
-    if (widget.container?.contains?.(event.target) || isUniCanvasTextTarget(event)) return; // the container handler has it
-    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-    const key = String(event.key || "").toLowerCase();
-    if (key !== "z" && key !== "y") return;
-    consumeUniCanvasShortcut(event);
-    if (key === "y" || event.shiftKey) widget.redo();
-    else widget.undo();
-  }, { signal: controller.signal });
 }
 
 function toggleUniCanvasTrueFullscreen(widget) {
@@ -347,6 +321,8 @@ export function enterUniCanvasFullscreen(widget) {
   // keys before they reach it, so it gets them first.
   const orbitTarget = (event) => (widget.panoramaOrbit && event.target === widget.panoramaOrbit.canvas ? widget.panoramaOrbit : null);
   const onKeyDown = (event) => {
+    // Undo / redo belong to the history key capture (vnccs_unicanvas_history_keys.mjs), from any focus.
+    if (uniCanvasHistoryKeyAction(event)) return;
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
     orbitTarget(event)?.keyDown(event);
@@ -390,6 +366,7 @@ export function enterUniCanvasFullscreen(widget) {
     onKeyPress,
     onFullscreenChange,
   };
+  syncUniCanvasHistoryKeyCapture(widget);
   syncUniCanvasFullscreenButton(widget);
   // The ResizeObserver re-lays out; the view fits the new size.
   widget.resize();
@@ -422,6 +399,7 @@ export function exitUniCanvasFullscreen(widget) {
     }
   }
   widget._vnccsFullscreen = null;
+  syncUniCanvasHistoryKeyCapture(widget);
   syncUniCanvasFullscreenButton(widget);
   if (!widget._disposed) {
     widget.resize();
@@ -442,7 +420,7 @@ function syncUniCanvasFullscreenButton(widget) {
 
 function installUniCanvasFullscreenButton(widget) {
   // The standalone tab already fills the window, so a fullscreen toggle there is redundant.
-  if (widget.standalone) return;
+  if (isUniCanvasStandalone(widget)) return;
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "vnccs-uc-icon vnccs-uc2-fullscreen-btn";
@@ -587,7 +565,7 @@ export async function newUniCanvasDocument(widget) {
 function installUniCanvasOutputActions(widget) {
   // Only the standalone tab needs these: on a node the composite already goes to the
   // node's image output, so Save to output would just duplicate it.
-  if (!widget.standalone) return;
+  if (!isUniCanvasStandalone(widget)) return;
   const row = document.createElement("div");
   row.className = "vnccs-uc2-output-actions";
   row.append(widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas"));
@@ -607,7 +585,7 @@ export function installUniCanvasWidgetModes(widget) {
   installUniCanvasShortcuts(widget);
   installUniCanvasFullscreenButton(widget);
   installUniCanvasOutputActions(widget);
-  if (widget.standalone) {
+  if (isUniCanvasStandalone(widget)) {
     installStandaloneEngineNote(widget);
     installStandalonePersistence(widget);
   }
@@ -712,9 +690,9 @@ export function teardownUniCanvasWidgetModes(widget) {
   // leave fullscreen (without touching a disposed widget) and flush/clear the
   // pending standalone persistence timer.
   exitUniCanvasFullscreen(widget);
+  widget._vnccsStandaloneActive = false;
+  syncUniCanvasHistoryKeyCapture(widget);
   flushStandalonePersistence(widget);
-  widget._vnccsPoseKeysAbort?.abort();
-  widget._vnccsPoseKeysAbort = null;
 }
 
 function readStandalonePersistedStateValue() {
@@ -736,12 +714,13 @@ function readStandalonePersistedStateValue() {
 function createStandaloneWidget(UniCanvasWidgetClass) {
   // No node and no workflow: the stub only feeds the existing restore pipeline
   // (hidden unicanvas_state widget) and carries a size hint.
-  const stubNode = {
+  // The marker tells the widget its surface from the constructor on (vnccs_unicanvas_surface.mjs).
+  const stubNode = markUniCanvasStandaloneNode({
     id: undefined,
     inputs: [],
     size: [1280, 860],
     widgets: [{ name: "unicanvas_state", value: readStandalonePersistedStateValue() }],
-  };
+  });
   const widget = new UniCanvasWidgetClass(stubNode);
   widget.standalone = true;
   installUniCanvasWidgetModes(widget);
@@ -857,6 +836,8 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
 
   const syncStandaloneChrome = () => {
     if (!widget) return;
+    // The open tab owns undo / redo; a hidden one gives them back to ComfyUI.
+    widget._vnccsStandaloneActive = active;
     if (active) {
       if (widget._vnccsFullscreen) exitUniCanvasFullscreen(widget);
       if (!shell) {
@@ -884,6 +865,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       if (!parking) parking = document.createDocumentFragment();
       (mountContainer?.isConnected ? mountContainer : parking).appendChild(widget.container);
     }
+    syncUniCanvasHistoryKeyCapture(widget);
     widget.resize?.();
     widget.requestRender?.();
   };

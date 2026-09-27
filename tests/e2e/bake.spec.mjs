@@ -1,5 +1,6 @@
+import { crc32, deflateSync } from "node:zlib";
 import { test, expect } from "@playwright/test";
-import { openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { addPoseCharacter, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
 
 // Plan 02 (#5): character bake and scene Generate. /vnccs/unicanvas/draw and
 // /vnccs/unicanvas/remove_bg are stubbed with in-memory PNGs, so nothing runs inference.
@@ -9,10 +10,37 @@ const CARD = ".vnccs-uc-pose-side .vnccs-uc-pose-character";
 const hook = (page, name, ...args) => page.evaluate(([fn, rest]) => globalThis.__VNCCS_UC_E2E__[fn](...rest), [name, args]);
 const bake = (page, id) => hook(page, "getPoseBake", id);
 
-// 2x2 PNGs: a red "generated" image and an opaque white remove-background mask.
+/** A solid opaque RGB PNG, built in memory. */
+function solidPng(width, height, [r, g, b]) {
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x += 1) row.set([r, g, b], 1 + x * 3);
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(Buffer.concat(Array.from({ length: height }, () => row)))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+// A red "generated" image at a model-like resolution (the bake cuts the character out along the
+// mannequin silhouette scaled to the result, which a 2x2 image cannot hold), a 2x2 red reference
+// and an opaque white remove-background mask.
 const PNG_RED = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGO4o6EBRAwQCgAjrgSxn17XlQAAAABJRU5ErkJggg==";
 const PNG_WHITE = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=";
-const RED_URL = `data:image/png;base64,${PNG_RED}`;
+const RED_URL = `data:image/png;base64,${solidPng(512, 512, [255, 0, 0]).toString("base64")}`;
 const WHITE_URL = `data:image/png;base64,${PNG_WHITE}`;
 const reference = (name) => ({ name, mimeType: "image/png", buffer: Buffer.from(PNG_RED, "base64") });
 
@@ -106,7 +134,7 @@ test("a manual bake is staged, accepted and shown; Show mannequin needs no histo
 
   // Editing the pose makes the bake stale; its pixels stay visible after saving.
   await page.locator(`${SHELL} [data-layer-id="${pose.id}"] .vnccs-uc-layer-edit-pose`).click();
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await page.locator('.vnccs-uc-pose-side [aria-label="Remove Character 2"]').click();
   await page.locator('[role="dialog"] button, [class*="modal"] button', { hasText: /^Remove/ }).last().click();
   const box = await page.locator(STAGE).first().boundingBox();
@@ -125,7 +153,7 @@ test("GENERATE bakes the bound mannequin only, runs the scene pass, and one undo
   await useBakeEngine(page);
   await openPoseTool(page);
   const pose = await poseLayer(page);
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
   const row = page.locator(`${CARD} .vnccs-uc-pose-character-item`).first();
   const [chooser] = await Promise.all([page.waitForEvent("filechooser"), row.getByRole("button", { name: "Upload image" }).click()]);
@@ -163,7 +191,7 @@ test("with nothing to bake GENERATE sends only the scene request, and a failed b
   await expect(page.locator(`${SHELL} [title="Accept as layer"]`).first()).toBeVisible({ timeout: 60_000 });
   expect(draws).toHaveLength(1);
   expect(draws[0].pose_edit).toBeUndefined();
-  await page.locator(`${SHELL} [title="Discard"], ${SHELL} [title="Discard staging"]`).first().click().catch(() => {});
+  await page.locator(`${SHELL} [title="Discard"]`).first().click().catch(() => {});
 
   await page.locator(`${SHELL} [data-layer-id="${pose.id}"] .vnccs-uc-layer-edit-pose`).click();
   await bindFirstCharacter(page);

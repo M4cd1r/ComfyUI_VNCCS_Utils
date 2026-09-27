@@ -266,6 +266,21 @@ class FlatDocument:
             return 0, 0
         return int(round(_number(offset.get("x"), 0))), int(round(_number(offset.get("y"), 0)))
 
+    def layer_scale(self, layer: dict[str, Any], origin: dict[str, float]) -> tuple[float, float, float]:
+        """A per-state depth scale of the layer: (scale, anchor x, anchor y) in canvas-local pixels.
+
+        The scale applies around the anchor (the character's feet) before the offset, like
+        web/vnccs_unicanvas_state_offset.mjs; states without one give (1, 0, 0).
+        """
+        offset = layer.get("stateOffset")
+        if not isinstance(offset, dict):
+            return 1.0, 0.0, 0.0
+        scale = _number(offset.get("scale"), 1.0)
+        if not (math.isfinite(scale) and scale > 0) or abs(scale - 1.0) <= 1e-6:
+            return 1.0, 0.0, 0.0
+        scale = min(64.0, max(1.0 / 64.0, scale))
+        return scale, _number(offset.get("ax"), 0.0) - origin["x"], _number(offset.get("ay"), 0.0) - origin["y"]
+
     def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
         """Validate a layer's crop rectangle against the output size."""
 
@@ -316,6 +331,9 @@ class EquirectangularPanorama(FlatDocument):
     def layer_offset(self, layer: dict[str, Any]) -> tuple[int, int]:
         return 0, 0  # every panorama layer covers the whole document
 
+    def layer_scale(self, layer: dict[str, Any], origin: dict[str, float]) -> tuple[float, float, float]:
+        return 1.0, 0.0, 0.0
+
     def check_layer(self, crop: tuple[int, int, int, int], size: tuple[int, int]) -> None:
         if crop != (0, 0, *size):
             raise ValueError("Panorama layer dimensions do not match the document")
@@ -329,7 +347,8 @@ class EquirectangularPanorama(FlatDocument):
 # kept them in state["panorama"] with a raster base layer.
 PANORAMA_LAYER_TYPE = "panorama"
 _PANORAMA_BASE_TYPES = {"raster", PANORAMA_LAYER_TYPE}
-_IMAGE_LAYER_TYPES = {"raster", "pose", PANORAMA_LAYER_TYPE}
+# Sprite sets (web/vnccs_unicanvas_sprites.mjs) store their active variant as ordinary pixels.
+_IMAGE_LAYER_TYPES = {"raster", "pose", "sprite", PANORAMA_LAYER_TYPE}
 
 
 def _panorama_settings(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -359,6 +378,53 @@ def _document_projection(state: dict[str, Any]) -> FlatDocument:
     return document_class(state)
 
 
+def _composite_onto(target: Image.Image, image: Image.Image, position: tuple[int, int], blend_mode: str) -> None:
+    """Draw `image` onto `target` in place at `position` with a layer blend mode."""
+    blend_mode = str(blend_mode or "source-over").lower()
+    if blend_mode in {"source-over", "normal"} or blend_mode not in BLEND_MODES:
+        target.alpha_composite(image, position)
+        return
+    left, top = position
+    box = (left, top, left + image.width, top + image.height)
+    target.paste(_alpha_composite_with_blend(target.crop(box), image, blend_mode), (left, top))
+
+
+# Layer groups (web/vnccs_unicanvas_groups.mjs): a group carries no pixels. A pass-through group
+# at full opacity draws its children in place; any other group is isolated - its children are
+# composited on their own surface, drawn with the group's opacity and blend mode.
+GROUP_LAYER_TYPE = "group"
+GROUP_PASS_THROUGH = "pass-through"
+
+
+def _is_isolated_group(group: dict[str, Any]) -> bool:
+    mode = str(group.get("blendMode") or GROUP_PASS_THROUGH).lower()
+    return mode != GROUP_PASS_THROUGH or _number(group.get("opacity"), 1.0) < 0.999
+
+
+def _layer_tree(layers: list[Any]) -> list[tuple[dict[str, Any], list]]:
+    """[(layer, children)] in stack order; a missing or cyclic parent puts a layer at the root."""
+    items = [layer for layer in layers if isinstance(layer, dict)]
+    groups = {layer.get("id"): layer for layer in items if layer.get("type") == GROUP_LAYER_TYPE and layer.get("id")}
+
+    def parent_of(layer: dict[str, Any]) -> dict[str, Any] | None:
+        parent = groups.get(layer.get("groupId"))
+        seen: set[int] = set()
+        node = parent
+        while node is not None and id(node) not in seen:
+            if node is layer:
+                return None
+            seen.add(id(node))
+            node = groups.get(node.get("groupId"))
+        return parent
+
+    nodes = {id(layer): (layer, []) for layer in items}
+    roots: list[tuple[dict[str, Any], list]] = []
+    for layer in items:
+        parent = parent_of(layer)
+        (nodes[id(parent)][1] if parent is not None else roots).append(nodes[id(layer)])
+    return roots
+
+
 def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
     document = _document_projection(_load_unicanvas_state(unicanvas_state))
     origin = document.origin()
@@ -370,18 +436,15 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         raise ValueError("UniCanvas output dimensions are too large")
     bbox_local_x = bbox["x"] - origin["x"]
     bbox_local_y = bbox["y"] - origin["y"]
-    out = Image.new("RGBA", (width, height), (0, 0, 0, 0))
 
-    for layer in reversed(document.layers()):
-        if not isinstance(layer, dict):
-            continue
-        if layer.get("type") not in _IMAGE_LAYER_TYPES or layer.get("visible") is False:
-            continue
+    def draw_layer(target: Image.Image, layer: dict[str, Any]) -> None:
+        if layer.get("type") not in _IMAGE_LAYER_TYPES:
+            return
         crop = layer.get("crop")
         data_url = layer.get("dataURL")
         if not isinstance(crop, dict) or not data_url:
             document.missing_pixels(layer)
-            continue
+            return
 
         layer_x = int(round(_number(crop.get("x"), 0)))
         layer_y = int(round(_number(crop.get("y"), 0)))
@@ -389,30 +452,52 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         layer_h = max(1, int(round(_number(crop.get("height"), 1))))
         document.check_layer((layer_x, layer_y, layer_w, layer_h), (width, height))
         offset_x, offset_y = document.layer_offset(layer)
-        dst_x = int(round(layer_x + offset_x - bbox_local_x))
-        dst_y = int(round(layer_y + offset_y - bbox_local_y))
+        scale, anchor_x, anchor_y = document.layer_scale(layer, origin)
+        placed_w, placed_h = layer_w, layer_h
+        left, top = float(layer_x), float(layer_y)
+        if scale != 1.0:
+            left = anchor_x + (layer_x - anchor_x) * scale
+            top = anchor_y + (layer_y - anchor_y) * scale
+            placed_w = max(1, int(round(layer_w * scale)))
+            placed_h = max(1, int(round(layer_h * scale)))
+        dst_x = int(round(left + offset_x - bbox_local_x))
+        dst_y = int(round(top + offset_y - bbox_local_y))
         inter_left = max(0, dst_x)
         inter_top = max(0, dst_y)
-        inter_right = min(width, dst_x + layer_w)
-        inter_bottom = min(height, dst_y + layer_h)
+        inter_right = min(width, dst_x + placed_w)
+        inter_bottom = min(height, dst_y + placed_h)
         if inter_right <= inter_left or inter_bottom <= inter_top:
-            continue
+            return
 
         image = _decode_data_url(str(data_url), "RGBA", max_pixels=pixel_limit)
         document.check_image(image, (width, height))
+        if scale != 1.0:
+            image = image.resize((placed_w, placed_h), Image.BICUBIC)
         src_left = inter_left - dst_x
         src_top = inter_top - dst_y
         src_right = src_left + (inter_right - inter_left)
         src_bottom = src_top + (inter_bottom - inter_top)
         image = image.crop((src_left, src_top, src_right, src_bottom))
         image = _apply_layer_opacity(image, _number(layer.get("opacity"), 1.0))
-        blend_mode = str(layer.get("blendMode") or "source-over").lower()
-        if blend_mode in {"source-over", "normal"} or blend_mode not in BLEND_MODES:
-            out.alpha_composite(image, (inter_left, inter_top))
-        else:
-            region = out.crop((inter_left, inter_top, inter_right, inter_bottom))
-            out.paste(_alpha_composite_with_blend(region, image, blend_mode), (inter_left, inter_top))
+        _composite_onto(target, image, (inter_left, inter_top), layer.get("blendMode"))
 
+    def draw_nodes(target: Image.Image, nodes: list[tuple[dict[str, Any], list]]) -> None:
+        for layer, children in reversed(nodes):
+            if layer.get("visible") is False:
+                continue
+            if layer.get("type") != GROUP_LAYER_TYPE:
+                draw_layer(target, layer)
+            elif not _is_isolated_group(layer):
+                draw_nodes(target, children)
+            elif children and _number(layer.get("opacity"), 1.0) > 0:
+                surface = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+                draw_nodes(surface, children)
+                mode = str(layer.get("blendMode") or GROUP_PASS_THROUGH).lower()
+                _composite_onto(target, _apply_layer_opacity(surface, _number(layer.get("opacity"), 1.0)),
+                                (0, 0), "source-over" if mode == GROUP_PASS_THROUGH else mode)
+
+    out = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw_nodes(out, _layer_tree(document.layers()))
     return out
 
 

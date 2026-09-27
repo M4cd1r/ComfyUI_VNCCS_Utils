@@ -17,6 +17,7 @@ children's names with the same model, text only.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from typing import Any
@@ -190,8 +191,12 @@ def _name_group(children: Any, key: str) -> str | None:
     messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
     try:
         return clean_layer_name(_generate(messages, None, key, 12))
-    except Exception:
+    except (TypeError, ValueError):
         # A processor that refuses text-only input leaves the group with its current name.
+        return None
+    except Exception as exc:
+        # Naming is best effort, but a real failure (OOM, CUDA) must not vanish silently.
+        logging.warning("[VNCCS UniCanvas] Group naming failed, keeping the current name: %s", exc, exc_info=True)
         return None
 
 

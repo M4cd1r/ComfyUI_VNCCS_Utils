@@ -54,11 +54,14 @@ import {
   shadowLengthFactor,
 } from "./vnccs_unicanvas_scene_place.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, stateOffsetRestRect } from "./vnccs_unicanvas_state_offset.mjs";
 import { currentNormalPass, isImageLayer } from "./vnccs_unicanvas_pose_state.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 // Import cycle with the layer tools (they list this module's menu entries): only functions and
 // constants read at call time cross it.
 import { COLOR_MATCH_METHODS, COLOR_MATCH_ROUTE, COLOR_MATCH_STRENGTH_MAX, placeInHost } from "./vnccs_unicanvas_layer_tools.mjs";
+import { escapeHtml, finiteOrNull } from "./vnccs_unicanvas_util.mjs";
+import { drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
 
 export const SHADOW_KINDS = Object.freeze(["contact", "cast"]);
 export const SHADOW_LAYER_HISTORY_KIND = "shadowLayer";
@@ -80,10 +83,7 @@ export const SHADOW_PARAM_SPECS = Object.freeze({
   ]),
 });
 
-function finite(value) {
-  const number = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
-  return typeof number === "number" && Number.isFinite(number) ? number : null;
-}
+const finite = finiteOrNull;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -155,6 +155,19 @@ export function previewPoint(preview, point) {
   };
 }
 
+/**
+ * A world-placed silhouette in the shadow layer's own stored space: the inverse of the shadow's
+ * scene-state placement (move and depth scale, vnccs_unicanvas_state_offset.mjs), so the stored
+ * pixels land where the silhouette shows once the render applies that placement again.
+ */
+export function shadowStoredPlacement(placed, ownOffset) {
+  const m = stateOffsetMatrix(ownOffset);
+  const scale = m[0] || 1;
+  const at = (point) => ({ x: (point.x - m[4]) / scale, y: (point.y - m[5]) / scale });
+  const rect = (value) => ({ ...at(value), width: value.width / scale, height: value.height / scale });
+  return { canvas: placed.canvas, canvasRect: rect(placed.canvasRect), rect: rect(placed.rect), feet: at(placed.feet), feetWidth: placed.feetWidth / scale };
+}
+
 /** The contact ellipse for a character with alpha box width `boxWidth` and feet span `feetWidth`. */
 export function contactShadowGeometry(feet, boxWidth, feetWidth, params) {
   const p = normalizeShadow({ sourceLayerId: "x", kind: "contact", params }).params;
@@ -213,8 +226,11 @@ export function castShadowStrength(light) {
 /** A layer's live scene-state offset (vnccs_unicanvas_states.mjs); render time only. */
 function stateOffsetOf(uc, layer) {
   const offset = typeof uc.getLayerStateOffset === "function" ? uc.getLayerStateOffset(layer) : null;
-  return { x: offset?.x || 0, y: offset?.y || 0 };
+  return normalizeStateOffset(offset);
 }
+
+/** A cache key part for a state placement (move and depth scale). */
+const offsetKey = (offset) => [offset.x, offset.y, offset.scale ?? 1, offset.ax ?? 0, offset.ay ?? 0].join(":");
 
 function sourceLayerOf(uc, layer) {
   const id = layer?.shadow?.sourceLayerId;
@@ -223,19 +239,45 @@ function sourceLayerOf(uc, layer) {
   return source && source !== layer && !source.shadow ? source : null;
 }
 
+/** The source's open Free Transform draft (the widget's live preview), if any. */
+function transformDraftOf(uc, source) {
+  return typeof uc.getLayerTransformDraft === "function" ? uc.getLayerTransformDraft(source) : null;
+}
+
+/**
+ * What the source's silhouette depends on: its pixels and scene-state offset (move and depth
+ * scale), or, while a Free Transform is open on it, the draft's frame (so the shadow follows the
+ * live preview, #19).
+ */
+export function shadowSilhouetteKey(uc, source) {
+  const draft = transformDraftOf(uc, source);
+  if (draft?.quad) return JSON.stringify([source.id, "transform", draft.quad, draft.mesh || null, draft.sourceBounds || null]);
+  const offset = stateOffsetOf(uc, source);
+  return `${source.id}:${source.pixelRevision ?? 0}:${offsetKey(offset)}`;
+}
+
 /**
  * The source's black silhouette on a small canvas, its alpha rect, feet and feet width, in world
- * pixels where the source shows (its scene-state offset included).
+ * pixels where the source shows (its scene-state offset included). An open Free Transform draft
+ * is drawn through its frame instead of the committed pixels.
  */
 function buildSilhouette(uc, source) {
-  const bounds = uc.getLayerWorldBounds(source);
+  const draft = transformDraftOf(uc, source);
+  const bounds = draft?.quad ? draft.bounds : uc.getLayerWorldBounds(source);
   if (!bounds || bounds.width < 1 || bounds.height < 1) return null;
   const scale = Math.min(1, SILHOUETTE_MAX_SIDE / Math.max(bounds.width, bounds.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(bounds.width * scale));
   canvas.height = Math.max(1, Math.round(bounds.height * scale));
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  uc.drawRasterLayerToWorldRect(ctx, source, bounds, { x: 0, y: 0, width: canvas.width, height: canvas.height }, true, false);
+  if (draft?.quad) {
+    // The cheap preview mesh is enough for a silhouette; Apply redraws from the committed pixels.
+    ctx.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, -bounds.x * canvas.width / bounds.width, -bounds.y * canvas.height / bounds.height);
+    uc.drawTransformDraft(ctx, draft, 8);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  } else {
+    uc.drawRasterLayerToWorldRect(ctx, source, bounds, { x: 0, y: 0, width: canvas.width, height: canvas.height }, true, false);
+  }
   ctx.globalCompositeOperation = "source-in";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -258,8 +300,7 @@ function buildSilhouette(uc, source) {
 }
 
 function sourceSilhouette(uc, source) {
-  const offset = stateOffsetOf(uc, source);
-  const key = `${source.id}:${source.pixelRevision ?? 0}:${offset.x}:${offset.y}`;
+  const key = shadowSilhouetteKey(uc, source);
   if (source._shadowSilhouette?.key !== key) source._shadowSilhouette = { key, value: buildSilhouette(uc, source) };
   return source._shadowSilhouette.value;
 }
@@ -318,9 +359,10 @@ const BLUR_LEVELS = [
   { blur: 1, stops: [[0, 0], [0.5, 0], [1, 1]] },
 ];
 
-function drawCastShadow(uc, ctx, base, placed, params) {
+function drawCastShadow(uc, ctx, base, placed, params, world = placed) {
   const light = uc.sceneLight;
-  const squash = castShadowSquash(uc.scenePerspective, placed.feet.y, placed.rect.height);
+  // The ground squash follows where the character shows (the horizon is in world pixels).
+  const squash = castShadowSquash(uc.scenePerspective, world.feet.y, world.rect.height);
   const { c, d } = castShadowMatrix(light, squash);
   const maxBlur = params.blur * placed.rect.height * 0.06;
   const pad = Math.ceil(maxBlur * 2 + 2);
@@ -390,12 +432,15 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
   delete layer.hiresRect;
   const silhouette = sourceSilhouette(uc, source);
   if (silhouette) {
-    const placed = placedSilhouette(silhouette, uc.getLayerMovePreview(source));
-    // Canvas pixel = world - origin - the shadow's own state offset, so it lands where it shows.
-    const own = stateOffsetOf(uc, layer);
-    const base = { x: uc.origin.x + own.x, y: uc.origin.y + own.y };
+    // A transform draft already places the silhouette; a move preview never runs at the same time.
+    const preview = transformDraftOf(uc, source) ? null : uc.getLayerMovePreview(source);
+    const world = placedSilhouette(silhouette, preview);
+    // Canvas pixel = the shadow's own state placement undone (its move and depth scale), minus
+    // the origin, so the shadow lands where the silhouette shows.
+    const placed = shadowStoredPlacement(world, stateOffsetOf(uc, layer));
+    const base = { x: uc.origin.x, y: uc.origin.y };
     if (shadow.kind === "contact") drawContactShadow(uc, ctx, base, placed, shadow.params);
-    else drawCastShadow(uc, ctx, base, placed, shadow.params);
+    else drawCastShadow(uc, ctx, base, placed, shadow.params, world);
   }
   uc.invalidateLayerRenderCaches(layer);
   layer._boundsCache = undefined;
@@ -404,9 +449,9 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
 
 function shadowKey(uc, layer, source) {
   const preview = uc.getLayerMovePreview(source);
-  const sourceOffset = stateOffsetOf(uc, source), ownOffset = stateOffsetOf(uc, layer);
+  const ownOffset = stateOffsetOf(uc, layer);
   return JSON.stringify([
-    source.id, source.pixelRevision ?? 0, sourceOffset.x, sourceOffset.y, ownOffset.x, ownOffset.y,
+    shadowSilhouetteKey(uc, source), offsetKey(ownOffset),
     preview ? [preview.dx || 0, preview.dy || 0, preview.scale || 1, preview.anchor?.x ?? 0, preview.anchor?.y ?? 0] : null,
     normalizeShadow(layer.shadow), normalizeSceneLight(uc.sceneLight), uc.scenePerspective?.horizonY ?? null,
     uc.origin.x, uc.origin.y, layer.canvas.width, layer.canvas.height,
@@ -590,7 +635,6 @@ export const AI_MASK_BAND = 8;
 export const AI_BBOX_TOLERANCE = 0.05;
 export const OCCLUDER_DEFAULT_MARGIN = 0.03;
 export const RELIGHT_DEFAULT_STRENGTH = 0.6;
-const DRAW_ROUTE = "/vnccs/unicanvas/draw";
 const SEGMENT_ROUTE = "/vnccs/unicanvas/segment";
 const AI_LONG_SIDE = 1024;
 
@@ -757,11 +801,11 @@ function characterPlacement(uc, layer) {
   const measured = measureLayerCharacter(uc, layer);
   if (!measured) return null;
   const offset = stateOffsetOf(uc, layer);
-  const r = measured.rect;
-  const x = Math.floor(r.x + offset.x), y = Math.floor(r.y + offset.y);
+  const r = stateOffsetRect(offset, measured.rect);
+  const x = Math.floor(r.x), y = Math.floor(r.y);
   return {
-    rect: { x, y, width: Math.ceil(r.x + offset.x + r.width) - x, height: Math.ceil(r.y + offset.y + r.height) - y },
-    feet: { x: measured.feet.x + offset.x, y: measured.feet.y + offset.y },
+    rect: { x, y, width: Math.ceil(r.x + r.width) - x, height: Math.ceil(r.y + r.height) - y },
+    feet: stateOffsetPoint(offset, measured.feet),
   };
 }
 
@@ -1185,30 +1229,28 @@ export async function runAiHarmonize(uc, layer) {
   const imageCanvas = exportRegion(uc, region, size);
   const prompt = resolveHarmonizePrompt(uc.settings);
   const settings = { ...uc.makeSettingsPayload(), positive: prompt, denoise: 1 };
-  const debugId = `harmonize-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const debugId = drawDebugId("harmonize");
   const original = placementBox(placement);
-  uc.drawInProgress = true;
-  if (uc.drawBtn) uc.drawBtn.disabled = true;
+  setGenerationLock(uc, true);
   uc.startDrawProgressPolling?.(debugId);
   uc.setStatus(`${label} running on ${layer.name}...`);
+  const snapshot = buildStagingSnapshot(settings, { mode: "harmonize", bbox: region });
+  // History (vnccs_unicanvas_history_gallery.mjs): one record per run with every staged result.
+  const historyRun = uc.generationHistory?.beginRun("harmonize", {
+    settings, snapshot, bbox: region, mode: "harmonize", inferenceSize: size, outputSize: { width: region.width, height: region.height },
+    targetLayerId: layer.id, imageCanvas, maskCanvas,
+  }) || null;
   try {
-    const res = await fetch(DRAW_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode: "inpaint", image: imageCanvas.toDataURL("image/png"), mask: maskCanvas.toDataURL("image/png"), source_empty: false,
-        bbox: region, inference_size: size, output_size: { width: region.width, height: region.height }, debug_id: debugId, settings,
-      }),
+    const { images } = await requestDirectDraw({
+      mode: "inpaint", image: imageCanvas.toDataURL("image/png"), mask: maskCanvas.toDataURL("image/png"), source_empty: false,
+      bbox: region, inference_size: size, output_size: { width: region.width, height: region.height }, debug_id: debugId, settings,
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    const images = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
     if (!images.length) throw new Error("the model returned no image");
-    const snapshot = buildStagingSnapshot(settings, { mode: "harmonize", bbox: region });
-    let staged = 0, rejected = 0;
+    const stagedItems = [];
+    let rejected = 0;
     for (const image of images) {
       const img = await uc.loadImage(uc.resultImageURL(image));
-      if (uc._disposed || !uc.layers.includes(layer)) return undefined;
+      if (uc._disposed || !uc.layers.includes(layer)) throw new Error(`${layer.name} was removed while harmonizing`);
       const result = makeCanvas(region.width, region.height);
       const resultCtx = result.getContext("2d", { willReadFrequently: true });
       resultCtx.drawImage(img, 0, 0, result.width, result.height);
@@ -1217,24 +1259,27 @@ export async function runAiHarmonize(uc, layer) {
       if (!harmonizeKeepsSilhouette(original, box)) { rejected += 1; continue; }
       const candidate = makeCanvas(region.width, region.height);
       candidate.getContext("2d").putImageData(new ImageData(pixels, region.width, region.height), 0, 0);
-      uc.addStagingItem({
+      const item = {
         url: candidate.toDataURL("image/png"), img: candidate, bbox: { ...region },
         displaySize: { width: region.width, height: region.height }, inferenceSize: size, image: null,
         visible: true, mode: "img2img", maskCanvas: null, userMaskCanvas: null, resultMaskCanvas: null,
         snapshot: { ...snapshot, seed: Number.isFinite(image?.seed) ? image.seed : snapshot.seed },
         harmonize: { layerId: layer.id, region: { ...region }, box },
-      });
-      staged += 1;
+      };
+      uc.addStagingItem(item);
+      stagedItems.push(item);
     }
+    historyRun?.finish(stagedItems);
+    const staged = stagedItems.length;
     uc.requestRender();
     const rejectedText = rejected ? ` ${rejected} result${rejected === 1 ? "" : "s"} rejected: the silhouette moved more than ${Math.round(AI_BBOX_TOLERANCE * 100)}%.` : "";
     uc.setStatus(staged ? `${label}: ${staged} result${staged === 1 ? "" : "s"} staged; accept replaces ${layer.name}'s pixels.${rejectedText}` : `${label}:${rejectedText || " no usable result."}`, !staged);
   } catch (err) {
-    uc.setStatus(`${label} failed: ${err.message || err}`, true);
+    historyRun?.fail(err);
+    if (!uc._disposed) uc.setStatus(`${label} failed: ${err.message || err}`, true);
   } finally {
     uc.stopDrawProgressPolling?.();
-    uc.drawInProgress = false;
-    if (uc.drawBtn) uc.drawBtn.disabled = false;
+    setGenerationLock(uc, false);
   }
   return undefined;
 }
@@ -1256,15 +1301,17 @@ export function acceptHarmonizeStaging(uc, staging) {
   if (uc._harmonizePanel?.layer === layer) closeHarmonizePanel(uc, true);
   const before = uc.createLayerPixelSnapshot(layer);
   prepareLayerPixels(uc, layer);
-  const offset = stateOffsetOf(uc, layer);
-  const target = { x: region.x - uc.origin.x - offset.x, y: region.y - uc.origin.y - offset.y, width: region.width, height: region.height };
+  // The shown region back in the layer's stored pixels (state move and depth scale undone).
+  const rest = stateOffsetRestRect(stateOffsetOf(uc, layer), region);
+  const target = { x: rest.x - uc.origin.x, y: rest.y - uc.origin.y, width: rest.width, height: rest.height };
   const ctx = uc.configureImageContext(layer.canvas.getContext("2d"));
   ctx.save();
   ctx.clearRect(target.x, target.y, target.width, target.height);
   ctx.drawImage(staging.img, target.x, target.y, target.width, target.height);
   ctx.restore();
   uc.markLayerPixelsChanged(layer, uc.clampCanvasBounds ? uc.clampCanvasBounds(target, layer.canvas) : target, false);
-  uc.pushHistoryEntry({ kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) });
+  const entry = { kind: "layerPixels", layerId: layer.id, before, after: uc.createLayerPixelSnapshot(layer) };
+  uc.pushHistoryEntry(uc.generationHistory?.acceptIntoLayer(entry, staging, layer) ?? entry);
   uc.stagingItems = [];
   uc.activeStagingIndex = -1;
   uc.refreshLayerRow?.(layer.id);
@@ -1444,9 +1491,6 @@ const HARMONIZE_LIGHT_SLIDERS = [
 ];
 const COLOR_METHOD_LABELS = { local_lab: "Local (follows the colors around each part)", reinhard_lab_gpu: "Global LAB mean / contrast" };
 
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[<>&"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[ch]);
-}
 
 function formatLight(spec, value) {
   return spec.unit ? `${Math.round(value)}${spec.unit}` : Number(value).toFixed(2);
@@ -1652,6 +1696,8 @@ export function harmonizeLightTarget(uc) {
 export function installUniCanvasHarmonize(uc) {
   if (!uc || uc._harmonize) return uc;
   uc._harmonize = { paramGesture: null, occluderBusy: false, forceCpuRelight: false };
+  uc.registerHistoryKind?.(SHADOW_LAYER_HISTORY_KIND, (entry, direction) => applyShadowLayerHistory(uc, entry, direction));
+  uc.registerHistoryKind?.(OCCLUDER_LAYER_HISTORY_KIND, (entry, direction) => applyOccluderLayerHistory(uc, entry, direction));
   uc.addShadowLayer = (source, kind) => addShadowLayer(uc, source, kind);
   uc.detachShadowLayer = (layer) => detachShadowLayer(uc, layer);
   uc.openHarmonizePanel = (layer, point) => openHarmonizePanel(uc, layer, point);

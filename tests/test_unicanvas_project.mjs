@@ -11,6 +11,7 @@ import {
   dehydrateValue,
   hydrateSceneState,
   installUniCanvasProjects,
+  isRevisionCacheable,
   migrationProjectName,
   saveRetryDelay,
 } from "../web/vnccs_unicanvas_project.mjs";
@@ -210,6 +211,34 @@ test("saves are incremental: only changed layers are encoded and only new blobs 
   assert.equal(server.uploads(), 3);
 });
 
+test("sprite and scene-sourced control layers are always saved in full (their extra pixels have no revision)", async () => {
+  assert.equal(isRevisionCacheable({}, { type: "raster" }), true);
+  assert.equal(isRevisionCacheable({}, { type: "sprite" }), false);
+  assert.equal(isRevisionCacheable({}, { type: "pose" }), false);
+  assert.equal(isRevisionCacheable({}, { type: "control", controlSource: { image: "x" } }), false);
+  assert.equal(isRevisionCacheable({ panorama: {} }, { type: "raster" }), false);
+
+  const server = fakeServer();
+  const sprite = layer("s", "face", "sprite");
+  const widget = fakeWidget({ layers: [layer("a", "one"), sprite] });
+  // Variant pixels ride along only with layer data; the metadata-only base state drops them.
+  const serializeLayer = widget.serializeLayer;
+  widget.serializeLayer = function serializeWithVariants(item) {
+    const out = serializeLayer.call(this, item);
+    if (item.type === "sprite") out.sprite = { variants: (item.variants || []).map((label) => ({ id: label, dataURL: png(label) })) };
+    return out;
+  };
+  const session = new UniCanvasProjectSession(widget, { fetchImpl: server.fetch, storage: null, now: () => 0 });
+  widget.projectSession = session;
+  await session.save();
+  // A new variant is generated: the layer's own pixels (the active variant) keep their revision.
+  sprite.variants = ["happy"];
+  widget.settings = { positive: "changed" };
+  await session.save();
+  const scene = server.projects.get(session.projectId).scenes[0];
+  assert.deepEqual(scene.state.layers[1].sprite.variants[0].dataURL, { blob: `${sha(png("happy"))}.png`, crop: null });
+});
+
 test("a stale scene answers 409 and 'Save mine as a copy' keeps both versions", async () => {
   const server = fakeServer();
   const widget = fakeWidget({ layers: [layer("a", "mine")] });
@@ -342,4 +371,39 @@ test("scenes: new, switch, duplicate without uploads, reorder", async () => {
   const order = session.project.scenes.map((scene) => scene.id).reverse();
   await session.reorderScenes(order);
   assert.deepEqual(session.project.scenes.map((scene) => scene.id), order);
+});
+
+test("thumbnails: an unchanged scene still sends a due thumbnail, a throttled one goes with a trailing save", async () => {
+  const server = fakeServer();
+  const bodies = [];
+  const fetchImpl = (url, init = {}) => {
+    if ((init.method || "GET") === "PUT" && url.includes("/scenes/")) bodies.push(JSON.parse(init.body));
+    return server.fetch(url, init);
+  };
+  const widget = fakeWidget({ layers: [layer("a", "one")] });
+  let clock = 100_000;
+  const session = new UniCanvasProjectSession(widget, { fetchImpl, storage: null, now: () => clock });
+  widget.projectSession = session;
+  let thumbs = 0;
+  session.buildThumbnail = () => `thumb-${(thumbs += 1)}`;
+  assert.equal(await session.save(), true);
+  assert.equal(bodies.at(-1).thumbnail, "thumb-1");
+
+  // An edit inside the throttle interval saves without a thumbnail...
+  paint(widget.layers[0], "two");
+  clock += 1000;
+  assert.equal(await session.save(), true);
+  assert.equal(bodies.at(-1).thumbnail, undefined);
+  assert.equal(session.thumbnailDirty, true);
+  // ...and once the interval has passed, a save with no other change sends it.
+  clock += 10_000;
+  const count = bodies.length;
+  assert.equal(await session.save(), true);
+  assert.equal(bodies.length, count + 1);
+  assert.equal(bodies.at(-1).thumbnail, "thumb-2");
+  assert.equal(session.thumbnailDirty, false);
+  // Nothing dirty: an unchanged scene does not write again.
+  assert.equal(await session.save(), true);
+  assert.equal(bodies.length, count + 1);
+  session.dispose();
 });

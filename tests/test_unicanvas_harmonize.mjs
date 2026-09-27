@@ -31,10 +31,13 @@ import {
   defaultShadowParams,
   normalizeShadow,
   previewPoint,
+  shadowSilhouetteKey,
+  shadowStoredPlacement,
   shadowTint,
   updateShadowLayers,
 } from "../web/vnccs_unicanvas_harmonize.mjs";
 import { LAYER_MENU_ITEMS } from "../web/vnccs_unicanvas_layer_tools.mjs";
+import { stateOffsetPoint, stateOffsetRect } from "../web/vnccs_unicanvas_state_offset.mjs";
 
 const widget = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const harmonize = readFileSync(new URL("../web/vnccs_unicanvas_harmonize.mjs", import.meta.url), "utf8");
@@ -73,6 +76,25 @@ test("previews move and scale points like the widget's render transform", () => 
   assert.deepEqual(previewPoint(null, { x: 3, y: 4 }), { x: 3, y: 4 });
   assert.deepEqual(previewPoint({ dx: 10, dy: -5 }, { x: 3, y: 4 }), { x: 13, y: -1 });
   assert.deepEqual(previewPoint({ dx: 0, dy: 100, scale: 2, anchor: { x: 50, y: 200 } }, { x: 40, y: 100 }), { x: 30, y: 100 });
+});
+
+test("a shadow's own scene-state move and depth scale are undone in its stored pixels", () => {
+  const world = { canvas: "c", canvasRect: { x: 100, y: 100, width: 40, height: 80 }, rect: { x: 104, y: 110, width: 32, height: 70 }, feet: { x: 120, y: 180 }, feetWidth: 12 };
+  assert.deepEqual(shadowStoredPlacement(world, { x: 0, y: 0 }), world, "no state placement: unchanged");
+  const moved = shadowStoredPlacement(world, { x: 10, y: -5 });
+  assert.deepEqual(moved.feet, { x: 110, y: 185 });
+  assert.equal(moved.feetWidth, 12);
+  // Depth scale 2 around the rest feet (100, 200), then a move by (20, 0).
+  const own = { x: 20, y: 0, scale: 2, ax: 100, ay: 200 };
+  const stored = shadowStoredPlacement(world, own);
+  assert.equal(stored.canvas, "c");
+  assert.equal(stored.feetWidth, 6);
+  assert.equal(stored.rect.width, 16);
+  assert.equal(stored.canvasRect.height, 40);
+  // Rendering the stored geometry through the shadow's placement lands it back on the silhouette.
+  assert.deepEqual(stateOffsetPoint(own, stored.feet), world.feet);
+  assert.deepEqual(stateOffsetRect(own, stored.rect), world.rect);
+  assert.match(harmonize, /shadowStoredPlacement\(world, stateOffsetOf\(uc, layer\)\)/, "renderShadowLayer uses it");
 });
 
 test("the contact ellipse is 60% of the box width, never narrower than the feet", () => {
@@ -142,10 +164,56 @@ test("shadow regeneration skips panorama mode and orphans", () => {
   assert.equal(updateShadowLayers({ layers: [orphan] }), 0);
 });
 
+test("a shadow follows its source's live Free Transform preview, before Apply (#19)", () => {
+  // A 2D context stub: every call is a no-op, reads return empty pixels.
+  const context = () => new Proxy({ canvas: null }, {
+    get(target, key) {
+      if (key in target) return target[key];
+      if (key === "getImageData") return (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
+      return () => {};
+    },
+    set(target, key, value) { target[key] = value; return true; },
+  });
+  const canvas = () => { const c = { width: 64, height: 64 }; c.getContext = () => { const ctx = context(); ctx.canvas = c; return ctx; }; return c; };
+  const previousDocument = globalThis.document;
+  globalThis.document = { createElement: () => canvas() };
+  try {
+    const source = { id: "src", type: "raster", pixelRevision: 3, canvas: canvas() };
+    const shadow = { id: "sh", type: "raster", pixelRevision: 0, canvas: canvas(), shadow: { sourceLayerId: "src", kind: "cast" } };
+    const drawn = [];
+    let draft = null;
+    const uc = {
+      layers: [source, shadow], origin: { x: 0, y: 0 }, sceneLight: {}, scenePerspective: null, _harmonize: {},
+      getLayerTransformDraft: (layer) => (layer === source ? draft : null),
+      getLayerMovePreview: () => null,
+      getLayerWorldBounds: () => ({ x: 0, y: 0, width: 32, height: 64 }),
+      drawRasterLayerToWorldRect: () => drawn.push("pixels"),
+      drawTransformDraft: (ctx, item) => drawn.push(item),
+      invalidateLayerRenderCaches() {},
+    };
+    assert.equal(updateShadowLayers(uc), 1, "first frame draws the shadow");
+    assert.equal(updateShadowLayers(uc), 0, "nothing changed");
+    const restKey = shadowSilhouetteKey(uc, source);
+    draft = { quad: { tl: { x: 0, y: 0 }, tr: { x: 32, y: 0 }, br: { x: 32, y: 64 }, bl: { x: 0, y: 64 } }, bounds: { x: 0, y: 0, width: 32, height: 64 } };
+    assert.notEqual(shadowSilhouetteKey(uc, source), restKey, "an open transform is its own silhouette");
+    assert.equal(updateShadowLayers(uc), 1, "opening the transform redraws the shadow");
+    assert.equal(drawn.at(-1), draft, "the silhouette comes from the draft, not the committed pixels");
+    draft = { ...draft, quad: { ...draft.quad, tr: { x: 60, y: 10 } }, bounds: { x: 0, y: 0, width: 60, height: 64 } };
+    assert.equal(updateShadowLayers(uc), 1, "every frame of the gesture moves the shadow");
+    assert.equal(updateShadowLayers(uc), 0);
+    draft = null;
+    source.pixelRevision += 1;
+    assert.equal(updateShadowLayers(uc), 1, "Apply (or Cancel) goes back to the pixels");
+    assert.equal(drawn.at(-1), "pixels");
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test("the widget wires shadows through hooks, serialization and history", () => {
   assert.match(widget, /installUniCanvasHarmonize\(this\);/);
-  assert.match(widget, /entry\.kind === SHADOW_LAYER_HISTORY_KIND/);
-  assert.match(widget, /entry\.kind === SCENE_LIGHT_HISTORY_KIND/);
+  assert.match(harmonize, /uc\.registerHistoryKind\?\.\(SHADOW_LAYER_HISTORY_KIND, \(entry, direction\) => applyShadowLayerHistory\(uc, entry, direction\)\)/);
+  assert.match(scenePlace, /uc\.registerHistoryKind\?\.\(SCENE_LIGHT_HISTORY_KIND, /);
   assert.equal((widget.match(/shadow: serializeShadow\(layer\.shadow\)/g) || []).length, 3, "both serializeLayer paths and the light sync carry the shadow");
   assert.match(widget, /sceneLight: serializeSceneLight\(this\.sceneLight\)/);
   assert.match(widget, /state\.sceneLight = serializeSceneLight\(this\.sceneLight\)/);
@@ -321,7 +389,7 @@ test("occluder history re-files the layer above its character on redo", () => {
 });
 
 test("the widget, pose editor and light gizmo are wired for harmonize", () => {
-  assert.match(widget, /entry\.kind === OCCLUDER_LAYER_HISTORY_KIND\) applyOccluderLayerHistory\(this, entry, direction\)/);
+  assert.match(harmonize, /uc\.registerHistoryKind\?\.\(OCCLUDER_LAYER_HISTORY_KIND, \(entry, direction\) => applyOccluderLayerHistory\(uc, entry, direction\)\)/);
   assert.match(widget, /isEditModelSelected\(\) \{/);
   assert.match(widget, /section\("harmonize", "Harmonize"\)/);
   assert.match(widget, /payload\.poseNormal = poseNormal/);

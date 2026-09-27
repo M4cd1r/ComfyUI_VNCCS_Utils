@@ -5,31 +5,35 @@
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
 import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs";
 import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs";
-import { SPRITE_VARIANT_HISTORY_KIND, installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
+import { installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
-  panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION } from "./vnccs_unicanvas_panorama.mjs";
+  panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION,
+  PANORAMA_VIEW_HISTORY_KIND, applyPanoramaViewHistory } from "./vnccs_unicanvas_panorama.mjs";
 import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vnccs_unicanvas_panorama_panel.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
-import { installUniCanvasSceneStates, normalizeStateOffset, SCENE_STATE_HISTORY_KINDS } from "./vnccs_unicanvas_states.mjs";
+import { installUniCanvasSceneStates, normalizeStateOffset, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs";
 import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
 import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
 import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs";
-import { TIMELINE_HISTORY_KIND, applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
+import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs";
+import { applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
 import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
-import { SCENE_LIGHT_HISTORY_KIND, SCENE_PERSPECTIVE_HISTORY_KIND, applySceneLightHistory, applyScenePerspectiveHistory, installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
-import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, OCCLUDER_LAYER_HISTORY_KIND, SHADOW_LAYER_HISTORY_KIND, applyOccluderLayerHistory, applyShadowLayerHistory, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
+import { installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
+import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
 import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
 import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs";
-import { HISTORY_SETTINGS_HISTORY_KIND, installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
+import { installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
 import { AUTO_FILE_SETTING, installUniCanvasFiling, resolveAutoFile } from "./vnccs_unicanvas_filing.mjs";
-import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
+import {
+  pickRenderLodScale, clearRenderLodCaches, RENDER_LOD_OVERSAMPLE, PLAYBACK_LOD_OVERSAMPLE, PLAYBACK_LOD_CACHE_KEY,
+} from "./vnccs_unicanvas_render_lod.mjs";
 import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs";
 import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs";
 import {
@@ -37,6 +41,7 @@ import {
   applyHomography,
   cloneQuad,
   distortQuadCorner,
+  draftPlacement,
   dragMeshSurface,
   flipMesh,
   flipQuad,
@@ -50,6 +55,7 @@ import {
   moveMeshPoint,
   normalizeTransformMode,
   perspectiveQuadCorner,
+  placedQuad,
   quadCenter,
   rectToQuad,
   rotateQuad,
@@ -76,6 +82,7 @@ import {
 import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
 import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
 import { installUniCanvasControlScene, normalizeControlSource } from "./vnccs_unicanvas_control_scene.mjs";
+import { applyUniCanvasSurface } from "./vnccs_unicanvas_surface.mjs";
 import {
   bindUniCanvasFeatureToggles,
   buildUniCanvasToggleSettings,
@@ -89,7 +96,11 @@ import {
   isUniCanvasSettingsSectionEnabled,
   isUniCanvasToolEnabled,
   syncUniCanvasSelectOptions,
+  uniCanvasRequestOverrides,
+  uniCanvasRequestSettings,
 } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { escapeHtml, randomId, stagePopoverBottom } from "./vnccs_unicanvas_util.mjs";
+import { runExclusiveGeneration, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -168,7 +179,7 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
 .vnccs-uc-bottom { grid-column:2; grid-row:1; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
 .vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; zoom:var(--vnccs-uc-ui-scale); transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:9px; padding:12px; border:1px solid var(--uc-border); border-radius:18px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; max-height:calc((100% - 16px) / var(--vnccs-uc-ui-scale)); overflow-y:auto; overflow-x:hidden; }
-.vnccs-uc-tool-settings { position:absolute; z-index:6; left:16px; top:52px; zoom:var(--vnccs-uc-ui-scale); display:none; flex-direction:column; gap:10px; width:248px; padding:14px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.86); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
+.vnccs-uc-tool-settings { position:absolute; z-index:6; left:var(--vnccs-uc-tool-settings-left, 120px); top:52px; zoom:var(--vnccs-uc-ui-scale); display:none; max-height:calc((100% - 68px) / var(--vnccs-uc-ui-scale)); overflow-y:auto; overflow-x:hidden; box-sizing:border-box; flex-direction:column; gap:10px; width:248px; padding:14px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.86); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
 .vnccs-uc-tool-settings.visible { display:flex; }
 .vnccs-uc-tool-settings-title { color:var(--uc-accent); font-weight:800; font-size:14px; }
 .vnccs-uc-tool-setting { display:grid; grid-template-columns:72px minmax(0,1fr); align-items:center; gap:10px; color:var(--uc-muted); font-weight:700; }
@@ -310,6 +321,9 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-transform-label { min-width:92px; }
 .vnccs-uc-modal-overlay {
   position:absolute; inset:0; z-index:20; display:grid; place-items:center;
+  /* One definite cell: a modal's percentage max-height (project browser, history) resolves
+     against the overlay instead of an auto row that grows with the content. */
+  grid-template:minmax(0, 1fr) / minmax(0, 1fr);
   background:rgba(4,4,8,.58); pointer-events:auto;
 }
 .vnccs-uc-modal {
@@ -523,9 +537,11 @@ function enableUniCanvasGraphNavigationForwarding(root) {
   }, { capture: true, passive: false });
 }
 
-const uid = () => `uc_${Math.random().toString(36).slice(2, 10)}`;
+const uid = () => randomId("uc");
 const MASK_OVERLAY_COLOR = "rgba(255, 143, 163, 0.48)";
 const STAGE_MIN_SCALE = 0.1;
+// Bottom-anchored stage popovers clear the timeline dock (vnccs_unicanvas_util.mjs).
+const STAGE_POPOVER_BOTTOM = stagePopoverBottom(12);
 const STAGE_MAX_SCALE = 20;
 const STAGE_FIT_PADDING_PX = 48;
 const STAGE_SCALE_FACTOR = 0.999;
@@ -536,7 +552,6 @@ const STATE_UPLOAD_DEBOUNCE_MS = 1200;
 const HISTORY_LIMIT = 20;
 const MOVE_SNAP_GRID_SIZE = 64;
 const RENDER_LOD_MIN_CANVAS_SIDE = 1024;
-const RENDER_LOD_OVERSAMPLE = 2.25;
 
 const UNICANVAS_LAYOUT_BASE_WIDTH = 320 / 0.2035;
 const UNICANVAS_LAYOUT_BASE_HEIGHT = 34 / 0.0311;
@@ -938,6 +953,10 @@ class UniCanvasWidget {
     this.presetDownloadTimer = null;
     this.presetPickerOpen = false;
     this._disposed = false;
+    // Feature cleanups registered with onDispose(), run by dispose() (last registered first).
+    this._disposers = [];
+    // History kinds owned by feature modules (registerHistoryKind), applied by applyHistoryEntry.
+    this.historyHandlers = new Map();
     this._eventAbortController = null;
     this.settings = makeDefaultUniCanvasSettings();
     if (!this.settings.preset_runtime_settings || typeof this.settings.preset_runtime_settings !== "object") {
@@ -976,10 +995,13 @@ class UniCanvasWidget {
     installUniCanvasLibrary(this);
     installUniCanvasAutoNaming(this);
     installUniCanvasFiling(this);
-    installUniCanvasHistory(this);
+    installUniCanvasHistory(this, { modelModule: getUniCanvasModelModule });
     installUniCanvasTimeline(this, { createPoseEditor: () => new UniCanvasPoseEditor(this) });
     // Settings > VNCCS > UniCanvas switches (issue #50): applied live to this widget.
     installUniCanvasFeatureToggles(this);
+    // Node vs standalone tab: the node does not show the standalone-only features (states,
+    // timeline, VN preview, projects / history); their data still loads and saves.
+    applyUniCanvasSurface(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -1274,8 +1296,8 @@ class UniCanvasWidget {
     this.container.append(this.left, this.stageWrap, this.side, this.bottom);
   }
 
-  // The panorama layer's settings panel (vnccs_unicanvas_panorama_panel.mjs): sphere, camera,
-  // projection and navigation quality. Shown while the document has a panorama layer.
+  // The panorama view panel (vnccs_unicanvas_panorama_panel.mjs): sphere, camera, projection,
+  // navigation quality and Reset / Cancel / Save. Shown only during a panorama view session.
   buildPanoramaControls() {
     this.panoramaLayerPanel = buildPanoramaLayerPanel(this);
     this.panoramaOrbit = this.panoramaLayerPanel.orbit;
@@ -1292,14 +1314,16 @@ class UniCanvasWidget {
   }
 
 
-  // Layer row button: select the panorama layer and bring its settings panel into view.
+  // Layer row globe button: select the panorama layer and open its view session.
   showPanoramaLayerSettings(layer) {
     if (!isPanoramaLayer(layer)) return;
     if (this.activeLayerId !== layer.id) this.onLayerRowClick(layer.id, {});
     this.updatePanoramaControls();
-    this.panoramaLayerPanel.details.open = true;
-    this.panoramaPanel.scrollIntoView?.({ block: "nearest" });
+    if (this.panoramaLayerPanel.enter()) this.panoramaPanel.scrollIntoView?.({ block: "nearest" });
   }
+
+  // While the view session is open the canvas turns the camera and history waits for Save/Cancel.
+  get panoramaViewActive() { return Boolean(this.panorama && this.panoramaLayerPanel?.session.isFor(this.panorama)); }
 
   choosePanoramaImport(img) {
     return new Promise((resolve) => {
@@ -1705,8 +1729,7 @@ class UniCanvasWidget {
     if (this.panorama) layer._panoramaDirty = true;
     layer._boundsCache = undefined;
     layer._thumbCache = undefined;
-    layer._renderLodCache = null;
-    layer._hiresRenderLodCache = null;
+    clearRenderLodCaches(layer);
   }
 
   invalidateLayerThumbnail(layer) {
@@ -1719,8 +1742,7 @@ class UniCanvasWidget {
     bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
-    layer._renderLodCache = null;
-    layer._hiresRenderLodCache = null;
+    clearRenderLodCaches(layer);
   }
 
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
@@ -1728,8 +1750,7 @@ class UniCanvasWidget {
     bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
-    layer._renderLodCache = null;
-    layer._hiresRenderLodCache = null;
+    clearRenderLodCaches(layer);
     if (!expandOnly) {
       layer._boundsCache = undefined;
       return;
@@ -1779,6 +1800,7 @@ class UniCanvasWidget {
     }
     this.tool = tool;
     this.poseBake?.onToolChanged(previousTool, tool);
+    this.samRemoveBg?.onToolChanged(tool);
     if (tool === "pose") void this.activatePoseTool(!force);
     this.container.querySelectorAll("[data-tool]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.tool === tool);
@@ -2109,6 +2131,11 @@ class UniCanvasWidget {
 
   updateContextCursor(point = this.hoverPoint) {
     if (this.isPointerDown) return;
+    const keyHandleCursor = this.timelinePanel?.keyHandles.cursor(point);
+    if (keyHandleCursor) {
+      this.canvas.style.cursor = keyHandleCursor;
+      return;
+    }
     if (this.tool !== "resize") {
       this.syncCursorStyle();
       return;
@@ -2470,7 +2497,8 @@ class UniCanvasWidget {
     this.forceSelectedPresetModelSettings();
     const settings = JSON.parse(JSON.stringify(this.settings));
     settings.lora_stack = this.filteredLoraStack();
-    return settings;
+    // Features switched off in Settings > VNCCS > UniCanvas do not run (the saved settings keep them).
+    return uniCanvasRequestSettings(settings);
   }
 
   renderLoraStackControls() {
@@ -3133,7 +3161,7 @@ class UniCanvasWidget {
   }
 
   _escape(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    return escapeHtml(value);
   }
 
   resize() {
@@ -3326,7 +3354,7 @@ class UniCanvasWidget {
       if (this.panoramaOrbit?.gesture) this.panoramaOrbit.finish();
       this.panoramaLayerPanel?.finishCamera();
       this.panorama.flushCamera();
-      if (e.button === 0 && this.tool === "panorama") {
+      if (e.button === 0 && (this.tool === "panorama" || this.panoramaViewActive)) {
         if (!this.panorama.beginCamera()) return;
         e.preventDefault(); e.stopPropagation(); this.canvas.setPointerCapture?.(e.pointerId);
         this.isPointerDown = true; this.pointerMode = "panorama";
@@ -3406,6 +3434,8 @@ class UniCanvasWidget {
       }
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.lassoPoints = [point];
+    } else if (this.pointerMode === "move" && !e.altKey && this.timelinePanel?.keyHandles.begin(point, e)) {
+      // Timeline scale / rotation handles: live keys at the playhead (vnccs_unicanvas_timeline_transform.mjs).
     } else if (this.pointerMode === "move" && !e.altKey && this.timelinePanel?.beginMove()) {
       // Timeline mode with auto-key: the drag writes a position key at the playhead.
     } else if (this.pointerMode === "move" && !e.altKey && this.beginSceneStateMove?.()) {
@@ -3496,6 +3526,8 @@ class UniCanvasWidget {
       this.updateLayerMovePreview(point);
     } else if (this.pointerMode === "layer-transform") {
       this.updateTransformDraft(point, e);
+    } else if (this.pointerMode === "timeline-key-handle") {
+      this.timelinePanel?.keyHandles.update(point, e);
     } else if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
       this.drawStroke(this.lastPoint, point);
     }
@@ -3520,7 +3552,9 @@ class UniCanvasWidget {
     if (this.pointerMode === "lasso" && this.lassoPoints.length > 2) {
       this.commitLassoShape();
     }
-    if (this.pointerMode === "layer-move" && this.dragStart?.timelineMove) {
+    if (this.pointerMode === "timeline-key-handle") {
+      this.timelinePanel?.keyHandles.end();
+    } else if (this.pointerMode === "layer-move" && this.dragStart?.timelineMove) {
       this.timelinePanel?.commitMove(this.dragStart);
     } else if (this.pointerMode === "layer-move" && this.dragStart?.stateMove) {
       this.commitSceneStateMove?.(this.dragStart);
@@ -3871,6 +3905,7 @@ class UniCanvasWidget {
       before,
       after: this.createLayerPixelSnapshot(layer),
     });
+    this.samRemoveBg?.onApplied(layer, crop); // SAM 3 Remove background: one History record
     this.clearSamMask(false);
     this.sam.status = "Mask applied";
     this.renderSamPanel();
@@ -3946,6 +3981,7 @@ class UniCanvasWidget {
       this.panorama.projectLayer(layer);
       this.panorama.settings.contentRevision++;
       this.poseBake?.restoreSnapshot(layer, snapshot, { rebuild: false });
+      this.sprites?.restoreSnapshot(layer, snapshot);
       return;
     }
     if (snapshot.origin && (snapshot.origin.x !== this.origin.x || snapshot.origin.y !== this.origin.y || snapshot.size?.width !== this.size.width || snapshot.size?.height !== this.size.height)) {
@@ -4020,6 +4056,8 @@ class UniCanvasWidget {
     if (layer.poseNormalCanvas) { clone.poseNormalCanvas = layer.poseNormalCanvas; clone.poseNormalMeta = layer.poseNormalMeta; }
     // Sprite variants are shared by reference (copy on write).
     Object.assign(clone, this.sprites?.cloneLayerFields(layer));
+    // ControlNet settings and scene source (replaced, never mutated) survive full-snapshot undo.
+    if (isControlLayer(layer)) Object.assign(clone, { control: normalizeControlState(layer.control), controlSource: layer.controlSource });
     this.invalidateLayerCaches(clone);
     return clone;
   }
@@ -4134,6 +4172,7 @@ class UniCanvasWidget {
       this.updateHistoryButtons();
       return;
     }
+    if (this.panoramaViewActive) { this.setStatus("Save or cancel the panorama view first", true); return; }
     this.panorama?.commit();
     this.poseBake?.flushPendingHistory();
     if (!this.undoStack.length) return;
@@ -4167,6 +4206,7 @@ class UniCanvasWidget {
       this.updateHistoryButtons();
       return;
     }
+    if (this.panoramaViewActive) { this.setStatus("Save or cancel the panorama view first", true); return; }
     this.panorama?.commit();
     if (!this.redoStack.length) return;
     if (this.transformDraft) {
@@ -4189,6 +4229,14 @@ class UniCanvasWidget {
     this.setStatus("Redo");
   }
 
+  // A feature module owns its history kinds: `apply(entry, direction)` restores one entry
+  // ("undo" or "redo"). By default the widget then refreshes layers, panels and sync as after any
+  // layer change; `isolated` kinds (timeline, scene states) refresh what they changed themselves.
+  registerHistoryKind(kind, apply, { isolated = false } = {}) {
+    if (!kind || typeof apply !== "function") return;
+    (this.historyHandlers ||= new Map()).set(kind, { apply, isolated });
+  }
+
   applyHistoryEntry(entry, direction) {
     if (!entry?.kind) return;
     if (entry.kind === "historyGroup") {
@@ -4197,20 +4245,11 @@ class UniCanvasWidget {
       for (const child of entries) this.applyHistoryEntry(child, direction);
       return;
     }
-    if (entry.kind === TIMELINE_HISTORY_KIND) {
+    const handler = this.historyHandlers?.get(entry.kind);
+    if (handler?.isolated) {
       this.historyRestoring = true;
       try {
-        this.timelinePanel?.applyHistory(entry, direction);
-      } finally {
-        this.historyRestoring = false;
-      }
-      return;
-    }
-    if (SCENE_STATE_HISTORY_KINDS.has(entry.kind)) {
-      // Scene states (vnccs_unicanvas_states.mjs): layer properties and the state list.
-      this.historyRestoring = true;
-      try {
-        this.applySceneStateHistory?.(entry, direction);
+        handler.apply(entry, direction);
       } finally {
         this.historyRestoring = false;
       }
@@ -4258,9 +4297,9 @@ class UniCanvasWidget {
         this.activeLayerId = entry.layer.id;
       }
       this.invalidateLayerCaches(entry.layer);
-      void this.generationHistory?.onAcceptHistory(entry, direction);
     }
-    if (entry.kind === HISTORY_SETTINGS_HISTORY_KIND) this.generationHistory?.applySettingsHistory(entry, direction);
+    // A staged result accepted into a new layer or into its own layer (bake, sprite, harmonize).
+    if (entry.acceptedItem) void this.generationHistory?.onAcceptHistory(entry, direction);
     if (entry.kind === "addLayer") {
       if (direction === "undo") {
         this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
@@ -4271,12 +4310,10 @@ class UniCanvasWidget {
       }
       this.invalidateLayerCaches(entry.layer);
     }
-    if (entry.kind === "vnPreviewFrame") this.vnPreview?.applyFrameHistory(entry, direction);
-    if (entry.kind === SPRITE_VARIANT_HISTORY_KIND) this.sprites?.applyVariantHistory(entry, direction);
-    if (entry.kind === SCENE_PERSPECTIVE_HISTORY_KIND) applyScenePerspectiveHistory(this, entry, direction);
-    if (entry.kind === SCENE_LIGHT_HISTORY_KIND) applySceneLightHistory(this, entry, direction);
-    if (entry.kind === SHADOW_LAYER_HISTORY_KIND) applyShadowLayerHistory(this, entry, direction);
-    if (entry.kind === OCCLUDER_LAYER_HISTORY_KIND) applyOccluderLayerHistory(this, entry, direction);
+    if (entry.kind === PANORAMA_VIEW_HISTORY_KIND) applyPanoramaViewHistory(this, entry, direction);
+    // Feature kinds (VN preview frame, sprite variants, scene perspective / light, shadow and
+    // occluder layers, history settings) are registered by their installers.
+    handler?.apply(entry, direction);
     if (entry.kind === "layerPixels") {
       const layer = this.layers.find((item) => item.id === entry.layerId);
       this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
@@ -4347,8 +4384,19 @@ class UniCanvasWidget {
   getLayerRenderTransform(layer) {
     const framed = layer?._timelineFrame?.matrix || this.timelinePanel?.layerMatrix(layer);
     if (framed) return framed;
+    // A plain offset, or a per-state depth scale around the feet (vnccs_unicanvas_state_offset.mjs).
     const offset = this.getLayerStateOffset(layer);
-    return [1, 0, 0, 1, offset.x, offset.y];
+    return stateOffsetMatrix(offset);
+  }
+
+  // The frame a scaled layer draws through (timeline frame or per-state depth scale), or null
+  // when a translation is enough.
+  getLayerScaledFrame(layer) {
+    const frame = layer._timelineFrame;
+    if (frame?.matrix && (frame.variant || frame.blur || !isTranslationMatrix(frame.matrix))) return frame;
+    if (frame?.matrix) return null;
+    const matrix = this.getLayerRenderTransform(layer);
+    return isTranslationMatrix(matrix) ? null : { matrix };
   }
 
   // World point -> the layer's rest pixel space (inverse render transform).
@@ -4378,31 +4426,33 @@ class UniCanvasWidget {
   getTransformFrame(layer = this.activeLayer) {
     const draft = this.getLayerTransformDraft(layer);
     if (draft) return draft;
-    const bounds = layer && !layer.locked ? this.getLayerWorldBounds(layer) : null;
-    return bounds ? { quad: rectToQuad(bounds), mesh: null } : null;
+    // The frame the layer shows at: its stored pixels through the render placement (rotated too).
+    const rest = layer && !layer.locked ? this.getLayerRestBounds(layer) : null;
+    return rest ? { quad: placedQuad(rest, this.getLayerRenderTransform(layer)), mesh: null } : null;
   }
 
   beginTransformDraft(layer) {
     if (!layer || layer.locked) return null;
-    if (this.timelinePanel?.blocksPixelTransform(layer)) {
-      this.setStatus("Free Transform edits the rest pixels: scale / rotate in the timeline, or go to a frame where the layer is at rest", true);
-      return null;
-    }
     const existing = this.getLayerTransformDraft(layer);
     if (existing) return existing;
     if (this.transformDraft) return null; // another layer's transform is still open
     const source = this.createTransformSource(layer);
     if (!source?.canvas || !source.bounds) return null;
-    // The draft works where the layer shows (scene-state offset included); Apply writes back.
-    const stateOffset = this.getLayerStateOffset(layer);
-    source.bounds = { ...source.bounds, x: source.bounds.x + stateOffset.x, y: source.bounds.y + stateOffset.y };
+    // The draft works where the layer shows: its placement is the render transform (scene-state
+    // move and depth scale, or the timeline frame). Apply writes the stored pixels back through
+    // the inverse placement - or, on a keyed timeline frame with auto-key, writes keys instead.
+    const placement = this.getLayerRenderTransform(layer);
+    const quad = placedQuad(source.bounds, placement);
     this.transformDraft = {
-      stateOffset,
+      placement,
+      keyFrame: this.timelinePanel?.transformKeyFrame(layer) || null,
       layerId: layer.id,
       before: source.before,
       sourceCanvas: source.canvas,
-      sourceBounds: { ...source.bounds },
-      quad: rectToQuad(source.bounds),
+      restBounds: { ...source.bounds },
+      sourceBounds: transformRectBounds(placement, source.bounds),
+      startQuad: cloneQuad(quad),
+      quad,
       mesh: null,
       sliders: null,
       kind: this.resizeTransformMode,
@@ -4538,7 +4588,7 @@ class UniCanvasWidget {
       const angle = action === "rotate-180" ? Math.PI : (action === "rotate-cw" ? Math.PI / 2 : -Math.PI / 2);
       this.setTransformFrame(draft, rotateQuad(quad, quadCenter(quad), angle), { fromQuad: quad, fromMesh: mesh });
     } else if (action === "reset") {
-      this.setTransformFrame(draft, rectToQuad(draft.sourceBounds), { mesh: null });
+      this.setTransformFrame(draft, cloneQuad(draft.startQuad) || rectToQuad(draft.sourceBounds), { mesh: null });
     }
     this.renderToolSettings();
     this.updateContextCursor();
@@ -4596,16 +4646,28 @@ class UniCanvasWidget {
       this.cancelTransformDraft();
       return;
     }
+    if (draft.keyFrame) {
+      // A keyed timeline frame: the frame becomes position / scale / rotation keys, pixels stay.
+      this.transformDraft = null;
+      this.timelinePanel?.commitTransformKeys(layer, draft);
+      this.renderToolSettings();
+      this.updateTransformControls();
+      this.requestRender();
+      return;
+    }
     const shown = transformDraftBounds(draft, 32);
     if (!shown) return;
-    const stateOffset = draft.stateOffset || { x: 0, y: 0 };
-    const bounds = { ...shown, x: shown.x - stateOffset.x, y: shown.y - stateOffset.y };
+    const inverse = invertMatrix(draftPlacement(draft));
+    if (!inverse) return;
+    // The stored pixels' rect: the shown frame through the inverse placement.
+    const bounds = transformRectBounds(inverse, shown);
     if (!this.ensureWorldBounds(bounds.x, bounds.y, 256, false)) return;
     if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256, false)) return;
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
     ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
     ctx.save();
-    ctx.translate(-this.origin.x - stateOffset.x, -this.origin.y - stateOffset.y);
+    ctx.translate(-this.origin.x, -this.origin.y);
+    ctx.transform(...inverse);
     this.drawTransformDraft(ctx, draft, 48);
     ctx.restore();
     this.sprites?.onTransform(layer, draft);
@@ -5060,6 +5122,7 @@ class UniCanvasWidget {
 
   render() {
     this.poseEditor?.layout();
+    this.poseBake?.syncStagingView?.();
     const ctx = this.canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     const w = this.canvas.width / dpr;
@@ -5112,9 +5175,12 @@ class UniCanvasWidget {
             height: visibleWorldRect.height / scale,
           };
         }
-        if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
-        else this.drawRasterLayerVisible(ctx, layer);
-        if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
+        try {
+          if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
+          else this.drawRasterLayerVisible(ctx, layer);
+        } finally {
+          if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
+        }
       }
       ctx.restore();
     }, this._groupScratchPool);
@@ -5123,6 +5189,7 @@ class UniCanvasWidget {
     this.drawShapeDraft(ctx);
     this.drawLassoDraft(ctx);
     this.drawResizeOverlay(ctx);
+    this.timelinePanel?.keyHandles.draw(ctx);
     if (this.panorama) ctx.restore();
     this.drawBbox(ctx);
     this.timelinePanel?.drawCameraOverlay(ctx);
@@ -5156,6 +5223,9 @@ class UniCanvasWidget {
 
   drawMaskLayer(ctx, layer) {
     if (this.hasOpenStagingPanel()) return;
+    // Nothing edits the mask while the timeline plays: measure its bounds once instead of tinting
+    // the whole canvas on every frame, and skip an empty one.
+    if (this.timelinePanel?.playing && this.getLayerAlphaBounds(layer) === null) return;
     const crop = this.getVisibleLayerCrop(layer.canvas, this.getLayerRenderBounds(layer));
     if (!crop) return;
     const lod = this.shouldUseLayerLod(layer) ? this.getRenderLodCanvas(layer, layer.canvas, "_renderLodCache") : null;
@@ -5222,10 +5292,10 @@ class UniCanvasWidget {
     ctx.drawImage(canvas, crop.sx, crop.sy, crop.sw, crop.sh, crop.dx, crop.dy, crop.sw, crop.sh);
   }
 
-  drawLayerCanvasVisibleWithLod(ctx, layer, canvas, contentBounds = null, cacheKey = "_renderLodCache") {
+  drawLayerCanvasVisibleWithLod(ctx, layer, canvas, contentBounds = null, cacheKey = "_renderLodCache", oversample = RENDER_LOD_OVERSAMPLE) {
     const crop = this.getVisibleLayerCrop(canvas, contentBounds);
     if (!crop) return;
-    const lod = this.getRenderLodCanvas(layer, canvas, cacheKey);
+    const lod = this.getRenderLodCanvas(layer, canvas, cacheKey, oversample);
     if (!lod) {
       ctx.drawImage(canvas, crop.sx, crop.sy, crop.sw, crop.sh, crop.dx, crop.dy, crop.sw, crop.sh);
       return;
@@ -5246,8 +5316,8 @@ class UniCanvasWidget {
   }
 
   drawRasterLayerVisible(ctx, layer) {
-    const frame = layer._timelineFrame;
-    if (frame?.matrix && (frame.variant || frame.blur || !isTranslationMatrix(frame.matrix))) {
+    const frame = this.getLayerScaledFrame(layer);
+    if (frame) {
       this.drawTimelineLayer(ctx, layer, frame, this._visibleWorldRectForRender, this.view.scale, this.shouldUseLayerLod(layer));
       return;
     }
@@ -5266,11 +5336,14 @@ class UniCanvasWidget {
       ctx.translate(offset.x, offset.y);
       if (visible) this._visibleWorldRectForRender = { ...visible, x: visible.x - offset.x, y: visible.y - offset.y };
     }
-    if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
-    else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
-    if (offset.x || offset.y) {
-      this._visibleWorldRectForRender = visible;
-      ctx.restore();
+    try {
+      if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+      else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+    } finally {
+      if (offset.x || offset.y) {
+        this._visibleWorldRectForRender = visible;
+        ctx.restore();
+      }
     }
   }
 
@@ -5294,10 +5367,15 @@ class UniCanvasWidget {
       const saved = this._visibleWorldRectForRender;
       // The source crop is the visible rect mapped back into the layer's rest space.
       this._visibleWorldRectForRender = visibleWorld ? transformRectBounds(inverse, visibleWorld) : null;
-      if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
-      else if (this._visibleWorldRectForRender) this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
-      else ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
-      this._visibleWorldRectForRender = saved;
+      try {
+        if (this._visibleWorldRectForRender && this.timelinePanel?.playing) {
+          this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer), PLAYBACK_LOD_CACHE_KEY, PLAYBACK_LOD_OVERSAMPLE);
+        } else if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+        else if (this._visibleWorldRectForRender) this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+        else ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
+      } finally {
+        this._visibleWorldRectForRender = saved;
+      }
     }
     ctx.restore();
   }
@@ -5307,8 +5385,8 @@ class UniCanvasWidget {
   }
 
   drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, smoothing = true, useLod = false) {
-    const frame = layer._timelineFrame;
-    if (frame?.matrix && (frame.variant || frame.blur || !isTranslationMatrix(frame.matrix))) {
+    const frame = this.getLayerScaledFrame(layer);
+    if (frame) {
       // A timeline frame with scale / rotation / variant / blur: world -> dest, then the frame.
       const sx = destRect.width / worldRect.width;
       const sy = destRect.height / worldRect.height;
@@ -5360,8 +5438,8 @@ class UniCanvasWidget {
     ctx.drawImage(source, sx * scaleX, sy * scaleY, worldRect.width * scaleX, worldRect.height * scaleY, destRect.x, destRect.y, destRect.width, destRect.height);
   }
 
-  getRenderLodCanvas(layer, sourceCanvas, cacheKey = "_renderLodCache") {
-    const scale = this.getRenderLodScale(sourceCanvas);
+  getRenderLodCanvas(layer, sourceCanvas, cacheKey = "_renderLodCache", oversample = RENDER_LOD_OVERSAMPLE) {
+    const scale = this.getRenderLodScale(sourceCanvas, oversample);
     if (scale >= 1) return null;
     const cache = layer[cacheKey];
     if (cache?.source === sourceCanvas && cache.scale === scale && cache.width === sourceCanvas.width && cache.height === sourceCanvas.height) {
@@ -5419,10 +5497,10 @@ class UniCanvasWidget {
     return layer[cacheKey];
   }
 
-  getRenderLodScale(canvas) {
+  getRenderLodScale(canvas, oversample = RENDER_LOD_OVERSAMPLE) {
     if (!canvas || Math.max(canvas.width, canvas.height) < RENDER_LOD_MIN_CANVAS_SIDE) return 1;
     const dpr = window.devicePixelRatio || 1;
-    return pickRenderLodScale(this.view.scale * dpr * RENDER_LOD_OVERSAMPLE);
+    return pickRenderLodScale(this.view.scale * dpr * oversample);
   }
 
   getLayerRenderBounds(layer) {
@@ -5561,7 +5639,7 @@ class UniCanvasWidget {
     this.stagingControls.style.left = "50%";
     this.stagingControls.style.right = "";
     this.stagingControls.style.top = "";
-    this.stagingControls.style.bottom = "12px";
+    this.stagingControls.style.bottom = STAGE_POPOVER_BOTTOM;
     this.stagingControls.style.width = "";
     this.stagingControls.style.transform = "translateX(-50%)";
     if (this.stagingCount) this.stagingCount.textContent = `${this.activeStagingIndex + 1}/${this.stagingItems.length}`;
@@ -5585,7 +5663,7 @@ class UniCanvasWidget {
     this.transformControls.style.left = "50%";
     this.transformControls.style.right = "";
     this.transformControls.style.top = "";
-    this.transformControls.style.bottom = "12px";
+    this.transformControls.style.bottom = STAGE_POPOVER_BOTTOM;
     this.transformControls.style.width = "";
     this.transformControls.style.transform = "translateX(-50%)";
     if (this.transformLabel) this.transformLabel.textContent = TRANSFORM_MODE_LABELS[this.transformDraft.kind] || "Transform";
@@ -5601,7 +5679,7 @@ class UniCanvasWidget {
     this.samPanel.style.left = "50%";
     this.samPanel.style.right = "";
     this.samPanel.style.top = "";
-    this.samPanel.style.bottom = "12px";
+    this.samPanel.style.bottom = STAGE_POPOVER_BOTTOM;
     this.samPanel.style.width = "";
     this.samPanel.style.transform = "translateX(-50%)";
     this.renderSamPanel();
@@ -5967,7 +6045,7 @@ class UniCanvasWidget {
       row.append(thumb, label, edit, lock, del);
       this.poseBake?.decorateLayerRow(row, layer);
     } else if (isPanoramaLayer(layer)) {
-      const settings = this._button(PANORAMA_ICON, "vnccs-uc-icon vnccs-uc-layer-panorama-settings", null, "Panorama settings");
+      const settings = this._button(PANORAMA_ICON, "vnccs-uc-icon vnccs-uc-layer-panorama-settings", null, "Edit panorama view");
       settings.addEventListener("click", (e) => { e.stopPropagation(); this.showPanoramaLayerSettings(layer); });
       settings.addEventListener("dblclick", (e) => e.stopPropagation());
       row.append(thumb, label, settings, lock, del);
@@ -6388,7 +6466,7 @@ class UniCanvasWidget {
       target.save();
       target.globalAlpha = layer.opacity;
       target.globalCompositeOperation = layer.blendMode || "source-over";
-      if ((layer.hiresCanvas && layer.hiresRect) || layer._timelineFrame) {
+      if ((layer.hiresCanvas && layer.hiresRect) || layer._timelineFrame || layer.stateOffset?.scale) {
         this.drawRasterLayerToWorldRect(target, layer, worldRect, destRect, false);
       } else {
         const offset = this.getLayerStateOffset(layer);
@@ -6879,7 +6957,8 @@ class UniCanvasWidget {
     const snapshotSettings = this.settings;
     const snapshot = buildStagingSnapshot(snapshotSettings, { mode, bbox: requestBbox });
     // ControlNet layer (vnccs_unicanvas_control.mjs): the topmost active one, cropped like the mask.
-    const control = requestPanorama ? null : this.controlLayers?.collectForDraw(inferenceSize, { masked: maskStats.nonzeroAlphaPixels > 0 });
+    // In a panorama its canvas holds the current view, the same one the image and mask come from.
+    const control = this.controlLayers?.collectForDraw(inferenceSize, { masked: maskStats.nonzeroAlphaPixels > 0 });
     if (control?.error) {
       this.drawInProgress = false;
       this.setStatus(control.error, true);
@@ -6900,6 +6979,8 @@ class UniCanvasWidget {
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
       this.settings.draw_id = `uc_${Date.now().toString(36)}`;
       this.settings.queued_draw = this._buildDrawPayload(drawContext);
+      // The node runs with the saved settings; switched-off features travel as overrides.
+      this.settings.queued_draw.settings_overrides = uniCanvasRequestOverrides(this.settings);
       // The widget value has to be current before queuePrompt serializes the graph, so the
       // debounced settings sync is flushed synchronously here.
       this.flushSettingsToWidget();
@@ -6907,8 +6988,7 @@ class UniCanvasWidget {
     } else {
       this.startDrawProgressPolling(debugId);
     }
-    this.drawBtn.disabled = true;
-    if (this.batchInput) this.batchInput.disabled = true;
+    this.setGenerationLock(true);
     let performance = "";
     try {
       if (configLinked) {
@@ -6947,13 +7027,21 @@ class UniCanvasWidget {
       this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
     } finally {
       this.stopDrawProgressPolling();
-      this.drawInProgress = false;
-      this.drawBtn.disabled = false;
-      if (this.batchInput) this.batchInput.disabled = false;
+      this.setGenerationLock(false);
       window.setTimeout(() => {
         if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
       }, 1800);
     }
+  }
+
+  // One generation at a time: GENERATE, bakes, sprite variants and AI harmonize share this lock
+  // (vnccs_unicanvas_draw_client.mjs); it also disables the controls that start a generation.
+  setGenerationLock(on) {
+    setGenerationLock(this, on);
+  }
+
+  runExclusiveGeneration(work) {
+    return runExclusiveGeneration(this, work);
   }
 
   imageResultToURL(image) {
@@ -7055,12 +7143,9 @@ class UniCanvasWidget {
       if (this.panorama) {
         this.panorama.commit();
         const { width, height } = this.panorama.settings;
-        const children = [...this.layers].reverse().filter(layer => isImageLayer(layer) && isLayerEffectivelyVisible(this.layers, layer)).map(layer => ({
-          name: layer.name, left: 0, top: 0, right: width, bottom: height,
-          opacity: Math.round(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          blendMode: layer.blendMode === "source-over" ? "normal" : layer.blendMode,
-          canvas: layer.panoramaCanvas,
-        }));
+        // Groups export as PSD folders with their opacity and blend (vnccs_unicanvas_psd_export.mjs).
+        const children = buildPsdChildren(this.layers, (layer) => (isImageLayer(layer) && layer.panoramaCanvas
+          ? { name: layer.name, left: 0, top: 0, right: width, bottom: height, canvas: layer.panoramaCanvas } : null));
         const buffer = writePsd({ width, height, channels: 3, bitsPerChannel: 8, colorMode: 3, children });
         this.downloadBlob(new Blob([buffer], { type: "application/octet-stream" }), "unicanvas-panorama.psd");
         this.setStatus(`Panorama PSD exported: ${width} × ${height}`); return;
@@ -7077,8 +7162,9 @@ class UniCanvasWidget {
       if (visibleRect.width > maxDimension || visibleRect.height > maxDimension || visibleRect.width * visibleRect.height > maxArea) {
         throw new Error("Canvas is too large for PSD export");
       }
-      const psdLayers = [...visibleLayers].reverse();
-      const children = psdLayers.map((layer, index) => {
+      const exported = new Set(visibleLayers);
+      const children = buildPsdChildren(this.layers, (layer, index) => {
+        if (!exported.has(layer)) return null;
         const crop = this.getCanvasAlphaBounds(layer.canvas);
         const canvas = document.createElement("canvas");
         canvas.width = crop.width;
@@ -7092,9 +7178,6 @@ class UniCanvasWidget {
           top: Math.floor(worldY - visibleRect.y),
           right: Math.floor(worldX - visibleRect.x + canvas.width),
           bottom: Math.floor(worldY - visibleRect.y + canvas.height),
-          opacity: Math.floor(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          hidden: false,
-          blendMode: layer.blendMode === "source-over" ? "normal" : (layer.blendMode || "normal"),
           canvas,
         };
       });
@@ -7109,7 +7192,7 @@ class UniCanvasWidget {
       const buffer = writePsd(psd);
       const blob = new Blob([buffer], { type: "application/octet-stream" });
       this.downloadBlob(blob, `unicanvas-layers-${new Date().toISOString().slice(0, 10)}.psd`);
-      this.setStatus(`PSD exported: ${children.length} layers`);
+      this.setStatus(`PSD exported: ${countPsdLayers(children)} layers`);
     } catch (err) {
       this.setStatus(`PSD failed: ${err.message || err}`, true);
     }
@@ -7855,6 +7938,20 @@ class UniCanvasWidget {
     }
   }
 
+  // Sprite sets and ControlNet layers, in flat and panorama documents alike (#33).
+  serializeLayerKindFields(layer, includeData) {
+    const fields = {};
+    // Sprite set: metadata always, variant pixels only with layer data.
+    if (layer.type === "sprite") fields.sprite = this.sprites?.serialize(layer, includeData);
+    if (isControlLayer(layer)) fields.control = normalizeControlState(layer.control);
+    // The scene source of a ControlNet layer (vnccs_unicanvas_control_scene.mjs); its PNG only with layer data.
+    if (isControlLayer(layer) && layer.controlSource) {
+      fields.controlSource = this.controlScene?.serialize(layer);
+      if (!includeData && fields.controlSource) delete fields.controlSource.image;
+    }
+    return fields;
+  }
+
   serializeLayer(layer, includeData = true) {
     if (isGroupLayer(layer)) return serializeGroupLayer({ ...layer, meta: normalizeLayerMeta(layer.meta) });
     // Per-character ID pass: state cache only, never workflow metadata.
@@ -7866,6 +7963,7 @@ class UniCanvasWidget {
     if (this.panorama) {
       this.panorama.commitLayer(layer);
       return {
+        ...this.serializeLayerKindFields(layer, includeData),
         pose: serializePose(layer.pose, includeData),
         id: layer.id, name: layer.name, nameSource: layer.nameSource || null, meta: normalizeLayerMeta(layer.meta), type: layer.type, groupId: layer.groupId || null, visible: layer.visible, locked: layer.locked,
         opacity: layer.opacity, blendMode: layer.blendMode || "source-over",
@@ -7902,14 +8000,7 @@ class UniCanvasWidget {
     if (poseId) payload.poseId = poseId;
     if (poseNormal) payload.poseNormal = poseNormal;
     if (bakePixels) payload.bakePixels = bakePixels;
-    // Sprite set: metadata always, variant pixels only with layer data.
-    if (layer.type === "sprite") payload.sprite = this.sprites?.serialize(layer, includeData);
-    if (isControlLayer(layer)) payload.control = normalizeControlState(layer.control);
-    // The scene source of a ControlNet layer (vnccs_unicanvas_control_scene.mjs); its PNG only with layer data.
-    if (isControlLayer(layer) && layer.controlSource) {
-      payload.controlSource = this.controlScene?.serialize(layer);
-      if (!includeData && payload.controlSource) delete payload.controlSource.image;
-    }
+    Object.assign(payload, this.serializeLayerKindFields(layer, includeData));
     if (!crop || !includeData) return payload;
     const out = document.createElement("canvas");
     out.width = crop.width;
@@ -8073,7 +8164,7 @@ class UniCanvasWidget {
           id: item.id || uid(),
           name: item.name || "Layer",
           nameSource: typeof item.nameSource === "string" ? item.nameSource : undefined,
-          type: item.type === "mask" ? "mask" : isControlLayer(item) && !restoredPanorama ? "control" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite && !restoredPanorama ? "sprite"
+          type: item.type === "mask" ? "mask" : isControlLayer(item) ? "control" : item.type === "pose" && item.pose ? "pose" : item.type === "sprite" && item.sprite ? "sprite"
             : isPanoramaLayer(item) && panoramaSettings?.baseLayerId === item.id ? "panorama" : "raster",
           pose: item.type === "pose" ? serializePose(item.pose) : undefined,
           visible: item.visible !== false,
@@ -8090,7 +8181,7 @@ class UniCanvasWidget {
         if (layer.type === "control") layer.control = normalizeControlState(item.control);
         if (layer.type === "control" && item.controlSource) layer.controlSource = normalizeControlSource(item.controlSource) || undefined;
         const stateOffset = !isMaskSectionLayer(item) ? normalizeStateOffset(item.stateOffset) : null;
-        if (stateOffset && (stateOffset.x || stateOffset.y)) layer.stateOffset = stateOffset;
+        if (stateOffset && (stateOffset.x || stateOffset.y || stateOffset.scale)) layer.stateOffset = stateOffset;
         if (item.dataURL) {
           const img = await this.loadImage(item.dataURL);
           if (restoredPanorama) {
@@ -8399,7 +8490,7 @@ class UniCanvasWidget {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
-    }).catch(() => {});
+    }).catch((err) => console.warn("[VNCCS UniCanvas] Debug mode toggle failed", err));
   }
 
   openUniCanvasSettings() {
@@ -8572,6 +8663,25 @@ class UniCanvasWidget {
     document.addEventListener("pointerdown", this._vnccsSettingsOutside, true);
   }
 
+  // Features register their own teardown (popovers, menus, timers) instead of the widget
+  // knowing each one. A cleanup registered after disposal runs at once.
+  onDispose(cleanup) {
+    if (typeof cleanup !== "function") return;
+    if (this._disposed) {
+      this._runDisposer(cleanup);
+      return;
+    }
+    this._disposers.push(cleanup);
+  }
+
+  _runDisposer(cleanup) {
+    try {
+      cleanup();
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] A feature cleanup failed during disposal", err);
+    }
+  }
+
   dispose() {
     this.poseEditor?.dispose();
     if (this._disposed) return;
@@ -8581,6 +8691,7 @@ class UniCanvasWidget {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
     this._disposed = true;
+    for (const cleanup of this._disposers.splice(0).reverse()) this._runDisposer(cleanup);
     teardownUniCanvasWidgetModes(this);
     this._vnccsTogglesOff?.();
     this._vnccsTogglesOff = null;

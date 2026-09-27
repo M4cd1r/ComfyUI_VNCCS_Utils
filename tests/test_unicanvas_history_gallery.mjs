@@ -5,15 +5,26 @@ import test from "node:test";
 import {
   HISTORY_SETTINGS_HISTORY_KIND,
   UniCanvasHistory,
+  autoAcceptedHistoryItem,
   buildHistoryRecord,
   filterHistoryRecords,
   formatBytes,
+  historyButtonSlot,
   historyFamilies,
   historySettingsSnapshot,
   installUniCanvasHistory,
   recordSeed,
+  rectInside,
   restoredSettings,
 } from "../web/vnccs_unicanvas_history_gallery.mjs";
+import { SamRemoveBgSession } from "../web/vnccs_unicanvas_layer_tools.mjs";
+import { isUniCanvasFamilyEnabled, resetUniCanvasToggles, setUniCanvasToggleValue } from "../web/vnccs_unicanvas_feature_toggles.mjs";
+
+function offOnly(...keys) {
+  resetUniCanvasToggles();
+  for (const key of keys) setUniCanvasToggleValue(key, false, { notify: false });
+}
+test.afterEach(() => resetUniCanvasToggles());
 
 // Plan 10.5 (#24): history records written when a run settles, acceptance flags, restore/undo,
 // and the gallery filters, driven against an in-memory copy of the history routes.
@@ -202,6 +213,30 @@ test("Re-run uses the recorded or a new seed and keeps the recorded seed mode", 
   await assert.rejects(history.rerun({ kind: "remove_bg" }));
 });
 
+test("a History result goes into a panorama as a layer in the current view (#24)", async () => {
+  const session = fakeSession();
+  const widget = fakeWidget(session);
+  const image = { width: 512, height: 256 };
+  const placed = [];
+  widget.bbox = { x: 0, y: 0, width: 1024, height: 1024 };
+  widget.panorama = { placeImage: (layer, img, rect) => placed.push({ layer: layer.id, img, rect }) };
+  widget.loadImage = async () => image;
+  widget.normalizeLayerWorldRect = (rect) => ({ ...rect });
+  widget.ensureWorldBounds = () => { throw new Error("a panorama has no world bounds to grow"); };
+  widget.addLayer = (type, name, record, defer, meta) => { const layer = { id: `layer_${placed.length}`, type, meta }; widget.layers.unshift(layer); return layer; };
+  Object.assign(widget, { renderLayerList() {}, requestRender() {}, syncLightStateToWidget() {} });
+  const history = new UniCanvasHistory(widget);
+  const inView = { id: "gen_a", kind: "generate", sceneId: "other", bbox: { x: 0, y: 0, width: 1024, height: 1024 }, results: [{ imageDataURL: null }] };
+  const layer = await history.placeResult(inView, 0);
+  assert.deepEqual(placed[0], { layer: layer.id, img: image, rect: { x: 0, y: 0, width: 1024, height: 1024 } });
+  assert.deepEqual(widget.undoStack.at(-1), { kind: "addLayer", layer, previousActiveLayerId: "layer_base" }, "one undo step");
+  const flat = { id: "gen_b", kind: "remove_bg", sceneId: "other", bbox: { x: 2000, y: -40, width: 300, height: 300 }, results: [{ imageDataURL: null }] };
+  await history.placeResult(flat, 0);
+  assert.equal(placed[1].rect, null, "a rect outside the view is fitted into it");
+  assert.equal(rectInside({ x: 10, y: 10, width: 5, height: 5 }, { x: 0, y: 0, width: 20, height: 20 }), true);
+  assert.equal(rectInside({ x: 10, y: 10, width: 15, height: 5 }, { x: 0, y: 0, width: 20, height: 20 }), false);
+});
+
 test("Show layer switches to the record's scene and selects the layer", async () => {
   const session = fakeSession();
   const widget = fakeWidget(session);
@@ -253,4 +288,101 @@ test("install puts history on the widget once", () => {
   const history = installUniCanvasHistory(widget);
   assert.ok(history instanceof UniCanvasHistory);
   assert.equal(installUniCanvasHistory(widget), history);
+});
+
+// Issue #33 (History #24, toggles #50): bake / sprite / harmonize runs, SAM 3 sessions, the
+// button next to the Library tab and the family filter.
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("results applied without staging are recorded accepted into their layer", async () => {
+  const session = fakeSession();
+  const history = new UniCanvasHistory(fakeWidget(session));
+  const run = history.beginRun("bake", { settings: { positive: "hero, full body" }, targetLayerId: "pose_1", mode: "bake" });
+  const item = { ...autoAcceptedHistoryItem({ img: null, seed: 7, rect: { x: 1, y: 2, width: 30, height: 40 }, layerId: "pose_1" }), imageDataURL: png("bake") };
+  await run.finish([item]);
+  const [record] = [...session.records.values()];
+  assert.equal(record.kind, "bake");
+  assert.equal(record.targetLayerId, "pose_1");
+  assert.deepEqual(record.results.map((result) => [result.accepted, result.layerId, result.seed]), [[true, "pose_1", 7]]);
+  assert.deepEqual(record.results[0].rect, { x: 1, y: 2, width: 30, height: 40 });
+});
+
+test("bake, sprite and harmonize results accepted into their layer flip the record on undo / redo", async () => {
+  for (const kind of ["bake", "sprite", "harmonize"]) {
+    const session = fakeSession();
+    const history = new UniCanvasHistory(fakeWidget(session));
+    const items = [staged(`${kind}-a`, 1), staged(`${kind}-b`, 2)];
+    await history.beginRun(kind, { snapshot: { historyId: "gen_run" } }).finish(items);
+    assert.equal(session.records.get("gen_run").kind, kind);
+    const entry = { kind: "layerPixels", layerId: "layer_target", before: {}, after: {} };
+    const wrapped = history.acceptIntoLayer(entry, items[1], { id: "layer_target" });
+    assert.equal(wrapped.acceptedItem, items[1], `${kind}: the pixels entry carries the staged item`);
+    assert.equal(wrapped.layerId, "layer_target");
+    await settle();
+    assert.deepEqual(session.records.get("gen_run").results.map((result) => result.accepted), [false, true], kind);
+    await history.onAcceptHistory(wrapped, "undo");
+    assert.equal(session.records.get("gen_run").results[1].accepted, false, kind);
+    await history.onAcceptHistory(wrapped, "redo");
+    assert.equal(session.records.get("gen_run").results[1].accepted, true, kind);
+    assert.equal(session.records.get("gen_run").results[1].layerId, "layer_target", kind);
+  }
+  const history = new UniCanvasHistory(fakeWidget(fakeSession()));
+  const plain = { kind: "layerPixels", layerId: "x" };
+  assert.equal(history.acceptIntoLayer(plain, { snapshot: {} }, { id: "x" }), plain, "an unrecorded item leaves the entry alone");
+});
+
+test("a SAM 3 Remove background session is recorded when its mask is applied to that layer", async () => {
+  const session = fakeSession();
+  const widget = fakeWidget(session);
+  widget.sam = { model: "sam3" };
+  widget.origin = { x: 0, y: 0 };
+  widget.getLayerAlphaBounds = () => ({ x: 0, y: 0, width: 8, height: 8 });
+  widget.cloneCanvasCrop = (canvas) => canvas;
+  widget.generationHistory = new UniCanvasHistory(widget);
+  const layer = { id: "layer_base", canvas: {} };
+  const sam = new SamRemoveBgSession(widget);
+
+  sam.start(layer);
+  assert.equal(sam.onApplied({ id: "other" }, null), null, "another layer is not this session");
+  await sam.onApplied(layer, { x: 0, y: 0, width: 8, height: 8 });
+  const [record] = [...session.records.values()];
+  assert.equal(record.kind, "remove_bg");
+  assert.equal(record.params.method, "sam3");
+  assert.equal(record.targetLayerId, "layer_base");
+  assert.equal(sam.onApplied(layer, null), null, "one session writes one record");
+
+  sam.start(layer);
+  sam.onToolChanged("move");
+  assert.equal(sam.onApplied(layer, null), null, "leaving the SAM tool ends the session");
+  sam.start(layer);
+  widget.sam.model = "sam2_large";
+  assert.equal(sam.onApplied(layer, null), null, "a SAM 2 mask is not a Remove background run");
+  assert.equal(session.records.size, 1);
+});
+
+test("the History button sits next to the Library tab, else in the project bar", () => {
+  const tabs = { id: "tabs" };
+  const bar = { id: "bar" };
+  const withTabs = { container: { querySelector: (selector) => (selector === ".vnccs-uc-library-tabs" ? tabs : null) }, _vnccsProjectBar: bar };
+  assert.equal(historyButtonSlot(withTabs).parent, tabs);
+  assert.match(historyButtonSlot(withTabs).className, /vnccs-uc-library-tab/);
+  assert.match(historyButtonSlot(withTabs).className, /vnccs-uc-history-open/, "the feature toggle still hides it");
+  const withoutTabs = { container: { querySelector: () => null }, _vnccsProjectBar: bar };
+  assert.equal(historyButtonSlot(withoutTabs).parent, bar);
+  assert.equal(historyButtonSlot({ container: { querySelector: () => null } }), null);
+});
+
+test("the family filter hides switched-off families; their records stay under All", () => {
+  const records = [
+    { id: "a", createdAt: 1, snapshot: { modelFamily: "illustrious" } },
+    { id: "b", createdAt: 2, snapshot: { modelFamily: "anima" } },
+  ];
+  const history = new UniCanvasHistory(fakeWidget(fakeSession()), { modelModule: (mode) => ({ key: mode === "illustrious" ? "sdxl" : mode }) });
+  assert.equal(history.familyKey("illustrious"), "sdxl", "aliases resolve through the widget's registry");
+  const familyOn = (family) => isUniCanvasFamilyEnabled(history.familyKey(family));
+  offOnly("family_sdxl");
+  assert.deepEqual(historyFamilies(records, familyOn), ["anima"]);
+  assert.deepEqual(filterHistoryRecords(records, { family: "" }).map((record) => record.id), ["b", "a"], "All keeps old entries");
+  resetUniCanvasToggles();
+  assert.deepEqual(historyFamilies(records, familyOn), ["anima", "illustrious"]);
 });
