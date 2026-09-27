@@ -2144,6 +2144,12 @@ class UniCanvasWidget {
     this.setStatus(`Rasterized ${layer.name}`);
   }
 
+  // Layer context menu: a sprite set becomes a layer group, one raster layer per ready variant
+  // (one undo step, reference rewriting and confirmation; vnccs_unicanvas_sprites.mjs).
+  rasterizeSpriteLayer(layer) {
+    return this.sprites?.rasterizeSpriteSet?.(layer);
+  }
+
   async preparePoseForQueue() {
     await this.poseEditor?.flush();
     this.panorama?.commit();
@@ -6333,7 +6339,9 @@ class UniCanvasWidget {
     this.drawLayerThumbnailPlaceholder(thumb, layer);
     this.queueLayerThumbnailRender(thumb, layer);
     const label = document.createElement("div");
-    label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
+    // Sprite rows take their type caption (frame-stack icon, active variant, variant count)
+    // from the sprite module; every other type keeps the plain type text.
+    label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${this.sprites?.rowTypeHTML?.(layer) || `${layer.type}${layer.visible ? "" : " hidden"}`}</div>`;
     label.className = "vnccs-uc-layer-label";
     label.title = formatProvenanceTooltip(layer.meta, this.layers);
     const lock = this._button(layer.locked ? UI_ICONS.lock : UI_ICONS.unlock, "vnccs-uc-icon", null, layer.locked ? "Unlock layer" : "Lock layer");
@@ -6350,6 +6358,12 @@ class UniCanvasWidget {
       settings.addEventListener("click", (e) => { e.stopPropagation(); this.showPanoramaLayerSettings(layer); });
       settings.addEventListener("dblclick", (e) => e.stopPropagation());
       row.append(thumb, label, settings, lock, del);
+    } else if (this.sprites?.isSprite?.(layer)) {
+      // The row button reveals the sprite panel in the left sidebar (it is easy to lose).
+      const showPanel = this._button(`<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/></svg>`, "vnccs-uc-icon vnccs-uc-layer-sprite-panel", null, "Show the sprite set panel");
+      showPanel.addEventListener("click", (e) => { e.stopPropagation(); this.sprites?.focusPanel?.(layer); });
+      showPanel.addEventListener("dblclick", (e) => e.stopPropagation());
+      row.append(thumb, label, showPanel, lock, del);
     } else row.append(thumb, label, lock, del);
     row.addEventListener("click", (e) => this.onLayerRowClick(layer.id, e));
     this.attachLayerRowDragHandlers(row, layer);
@@ -6448,7 +6462,7 @@ class UniCanvasWidget {
     const label = row.querySelector(".vnccs-uc-layer-label");
     if (label) label.title = formatProvenanceTooltip(layer.meta, this.layers);
     const type = row.querySelector(".vnccs-uc-layer-type");
-    if (type) type.textContent = `${layer.type}${layer.visible ? "" : " hidden"}`;
+    if (type) type.innerHTML = this.sprites?.rowTypeHTML?.(layer) || `${layer.type}${layer.visible ? "" : " hidden"}`;
     if (isControlLayer(layer)) this.controlLayers?.decorateRow(row);
     const lock = row.querySelector("[data-layer-lock]") || row.querySelectorAll(".vnccs-uc-icon")[0];
     if (lock) {
