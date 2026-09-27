@@ -11,6 +11,7 @@ import {
   dehydrateValue,
   hydrateSceneState,
   installUniCanvasProjects,
+  isRevisionCacheable,
   migrationProjectName,
   saveRetryDelay,
 } from "../web/vnccs_unicanvas_project.mjs";
@@ -208,6 +209,34 @@ test("saves are incremental: only changed layers are encoded and only new blobs 
   paint(widget.layers[1], "two");
   await session.save();
   assert.equal(server.uploads(), 3);
+});
+
+test("sprite and scene-sourced control layers are always saved in full (their extra pixels have no revision)", async () => {
+  assert.equal(isRevisionCacheable({}, { type: "raster" }), true);
+  assert.equal(isRevisionCacheable({}, { type: "sprite" }), false);
+  assert.equal(isRevisionCacheable({}, { type: "pose" }), false);
+  assert.equal(isRevisionCacheable({}, { type: "control", controlSource: { image: "x" } }), false);
+  assert.equal(isRevisionCacheable({ panorama: {} }, { type: "raster" }), false);
+
+  const server = fakeServer();
+  const sprite = layer("s", "face", "sprite");
+  const widget = fakeWidget({ layers: [layer("a", "one"), sprite] });
+  // Variant pixels ride along only with layer data; the metadata-only base state drops them.
+  const serializeLayer = widget.serializeLayer;
+  widget.serializeLayer = function serializeWithVariants(item) {
+    const out = serializeLayer.call(this, item);
+    if (item.type === "sprite") out.sprite = { variants: (item.variants || []).map((label) => ({ id: label, dataURL: png(label) })) };
+    return out;
+  };
+  const session = new UniCanvasProjectSession(widget, { fetchImpl: server.fetch, storage: null, now: () => 0 });
+  widget.projectSession = session;
+  await session.save();
+  // A new variant is generated: the layer's own pixels (the active variant) keep their revision.
+  sprite.variants = ["happy"];
+  widget.settings = { positive: "changed" };
+  await session.save();
+  const scene = server.projects.get(session.projectId).scenes[0];
+  assert.deepEqual(scene.state.layers[1].sprite.variants[0].dataURL, { blob: `${sha(png("happy"))}.png`, crop: null });
 });
 
 test("a stale scene answers 409 and 'Save mine as a copy' keeps both versions", async () => {

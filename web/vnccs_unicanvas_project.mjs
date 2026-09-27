@@ -83,6 +83,19 @@ export function migrationProjectName(date = new Date()) {
   return `Untitled - ${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/**
+ * True when a layer's stored pixels are exactly `crop`, `dataURL` and the hires pair, keyed by its
+ * `pixelRevision`, so an unchanged revision may reuse the last blob refs. Pose layers (ID pass,
+ * bake parts), sprite sets (every variant's pixels), ControlNet layers with a scene source (its
+ * PNG) and panorama documents carry more pixels than that, which change without a new revision
+ * and are left out of the metadata-only base state: they are always serialized in full.
+ */
+export function isRevisionCacheable(widget, layer) {
+  if (!layer || widget?.panorama) return false;
+  if (layer.type === "pose" || layer.type === "sprite") return false;
+  return !layer.controlSource;
+}
+
 export function blobUrl(projectId, ref) {
   const name = typeof ref === "string" ? ref : ref?.blob;
   return `${PROJECTS_BASE}/${encodeURIComponent(projectId)}/blobs/${encodeURIComponent(String(name || "").replace(/\.png$/, ""))}`;
@@ -379,7 +392,7 @@ export class UniCanvasProjectSession {
       const cached = this.layerCache.get(layer.id);
       const reusable = cached && revision != null && cached.revision === revision
         && cached.canvas === layer.canvas && cached.hires === (layer.hiresCanvas || null)
-        && layer.type !== "pose" && !widget.panorama;
+        && isRevisionCacheable(widget, layer);
       if (reusable) {
         layers.push({ ...base, ...cached.fields });
         continue;
@@ -550,7 +563,7 @@ export class UniCanvasProjectSession {
     const byId = new Map((stored.layers || []).map((item) => [item?.id, item]));
     for (const layer of this.widget.layers || []) {
       const item = byId.get(layer.id);
-      if (!item || layer.type === "pose" || this.widget.panorama) continue;
+      if (!item || !isRevisionCacheable(this.widget, layer)) continue;
       this.layerCache.set(layer.id, {
         revision: layer.pixelRevision, canvas: layer.canvas, hires: layer.hiresCanvas || null,
         fields: { crop: item.crop ?? null, dataURL: item.dataURL ?? null, hiresRect: item.hiresRect ?? null, hiresDataURL: item.hiresDataURL ?? null },
