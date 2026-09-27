@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
@@ -35,9 +35,11 @@ import {
   pruneTimelineTargets,
   serializeTimeline,
   setKey,
+  timelineHasCamera,
   trackIdFor,
   transformRectBounds,
 } from "../web/vnccs_unicanvas_timeline_core.mjs";
+import { defaultExportFrameMode, exportSourceRect } from "../web/vnccs_unicanvas_animation_export.mjs";
 import { installUniCanvasTimeline } from "../web/vnccs_unicanvas_timeline.mjs";
 
 const near = (actual, expected, epsilon = 1e-6) => assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
@@ -379,4 +381,64 @@ test("the widget routes render, bounds, paint, history and persistence through t
   const modes = readFileSync(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
   assert.match(modes, /key === " " && widget\.timelinePanel\?\.togglePlay\(\)/);
   assert.match(modes, /getTimeline:/);
+});
+
+// Animation export camera track -----------------------------------------------------------------
+
+describe("animation export follows the camera track", () => {
+  const bbox = { x: 0, y: 0, width: 640, height: 360 };
+  const cameraRectAt = (timeline, frame, value) => setKey(timeline, CAMERA_TARGET, "rect", frame, value);
+
+  it("timelineHasCamera reports keyed camera rect and shake tracks only", () => {
+    assert.equal(timelineHasCamera(null), false);
+    const timeline = createTimeline();
+    assert.equal(timelineHasCamera(timeline), false);
+    setKey(timeline, "L", "position", 0, [1, 2]);
+    assert.equal(timelineHasCamera(timeline), false);
+    cameraRectAt(timeline, 0, { x: 0, y: 0, width: 100, height: 100 });
+    assert.equal(timelineHasCamera(timeline), true);
+    const shaken = createTimeline();
+    setKey(shaken, CAMERA_TARGET, "shake", 0, 4);
+    assert.equal(timelineHasCamera(shaken), true);
+  });
+
+  it("the default Frame mode follows camera keys, and a saved choice wins over it", () => {
+    assert.equal(defaultExportFrameMode(null), "bbox");
+    const timeline = createTimeline();
+    assert.equal(defaultExportFrameMode(timeline), "bbox");
+    cameraRectAt(timeline, 0, { x: 0, y: 0, width: 400, height: 300 });
+    cameraRectAt(timeline, 10, { x: 40, y: 30, width: 200, height: 150 });
+    assert.equal(defaultExportFrameMode(timeline), "camera");
+    timeline.exportOptions = { frameMode: "bbox" };
+    assert.equal(defaultExportFrameMode(timeline), "bbox");
+    timeline.exportOptions = { frameMode: "custom" };
+    assert.equal(defaultExportFrameMode(timeline), "custom");
+    timeline.exportOptions = { frameMode: "bogus" };
+    assert.equal(defaultExportFrameMode(timeline), "camera");
+  });
+
+  it("exportSourceRect exports the bbox or the per-frame camera rect", () => {
+    const camera = { x: 10, y: 20, width: 320, height: 180 };
+    assert.deepEqual(exportSourceRect("bbox", bbox, camera), { x: 0, y: 0, width: 640, height: 360 });
+    assert.deepEqual(exportSourceRect("camera", bbox, camera), camera);
+    assert.deepEqual(exportSourceRect("camera", bbox, null), bbox);
+  });
+
+  it("the saved Frame choice survives serialize and restore", () => {
+    const timeline = createTimeline();
+    cameraRectAt(timeline, 0, { x: 0, y: 0, width: 100, height: 100 });
+    timeline.exportOptions = { frameMode: "camera" };
+    const saved = serializeTimeline(timeline);
+    assert.deepEqual(saved.exportOptions, { frameMode: "camera" });
+    const restored = normalizeTimeline(JSON.parse(JSON.stringify(saved)));
+    assert.deepEqual(restored.exportOptions, { frameMode: "camera" });
+    assert.equal(defaultExportFrameMode(restored), "camera");
+    // A valid choice alone keeps the timeline in the state; junk or no choice still serializes to null.
+    const bare = createTimeline();
+    assert.equal(serializeTimeline(bare), null);
+    bare.exportOptions = { frameMode: "camera" };
+    assert.ok(serializeTimeline(bare));
+    bare.exportOptions = { frameMode: "nonsense" };
+    assert.equal(serializeTimeline(bare), null);
+  });
 });
