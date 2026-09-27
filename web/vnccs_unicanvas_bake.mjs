@@ -869,10 +869,15 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       rerenderPoseLoraRow();
       // Same cadence as the preset card downloads; the row re-renders with every poll.
       // refreshPresetDownloadStatus swallows its own errors, so a dead backend (or a lost job)
-      // leaves the watched statuses frozen instead of failing: a snapshot that stays unchanged
+      // leaves the watched entries frozen instead of failing: a snapshot that stays unchanged
       // for `poseLoraStallLimit` polls ends the wait — the row re-enables with a message instead
-      // of a frozen progress and a disabled button until reload.
-      const watched = () => JSON.stringify(loraDownloadKeys.map((key) => uc.presetDownloads?.[key]?.status ?? ""));
+      // of a frozen progress and a disabled button until reload. The snapshot covers status,
+      // message AND progress: a healthy download keeps `status: "downloading"` for minutes while
+      // only the percentage climbs, and that movement must reset the stall.
+      const watched = () => JSON.stringify(loraDownloadKeys.map((key) => {
+        const status = uc.presetDownloads?.[key] || {};
+        return [status.status ?? "", status.message ?? "", Number(status.progress) || 0];
+      }));
       let stall = 0;
       let snapshot = watched();
       while (loraDownloadKeys.some((key) => ["queued", "downloading"].includes(String(uc.presetDownloads?.[key]?.status)))) {
