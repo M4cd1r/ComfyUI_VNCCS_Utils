@@ -285,6 +285,13 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-model-picker.open .vnccs-uc-model-picker-menu { display:flex; }
 .vnccs-uc-model-picker-group { display:flex; flex-direction:column; gap:7px; }
 .vnccs-uc-model-picker-group-title { color:#ffdce5; font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+/* The preset picker head card reads as a dropdown: a trailing chevron flips while the menu is open and hover moves the border to the accent like a select. */
+.vnccs-uc-model-picker .vnccs-uc-model-card-chevron { flex:0 0 auto; width:13px; height:13px; color:var(--uc-muted); transition:rotate .15s ease; }
+.vnccs-uc-model-picker .vnccs-uc-model-card-chevron svg { width:13px; height:13px; display:block; fill:none; stroke:currentColor; stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round; }
+.vnccs-uc-model-picker.open .vnccs-uc-model-card.head .vnccs-uc-model-card-chevron { rotate:180deg; }
+.vnccs-uc-model-picker .vnccs-uc-model-card-sub { color:var(--uc-muted); font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
+.vnccs-uc-model-picker .vnccs-uc-model-card.head:hover { border-color:var(--uc-accent); }
+.vnccs-uc-model-picker .vnccs-uc-model-card.head:hover .vnccs-uc-model-card-sub { color:var(--uc-accent); }
 .vnccs-uc-model-card { display:flex; flex-direction:column; gap:5px; padding:10px 11px 8px; border:1px solid rgba(0,214,143,.25); border-radius:10px; background:rgba(0,214,143,.05); cursor:pointer; min-width:0; }
 .vnccs-uc-model-card.head { min-height:58px; }
 .vnccs-uc-model-card.turbo { min-height:0; height:34px; padding:0 8px; justify-content:center; border-color:rgba(255,143,163,.76); background:rgba(255,143,163,.14); }
@@ -935,6 +942,7 @@ const UI_ICONS = {
   duplicate: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="10" height="10" rx="1.5"/><rect x="5" y="5" width="10" height="10" rx="1.5"/></svg>`,
   up: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>`,
   down: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
+  chevronDown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
   lock: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>`,
   unlock: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.2-2.4"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/></svg>`,
@@ -2763,7 +2771,7 @@ class UniCanvasWidget {
     const status = turbo ? this.presetAssetStatus(asset) : this.presetStatus(preset);
     const selected = turbo ? this.isPresetTurboEnabled(preset) : this.settings.selected_preset_id === preset.id;
     const card = document.createElement("div");
-    card.role = "button";
+    card.setAttribute("role", "button");
     card.tabIndex = 0;
     card.className = `vnccs-uc-model-card ${turbo ? "turbo" : ""} ${head ? "head" : ""} ${selected ? "selected" : ""} ${status.progress ? "progress" : status.installed ? "installed" : "missing"}`;
     if (turbo) {
@@ -2784,15 +2792,50 @@ class UniCanvasWidget {
       : `<div class="vnccs-uc-model-card-actions"><button type="button" class="vnccs-uc-model-card-download" ${downloadAttrs}>Download</button></div>`;
     const toggle = turbo ? `<span class="vnccs-uc-toggle ${selected ? "active" : ""}" aria-hidden="true"></span>` : "";
     const statusNode = `<span class="vnccs-uc-model-card-status ${statusClass}">${this._escape(statusText)}</span>`;
+    const chevron = head ? `<span class="vnccs-uc-model-card-chevron" aria-hidden="true">${UI_ICONS.chevronDown}</span>` : "";
+    const presetCount = head ? [...this.groupPresetsByType().values()].reduce((sum, list) => sum + list.length, 0) : 0;
+    const subLine = head ? `<span class="vnccs-uc-model-card-sub">Change model / ${presetCount} ${presetCount === 1 ? "preset" : "presets"}</span>` : "";
     card.innerHTML = `
       <span class="vnccs-uc-model-card-top">
         <span class="vnccs-uc-model-card-badge ${statusClass}"></span>
         <span class="vnccs-uc-model-card-name">${this._escape(title || preset.label || preset.id)}</span>
-        ${turbo ? `${statusNode}${toggle}` : statusNode}
+        ${turbo ? `${statusNode}${toggle}` : statusNode}${chevron}
       </span>
+      ${subLine}
       ${modelName ? `<span class="vnccs-uc-model-card-model">Model: ${this._escape(modelName)}</span>` : ""}
       ${turbo ? "" : `<span class="vnccs-uc-model-card-desc">${this._escape(desc || "")}</span>`}
       ${downloadButton}`;
+    if (head) {
+      card.setAttribute("aria-haspopup", "listbox");
+      card.setAttribute("aria-expanded", this.presetPickerOpen ? "true" : "false");
+      // aria-expanded tracks the open state of the nearest picker: the main picker rebuilds the card
+      // from presetPickerOpen, the bake picker only toggles the open class on its root, so re-read
+      // the class after the delegated click handlers ran (microtask) and when Esc closes the menu.
+      const syncAriaExpanded = () => {
+        const picker = card.closest(".vnccs-uc-model-picker");
+        if (picker) card.setAttribute("aria-expanded", picker.classList.contains("open") ? "true" : "false");
+      };
+      queueMicrotask(syncAriaExpanded);
+      card.addEventListener("click", () => queueMicrotask(syncAriaExpanded));
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          card.click();
+          return;
+        }
+        if (e.key !== "Escape") return;
+        const picker = card.closest(".vnccs-uc-model-picker");
+        if (!picker?.classList.contains("open")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        picker.classList.remove("open");
+        syncAriaExpanded();
+        if (this.presetPickerOpen) {
+          this.presetPickerOpen = false;
+          this.renderModelSelectionControls();
+        }
+      });
+    }
     return card;
   }
 

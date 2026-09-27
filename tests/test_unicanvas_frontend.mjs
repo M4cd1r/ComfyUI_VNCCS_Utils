@@ -147,3 +147,25 @@ test("a linked VNCSS Config greys out every UniCanvas control it overrides", () 
     assert.ok(!/data-mode-control[^>]*data-config-override/.test(source), "Mode (model family) stays editable");
     assert.ok(source.includes("[data-config-override] { opacity:.38; filter:grayscale(1)"), "overridden controls read as greyed out");
 });
+
+test("the preset picker head card reads as a dropdown: chevron, preset count, aria, keyboard", () => {
+    const card = source.match(/  buildPresetCard\(preset, turbo = false, head = false\) \{[\s\S]*?\n  \}\n\n  getPresetGroupLabel/);
+    assert.ok(card, "buildPresetCard method not found");
+    const body = card[0];
+    assert.match(source, /chevronDown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"\/><\/svg>`/, "UI_ICONS must define a chevronDown icon");
+    assert.ok(body.includes("${UI_ICONS.chevronDown}"), "the head card must render the chevron icon");
+    assert.ok(body.includes("vnccs-uc-model-card-chevron"), "the chevron must carry its own class for the open-state rotation");
+    assert.ok(body.includes("vnccs-uc-model-card-sub"), "the head card must show the Change model / N presets sub-line");
+    assert.ok(body.includes("Change model / "), "the sub-line must advertise that the card opens the picker");
+    assert.ok(body.includes("groupPresetsByType()"), "the preset count must come from groupPresetsByType()");
+    assert.match(body, /const subLine = head \?/, "the sub-line belongs to the head card only");
+    assert.match(body, /setAttribute\("aria-haspopup", "listbox"\)/, "the head card must declare aria-haspopup=listbox");
+    assert.match(body, /setAttribute\("aria-expanded"/, "the head card must declare aria-expanded");
+    assert.match(body, /e\.key === "Enter" \|\| e\.key === " "/, "Enter and Space must toggle the picker");
+    assert.ok(body.includes("card.click()"), "keyboard activation must reuse the delegated click path");
+    assert.match(body, /key !== "Escape"/, "Escape must close the open picker");
+    assert.ok(source.includes(".vnccs-uc-model-picker.open .vnccs-uc-model-card.head .vnccs-uc-model-card-chevron { rotate:180deg; }"),
+        "STYLES must rotate the head chevron while the picker is open");
+    assert.ok(source.includes(".vnccs-uc-model-picker .vnccs-uc-model-card.head:hover { border-color:var(--uc-accent); }"),
+        "STYLES must give the head card a select-like accent hover");
+});
