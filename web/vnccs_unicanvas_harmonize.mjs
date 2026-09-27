@@ -54,7 +54,7 @@ import {
   shadowLengthFactor,
 } from "./vnccs_unicanvas_scene_place.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { normalizeStateOffset, stateOffsetPoint, stateOffsetRect, stateOffsetRestRect } from "./vnccs_unicanvas_state_offset.mjs";
+import { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, stateOffsetRestRect } from "./vnccs_unicanvas_state_offset.mjs";
 import { currentNormalPass, isImageLayer } from "./vnccs_unicanvas_pose_state.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 // Import cycle with the layer tools (they list this module's menu entries): only functions and
@@ -153,6 +153,19 @@ export function previewPoint(preview, point) {
     x: anchor.x + (point.x - anchor.x) * scale + (preview.dx || 0),
     y: anchor.y + (point.y - anchor.y) * scale + (preview.dy || 0),
   };
+}
+
+/**
+ * A world-placed silhouette in the shadow layer's own stored space: the inverse of the shadow's
+ * scene-state placement (move and depth scale, vnccs_unicanvas_state_offset.mjs), so the stored
+ * pixels land where the silhouette shows once the render applies that placement again.
+ */
+export function shadowStoredPlacement(placed, ownOffset) {
+  const m = stateOffsetMatrix(ownOffset);
+  const scale = m[0] || 1;
+  const at = (point) => ({ x: (point.x - m[4]) / scale, y: (point.y - m[5]) / scale });
+  const rect = (value) => ({ ...at(value), width: value.width / scale, height: value.height / scale });
+  return { canvas: placed.canvas, canvasRect: rect(placed.canvasRect), rect: rect(placed.rect), feet: at(placed.feet), feetWidth: placed.feetWidth / scale };
 }
 
 /** The contact ellipse for a character with alpha box width `boxWidth` and feet span `feetWidth`. */
@@ -346,9 +359,10 @@ const BLUR_LEVELS = [
   { blur: 1, stops: [[0, 0], [0.5, 0], [1, 1]] },
 ];
 
-function drawCastShadow(uc, ctx, base, placed, params) {
+function drawCastShadow(uc, ctx, base, placed, params, world = placed) {
   const light = uc.sceneLight;
-  const squash = castShadowSquash(uc.scenePerspective, placed.feet.y, placed.rect.height);
+  // The ground squash follows where the character shows (the horizon is in world pixels).
+  const squash = castShadowSquash(uc.scenePerspective, world.feet.y, world.rect.height);
   const { c, d } = castShadowMatrix(light, squash);
   const maxBlur = params.blur * placed.rect.height * 0.06;
   const pad = Math.ceil(maxBlur * 2 + 2);
@@ -420,12 +434,13 @@ export function renderShadowLayer(uc, layer, source = sourceLayerOf(uc, layer)) 
   if (silhouette) {
     // A transform draft already places the silhouette; a move preview never runs at the same time.
     const preview = transformDraftOf(uc, source) ? null : uc.getLayerMovePreview(source);
-    const placed = placedSilhouette(silhouette, preview);
-    // Canvas pixel = world - origin - the shadow's own state offset, so it lands where it shows.
-    const own = stateOffsetOf(uc, layer);
-    const base = { x: uc.origin.x + own.x, y: uc.origin.y + own.y };
+    const world = placedSilhouette(silhouette, preview);
+    // Canvas pixel = the shadow's own state placement undone (its move and depth scale), minus
+    // the origin, so the shadow lands where the silhouette shows.
+    const placed = shadowStoredPlacement(world, stateOffsetOf(uc, layer));
+    const base = { x: uc.origin.x, y: uc.origin.y };
     if (shadow.kind === "contact") drawContactShadow(uc, ctx, base, placed, shadow.params);
-    else drawCastShadow(uc, ctx, base, placed, shadow.params);
+    else drawCastShadow(uc, ctx, base, placed, shadow.params, world);
   }
   uc.invalidateLayerRenderCaches(layer);
   layer._boundsCache = undefined;

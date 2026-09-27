@@ -24,6 +24,7 @@
 
 import { getGroupDescendants, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible, topLevelSelection } from "./vnccs_unicanvas_groups.mjs";
 import { isZeroStateOffset, normalizeStateOffset, sameStateOffset } from "./vnccs_unicanvas_state_offset.mjs";
+import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
 
 export const SCENE_STATE_HISTORY_KINDS = new Set(["applySceneState", "sceneStates", "sceneStateOffset"]);
 export const MOVE_SCOPE_STATE = "state";
@@ -599,8 +600,12 @@ function stateMoveTargets(uc) {
   return targets;
 }
 
+/**
+ * Where a Move-tool drag lands. Where scene states are not shown (the node surface, or the
+ * feature toggled off) a saved "this state" setting must not apply invisibly: moves change the base.
+ */
 export function getSceneStateMoveScope(uc) {
-  if (uc.panorama || !activeState(uc)) return MOVE_SCOPE_ALL;
+  if (uc.panorama || !activeState(uc) || !isUniCanvasFeatureAvailable(uc, "sceneStates")) return MOVE_SCOPE_ALL;
   return resolveMoveScope(scene(uc));
 }
 

@@ -11,7 +11,8 @@
  *    the draw with `_timelineCompositeFrame` set.
  *  - Auto-key (default on): a move-tool drag, the dock's value fields and the layer opacity slider
  *    write keys at the playhead. With auto-key off the move tool and opacity edit the rest scene
- *    as before and a chip says so.
+ *    as before and a chip says so. Scale / rotation handles on the canvas and Free Transform on
+ *    a keyed frame write keys too (vnccs_unicanvas_timeline_transform.mjs).
  *  - History: every key gesture, preset insert, effect change or setting change is one `timeline`
  *    entry (the whole timeline before / after; it is small JSON). Scrubbing and playback add none.
  *  - Pose layers (issue #18): an animated pose layer gets a "Pose animation" row (drag it to move
@@ -81,6 +82,7 @@ import {
   studioFramesForRange,
 } from "./vnccs_unicanvas_timeline_pose.mjs";
 import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs";
+import { TimelineKeyHandles, commitTransformKeys, layerKeyContext } from "./vnccs_unicanvas_timeline_transform.mjs";
 import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs";
 import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
 
@@ -171,6 +173,7 @@ class TimelineController {
     this.capturing = null; // { layerId, hash } while the hidden editor renders that layer's frames
     this.exportDialog = null;
     this.createPoseEditor = null;
+    this.keyHandles = new TimelineKeyHandles(this);
   }
 
   // Availability and data ---------------------------------------------------------------------
@@ -227,25 +230,33 @@ class TimelineController {
     return rect ? { x: rect.x + rect.width / 2, y: rect.y + rect.height } : { x: 0, y: 0 };
   }
 
+  /**
+   * The keyed state of every animated target of the layer's chain at `frame`, outermost group
+   * first and the layer itself last: `[{ item, state, transform: { state, anchor } }]`.
+   */
+  chainTransforms(layer, frame) {
+    const timeline = this.data;
+    if (!timeline) return [];
+    const chain = [...groupChainOf(this.uc.layers, layer)].reverse();
+    chain.push(layer);
+    const out = [];
+    for (const item of chain) {
+      if (!targetHasAnimation(timeline, item.id)) continue;
+      const state = evaluateTarget(timeline, item.id, frame);
+      const needsAnchor = state.sx !== 1 || state.sy !== 1 || state.rotation;
+      out.push({ item, state, transform: state.animated ? { state, anchor: needsAnchor ? this.anchorOf(item) : { x: 0, y: 0 } } : null });
+    }
+    return out;
+  }
+
   /** The evaluated frame of one layer: { matrix, opacity, visible, variant, blur, animated } or null. */
   evaluateLayer(layer, frame) {
     const timeline = this.data;
     if (!timeline || frame === null || frame === undefined || !layer || layer.type === "mask") return null;
-    // Outermost group first, the layer itself last.
-    const chain = [...groupChainOf(this.uc.layers, layer)].reverse();
-    chain.push(layer);
-    let any = false;
-    const items = [];
-    let own = null;
-    for (const item of chain) {
-      if (!targetHasAnimation(timeline, item.id)) continue;
-      const state = evaluateTarget(timeline, item.id, frame);
-      if (item === layer) own = state;
-      if (!state.animated) continue;
-      any = true;
-      const needsAnchor = state.sx !== 1 || state.sy !== 1 || state.rotation;
-      items.push({ state, anchor: needsAnchor ? this.anchorOf(item) : { x: 0, y: 0 } });
-    }
+    const chain = this.chainTransforms(layer, frame);
+    const own = chain.find((entry) => entry.item === layer)?.state || null;
+    const items = chain.filter((entry) => entry.transform).map((entry) => entry.transform);
+    let any = items.length > 0;
     const pose = this.poseFrame(layer, frame);
     if (pose) any = true;
     if (!any) return null;
@@ -477,9 +488,23 @@ class TimelineController {
     return { ...base, x: base.x + Math.cos(angle) * shake, y: base.y + Math.sin(angle * 1.7) * shake };
   }
 
-  /** Pixel tools keep working on rest pixels; a free transform on a moved frame would not. */
-  blocksPixelTransform(layer) {
-    return Boolean(this.isOpen() && layer && this.evaluateLayer(layer, this.viewFrame()));
+  /**
+   * Free Transform on a frame where the layer is keyed away from rest, with auto-key on: the key
+   * context the draft writes back to on Apply (vnccs_unicanvas_timeline_transform.mjs), else null
+   * (the draft edits the stored pixels through the frame's placement).
+   */
+  transformKeyFrame(layer) {
+    if (!this.isOpen() || !this.autoKey || !layer || layer.locked || layer.type === "mask" || isGroupLayer(layer)) return null;
+    const frame = this.viewFrame();
+    if (!this.evaluateLayer(layer, frame)?.matrix) return null;
+    return layerKeyContext(this, layer, frame);
+  }
+
+  /** Apply of a keyed Free Transform draft: keys at the playhead, one history entry. */
+  commitTransformKeys(layer, draft) {
+    if (!draft?.keyFrame || !layer) return null;
+    this.pause();
+    return commitTransformKeys(this, layer, draft, draft.keyFrame);
   }
 
   /** World point -> the layer's rest pixels (inverse frame transform). */

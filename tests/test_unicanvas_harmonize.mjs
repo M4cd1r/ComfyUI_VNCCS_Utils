@@ -32,10 +32,12 @@ import {
   normalizeShadow,
   previewPoint,
   shadowSilhouetteKey,
+  shadowStoredPlacement,
   shadowTint,
   updateShadowLayers,
 } from "../web/vnccs_unicanvas_harmonize.mjs";
 import { LAYER_MENU_ITEMS } from "../web/vnccs_unicanvas_layer_tools.mjs";
+import { stateOffsetPoint, stateOffsetRect } from "../web/vnccs_unicanvas_state_offset.mjs";
 
 const widget = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const harmonize = readFileSync(new URL("../web/vnccs_unicanvas_harmonize.mjs", import.meta.url), "utf8");
@@ -74,6 +76,25 @@ test("previews move and scale points like the widget's render transform", () => 
   assert.deepEqual(previewPoint(null, { x: 3, y: 4 }), { x: 3, y: 4 });
   assert.deepEqual(previewPoint({ dx: 10, dy: -5 }, { x: 3, y: 4 }), { x: 13, y: -1 });
   assert.deepEqual(previewPoint({ dx: 0, dy: 100, scale: 2, anchor: { x: 50, y: 200 } }, { x: 40, y: 100 }), { x: 30, y: 100 });
+});
+
+test("a shadow's own scene-state move and depth scale are undone in its stored pixels", () => {
+  const world = { canvas: "c", canvasRect: { x: 100, y: 100, width: 40, height: 80 }, rect: { x: 104, y: 110, width: 32, height: 70 }, feet: { x: 120, y: 180 }, feetWidth: 12 };
+  assert.deepEqual(shadowStoredPlacement(world, { x: 0, y: 0 }), world, "no state placement: unchanged");
+  const moved = shadowStoredPlacement(world, { x: 10, y: -5 });
+  assert.deepEqual(moved.feet, { x: 110, y: 185 });
+  assert.equal(moved.feetWidth, 12);
+  // Depth scale 2 around the rest feet (100, 200), then a move by (20, 0).
+  const own = { x: 20, y: 0, scale: 2, ax: 100, ay: 200 };
+  const stored = shadowStoredPlacement(world, own);
+  assert.equal(stored.canvas, "c");
+  assert.equal(stored.feetWidth, 6);
+  assert.equal(stored.rect.width, 16);
+  assert.equal(stored.canvasRect.height, 40);
+  // Rendering the stored geometry through the shadow's placement lands it back on the silhouette.
+  assert.deepEqual(stateOffsetPoint(own, stored.feet), world.feet);
+  assert.deepEqual(stateOffsetRect(own, stored.rect), world.rect);
+  assert.match(harmonize, /shadowStoredPlacement\(world, stateOffsetOf\(uc, layer\)\)/, "renderShadowLayer uses it");
 });
 
 test("the contact ellipse is 60% of the box width, never narrower than the feet", () => {

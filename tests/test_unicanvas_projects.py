@@ -190,6 +190,59 @@ def test_zip_export_then_import_round_trips(store):
     assert again["id"] != pid
 
 
+def _thumb_pixel(store, pid, scene_id, xy=(0, 0)):
+    with Image.open(store.thumb_path(pid, scene_id)) as image:
+        return image.convert("RGBA").getpixel(xy)
+
+
+def test_a_scene_saved_without_a_thumbnail_gets_one_rendered_from_its_layers(store):
+    project = store.create_project("Server thumbs")
+    pid, scene_id = project["id"], project["scenes"][0]["id"]
+    entry = store.put_scene(pid, scene_id, _state((0, 0, 255, 255)))
+    assert entry["thumbnail"] == f"thumbs/{scene_id}.png"
+    assert _thumb_pixel(store, pid, scene_id) == (0, 0, 255, 255)
+    assert store.load_project(pid)["scenes"][0]["thumbnail"] == f"thumbs/{scene_id}.png"
+
+    # A later save without one is the client's throttle: the existing thumbnail stays.
+    store.put_scene(pid, scene_id, _state((0, 255, 0, 255)))
+    assert _thumb_pixel(store, pid, scene_id) == (0, 0, 255, 255)
+    # A client thumbnail always wins.
+    store.put_scene(pid, scene_id, _state(), thumbnail=_data_url(_png((255, 255, 0, 255))))
+    assert _thumb_pixel(store, pid, scene_id) == (255, 255, 0, 255)
+
+
+def test_the_server_thumbnail_reads_blob_refs_and_fits_the_thumbnail_size(store):
+    project = store.create_project("Refs")
+    pid = project["id"]
+    big = _png((10, 20, 30, 255), size=(1024, 512))
+    sha = hashlib.sha256(big).hexdigest()
+    store.put_blob(pid, sha, big)
+    state = _state()
+    state["size"] = {"width": 1024, "height": 512}
+    state["bbox"] = {"x": 0, "y": 0, "width": 1024, "height": 512}
+    crop = {"x": 0, "y": 0, "width": 1024, "height": 512}
+    state["layers"][0].update(crop=crop, dataURL={"blob": f"{sha}.png", "crop": crop})
+    scene = store.create_scene(pid, name="From refs", state=state)
+    assert scene["thumbnail"] == f"thumbs/{scene['id']}.png"
+    with Image.open(store.thumb_path(pid, scene["id"])) as image:
+        assert image.size == (projects.THUMBNAIL_SIZE, projects.THUMBNAIL_SIZE // 2)
+        assert image.convert("RGBA").getpixel((5, 5)) == (10, 20, 30, 255)
+
+
+def test_an_empty_or_unrenderable_scene_still_saves_without_a_thumbnail(store):
+    project = store.create_project("Empty")
+    pid, scene_id = project["id"], project["scenes"][0]["id"]
+    entry = store.put_scene(pid, scene_id, {"layers": []})
+    assert entry["thumbnail"] is None and not os.path.isfile(store.thumb_path(pid, scene_id))
+    hidden = _state()
+    hidden["layers"][0]["visible"] = False
+    assert store.put_scene(pid, scene_id, hidden)["thumbnail"] is None
+    broken = _state()
+    broken["bbox"] = {"x": 0, "y": 0, "width": 100000, "height": 100000}  # over the pixel limit
+    entry = store.put_scene(pid, scene_id, broken)
+    assert entry["thumbnail"] is None and entry["rev"] == 4
+
+
 def test_import_refuses_unsafe_zip_paths(store):
     import zipfile
 

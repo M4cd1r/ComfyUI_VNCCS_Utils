@@ -27,6 +27,7 @@ import binascii
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -53,6 +54,7 @@ from .project_io import (
 from .route_utils import json_route, match, read_json_object
 
 
+_LOG = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 PROJECTS_DIRNAME = "vnccs_unicanvas"
 TRASH_RETENTION_SECONDS = 30 * 24 * 3600
@@ -368,6 +370,19 @@ class ProjectStore:
         """Turns blob refs back into PNG data URLs (for rendering a scene in node mode)."""
         return _hydrate_value(value, lambda sha: self.get_blob(project_id, sha))
 
+    def render_scene_thumbnail(self, project_id: str, state: Any, size: int = THUMBNAIL_SIZE) -> bytes | None:
+        """A PNG thumbnail composited from a scene's layers (inline pixels or this project's blob
+        refs), or None when the scene shows nothing or cannot be rendered. Never raises: a missing
+        thumbnail must not fail the save. Callers run in a worker thread (the routes use
+        ``asyncio.to_thread``), so the compositing stays off the event loop."""
+        if not isinstance(state, dict) or not state.get("layers"):
+            return None
+        try:
+            return render_state_thumbnail(self.hydrate(project_id, state), size)
+        except Exception as exc:  # noqa: BLE001 - a thumbnail is best effort
+            _LOG.warning("[VNCCS UniCanvas] Scene thumbnail render failed: %s", exc)
+            return None
+
     def collect_garbage(self, project_id: str, now: float | None = None) -> list[str]:
         """Deletes blobs no scene, asset or history record references and that are older than 24 h."""
         with STORE_LOCK:
@@ -390,6 +405,8 @@ class ProjectStore:
         return entry
 
     def create_scene(self, project_id: str, name: str = "", from_scene_id: str | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+        # A new scene from a state gets a rendered thumbnail (outside the store-wide lock).
+        thumb_png = self.render_scene_thumbnail(project_id, state) if not from_scene_id and isinstance(state, dict) else None
         with STORE_LOCK:
             project = self.load_project(project_id)
             scene_id = new_id("scn")
@@ -403,6 +420,8 @@ class ProjectStore:
             else:
                 stored = self.dehydrate(project_id, state if isinstance(state, dict) else {"layers": []})
             atomic_write_json(self._scene_json(project_id, scene_id), stored)
+            if thumb_png is not None:
+                atomic_write_bytes(self.thumb_path(project_id, scene_id), thumb_png)
             now = current_time()
             entry = {
                 "id": scene_id, "name": str(name or f"Scene {len(project['scenes']) + 1}")[:200],
@@ -427,7 +446,14 @@ class ProjectStore:
             raise ProjectError("[VNCCS UniCanvas] The scene state must be an object.", 400)
         expected_rev = parse_rev(if_rev)
         # Rendering the thumbnail is pure CPU work: keep it out of the store-wide lock.
-        thumb_png = _thumbnail_png(decode_png_data_url(thumbnail)) if thumbnail else None
+        if thumbnail:
+            thumb_png = _thumbnail_png(decode_png_data_url(thumbnail))
+        elif not os.path.isfile(self.thumb_path(project_id, scene_id)):
+            # A scene the store has no thumbnail for gets one rendered from its layers. A save
+            # without a thumbnail for a scene that has one is the client's throttle: keep it.
+            thumb_png = self.render_scene_thumbnail(project_id, state)
+        else:
+            thumb_png = None
         with STORE_LOCK:
             project = self.load_project(project_id)
             entry = self._scene_entry(project, safe_id(scene_id, "scene id"))
@@ -699,6 +725,20 @@ def _thumbnail_png(data: bytes, size: int = THUMBNAIL_SIZE) -> bytes:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         return buffer.getvalue()
+
+
+def render_state_thumbnail(state: dict[str, Any], size: int = THUMBNAIL_SIZE) -> bytes | None:
+    """Flattens a hydrated scene state with the node's CPU compositor (``render.py``: blend
+    modes, groups, scene-state offsets) and scales it to fit ``size``; None when the frame is empty."""
+    from .render import _render_unicanvas_state_to_rgba  # imports torch: load on first use only
+
+    image = _render_unicanvas_state_to_rgba(json.dumps(state))
+    if image.getbbox() is None:
+        return None
+    image.thumbnail((size, size))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def load_project_scene_state(project_id: str, scene_id: str, user: str = "default", user_root: str | None = None) -> dict[str, Any]:

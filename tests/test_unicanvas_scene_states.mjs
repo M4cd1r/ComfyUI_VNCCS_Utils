@@ -42,6 +42,7 @@ const layer = (id, extra = {}) => ({ id, name: id, type: "raster", visible: true
 // A widget stand-in: the module only needs layers, history and a few no-op hooks.
 function fakeWidget(layers) {
   const uc = {
+    standalone: true, // scene states are shown in the standalone tab only
     layers,
     activeLayerId: layers[0]?.id || null,
     selectedLayerIds: [],
@@ -300,7 +301,11 @@ test("the widget routes composites, bounds and tools through the state offset", 
     /const handler = this\.historyHandlers\?\.get\(entry\.kind\);\n\s+if \(handler\?\.isolated\)/,
     /sceneStates: this\.serializeSceneStates\?\.\(\) \?\? null/,
     /this\.restoreSceneStates\?\.\(state\.sceneStates\)/,
-    /ctx\.translate\(-this\.origin\.x - stateOffset\.x, -this\.origin\.y - stateOffset\.y\)/,
+    // Free Transform works where the layer shows (state move and depth scale) and Apply writes
+    // the stored pixels back through the inverse placement.
+    /const placement = this\.getLayerRenderTransform\(layer\);\n\s+const quad = placedQuad\(source\.bounds, placement\);/,
+    /const inverse = invertMatrix\(draftPlacement\(draft\)\);/,
+    /ctx\.translate\(-this\.origin\.x, -this\.origin\.y\);\n\s+ctx\.transform\(\.\.\.inverse\);/,
   ]) {
     assert.match(widgetSource, pattern);
   }
@@ -348,4 +353,18 @@ test("a depth-scaled move in one state stores a scale around the feet in that st
   assert.ok(beginSceneStateMove(uc), "a multi-selection moves in the state");
   assert.deepEqual(uc.dragStart.stateMoveLayerIds, ["ben", "bg"]);
   assert.equal(uc.dragStart.depthScale, null);
+});
+
+test("on the node surface a saved 'Move affects: this state' never applies: moves change the base", () => {
+  const uc = fakeWidget([layer("anna"), layer("bg")]);
+  newStateFromCurrent(uc);
+  newStateFromCurrent(uc);
+  uc.sceneStates.moveScope = MOVE_SCOPE_STATE;
+  assert.equal(getSceneStateMoveScope(uc), MOVE_SCOPE_STATE);
+  uc.standalone = false; // the same saved scene loaded on the workflow node
+  assert.equal(getSceneStateMoveScope(uc), MOVE_SCOPE_ALL);
+  uc.dragStart = {};
+  assert.equal(beginSceneStateMove(uc), false, "the Move tool falls through to the base (pixel) move");
+  assert.equal(uc.dragStart.stateMove, undefined);
+  assert.equal(uc.sceneStates.moveScope, MOVE_SCOPE_STATE, "the saved setting is kept for the standalone tab");
 });
