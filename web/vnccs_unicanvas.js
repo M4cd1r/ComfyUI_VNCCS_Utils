@@ -317,6 +317,9 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-transform-label { min-width:92px; }
 .vnccs-uc-modal-overlay {
   position:absolute; inset:0; z-index:20; display:grid; place-items:center;
+  /* One definite cell: a modal's percentage max-height (project browser, history) resolves
+     against the overlay instead of an auto row that grows with the content. */
+  grid-template:minmax(0, 1fr) / minmax(0, 1fr);
   background:rgba(4,4,8,.58); pointer-events:auto;
 }
 .vnccs-uc-modal {

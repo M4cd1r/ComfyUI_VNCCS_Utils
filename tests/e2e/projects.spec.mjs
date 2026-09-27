@@ -239,3 +239,24 @@ test("projects: an existing standalone document is migrated into a project", asy
   await expect.poll(() => snapshot(page), { timeout: 30_000 }).toEqual(expected);
   await page.request.delete(`/vnccs/unicanvas/projects/${info.projectId}`);
 });
+
+test("projects: the project browser stays inside the widget and scrolls with many projects", async ({ page }) => {
+  // 150 listed projects (stubbed list): the grid scrolls inside a modal that fits the widget.
+  const many = Array.from({ length: 150 }, (_, i) => ({ id: `prj_many_${i}`, name: `Many ${i}`, updatedAt: 1_700_000_000 + i, sceneCount: 1 }));
+  await page.route("**/vnccs/unicanvas/projects", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ json: { projects: many } })
+    : route.fallback()));
+  await openUnicanvas(page);
+  await createProject(page, `E2E browser ${Date.now()}`);
+  const info = await project(page);
+  await page.locator(`${SHELL} .vnccs-uc-project-name`).click();
+  const browser = page.locator(`${SHELL} .vnccs-uc-project-browser`);
+  await expect(browser.locator(".vnccs-uc-project-card")).toHaveCount(150);
+  const [modal, widget] = [await browser.boundingBox(), await page.locator(`${SHELL} .vnccs-unicanvas`).boundingBox()];
+  expect(modal.y).toBeGreaterThanOrEqual(widget.y);
+  expect(modal.y + modal.height).toBeLessThanOrEqual(widget.y + widget.height);
+  const grid = await browser.locator(".vnccs-uc-project-grid").evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight }));
+  expect(grid.scroll).toBeGreaterThan(grid.client);
+  await page.keyboard.press("Escape");
+  await page.request.delete(`/vnccs/unicanvas/projects/${info.projectId}`);
+});
