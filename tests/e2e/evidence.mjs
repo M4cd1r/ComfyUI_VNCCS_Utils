@@ -134,7 +134,9 @@ if (topic === "vn-preview") {
   await page.keyboard.press("Enter");
   await page.waitForTimeout(1_000);
   await page.locator('[title="VN preview (P)"]').first().click();
-  await page.mouse.click(3, 3);
+  // Close the popover with a click on the empty top bar (the page corner is ComfyUI's workflow tab).
+  const bar = await page.locator(".vnccs-uc-bottom").first().boundingBox();
+  await page.mouse.click(bar.x + bar.width / 2, bar.y + 6);
   await page.locator('.vnccs-uc-tool[data-tool="move"]').click();
   const box = await page.locator("canvas.vnccs-uc-stage").first().boundingBox();
   const vn = await page.evaluate(() => globalThis.__VNCCS_UC_E2E__.getVnPreview());

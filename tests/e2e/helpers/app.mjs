@@ -38,6 +38,17 @@ export async function openUnicanvas(page, { navigate = true } = {}) {
   await expect(page.locator(".vnccs-uc2-standalone-shell .vnccs-uc-left")).toBeVisible({ timeout: 30_000 });
 }
 
+/**
+ * An "outside" click that closes UniCanvas popovers: the empty middle of the stage's top bar.
+ * Not a page corner - ComfyUI's workflow tab sits there beside the standalone tab, and its
+ * hover preview (a ComfyUI popover, above the tab) would then cover the widget.
+ */
+export async function clickOutsidePopovers(page) {
+  const bar = page.locator(".vnccs-uc2-standalone-shell .vnccs-uc-bottom").first();
+  const box = await bar.boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + Math.min(6, box.height / 2));
+}
+
 /** Import an image file as a raster layer through the Layers "Import Image" button. */
 export async function importImageLayer(page, filePath) {
   const [chooser] = await Promise.all([

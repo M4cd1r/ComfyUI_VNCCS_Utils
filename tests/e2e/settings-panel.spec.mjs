@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openUnicanvas } from "./helpers/app.mjs";
+import { clickOutsidePopovers, openUnicanvas } from "./helpers/app.mjs";
 
 test("settings open as one larger panel anchored under the gear", async ({ page }) => {
   await openUnicanvas(page);
@@ -17,7 +17,7 @@ test("settings open as one larger panel anchored under the gear", async ({ page 
   const overlapsLeft = panelBox.x < leftBox.x + leftBox.width && panelBox.x + panelBox.width > leftBox.x;
   expect(overlapsLeft).toBe(false); // never over the left sidebar
 
-  await page.mouse.click(2, 2); // outside click closes
+  await clickOutsidePopovers(page); // outside click closes
   await expect(panel).toHaveCount(0);
   await gear.click();
   await expect(panel).toHaveCount(1);

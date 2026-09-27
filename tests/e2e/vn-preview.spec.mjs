@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { importImageLayer, openPoseTool, openUnicanvas, poseLayer, setLayerNaming } from "./helpers/app.mjs";
+import { clickOutsidePopovers, importImageLayer, openPoseTool, openUnicanvas, poseLayer, setLayerNaming } from "./helpers/app.mjs";
 
 // Plan 07 (#10): the VN preview overlay is a preview only. It shows on the stage canvas and
 // never reaches save to output, flatten or a generation request.
@@ -18,7 +18,7 @@ async function setVnOn(page, on) {
   if (((await btn.getAttribute("aria-pressed")) === "true") !== on) await btn.click();
   await expect(btn).toHaveAttribute("aria-pressed", on ? "true" : "false");
   if (on) await expect.poll(async () => (await vn(page))?.lines?.length ?? 0).toBeGreaterThan(0);
-  await page.mouse.click(3, 3); // close the popover
+  await clickOutsidePopovers(page); // close the popover
   await page.waitForTimeout(150);
 }
 
