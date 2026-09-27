@@ -3,7 +3,8 @@
  *
  *  - `widget.timeline = { schemaVersion, fps, frameCount, loop, currentFrame, workArea:
  *    { start, end }, tracks: { [trackId]: { target, property, type, keys } }, effects, markers,
- *    poseClips }` (poseClips: pose layer animation offsets, issue #18).
+ *    poseClips }` (poseClips: pose layer animation offsets, issue #18; exportOptions: the last
+ *    Frame choice of the animation export dialog, `{ frameMode }`).
  *    A track id is `${target}:${property}`; a target is a layer id, a group id or `camera`.
  *  - Layer / group properties: `position` (world-px offset from rest), `scale` and `rotation`
  *    (degrees) around the anchor, `opacity`, `visible` and `spriteVariant` (step), `blur` (px).
@@ -38,6 +39,8 @@ export const MAX_TIMELINE_FPS = 60;
 export const MIN_TIMELINE_FRAMES = 2;
 export const MAX_TIMELINE_FRAMES = 3600;
 export const FRAME_LIMITS = Object.freeze({ minFrames: MIN_TIMELINE_FRAMES, maxFrames: MAX_TIMELINE_FRAMES });
+/** Valid Frame modes of the animation export dialog, persisted as `exportOptions.frameMode`. */
+export const EXPORT_FRAME_MODES = Object.freeze(["bbox", "camera", "custom"]);
 
 /** Property -> { type, camera }. Types: vector2, scalar, step, rect. */
 export const TIMELINE_PROPERTIES = Object.freeze({
@@ -82,6 +85,11 @@ export const IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
 
 const newEffectId = () => `fx_${createKeyId()}`;
 export const trackIdFor = (target, property) => `${target}:${property}`;
+
+/** True when the camera track has any keys (camera:rect or camera:shake), so the export can follow it. */
+export function timelineHasCamera(timeline) {
+  return CAMERA_PROPERTIES.some((property) => timeline?.tracks?.[trackIdFor(CAMERA_TARGET, property)]?.keys?.length);
+}
 
 // Construction and normalization ---------------------------------------------------------------
 
@@ -172,6 +180,7 @@ export function normalizeTimeline(raw) {
     .filter((marker) => marker && Number.isFinite(Number(marker.frame)))
     .map((marker) => ({ id: typeof marker.id === "string" && marker.id ? marker.id : createKeyId(), frame: clamp(Math.round(Number(marker.frame)), 0, lastFrame), name: String(marker.name || "Marker").slice(0, 80) }));
   const poseClips = normalizePoseClips(source.poseClips, lastFrame);
+  const exportOptions = exportOptionsFrom(source.exportOptions);
   const startRaw = clamp(Math.round(finiteNumber(source.workArea?.start, 0)), 0, lastFrame);
   const endRaw = clamp(Math.round(finiteNumber(source.workArea?.end, lastFrame)), 0, lastFrame);
   return {
@@ -185,6 +194,7 @@ export function normalizeTimeline(raw) {
     effects,
     markers,
     poseClips,
+    ...(exportOptions ? { exportOptions } : {}),
   };
 }
 
@@ -205,6 +215,12 @@ function normalizePoseClips(raw, lastFrame) {
   return out;
 }
 
+/** The persisted export-dialog choice: `{ frameMode }` for a valid mode, otherwise nothing. */
+function exportOptionsFrom(raw) {
+  const frameMode = raw?.frameMode;
+  return EXPORT_FRAME_MODES.includes(frameMode) ? { frameMode } : null;
+}
+
 export function isTimelineEmpty(timeline) {
   if (!timeline) return true;
   const keyed = Object.values(timeline.tracks || {}).some((track) => track.keys?.length);
@@ -215,7 +231,8 @@ export function isTimelineEmpty(timeline) {
 export function serializeTimeline(timeline) {
   if (!timeline) return null;
   const defaults = timeline.fps === DEFAULT_TIMELINE_FPS && timeline.frameCount === DEFAULT_TIMELINE_FRAMES && timeline.loop !== false;
-  if (isTimelineEmpty(timeline) && defaults) return null;
+  // A saved export choice alone is worth keeping, so the next dialog opens with it.
+  if (isTimelineEmpty(timeline) && defaults && !exportOptionsFrom(timeline.exportOptions)) return null;
   return cloneJSON(normalizeTimeline(timeline), null);
 }
 

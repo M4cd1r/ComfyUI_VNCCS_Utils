@@ -3,9 +3,10 @@
  *
  *  - Formats: WebM (VP9), MP4 (H.264), GIF, PNG sequence. Range: the work area or the full
  *    timeline. Frame: the bbox, the camera rect (per frame, bbox when unkeyed) or a custom size of
- *    the camera view, at 100 % or 50 %. The source rect is fitted into the output ("contain"), so a
- *    camera zoom or a custom aspect never distorts the picture. PNG sequence and WebM keep alpha:
- *    hide the background layers for a transparent export.
+ *    the camera view, at 100 % or 50 %. The camera is the default while the camera track has keys,
+ *    and the last choice is kept in timeline.exportOptions. The source rect is fitted into the
+ *    output ("contain"), so a camera zoom or a custom aspect never distorts the picture. PNG
+ *    sequence and WebM keep alpha: hide the background layers for a transparent export.
  *  - Every frame is rendered offscreen through the flatten / export path with that frame's
  *    transforms (`_timelineCompositeFrame`), never a screen capture, so an export frame equals the
  *    composite of the scrubbed frame.
@@ -18,6 +19,7 @@
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
+import { EXPORT_FRAME_MODES, timelineHasCamera } from "./vnccs_unicanvas_timeline_core.mjs";
 
 export const ANIMATION_ROUTE = "/vnccs/unicanvas/animation";
 export const EXPORT_FORMATS = Object.freeze([
@@ -55,6 +57,16 @@ export function exportFrameRange(timeline, range = "work") {
   if (!timeline) return { start: 0, end: 0 };
   if (range === "full") return { start: 0, end: timeline.frameCount - 1 };
   return { start: timeline.workArea.start, end: timeline.workArea.end };
+}
+
+/**
+ * The dialog's default Frame mode: the choice last saved on the timeline, else the camera when the
+ * camera track has keys (the export then follows the animation), else the bbox.
+ */
+export function defaultExportFrameMode(timeline) {
+  const saved = timeline?.exportOptions?.frameMode;
+  if (EXPORT_FRAME_MODES.includes(saved)) return saved;
+  return timelineHasCamera(timeline) ? "camera" : "bbox";
 }
 
 /** The world rect a frame shows: the bbox, or the camera view (bbox when unkeyed). */
@@ -263,8 +275,8 @@ export function openAnimationExportDialog(controller) {
         <option value="full">Full (0-${timeline.frameCount - 1})</option>
       </select>
       <span>Frame</span><select data-anim="frame">
-        <option value="bbox">Bbox</option>
-        <option value="camera">Camera rect</option>
+        <option value="bbox">Bbox (static – ignores camera)</option>
+        <option value="camera">Camera (animated)</option>
         <option value="custom">Custom size</option>
       </select>
       <span>Size</span><span class="vnccs-uc-anim-size">
@@ -283,6 +295,8 @@ export function openAnimationExportDialog(controller) {
   const format = field("format");
   for (const item of EXPORT_FORMATS) format.add(new Option(item.label, item.value));
   field("name").value = defaultName(uc);
+  // The camera wins the first default while its track has keys; afterwards the last choice does.
+  field("frame").value = defaultExportFrameMode(timeline);
   const width = field("width");
   const height = field("height");
   const note = field("note");
@@ -312,7 +326,8 @@ export function openAnimationExportDialog(controller) {
     }
     const out = exportOutputSize({ ...options, bbox: uc.bbox, startCameraRect: controller.cameraRect(exportFrameRange(timeline, options.range).start) });
     const alpha = EXPORT_FORMATS.find((item) => item.value === options.format)?.alpha;
-    note.textContent = `${out.width} x ${out.height} px, ${timeline.fps} fps. ${alpha ? "Keeps alpha: hide background layers for a transparent export." : "No alpha: transparent areas become black."}${options.format === "mp4" && (out.width % 2 || out.height % 2) ? " MP4 pads odd sizes by one pixel." : ""}`;
+    const warning = options.frameMode === "bbox" && timelineHasCamera(timeline) ? "The camera track is ignored in Bbox mode. " : "";
+    note.textContent = `${warning}${out.width} x ${out.height} px, ${timeline.fps} fps. ${alpha ? "Keeps alpha: hide background layers for a transparent export." : "No alpha: transparent areas become black."}${options.format === "mp4" && (out.width % 2 || out.height % 2) ? " MP4 pads odd sizes by one pixel." : ""}`;
   };
   for (const name of ["format", "range", "frame", "scale", "width", "height"]) field(name).addEventListener("input", syncSize);
   syncSize();
@@ -348,6 +363,8 @@ export function openAnimationExportDialog(controller) {
     for (const input of modal.querySelectorAll("select, input")) input.disabled = true;
     modal.querySelector(".vnccs-uc-anim-progress").hidden = false;
     const options = readOptions();
+    // Remember the last Frame choice with the timeline so the next dialog opens with it.
+    timeline.exportOptions = { frameMode: options.frameMode };
     try {
       const result = await runAnimationExport(controller, options, {
         cancelled: () => cancelRequested,
