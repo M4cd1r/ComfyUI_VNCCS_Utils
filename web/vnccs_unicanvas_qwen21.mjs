@@ -3,7 +3,7 @@
 // Spectrum acceleration is ported from Comfyui-Spectrum-Qwen2.1
 // (https://github.com/awdqwdasdg/Comfyui-Spectrum-Qwen2.1), MIT License,
 // Copyright (c) 2026 ComfyUI-Spectrum-QwenImage21 contributors.
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790495264510";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790497347734";
 
 export const QWEN21_MODULE_KEY = "qwen_image21";
 

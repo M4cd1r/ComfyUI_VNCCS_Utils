@@ -417,6 +417,26 @@ test("navigation only inspects: no capture, no persisted viewport, no commit on 
     editor.release();
 });
 
+test("viewport frames without an edit in flight never re-capture the layer pixels", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    const studio = controlled.instances[0];
+    const draws = () => layer.canvas.ctx.calls.filter(call => call[0] === "draw").length;
+    clearTimeout(editor.commitTimer); editor.commitTimer = null;
+    editor.pointerHeld = false;
+    const settled = draws();
+    // A joint hover highlight renders a frame: the final bake must stay, not a preview capture.
+    studio.host.onViewportRender();
+    assert.equal(draws(), settled, "a hover/resize frame keeps the final-quality pixels");
+    // A held pointer (bone drag, slider) is an edit gesture: its frames preview live.
+    editor.pointerHeld = true;
+    studio.host.onViewportRender();
+    assert.ok(draws() > settled, "frames during an edit gesture re-capture live");
+    editor.pointerHeld = false;
+    editor.release();
+});
+
 test("shared capture returns transparent pixels and hides helpers while restoring renderer state", () => {
     const { viewer } = createScene();
     let captureRender;

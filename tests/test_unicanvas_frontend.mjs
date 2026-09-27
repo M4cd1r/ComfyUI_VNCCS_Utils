@@ -86,10 +86,22 @@ test("tool settings dock above the Layers section in the right sidebar", () => {
         "the docked tool settings must be styled as a sidebar section");
     assert.match(source, /if \(this\.toolSettingsSection\) this\.toolSettingsSection\.hidden = true;/,
         "tools without settings (move/pan/sam/bbox) must collapse the whole section");
-    assert.match(source, /if \(this\.toolSettingsTitle\) this\.toolSettingsTitle\.textContent = `\$\{title\} Settings`;/,
+    assert.match(source, /this\.showToolSettingsPanel\(`\$\{title\} Settings`, html\.join\(""\)\)/,
         "the section head must carry the active tool's title");
+    assert.match(source, /if \(this\.toolSettingsTitle\) this\.toolSettingsTitle\.textContent = title;/,
+        "showToolSettingsPanel must title the docked section");
     assert.ok(!/\.vnccs-uc-tool-settings \{ position:absolute/.test(source),
         "the old stage-overlay positioning must be gone");
+});
+
+test("feature panels (perspective, shadows) open the docked tool-settings section", async () => {
+    // The section is hidden by default; a feature module that only filled the inner panel left
+    // its controls (Calibrate, Scene light) invisible once tool settings moved into the sidebar.
+    for (const file of ["vnccs_unicanvas_scene_place.mjs", "vnccs_unicanvas_harmonize.mjs"]) {
+        const text = await readFile(new URL(`../web/${file}`, import.meta.url), "utf8");
+        assert.match(text, /uc\.showToolSettingsPanel\(/, `${file} must show its panel through showToolSettingsPanel`);
+        assert.ok(!/toolSettings\.classList\.add\("visible"\)/.test(text), `${file} must not toggle the inner panel by hand`);
+    }
 });
 
 test("a linked VNCSS Config greys out every UniCanvas control it overrides", () => {

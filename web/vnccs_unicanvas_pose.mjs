@@ -1,10 +1,10 @@
 /** Pose Studio host contract and image preparation for UniCanvas pose layers. */
 import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790495264510";
-import { applyMannequinMeshMorphs, composePoseReference, isImageRef, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, posePromptMappingForLayer, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs?v=1790495264510";
-import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs?v=1790495264510";
-import { openPoseFromRig } from "./vnccs_unicanvas_control_scene.mjs?v=1790495264510";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790497347734";
+import { applyMannequinMeshMorphs, composePoseReference, isImageRef, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, posePromptMappingForLayer, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs?v=1790497347734";
+import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs?v=1790497347734";
+import { openPoseFromRig } from "./vnccs_unicanvas_control_scene.mjs?v=1790497347734";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 const styles = `
@@ -82,6 +82,13 @@ export class UniCanvasPoseEditor {
         this.commitTimer = null;
         this.wheelInspectionTimer = null;
         this.abort = new AbortController();
+        // A held pointer is an edit gesture in flight (bone drag, gizmo, a side-panel slider):
+        // only then do viewport frames re-capture the layer (see editInFlight()).
+        this.pointerHeld = false;
+        const trackPointer = event => { this.pointerHeld = event.type === "pointerdown" || Boolean(event.buttons); };
+        for (const type of ["pointerdown", "pointerup", "pointercancel"]) {
+            globalThis.addEventListener?.(type, trackPointer, { capture: true, signal: this.abort.signal });
+        }
         if (!document.getElementById("vnccs-uc-pose-style")) {
             const style = document.createElement("style");
             style.id = "vnccs-uc-pose-style"; style.textContent = styles;
@@ -129,6 +136,10 @@ export class UniCanvasPoseEditor {
             },
             onViewportRender: () => {
                 if (this.token !== token || !this.initialized || this.capturing || !this.visible) return;
+                // A frame without an edit (joint hover highlight, resize, damping) changes no
+                // pixels of the stored framing; re-capturing it would only swap the final bake
+                // for a preview-resolution one.
+                if (!this.editInFlight()) return;
                 this.capturePreview();
             },
         });
@@ -947,6 +958,11 @@ export class UniCanvasPoseEditor {
         this.updateIdPass();
         this.updateNormalPass();
         this.host.poseBake?.afterCommit(this.layer);
+    }
+
+    // An edit is in flight while a pointer is held or a state change awaits its trailing commit.
+    editInFlight() {
+        return this.pointerHeld || this.commitTimer !== null;
     }
 
     // One trailing full-quality bake per settled edit gesture (AGENTS.md realtime rule:

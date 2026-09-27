@@ -41,8 +41,8 @@
  * `installUniCanvasHarmonize` and the serialize / history hooks exported here.
  */
 
-import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790495264510";
-import { buildStagingSnapshot, createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790495264510";
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790497347734";
+import { buildStagingSnapshot, createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790497347734";
 import {
   SCENE_LIGHT_HISTORY_KIND,
   backgroundDepth,
@@ -52,16 +52,16 @@ import {
   renderSceneLightControls,
   shadowGroundDirection,
   shadowLengthFactor,
-} from "./vnccs_unicanvas_scene_place.mjs?v=1790495264510";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790495264510";
-import { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, stateOffsetRestRect } from "./vnccs_unicanvas_state_offset.mjs?v=1790495264510";
-import { currentNormalPass, isImageLayer } from "./vnccs_unicanvas_pose_state.mjs?v=1790495264510";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790495264510";
+} from "./vnccs_unicanvas_scene_place.mjs?v=1790497347734";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790497347734";
+import { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, stateOffsetRestRect } from "./vnccs_unicanvas_state_offset.mjs?v=1790497347734";
+import { currentNormalPass, isImageLayer } from "./vnccs_unicanvas_pose_state.mjs?v=1790497347734";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790497347734";
 // Import cycle with the layer tools (they list this module's menu entries): only functions and
 // constants read at call time cross it.
-import { COLOR_MATCH_METHODS, COLOR_MATCH_ROUTE, COLOR_MATCH_STRENGTH_MAX, placeInHost } from "./vnccs_unicanvas_layer_tools.mjs?v=1790495264510";
-import { escapeHtml, finiteOrNull } from "./vnccs_unicanvas_util.mjs?v=1790495264510";
-import { drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs?v=1790495264510";
+import { COLOR_MATCH_METHODS, COLOR_MATCH_ROUTE, COLOR_MATCH_STRENGTH_MAX, placeInHost } from "./vnccs_unicanvas_layer_tools.mjs?v=1790497347734";
+import { escapeHtml, finiteOrNull } from "./vnccs_unicanvas_util.mjs?v=1790497347734";
+import { drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs?v=1790497347734";
 
 export const SHADOW_KINDS = Object.freeze(["contact", "cast"]);
 export const SHADOW_LAYER_HISTORY_KIND = "shadowLayer";
@@ -569,7 +569,6 @@ function renderShadowPanel(uc) {
   const source = sourceLayerOf(uc, layer);
   const escape = (text) => uc._escape ? uc._escape(text) : String(text);
   const html = [
-    `<div class="vnccs-uc-tool-settings-title">${shadow.kind === "cast" ? "Cast" : "Contact"} Shadow Settings</div>`,
     `<div class="vnccs-uc-transform-hint">${source ? `Follows ${escape(source.name)}` : "The source layer is gone: this shadow keeps its last pixels"}</div>`,
   ];
   for (const spec of SHADOW_PARAM_SPECS[shadow.kind]) {
@@ -578,8 +577,7 @@ function renderShadowPanel(uc) {
   }
   html.push(`<div class="vnccs-uc-transform-actions"><button class="vnccs-uc-btn" type="button" data-shadow-action="detach" title="Keep the pixels as a plain raster layer">Detach shadow</button></div>`);
   html.push(renderSceneLightControls(uc));
-  uc.toolSettings.innerHTML = html.join("");
-  uc.toolSettings.classList.add("visible");
+  uc.showToolSettingsPanel(`${shadow.kind === "cast" ? "Cast" : "Contact"} Shadow Settings`, html.join(""));
 }
 
 function installShadowControls(uc) {
