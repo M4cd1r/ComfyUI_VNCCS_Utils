@@ -1183,13 +1183,20 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const type = row.querySelector?.(".vnccs-uc-layer-type");
     if (type && baked) type.textContent = `${type.textContent} · ${baked}/${statuses.length} baked${stale ? `, ${stale} stale` : ""}`;
     if (!Object.keys(partsOf(layer)).length) return;
-    const show = layer.pose?.bake?.showMannequin === true;
-    const toggle = uc._button(show ? "Show baked" : "Show mannequin", "vnccs-uc-btn vnccs-uc-bake-toggle", null,
-      show ? "Show the baked characters" : "Show the mannequins instead of the baked characters");
+    const showing = () => layer.pose?.bake?.showMannequin === true;
+    const toggle = uc._button("Show mannequin", "vnccs-uc-btn vnccs-uc-bake-toggle", null);
     toggle.dataset.bakeToggle = "";
-    toggle.setAttribute?.("aria-pressed", String(show));
     toggle.style.cssText = "font-size:10px; padding:2px 6px;";
-    toggle.addEventListener("click", (event) => { event.stopPropagation(); setShowMannequin(layer, !show); });
+    // The row is updated in place (refreshLayerRow), not rebuilt: the button reads the live state
+    // on every click and relabels itself, or its second click would repeat the first.
+    const sync = () => {
+      const show = showing();
+      toggle.textContent = show ? "Show baked" : "Show mannequin";
+      toggle.title = show ? "Show the baked characters" : "Show the mannequins instead of the baked characters";
+      toggle.setAttribute?.("aria-pressed", String(show));
+    };
+    sync();
+    toggle.addEventListener("click", (event) => { event.stopPropagation(); setShowMannequin(layer, !showing()); sync(); });
     toggle.addEventListener("dblclick", (event) => event.stopPropagation());
     const lock = row.querySelector?.("[data-layer-lock]");
     if (lock) row.insertBefore(toggle, lock); else row.appendChild(toggle);

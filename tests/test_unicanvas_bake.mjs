@@ -317,3 +317,36 @@ test("a staged card bake hides its character's mannequin until the staging is go
   assert.equal(layer._bakeViewBaked, false, "discarding the staging brings the mannequin back");
   assert.deepEqual(layer.canvas.draws, ["mannequin"]);
 });
+
+test("the layer row's Show mannequin button toggles both ways (the row is updated in place)", () => {
+  const fakeCanvas = (width, height, name = "canvas") => ({ name, width, height, getContext: () => ({
+    clearRect: () => {}, drawImage: () => {}, globalCompositeOperation: "source-over",
+  }) });
+  const layer = poseLayer("p", [character("a", 0)]);
+  layer.canvas = fakeCanvas(2048, 2048, "layer");
+  layer.mannequinSurface = fakeCanvas(400, 600, "mannequin");
+  layer.bakeParts = { a: { surface: fakeCanvas(400, 600, "part"), rect: { x: 0, y: 0, width: 400, height: 600 }, anchor: { x: 0, y: 0 } } };
+  layer.pose.bake = { characters: { a: { status: "baked" } }, showMannequin: false };
+  const button = () => {
+    const listeners = [];
+    return { dataset: {}, style: {}, attrs: {}, textContent: "", title: "", listeners,
+      addEventListener: (type, fn) => listeners.push([type, fn]), setAttribute(name, value) { this.attrs[name] = value; } };
+  };
+  const uc = {
+    layers: [layer], settings: {}, tool: "move", origin: { x: 0, y: 0 }, stagingItems: [], activeStagingIndex: -1,
+    _createCanvas: (w, h) => fakeCanvas(w, h, "view"), _button: button,
+    invalidateLayerCaches: () => {}, requestRender: () => {}, refreshLayerRow: () => {}, syncToNode: () => {},
+  };
+  installUniCanvasCharacterBake(uc);
+  let toggle = null;
+  uc.poseBake.decorateLayerRow({ querySelector: () => null, appendChild: (el) => { toggle = el; } }, layer);
+  const click = () => toggle.listeners.filter(([type]) => type === "click").forEach(([, fn]) => fn({ stopPropagation() {} }));
+  assert.equal(toggle.textContent, "Show mannequin");
+  click();
+  assert.equal(layer.pose.bake.showMannequin, true);
+  assert.equal(toggle.textContent, "Show baked");
+  assert.equal(toggle.attrs["aria-pressed"], "true");
+  click();
+  assert.equal(layer.pose.bake.showMannequin, false);
+  assert.equal(toggle.textContent, "Show mannequin");
+});
