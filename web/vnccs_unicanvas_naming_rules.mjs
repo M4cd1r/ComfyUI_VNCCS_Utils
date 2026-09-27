@@ -9,8 +9,8 @@
  * automatically) or "import" (file stem or PSD layer name, never replaced by the model).
  */
 
-import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790499231125";
-import { LAYER_CATEGORIES, normalizeLayerCategory } from "./vnccs_unicanvas_provenance.mjs?v=1790499231125";
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790499983579";
+import { LAYER_CATEGORIES, normalizeLayerCategory } from "./vnccs_unicanvas_provenance.mjs?v=1790499983579";
 
 export { LAYER_CATEGORIES, normalizeLayerCategory };
 

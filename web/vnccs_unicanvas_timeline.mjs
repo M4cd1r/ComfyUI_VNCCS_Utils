@@ -67,8 +67,8 @@ import {
   snapshotTimeline,
   targetHasAnimation,
   trackIdFor,
-} from "./vnccs_unicanvas_timeline_core.mjs?v=1790499231125";
-import { getGroupDescendants, groupChainOf, isGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs?v=1790499231125";
+} from "./vnccs_unicanvas_timeline_core.mjs?v=1790499983579";
+import { getGroupDescendants, groupChainOf, isGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs?v=1790499983579";
 import {
   POSE_BAKED_NOTE,
   PoseFrameCache,
@@ -80,11 +80,11 @@ import {
   setPoseClip,
   studioFrameFor,
   studioFramesForRange,
-} from "./vnccs_unicanvas_timeline_pose.mjs?v=1790499231125";
-import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs?v=1790499231125";
-import { TimelineKeyHandles, commitTransformKeys, layerKeyContext } from "./vnccs_unicanvas_timeline_transform.mjs?v=1790499231125";
-import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs?v=1790499231125";
-import { ensureStyleTag, setStageBottomInset } from "./vnccs_unicanvas_util.mjs?v=1790499231125";
+} from "./vnccs_unicanvas_timeline_pose.mjs?v=1790499983579";
+import { openAnimationExportDialog } from "./vnccs_unicanvas_animation_export.mjs?v=1790499983579";
+import { TimelineKeyHandles, commitTransformKeys, layerKeyContext } from "./vnccs_unicanvas_timeline_transform.mjs?v=1790499983579";
+import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs?v=1790499983579";
+import { ensureStyleTag, setStageBottomInset } from "./vnccs_unicanvas_util.mjs?v=1790499983579";
 
 const STYLE_ID = "vnccs-uc-timeline-styles";
 const LABEL_WIDTH = 180;

@@ -1,5 +1,44 @@
 import { expect } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { clickOutsidePopovers, openUnicanvas } from "./app.mjs";
+import { pngDataURL, rgbaPng } from "./png.mjs";
+
+const BACKDROP = `data:image/png;base64,${readFileSync(fileURLToPath(new URL("../fixtures/backdrop.png", import.meta.url))).toString("base64")}`;
+/** Left half opaque, right half clear: a Remove background / SAM answer with a visible effect. */
+export const HALF_ALPHA = pngDataURL(rgbaPng(16, 16, (x) => [255, 255, 255, x < 8 ? 255 : 0]));
+
+/**
+ * Stubs every UniCanvas route that would run a model (nothing downloads, no GPU): draw, remove
+ * background, segment (SAM), depth, layer naming, ControlNet preprocessing and preset downloads.
+ * Each request body is logged under its route name. Real CPU routes (assets, projects, library,
+ * color match, save output is stubbed so nothing lands in output/) stay live.
+ */
+export async function stubInference(page) {
+  const log = { draw: [], remove_bg: [], segment: [], depth: [], describe_layers: [], control_preprocess: [], download: [], save_output: [] };
+  const json = (route, body) => route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+  const body = (route) => { try { return route.request().postDataJSON(); } catch (_) { return null; } };
+  await page.route("**/vnccs/unicanvas/draw", (route) => { log.draw.push(body(route)); return json(route, { images: [BACKDROP], performance: "stub" }); });
+  await page.route("**/vnccs/unicanvas/remove_bg", (route) => { log.remove_bg.push(body(route)); return json(route, { alpha: HALF_ALPHA, width: 16, height: 16, method: "birefnet", edit_model: null }); });
+  await page.route("**/vnccs/unicanvas/segment", (route) => { log.segment.push(body(route)); return json(route, { mask: HALF_ALPHA }); });
+  await page.route("**/vnccs/unicanvas/depth", (route) => { log.depth.push(body(route)); return json(route, { depth: BACKDROP, width: 512, height: 512, horizonY: 180 }); });
+  await page.route("**/vnccs/unicanvas/describe_layers", (route) => {
+    const request = body(route) || {};
+    log.describe_layers.push(request);
+    return json(route, {
+      names: (request.layers || []).map((item) => ({ id: item.id, name: `Named ${String(item.id).slice(-4)}`, category: "prop" })),
+      groups: (request.groups || []).map((item) => ({ id: item.id, name: null })),
+      model: request.model,
+    });
+  });
+  await page.route("**/vnccs/unicanvas/control_preprocess", (route) => { log.control_preprocess.push(body(route)); return json(route, { image: BACKDROP }); });
+  await page.route("**/vnccs/unicanvas/presets/download", (route) => { log.download.push(body(route)); return json(route, { queued: [] }); });
+  await page.route("**/vnccs/unicanvas/save_output**", (route) => {
+    log.save_output.push({ url: route.request().url(), body: body(route) });
+    return json(route, { ok: true, path: "output/unicanvas_sweep.png", filename: "unicanvas_sweep.png", width: 64, height: 64 });
+  });
+  return log;
+}
 
 // Control sweep (issue #33) helpers: one surface object for the standalone tab and for a workflow
 // node in fullscreen, so the same area checks run on both. State is read through the read-only
@@ -17,7 +56,13 @@ export function watchErrors(page) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console.error: ${message.text()} @ ${message.location()?.url || ""}`);
+    if (message.type() !== "error") return;
+    const url = message.location()?.url || "";
+    // ComfyUI core's own start-up fetches (user.css, templates, release notes, the missing-model
+    // metadata HEAD requests of its default workflow) are not UniCanvas controls. Every other
+    // console error, and a failed load of a UniCanvas route or file, fails the sweep.
+    if (/^Failed to load resource/.test(message.text()) && !/\/vnccs\/|ComfyUI_VNCCS_Utils/.test(url)) return;
+    errors.push(`console.error: ${message.text()} @ ${url}`);
   });
   return {
     errors,
@@ -37,14 +82,16 @@ async function publishHook(page, source) {
 
 /** The standalone Unicanvas tab. */
 export async function openStandaloneSurface(page) {
+  const routes = await stubInference(page);
   await openUnicanvas(page);
   await publishHook(page, "standalone");
   const watch = watchErrors(page);
-  return makeSurface(page, "standalone", page.locator(".vnccs-uc2-standalone-shell .vnccs-unicanvas"), watch);
+  return makeSurface(page, "standalone", page.locator(".vnccs-uc2-standalone-shell .vnccs-unicanvas"), watch, routes);
 }
 
 /** A fresh workflow with one UniCanvas node, opened in fullscreen. */
 export async function openNodeSurface(page) {
+  const routes = await stubInference(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.app?.graph && window.LiteGraph, null, { timeout: 60_000 });
   for (let i = 0; i < 3; i += 1) await page.keyboard.press("Escape");
@@ -61,13 +108,13 @@ export async function openNodeSurface(page) {
   await expect(root.locator(".vnccs-uc-left")).toBeVisible({ timeout: 30_000 });
   await publishHook(page, "node");
   const watch = watchErrors(page);
-  return makeSurface(page, "node", root, watch);
+  return makeSurface(page, "node", root, watch, routes);
 }
 
-function makeSurface(page, kind, root, watch) {
+function makeSurface(page, kind, root, watch, routes) {
   const hook = (name, ...args) => page.evaluate(([fn, rest]) => window.__ucHook[fn](...rest), [name, args]);
   const surface = {
-    kind, page, root, watch, hook,
+    kind, page, root, watch, hook, routes,
     stack: () => hook("getLayerStack"),
     depth: () => hook("getHistoryDepth"),
     settings: () => hook("getSettings"),
@@ -128,6 +175,25 @@ function makeSurface(page, kind, root, watch) {
     },
     async addRaster() {
       return surface.newLayerAfter(() => root.locator(".vnccs-uc-section-actions [title=\"Add raster\"]").click());
+    },
+    async importImage(file) {
+      return surface.newLayerAfter(async () => {
+        const [chooser] = await Promise.all([page.waitForEvent("filechooser"), root.locator('button[title="Import image"]').first().click()]);
+        await chooser.setFiles(file);
+      });
+    },
+    /** The widget's own modal (confirm / prompt): optionally type `value`, then press `button`. */
+    async answerModal(button, value = null) {
+      const modal = root.locator(".vnccs-uc-modal").last();
+      await expect(modal).toBeVisible();
+      if (value !== null) await modal.locator("input").first().fill(value);
+      await modal.locator("button", { hasText: button }).last().click();
+      await expect(modal).toBeHidden();
+    },
+    async menuItem(id, item) {
+      const menu = await surface.layerMenu(id);
+      await menu.locator(`[data-menu-item="${item}"]`).click();
+      await expect(menu).toBeHidden();
     },
     async layerMenu(id) {
       await surface.row(id).click({ button: "right" });

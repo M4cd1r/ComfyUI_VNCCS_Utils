@@ -400,3 +400,223 @@ for (const [kind, open] of Object.entries(SURFACES)) {
     await sweepGenerationPanel(s);
   });
 }
+
+/* ------------------------------------------------------------------------------------------ */
+/* Area 3: layers panel - section actions, rows, blend / opacity, groups, context menu, PSD     */
+/* ------------------------------------------------------------------------------------------ */
+
+const order = async (s) => (await s.stack()).layers.map((l) => l.id);
+const prop = async (s, id, key) => (await s.stack()).layers.find((l) => l.id === id)?.[key];
+
+async function sweepLayersPanel(s) {
+  const { page, root } = s;
+  const actions = root.locator(".vnccs-uc-section-actions", { has: page.locator('[title="Add mask"]') });
+
+  // Section actions: add raster / mask, duplicate, move up / down (each undoable).
+  const a = await s.addRaster();
+  const b = await s.addRaster();
+  const mask = await s.newLayerAfter(() => actions.locator('[title="Add mask"]').click());
+  expect(mask.type).toBe("mask");
+  await s.expectUndoRedo(async () => (await s.layers()).some((l) => l.id === mask.id), false, true);
+  await s.row(b.id).click();
+  const dup = await s.newLayerAfter(() => actions.locator('[title="Duplicate selected"]').click());
+  await s.expectUndoRedo(async () => (await s.layers()).some((l) => l.id === dup.id), false, true);
+  await s.row(a.id).click();
+  for (const title of ["Move selected up", "Move selected down"]) {
+    const before = await order(s);
+    await actions.locator(`[title="${title}"]`).click();
+    await expect.poll(() => order(s), { message: title }).not.toEqual(before);
+    const after = await order(s);
+    await s.expectUndoRedo(() => order(s), before, after);
+  }
+
+  // Blend mode (custom dropdown) and the opacity slider (realtime, one undo step per drag).
+  await s.row(a.id).click();
+  await s.pick(root.locator('select[data-layer-control="blendMode"]'), "multiply");
+  await expect.poll(() => prop(s, a.id, "blendMode")).toBe("multiply");
+  await s.expectUndoRedo(() => prop(s, a.id, "blendMode"), "source-over", "multiply");
+  const depthBefore = (await s.depth()).undo;
+  const opacity = await s.dragRange(root.locator('input[data-layer-control="opacity"]'), 0.95, 0.4, () => prop(s, a.id, "opacity"));
+  expect(opacity.during, "layer opacity follows the slider before release").toBeLessThan(opacity.before);
+  expect(opacity.late).toBeLessThan(opacity.during);
+  expect((await s.depth()).undo, "one undo entry per opacity drag").toBe(depthBefore + 1);
+  await s.expectUndoRedo(() => prop(s, a.id, "opacity"), opacity.before, opacity.after);
+
+  // Row controls: visibility (thumb), lock, rename, delete - each one undo step.
+  const thumb = s.row(a.id).locator(".vnccs-uc-thumb");
+  await thumb.click();
+  await expect.poll(() => prop(s, a.id, "visible")).toBe(false);
+  await expect(thumb).toHaveAttribute("title", "Show layer");
+  await s.expectUndoRedo(() => prop(s, a.id, "visible"), true, false);
+  await thumb.click();
+  await s.row(a.id).locator("[data-layer-lock]").click();
+  await expect.poll(() => prop(s, a.id, "locked")).toBe(true);
+  await s.expectUndoRedo(() => prop(s, a.id, "locked"), false, true);
+  await s.row(a.id).locator("[data-layer-lock]").click();
+  await s.row(a.id).locator(".vnccs-uc-layer-label").dblclick();
+  await s.answerModal("OK", "Sweep hero");
+  await expect.poll(() => prop(s, a.id, "name")).toBe("Sweep hero");
+  await expect(s.row(a.id).locator(".vnccs-uc-layer-name")).toHaveText("Sweep hero");
+  const nameBefore = (await s.hook("getLayerNaming", a.id));
+  expect(nameBefore.nameSource).toBe("user");
+  await s.undo();
+  await expect.poll(() => prop(s, a.id, "name")).not.toBe("Sweep hero");
+  await s.redo();
+  await expect.poll(() => prop(s, a.id, "name")).toBe("Sweep hero");
+  await s.row(dup.id).locator('[title="Delete layer"]').click();
+  await expect.poll(async () => (await s.layers()).some((l) => l.id === dup.id)).toBe(false);
+  await s.expectUndoRedo(async () => (await s.layers()).some((l) => l.id === dup.id), true, false);
+
+  // Drag a row onto another to reorder (undoable).
+  const beforeDrag = await order(s);
+  await s.row(b.id).dragTo(s.row(a.id), { targetPosition: { x: 20, y: 4 } });
+  await expect.poll(() => order(s)).not.toEqual(beforeDrag);
+  const afterDrag = await order(s);
+  expect(afterDrag.indexOf(b.id)).toBeLessThan(afterDrag.indexOf(a.id));
+  await s.expectUndoRedo(() => order(s), beforeDrag, afterDrag);
+
+  // Import image.
+  const imported = await s.importImage(CHARACTER);
+  expect(imported.type).toBe("raster");
+  expect(await s.alpha(imported.id)).toBeGreaterThan(1000);
+
+  // Groups: Ctrl-click multi-select, group, folder toggle / eye / lock / rename, the folder menu,
+  // new empty group, ungroup.
+  await s.row(a.id).click();
+  await s.row(b.id).click({ modifiers: ["Control"] });
+  expect((await s.stack()).selectedLayerIds.sort()).toEqual([a.id, b.id].sort());
+  const group = await s.newLayerAfter(() => root.locator('button[title="Group selected layers (Ctrl+G)"]').click());
+  expect(group.type).toBe("group");
+  expect((await s.stack()).layers.filter((l) => l.groupId === group.id).map((l) => l.id).sort()).toEqual([a.id, b.id].sort());
+  await s.expectUndoRedo(async () => (await s.layers()).some((l) => l.id === group.id), false, true);
+  const folder = s.row(group.id);
+  await folder.locator("[data-folder-toggle]").click();
+  await expect(s.row(a.id)).toHaveCount(0);
+  await folder.locator("[data-folder-toggle]").click();
+  await expect(s.row(a.id)).toHaveCount(1);
+  await folder.locator("[data-folder-eye]").click();
+  await expect.poll(() => prop(s, group.id, "visible")).toBe(false);
+  await expect(s.row(a.id)).toHaveClass(/hidden-by-group/);
+  await s.expectUndoRedo(() => prop(s, group.id, "visible"), true, false);
+  await folder.locator("[data-folder-eye]").click();
+  await folder.locator("[data-layer-lock]").click();
+  await expect.poll(() => prop(s, group.id, "locked")).toBe(true);
+  await folder.locator("[data-layer-lock]").click();
+  await folder.locator(".vnccs-uc-folder-name").dblclick();
+  await s.answerModal("OK", "Sweep folder");
+  await expect.poll(() => prop(s, group.id, "name")).toBe("Sweep folder");
+  // Group opacity / blend come from the same subhead controls.
+  await folder.click();
+  const groupOpacity = await s.dragRange(root.locator('input[data-layer-control="opacity"]'), 0.95, 0.5, () => prop(s, group.id, "opacity"));
+  expect(groupOpacity.during).toBeLessThan(groupOpacity.before);
+  for (const action of ["duplicate-group", "flatten-group"]) {
+    const before = await order(s);
+    await folder.click({ button: "right" });
+    await root.locator(`.vnccs-uc-folder-menu [data-group-action="${action}"]`).click();
+    await expect.poll(async () => (await order(s)).some((id) => !before.includes(id)), { message: action }).toBe(true);
+    const after = await order(s);
+    await s.expectUndoRedo(() => order(s), before, after);
+    await s.undo();
+    await expect.poll(() => order(s)).toEqual(before);
+  }
+  const empty = await s.newLayerAfter(() => root.locator('button[title="New empty group"]').click());
+  expect(empty.type).toBe("group");
+  await s.row(empty.id).click({ button: "right" });
+  await root.locator('.vnccs-uc-folder-menu [data-group-action="delete-group"]').click();
+  await s.answerModal(/Delete/);
+  await expect.poll(async () => (await s.layers()).some((l) => l.id === empty.id)).toBe(false);
+  await folder.click();
+  await root.locator('button[title="Ungroup the selected group (Ctrl+Shift+G)"]').click();
+  await expect.poll(async () => (await s.layers()).some((l) => l.id === group.id)).toBe(false);
+  expect((await s.stack()).layers.filter((l) => [a.id, b.id].includes(l.id)).every((l) => !l.groupId)).toBe(true);
+  await s.expectUndoRedo(async () => (await s.layers()).some((l) => l.id === group.id), true, false);
+
+  // Organize: the preview dialog files unfiled layers; one undo reverts it.
+  const unfiled = await s.stack();
+  await root.locator("[data-organize-layers]").click();
+  const dialog = root.locator(".vnccs-uc-organize");
+  await expect(dialog).toBeVisible();
+  await dialog.locator("[data-organize-apply]").click();
+  await expect.poll(async () => (await s.stack()).layers.some((l) => l.type === "group")).toBe(true);
+  await s.undo();
+  await expect.poll(async () => (await s.stack()).layers.map((l) => [l.id, l.groupId])).toEqual(unfiled.layers.map((l) => [l.id, l.groupId]));
+
+  // Layer context menu on a layer with pixels.
+  const menuTarget = imported.id;
+  await s.menuItem(menuTarget, "duplicate");
+  await expect.poll(async () => (await s.layers()).length).toBe(unfiled.layers.length + 1);
+  await s.undo();
+  for (const item of ["move-down", "move-up"]) {
+    const before = await order(s);
+    await s.menuItem(menuTarget, item);
+    await expect.poll(() => order(s), { message: item }).not.toEqual(before);
+  }
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
+  await s.menuItem(menuTarget, "copy-clipboard");
+  await expect.poll(() => s.status()).toMatch(/copied to clipboard|Clipboard copy failed/);
+  expect(await s.status()).toMatch(/copied to clipboard/);
+  await s.menuItem(menuTarget, "save-image");
+  await expect.poll(() => s.routes.save_output.length).toBeGreaterThan(0);
+  expect(s.routes.save_output.at(-1).url).toContain(`layer_id=${menuTarget}`);
+  await expect.poll(() => s.status()).toMatch(/Layer image saved/);
+  // Remove background (default backend, stubbed): the right half turns transparent, one undo step.
+  const alphaFull = await s.alpha(menuTarget);
+  await s.menuItem(menuTarget, "remove-bg");
+  await expect.poll(() => s.alpha(menuTarget)).toBeLessThan(alphaFull);
+  const alphaCut = await s.alpha(menuTarget);
+  await s.expectUndoRedo(() => s.alpha(menuTarget), alphaFull, alphaCut);
+  // Color match to below (real CPU route): method select, realtime strength, Cancel, Apply.
+  await s.menuItem(menuTarget, "color-match");
+  const popover = root.locator(".vnccs-uc-color-match-popover");
+  await expect(popover).toBeVisible();
+  const pixels = async () => (await s.hook("getLayerPixels", menuTarget)).dataURL;
+  const original = await pixels();
+  await expect.poll(pixels, { timeout: 30_000, message: "the full-strength match shows right away" }).not.toBe(original);
+  const methodSelect = popover.locator('select[data-control="colorMatchMethod"]');
+  const methods = await methodSelect.evaluate((el) => [...el.options].map((o) => o.value));
+  await s.pick(methodSelect, methods.at(-1));
+  const strength = await s.dragRange(popover.locator('[data-control="colorMatchStrength"]'), 0.98, 0.2, async () => popover.locator("[data-color-match-readout]").textContent());
+  expect(strength.during, "strength readout follows the slider").not.toBe(strength.before);
+  await popover.locator('[data-control="colorMatchCancel"]').click();
+  await expect(popover).toHaveCount(0);
+  await expect.poll(pixels).toBe(original);
+  await s.menuItem(menuTarget, "color-match");
+  await expect(popover).toBeVisible();
+  await expect.poll(pixels, { timeout: 30_000 }).not.toBe(original);
+  await popover.locator('[data-control="colorMatchClose"]').click();
+  await expect(popover).toHaveCount(0);
+  const matched = await pixels();
+  expect(matched).not.toBe(original);
+  await s.undo();
+  await expect.poll(pixels).toBe(original);
+  await s.redo();
+  // Auto-name (model level is stubbed): the layer gets the model's name.
+  await s.menuItem(menuTarget, "auto-name");
+  await expect.poll(async () => (await s.hook("getLayerNaming", menuTarget)).nameSource).not.toBe("user");
+
+  // Flatten all layers (confirm) and one undo step back.
+  const beforeFlatten = await order(s);
+  await root.locator('button[title="Flatten all layers"]').click();
+  await s.answerModal("Flatten");
+  await expect.poll(async () => (await s.layers()).filter((l) => l.type !== "mask").length).toBe(1);
+  await s.undo();
+  await expect.poll(() => order(s)).toEqual(beforeFlatten);
+
+  // PSD export (download) and import of that file.
+  const [download] = await Promise.all([page.waitForEvent("download"), root.locator('[data-psd-action="export"]').click()]);
+  const psdPath = await download.path();
+  expect(download.suggestedFilename()).toMatch(/\.psd$/);
+  const known = new Set(await order(s));
+  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), root.locator('[data-psd-action="import"]').click()]);
+  await chooser.setFiles(psdPath);
+  await expect.poll(async () => (await order(s)).filter((id) => !known.has(id)).length, { timeout: 30_000 }).toBeGreaterThan(0);
+
+  s.watch.expectNone("layers panel");
+}
+
+for (const [kind, open] of Object.entries(SURFACES)) {
+  test(`[${kind}] layers panel, groups, layer menu and PSD`, async ({ page }) => {
+    const s = await open(page);
+    await sweepLayersPanel(s);
+  });
+}

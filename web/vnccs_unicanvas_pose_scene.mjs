@@ -19,10 +19,10 @@
 import { MAX_POSE_STUDIO_CHARACTERS, nextCharacterColor, nextCharacterId, nextCharacterSlot, normalizeCharacterColor,
   normalizePoseStudioCharacters } from "./vnccs_pose_characters.mjs";
 import { getPoseCharacterMask, movePanoramaToPoseCamera, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters,
-  samePanoramaCamera } from "./vnccs_unicanvas_pose_state.mjs?v=1790499231125";
-import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs?v=1790499231125";
-import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790499231125";
-import { cloneJson } from "./vnccs_unicanvas_util.mjs?v=1790499231125";
+  samePanoramaCamera } from "./vnccs_unicanvas_pose_state.mjs?v=1790499983579";
+import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs?v=1790499983579";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790499983579";
+import { cloneJson } from "./vnccs_unicanvas_util.mjs?v=1790499983579";
 
 const clone = cloneJson;
 const newId = () => (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`);

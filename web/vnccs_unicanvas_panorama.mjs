@@ -1,5 +1,5 @@
 // Equirectangular document storage and a perspective editing window.
-import { compositeLayerStack } from "./vnccs_unicanvas_groups.mjs?v=1790499231125";
+import { compositeLayerStack } from "./vnccs_unicanvas_groups.mjs?v=1790499983579";
 export const PANORAMA_MAX_PIXELS = 8192 * 4096;
 export const isPanoramaCandidate = (width, height) => height > 0 && width / height >= 1.9;
 

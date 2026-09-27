@@ -17,10 +17,10 @@
  * vnccs_unicanvas.js only carries the install call, the render hook and the history kind.
  */
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499231125";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790499231125";
-import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs?v=1790499231125";
-import { ensureStyleTag, finite, rectsIntersect } from "./vnccs_unicanvas_util.mjs?v=1790499231125";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499983579";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790499983579";
+import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs?v=1790499983579";
+import { ensureStyleTag, finite, rectsIntersect } from "./vnccs_unicanvas_util.mjs?v=1790499983579";
 
 export const VN_PREVIEW_PRESETS = Object.freeze([
   { id: "16x9_1080", label: "16:9 - 1920x1080", width: 1920, height: 1080 },

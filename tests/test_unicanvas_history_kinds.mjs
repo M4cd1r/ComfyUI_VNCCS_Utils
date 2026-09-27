@@ -57,3 +57,24 @@ test("unknown kinds and invalid registrations are ignored", () => {
   w.applyHistoryEntry({ kind: "nobodyOwnsThis" }, "undo");
   w.applyHistoryEntry(null, "undo");
 });
+
+test("a layer row's hide, lock and rename are one layerProps entry each and undo like a group row's", () => {
+  const { w } = widget();
+  const layer = { id: "a", name: "Paint", nameSource: "auto", visible: true, locked: false };
+  const history = [];
+  Object.assign(w, {
+    layers: [layer], tool: "move", activeLayerId: "a",
+    pushHistoryEntry: (entry) => history.push(entry), invalidateLayerThumbnail() {},
+  });
+  w.commitLayerProps(layer, { visible: false });
+  w.commitLayerProps(layer, { locked: true });
+  w.commitLayerProps(layer, { name: "Hero", nameSource: "user" });
+  assert.deepEqual(JSON.parse(JSON.stringify(history.map((entry) => [entry.kind, entry.before, entry.after]))), [
+    ["layerProps", { visible: true }, { visible: false }],
+    ["layerProps", { locked: false }, { locked: true }],
+    ["layerProps", { name: "Paint", nameSource: "auto" }, { name: "Hero", nameSource: "user" }],
+  ]);
+  assert.deepEqual([layer.visible, layer.locked, layer.name], [false, true, "Hero"]);
+  for (const entry of [...history].reverse()) w.applyHistoryEntry(entry, "undo");
+  assert.deepEqual([layer.visible, layer.locked, layer.name, layer.nameSource], [true, false, "Paint", "auto"]);
+});
