@@ -5,6 +5,8 @@ import vm from "node:vm";
 import * as state from "../web/vnccs_unicanvas_pose_state.mjs";
 import * as control from "../web/vnccs_unicanvas_control.mjs";
 import * as toggles from "../web/vnccs_unicanvas_feature_toggles.mjs";
+import * as transform from "../web/vnccs_unicanvas_transform.mjs";
+import * as timelineCore from "../web/vnccs_unicanvas_timeline_core.mjs";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
 
 const noop = () => {};
@@ -36,7 +38,7 @@ class Element {
     fire(name, extra = {}) { for (const callback of this.events[name] || []) callback({ preventDefault: noop, stopPropagation: noop, ...extra }); }
     contains(target) { return this === target || this.children.some(child => child.contains(target)); }
     focus() { this.focused = true; }
-    getContext() { return this.ctx ||= { calls: [], save: noop, restore: noop,
+    getContext() { return this.ctx ||= { calls: [], save: noop, restore: noop, translate: noop, transform: noop, setTransform: noop,
         clearRect: (...args) => this.ctx.calls.push(["clear", ...args]),
         fillRect: (...args) => this.ctx.calls.push(["fill", ...args]),
         drawImage: (...args) => this.ctx.calls.push(["draw", ...args]),
@@ -47,7 +49,7 @@ const source = fs.readFileSync(new URL("../web/vnccs_unicanvas_pose.mjs", import
 const ucSource = fs.readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 function harness(studioClass = class {}) {
     const document = Object.assign(new Element("document"), { createElement: tag => new Element(tag), head: new Element(), getElementById: () => true });
-    const context = { ...state, ...control, ...toggles, document, AbortController, console, JSON, setTimeout, clearTimeout,
+    const context = { ...state, ...control, ...toggles, ...transform, ...timelineCore, document, AbortController, console, JSON, setTimeout, clearTimeout,
         requestAnimationFrame: () => 0, cancelAnimationFrame: noop,
         window: { devicePixelRatio: 1 },
         // refreshCharacterMenu probes /vnccs/context_lists; tests stub the list directly.
@@ -565,6 +567,69 @@ test("Save pose and Cancel put the preview camera back on the capture framing", 
     host.editPoseLayer(layer);
     host.finishPoseEdit(false);
     assert.equal(calls.filter(call => call[0] === "resetView").length, 2, "Cancel resets it too");
+});
+
+function transformHarness() {
+    const { host, layer, calls, context } = selectionHarness();
+    host.tool = "resize";
+    host.activeLayerId = layer.id;
+    layer.pose.rect = { x: 0, y: 0, width: 200, height: 100 };
+    layer.pose.viewport = { position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 };
+    layer.canvas = Object.assign(new Element("canvas"), { width: 200, height: 100 });
+    layer.hiresCanvas = new Element("canvas");
+    layer.hiresRect = { ...layer.pose.rect };
+    host.getLayerRenderTransform = () => [1, 0, 0, 1, 0, 0];
+    host.getLayerStateOffset = () => ({ x: 0, y: 0 });
+    host.cloneCanvas = canvas => canvas;
+    host.invalidateLayerRenderCaches = noop;
+    host.clampCanvasBounds = bounds => bounds;
+    host.dragStart = {};
+    host.origin = { x: -500, y: -500 };
+    host.size = { width: 4000, height: 4000 };
+    host.projectPoseLayer = async selected => {
+        if (selected !== layer) throw new Error("wrong layer");
+        calls.push(["recapture", layer.pose.rect.width, layer.pose.rect.height]);
+    };
+    return { host, layer, calls, context };
+}
+
+test("the Resize tool scales a live pose layer's rect non-destructively from its corners", () => {
+    const { host, layer, calls } = transformHarness();
+    // Corner drag on the placed rect: the draft previews the scaled bitmap, Apply resizes the
+    // rect, keeps the framing and re-captures crisply at the new size.
+    assert.equal(host.startTransformGesture({ x: 200, y: 100 }, { shiftKey: false, altKey: false, ctrlKey: false }), true);
+    assert.equal(host.pointerMode, "layer-transform");
+    assert.equal(host.transformDraft.poseScale, true);
+    host.updateTransformDraft({ x: 300, y: 150 }, { shiftKey: false, altKey: false, ctrlKey: false });
+    host.applyTransformDraft();
+    assert.equal(JSON.stringify(layer.pose.rect), JSON.stringify({ x: 0, y: 0, width: 300, height: 150 }),
+        "proportional corner scale (aspect kept)");
+    assert.equal(JSON.stringify(layer.pose.viewport), JSON.stringify({ position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 }),
+        "the capture framing never changes with the rect");
+    assert.equal(host.transformDraft, null);
+    assert.equal(host.undoStack.length, 1, "one history entry per gesture");
+    assert.equal(host.undoStack[0].kind, "layerPixels");
+    assert.deepEqual(calls.filter(call => call[0] === "recapture"), [[ "recapture", 300, 150 ]],
+        "Apply re-renders the mannequin at the new rect size");
+    assert.match(ucSource, /"pose", "bbox", "pan", "move", "resize"\]/, "the Resize tool reaches pose layers");
+});
+
+test("pose layers refuse rotate, skew, distort and edge (aspect) drags of the transform tool", () => {
+    const { host, layer, calls } = transformHarness();
+    // Edge handle: an aspect change cannot keep the camera framing honest.
+    assert.equal(host.startTransformGesture({ x: 100, y: 0 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
+    assert.match(String(calls.find(call => call[0] === "status")?.[1] || ""), /Corner handles scale a live pose layer/);
+    // Rotate knob above the top edge.
+    assert.equal(host.startTransformGesture({ x: 100, y: -40 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
+    assert.ok(!host.transformDraft);
+    // Inside the frame is the raster move gesture, not a pose gesture.
+    assert.equal(host.startTransformGesture({ x: 100, y: 50 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
+    // A rotated timeline frame refuses entirely: go back to the rest frame.
+    host.getLayerRenderTransform = () => [0.7, 0.7, -0.7, 0.7, 10, 10];
+    // The ne corner of the rotated frame sits at (150, 150).
+    assert.equal(host.startTransformGesture({ x: 150, y: 150 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
+    assert.match(String(calls.find(call => call[0] === "status" && /rest frame/.test(call[1]))?.[1] || ""), /rest frame/);
+    assert.equal(layer.pose.rect.width, 200, "nothing moved");
 });
 
 test("captures run on the persisted framing; existing layers keep their saved framing", async () => {

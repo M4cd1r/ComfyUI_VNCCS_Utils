@@ -45,6 +45,15 @@ export function posePlacedRect(rect, matrix = null, stateOffset = null) {
     return { ...rect, x: rect.x + dx, y: rect.y + dy };
 }
 
+/**
+ * A timeline frame may rotate a layer. A rotated frame cannot be matched by the pose editor's
+ * axis-aligned rect (nor by a corner scale of it), so pose editing and pose scaling refuse it.
+ */
+export function poseFrameRotated(matrix = null) {
+    return Array.isArray(matrix) && matrix.length >= 6
+        && (Math.abs(Number(matrix[1]) || 0) > 1e-9 || Math.abs(Number(matrix[2]) || 0) > 1e-9);
+}
+
 export function poseLayerBelow(layers, layer) {
     const index = layers.indexOf(layer);
     return index < 0 ? [] : layers.slice(index + 1).filter(item => item.visible && isImageLayer(item));
