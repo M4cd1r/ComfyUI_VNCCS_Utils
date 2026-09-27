@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 
+import * as control from "../web/vnccs_unicanvas_control.mjs";
+import { normalizeControlSource } from "../web/vnccs_unicanvas_control_scene.mjs";
+import * as drawClient from "../web/vnccs_unicanvas_draw_client.mjs";
+import * as groups from "../web/vnccs_unicanvas_groups.mjs";
+import * as harmonize from "../web/vnccs_unicanvas_harmonize.mjs";
+import * as panoramaModule from "../web/vnccs_unicanvas_panorama.mjs";
+import * as poseState from "../web/vnccs_unicanvas_pose_state.mjs";
+import * as provenance from "../web/vnccs_unicanvas_provenance.mjs";
+import * as psdExport from "../web/vnccs_unicanvas_psd_export.mjs";
+import * as renderLod from "../web/vnccs_unicanvas_render_lod.mjs";
+import * as scenePlace from "../web/vnccs_unicanvas_scene_place.mjs";
+import * as sceneStatesModule from "../web/vnccs_unicanvas_states.mjs";
+import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
 import {
   PROJECT_POINTER_KEY,
   UniCanvasProjectSession,
@@ -373,6 +388,35 @@ test("scenes: new, switch, duplicate without uploads, reorder", async () => {
   assert.deepEqual(session.project.scenes.map((scene) => scene.id), order);
 });
 
+test("a scene that is created but fails to open keeps the saved scene and reports the error", async () => {
+  const server = fakeServer();
+  const widget = fakeWidget({ layers: [layer("a", "scene one")] });
+  const session = new UniCanvasProjectSession(widget, { fetchImpl: server.fetch, storage: null, now: () => 0 });
+  widget.projectSession = session;
+  await session.save();
+  const first = session.sceneId;
+
+  // The apply of the fresh scene fails (a restore error must never strand the session on a
+  // half-loaded scene): the new tab exists, the old scene stays open and the user is told.
+  const apply = widget.applySerializedState;
+  widget.applySerializedState = async () => false;
+  const entry = await session.newScene("Broken");
+  assert.notEqual(entry.id, first);
+  assert.equal(session.sceneId, first, "the previous scene stays open");
+  assert.equal(session.project.scenes.at(-1).id, entry.id, "the new scene tab exists");
+  assert.equal(session.status, "saved", "the stale loading status does not stick");
+  assert.match(widget.lastStatus, /was created but could not be opened/);
+
+  await session.duplicateScene(first);
+  assert.equal(session.sceneId, first, "a failing duplicate also stays on the old scene");
+  widget.applySerializedState = apply;
+
+  // Once the apply works again the queued scenes open normally.
+  await session.switchScene(entry.id);
+  assert.equal(session.sceneId, entry.id);
+  assert.deepEqual(widget.layers.map((item) => item.type), ["mask", "raster"], "the new scene is blank");
+});
+
 test("thumbnails: an unchanged scene still sends a due thumbnail, a throttled one goes with a trailing save", async () => {
   const server = fakeServer();
   const bodies = [];
@@ -406,4 +450,100 @@ test("thumbnails: an unchanged scene still sends a due thumbnail, a throttled on
   assert.equal(await session.save(), true);
   assert.equal(bodies.length, count + 1);
   session.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// applySerializedState (widget prototype, no DOM): a restore that throws mid-way must roll the
+// timeline and the scene states back, and a throwing panel restore must not fail the canvas.
+// ---------------------------------------------------------------------------
+
+const widgetSource = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+const widgetContext = {
+  ...poseState, normalizeControlSource, ...panoramaModule, normalizeTransformMode, ...provenance, ...control, ...groups,
+  ...scenePlace, ...sceneStatesModule, ...harmonize, ...psdExport, ...drawClient, ...renderLod,
+  document: { createElement: () => ({ style: {}, dataset: {}, classList: { add() {}, toggle() {} }, append() {} }) },
+  window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
+  uid: () => "new-layer", HISTORY_LIMIT: 20, DEFAULT_SEED_MODE: "randomize",
+};
+const widgetPrototype = vm.runInNewContext(
+  widgetSource.slice(widgetSource.indexOf("class UniCanvasWidget {"), widgetSource.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype",
+  widgetContext,
+);
+
+/** Just the widget surface applySerializedState touches. */
+function restorationWidget(overrides = {}) {
+  return Object.assign(Object.create(widgetPrototype), {
+    layers: [], panorama: null, activeLayerId: null,
+    bbox: { x: 0, y: 0, width: 1024, height: 1024 }, origin: { x: 0, y: 0 }, size: { width: 1024, height: 1024 },
+    settings: {}, statusCalls: [],
+    setStatus(text, isError = false) { this.statusCalls.push({ text, isError }); },
+    requestRender() {}, scheduleFullSync() {}, syncLightStateToWidget() {},
+    _createCanvas: (width, height) => ({ width, height, getContext: () => ({ drawImage() {} }) }),
+    loadImage: async () => ({ width: 8, height: 8 }),
+    getLayerAlphaBounds: () => null,
+    saveLocalStateBackup() {}, loadLocalStateBackup: () => null,
+    syncPromptControls() {}, updateSnapButton() {}, renderLayerList() {},
+    ...overrides,
+  });
+}
+
+const oldSceneWidget = () => {
+  const w = restorationWidget({ layers: [{ id: "L1", type: "raster", name: "Old", canvas: { id: "c1" } }] });
+  w.activeLayerId = "L1";
+  w.timeline = { frameCount: 72, currentFrame: 4, tracks: { "L1:position": { target: "L1", property: "position", keys: [{ id: "k1", frame: 4 }] } } };
+  w.sceneStates = { activeStateId: "st1", moveScope: "all", newLayersHidden: false, states: [{ id: "st1", name: "Old state", layers: { L1: { visible: true } } }] };
+  w.serializeSceneStates = () => ({ ...w.sceneStates, states: w.sceneStates.states.map((state) => ({ ...state })) });
+  w.restoredStates = [];
+  w.restoreSceneStates = (raw) => {
+    w.restoredStates.push(raw);
+    w.sceneStates = raw ? JSON.parse(JSON.stringify(raw)) : { activeStateId: null, states: [] };
+  };
+  return w;
+};
+
+const nextSceneState = () => ({
+  version: 2,
+  origin: { x: 0, y: 0 }, size: { width: 1024, height: 1024 }, bbox: { x: 0, y: 0, width: 1024, height: 1024 },
+  layers: [{ id: "L2", type: "raster", name: "Fresh" }],
+  activeLayerId: "L2",
+  sceneStates: { activeStateId: "st9", states: [{ id: "st9", name: "New state", layers: {} }] },
+  timeline: null,
+});
+
+test("a restore that throws after the panels applied rolls the timeline and scene states back", async () => {
+  const w = oldSceneWidget();
+  const oldLayers = w.layers;
+  const oldTimeline = w.timeline;
+  w.syncPromptControls = () => { throw new Error("boom"); };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(await w.applySerializedState(nextSceneState()), false);
+  } finally {
+    console.warn = warn;
+  }
+  assert.match(w.statusCalls.at(-1).text, /Canvas restore failed: boom/);
+  assert.equal(w.statusCalls.at(-1).isError, true);
+  assert.equal(w.layers, oldLayers, "the old layer stack is back");
+  assert.equal(w.timeline, oldTimeline, "the old timeline object is rolled back");
+  assert.deepEqual(w.sceneStates.states.map((state) => state.id), ["st1"], "the old scene states are back");
+  assert.deepEqual(w.restoredStates.at(-1)?.states.map((state) => state.id), ["st1"], "the rollback restores the snapshot");
+});
+
+test("a throwing scene state or timeline restore keeps the loaded canvas", async () => {
+  const w = oldSceneWidget();
+  w.restoreSceneStates = () => { throw new Error("panel boom"); };
+  const warn = console.warn;
+  console.warn = () => {};
+  let ok;
+  try {
+    ok = await w.applySerializedState(nextSceneState());
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(ok, true, "a panel error must not fail (and roll back) the canvas restore");
+  assert.deepEqual(w.layers.map((layer) => layer.id), ["L2"]);
+  assert.equal(w.activeLayerId, "L2");
+  assert.match(w.statusCalls.at(-1).text, /Scene data could not be fully restored/);
+  assert.equal(w.statusCalls.at(-1).isError, true);
 });

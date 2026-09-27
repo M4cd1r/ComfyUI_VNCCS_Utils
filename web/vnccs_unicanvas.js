@@ -8404,7 +8404,7 @@ class UniCanvasWidget {
   // `exact` (project scenes): apply the state as given, without the local-backup recovery.
   async applySerializedState(state, { exact = false } = {}) {
     const restoreRevision = this._stateRestoreRevision = (this._stateRestoreRevision || 0) + 1;
-    let restoredPanorama = null, previous = null;
+    let restoredPanorama = null, previous = null, previousSceneStates = null;
     try {
       if (!exact && !this.stateHasLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
@@ -8485,7 +8485,12 @@ class UniCanvasWidget {
       }
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return false;
       if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && isPanoramaLayer(layer))) throw new Error("The panorama base layer is missing");
-      previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "sceneLight", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
+      // Complete rollback data, taken before anything is swapped: the plain widget fields plus
+      // the timeline object. The scene states cannot ride on `previous` (they are restored
+      // through their helper, which also refreshes the panel), so their serialized snapshot is
+      // taken separately and put back in the catch.
+      previousSceneStates = this.serializeSceneStates?.() ?? null;
+      previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "scenePerspective", "sceneLight", "settings", "layers", "activeLayerId", "timeline"].map(key => [key, this[key]]));
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
       this.snapToGrid = state.snapToGrid === true;
@@ -8504,8 +8509,16 @@ class UniCanvasWidget {
         if (!exact) this.saveLocalStateBackup(state);
       }
       this.poseBake?.afterStateRestore();
-      this.restoreSceneStates?.(state.sceneStates);
-      this.timelinePanel?.restore(state.timeline);
+      // Scene states and the timeline dock are panels over the restored canvas: a failure in
+      // them must never fail (and roll back) the canvas restore itself, so they throw into
+      // their own catch and the loaded scene stays on the canvas and in the autosave.
+      try {
+        this.restoreSceneStates?.(state.sceneStates);
+        this.timelinePanel?.restore(state.timeline);
+      } catch (panelErr) {
+        console.warn("[VNCCS UniCanvas] Scene state or timeline restore failed; the loaded scene stays", panelErr);
+        this.setStatus(`Scene data could not be fully restored: ${panelErr.message || panelErr}`, true);
+      }
       this.syncPromptControls();
       this.updateSnapButton();
       this.updatePanoramaControls();
@@ -8513,7 +8526,13 @@ class UniCanvasWidget {
       previous.panorama?.dispose();
       return true;
     } catch (err) {
-      if (previous) Object.assign(this, previous);
+      if (previous) {
+        Object.assign(this, previous);
+        // `previous.timeline` restores the old timeline object; the scene states go through
+        // their restore so the states panel follows, and the dock re-renders the old data.
+        this.restoreSceneStates?.(previousSceneStates);
+        this.timelinePanel?.afterChange?.();
+      }
       this.updatePanoramaControls();
       this.setStatus(`Canvas restore failed: ${err.message || err}`, true);
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
