@@ -31,14 +31,14 @@
  * `uc.layerMenuExtensions` / `uc.library`.
  */
 
-import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790498789213";
-import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790498789213";
-import { cachedBackgroundDepth, expectedHeightAt, isPerspectiveCalibrated, layerHeightFactor, normalizeScenePerspective, editScenePerspective, seedBackgroundDepth } from "./vnccs_unicanvas_scene_place.mjs?v=1790498789213";
-import { serializePose } from "./vnccs_unicanvas_pose_state.mjs?v=1790498789213";
-import { PROJECTS_BASE } from "./vnccs_unicanvas_project.mjs?v=1790498789213";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790498789213";
-import { layerCategory } from "./vnccs_unicanvas_naming_rules.mjs?v=1790498789213";
-import { cloneJson, ensureStyleTag, escapeHtml } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790499067345";
+import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790499067345";
+import { cachedBackgroundDepth, expectedHeightAt, isPerspectiveCalibrated, layerHeightFactor, normalizeScenePerspective, editScenePerspective, seedBackgroundDepth } from "./vnccs_unicanvas_scene_place.mjs?v=1790499067345";
+import { serializePose } from "./vnccs_unicanvas_pose_state.mjs?v=1790499067345";
+import { PROJECTS_BASE } from "./vnccs_unicanvas_project.mjs?v=1790499067345";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499067345";
+import { layerCategory } from "./vnccs_unicanvas_naming_rules.mjs?v=1790499067345";
+import { cloneJson, ensureStyleTag, escapeHtml } from "./vnccs_unicanvas_util.mjs?v=1790499067345";
 
 export const LIBRARY_BASE = "/vnccs/unicanvas/library";
 export const ASSET_KINDS = Object.freeze(["character", "background", "prop", "pose", "preset"]);

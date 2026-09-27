@@ -17,11 +17,11 @@
  * Off / Rules only / Rules + model; nothing is downloaded unless the level needs the model.
  */
 
-import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790498789213";
-import { autoFileLayer } from "./vnccs_unicanvas_filing.mjs?v=1790498789213";
-import { isGroupLayer } from "./vnccs_unicanvas_groups.mjs?v=1790498789213";
-import { isUniCanvasAutoNameModelEnabled, isUniCanvasEnabled, isUniCanvasNamingModelAvailable, pickEnabledUniCanvasChoice } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790498789213";
-import { groupCharacterName, modelLayerName, nameSourceForOrigin, normalizeLayerCategory, rulesCategory, rulesLayerName } from "./vnccs_unicanvas_naming_rules.mjs?v=1790498789213";
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790499067345";
+import { autoFileLayer } from "./vnccs_unicanvas_filing.mjs?v=1790499067345";
+import { isGroupLayer } from "./vnccs_unicanvas_groups.mjs?v=1790499067345";
+import { isUniCanvasAutoNameModelEnabled, isUniCanvasEnabled, isUniCanvasNamingModelAvailable, pickEnabledUniCanvasChoice } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790499067345";
+import { groupCharacterName, modelLayerName, nameSourceForOrigin, normalizeLayerCategory, rulesCategory, rulesLayerName } from "./vnccs_unicanvas_naming_rules.mjs?v=1790499067345";
 
 export const DESCRIBE_LAYERS_ROUTE = "/vnccs/unicanvas/describe_layers";
 export const AUTO_NAME_SETTING = "auto_name_layers"; // legacy boolean: true reads as "model"

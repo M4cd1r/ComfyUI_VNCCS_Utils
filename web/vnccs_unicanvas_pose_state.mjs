@@ -1,5 +1,5 @@
 /** Serializable pose layer contracts shared by the canvas and editor host. */
-import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
+import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs?v=1790499067345";
 // Articulated mannequin mid-pose: filled head and joints read as a posable figure at tool size.
 export const POSE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle class="fill" cx="12" cy="3.7" r="2.5"/><rect class="fill" x="9.7" y="7" width="4.6" height="7.4" rx="2.3"/><path stroke-width="2.4" d="M10.4 8.4 7 6.4 5.8 2.9M13.6 8.4l3.2 2.9 2.9 1.4M10.8 13.8l-1.6 4-1 3.6M13.2 13.8l1.7 3.9 1.3 3.5"/><circle class="fill" cx="7" cy="6.4" r="1.4"/><circle class="fill" cx="16.8" cy="11.3" r="1.4"/><circle class="fill" cx="9.2" cy="17.8" r="1.4"/><circle class="fill" cx="14.9" cy="17.7" r="1.4"/></svg>';
 // A panorama layer is an image layer that holds the equirectangular source (vnccs_unicanvas_panorama.mjs).
@@ -489,8 +489,31 @@ export function mergePoseCache(live, cached) {
     return result;
 }
 
+const PANORAMA_CAMERA_KEYS = ["yaw", "pitch", "roll", "fov"];
+const cameraValue = (camera, key) => Number(camera?.[key] ?? (key === "fov" ? 90 : 0));
+
+/** Whether two panorama cameras ({ yaw, pitch, roll, fov }) look the same way; null matches only null. */
+export function samePanoramaCamera(a, b) {
+    if (!a || !b) return !a && !b;
+    return PANORAMA_CAMERA_KEYS.every(key => Math.abs(cameraValue(a, key) - cameraValue(b, key)) < 1e-6);
+}
+
 export function poseAtPanoramaCamera(layer, panorama) {
     const anchor = layer?.pose?.panoramaCamera;
-    return !panorama || !anchor || ["yaw", "pitch", "roll", "fov"].every(key =>
-        Math.abs(Number(anchor[key] ?? (key === "fov" ? 90 : 0)) - Number(panorama.settings[key] ?? (key === "fov" ? 90 : 0))) < 1e-6);
+    return !panorama || !anchor || samePanoramaCamera(anchor, panorama.settings);
+}
+
+/**
+ * Turns a panorama document to the camera a pose layer was posed from, committing the current
+ * view first (what the pose tool does before editing). No-op outside panoramas or when the view
+ * is already there; returns whether the camera moved.
+ */
+export function movePanoramaToPoseCamera(panorama, layer) {
+    const camera = layer?.pose?.panoramaCamera;
+    if (!panorama || !camera || poseAtPanoramaCamera(layer, panorama)) return false;
+    panorama.commit();
+    const { yaw, pitch, roll, fov } = camera;
+    panorama.setCamera({ yaw, pitch, roll, fov });
+    panorama.flushCamera();
+    return true;
 }

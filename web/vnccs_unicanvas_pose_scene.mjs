@@ -8,6 +8,9 @@
  *  - Merge pose layers: the inverse for a multi-selection of pose layers with identical rect and
  *    viewport, capped at MAX_POSE_STUDIO_CHARACTERS, references merged by character id.
  *  - Both are one `historyGroup` entry (addLayer / layerProps / removeLayer + groupStructure).
+ *  - Panorama documents: both first turn the view to the pose layers' saved camera
+ *    (`pose.panoramaCamera`, as the pose tool does) and write the new layers onto the sphere
+ *    from there; merge needs every selected layer to share that camera.
  *
  * The pure helpers run under Node for tests; installUniCanvasPoseScene binds the actions onto
  * the widget like installUniCanvasLayerTools.
@@ -15,10 +18,11 @@
 
 import { MAX_POSE_STUDIO_CHARACTERS, nextCharacterColor, nextCharacterId, nextCharacterSlot, normalizeCharacterColor,
   normalizePoseStudioCharacters } from "./vnccs_pose_characters.mjs";
-import { getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790498789213";
-import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs?v=1790498789213";
-import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790498789213";
-import { cloneJson } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
+import { getPoseCharacterMask, movePanoramaToPoseCamera, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters,
+  samePanoramaCamera } from "./vnccs_unicanvas_pose_state.mjs?v=1790499067345";
+import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs?v=1790499067345";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790499067345";
+import { cloneJson } from "./vnccs_unicanvas_util.mjs?v=1790499067345";
 
 const clone = cloneJson;
 const newId = () => (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`);
@@ -71,13 +75,16 @@ export function splitPoseState(layer, characterId) {
   return next;
 }
 
-/** Why `layers` cannot merge into one pose layer, or null. */
-export function mergePoseIssue(layers) {
+/** Why `layers` cannot merge into one pose layer, or null. `panorama`: a panorama document is open. */
+export function mergePoseIssue(layers, { panorama = false } = {}) {
   if (layers.length < 2 || layers.some((layer) => layer?.type !== "pose" || !layer.pose)) return "Select two or more pose layers to merge.";
   if (layers.some((layer) => layer.locked)) return "Unlock the pose layers to merge them.";
   const [first] = layers;
   if (!layers.every((layer) => sameJSON(layer.pose.rect, first.pose.rect) && sameJSON(layer.pose.viewport, first.pose.viewport))) {
     return "Only pose layers with the same frame and camera can be merged.";
+  }
+  if (panorama && !layers.every((layer) => samePanoramaCamera(layer.pose.panoramaCamera, first.pose.panoramaCamera))) {
+    return "Only pose layers posed from the same panorama view can be merged: open each in the pose tool from one view first.";
   }
   const total = layers.reduce((sum, layer) => sum + studioCharacterList(layer.pose).length, 0);
   if (total > MAX_POSE_STUDIO_CHARACTERS) return `A pose layer holds at most ${MAX_POSE_STUDIO_CHARACTERS} characters (these hold ${total}).`;
@@ -133,20 +140,14 @@ function maskedSurface(uc, layer, characterId) {
   return out;
 }
 
-function refusePanorama(uc, action) {
-  if (!uc.panorama) return false;
-  uc.setStatus(`${action} is not available in panorama documents yet.`, true);
-  return true;
-}
-
 export async function splitPoseCharacters(uc, layer, createEditor) {
   if (layer?.type !== "pose" || !layer.pose) return null;
   if (layer.locked) { uc.setStatus("Unlock the pose layer to split it.", true); return null; }
   const characters = poseStudioCharacters(layer.pose);
   if (characters.length < 2) { uc.setStatus("Split characters needs a pose layer with two or more characters.", true); return null; }
-  if (refusePanorama(uc, "Split characters")) return null;
   if (uc.transformDraft) { uc.setStatus("Apply or cancel the active transform first", true); return null; }
   if (uc.tool === "pose") uc.finishPoseEdit(true);
+  movePanoramaToPoseCamera(uc.panorama, layer);
   const rect = { ...layer.pose.rect };
   const scale = Math.min(1, 2048 / Math.max(rect.width, rect.height));
   const size = { width: Math.max(1, Math.round(rect.width * scale)), height: Math.max(1, Math.round(rect.height * scale)) };
@@ -182,6 +183,7 @@ export async function splitPoseCharacters(uc, layer, createEditor) {
     const surface = solos.get(character.id) || maskedSurface(uc, layer, character.id);
     if (surface) drawSurface(uc, created, surface, rect);
     uc.invalidateLayerCaches(created);
+    uc.panorama?.commitLayer(created); // onto the sphere from the pose layer's camera
     return created;
   });
   uc.layers.splice(Math.max(0, uc.layers.indexOf(layer)), 0, ...created);
@@ -203,11 +205,12 @@ export async function splitPoseCharacters(uc, layer, createEditor) {
 export function mergePoseLayers(uc, ids = uc.selectedLayerIds, createEditor = null) {
   const wanted = new Set(ids || []);
   const layers = uc.layers.filter((layer) => wanted.has(layer.id));
-  const issue = mergePoseIssue(layers);
+  const issue = mergePoseIssue(layers, { panorama: Boolean(uc.panorama) });
   if (issue) { uc.setStatus(issue, true); return null; }
-  if (refusePanorama(uc, "Merge pose layers")) return null;
   if (uc.transformDraft) { uc.setStatus("Apply or cancel the active transform first", true); return null; }
   if (uc.tool === "pose") uc.finishPoseEdit(true);
+  // The sources are stacked as seen from their shared camera.
+  movePanoramaToPoseCamera(uc.panorama, layers[0]);
   uc.poseEditor?.commit?.();
   if (layers.includes(uc.poseEditor?.layer)) uc.poseEditor.release();
   const activeBefore = uc.activeLayerId;
@@ -235,6 +238,7 @@ export function mergePoseLayers(uc, ids = uc.selectedLayerIds, createEditor = nu
     ctx.restore();
   }
   uc.invalidateLayerCaches(merged);
+  uc.panorama?.commitLayer(merged);
   const removals = layers.map((layer) => ({ kind: "removeLayer", layer, index: uc.layers.indexOf(layer), groupId: layer.groupId || null, previousActiveLayerId: activeBefore }));
   uc.layers.splice(Math.max(0, uc.layers.indexOf(top)), 0, merged);
   uc.layers = uc.layers.filter((layer) => !wanted.has(layer.id));

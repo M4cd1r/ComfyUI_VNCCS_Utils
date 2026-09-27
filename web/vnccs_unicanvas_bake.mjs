@@ -20,16 +20,16 @@
  * controller onto the widget like the other install* modules.
  */
 
-import { getPoseCharacterMask, isImageRef, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
-  poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790498789213";
-import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs?v=1790498789213";
-import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs?v=1790498789213";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790498789213";
-import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs?v=1790498789213";
-import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs?v=1790498789213";
-import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790498789213";
-import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
-import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs?v=1790498789213";
+import { getPoseCharacterMask, isImageRef, movePanoramaToPoseCamera, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
+  poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790499067345";
+import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs?v=1790499067345";
+import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs?v=1790499067345";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790499067345";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs?v=1790499067345";
+import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs?v=1790499067345";
+import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790499067345";
+import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs?v=1790499067345";
+import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs?v=1790499067345";
 
 // Offline fallback for the bake families (the families whose backend descriptor sets
 // capabilities.supports_pose_edit) until /assets has loaded; it also gives the known families
@@ -674,13 +674,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   async function prepareEditor(layer) {
     const editor = ensureEditor();
     if (!editor) throw new Error("The pose editor is not available.");
-    if (uc.panorama && layer.pose.panoramaCamera && !poseAtPanoramaCamera(layer, uc.panorama)) {
-      // Bakes run in the pose layer's own camera.
-      uc.panorama.commit();
-      const { yaw, pitch, roll, fov } = layer.pose.panoramaCamera;
-      uc.panorama.setCamera({ yaw, pitch, roll, fov });
-      uc.panorama.flushCamera();
-    }
+    movePanoramaToPoseCamera(uc.panorama, layer); // bakes run in the pose layer's own camera
     await editor.activate(layer, { show: editingLayer(layer) });
     await editor.flush();
     if (editor.layer !== layer || !uc.layers.includes(layer)) throw new Error("The pose layer changed. Bake again.");

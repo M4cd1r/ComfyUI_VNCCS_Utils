@@ -82,8 +82,11 @@ duplicating it creates an ordinary layer holding a copy of the spherical pixels.
   transform or paint-all stroke in another view first re-anchors the whole set to
   that view (every variant is re-projected once). Staged sprite results preview
   flat at the sprite's rect, which is exact from the sprite's own camera; accepting
-  them always lands on the sphere correctly. Splitting and merging pose layers is
-  still not available in panorama documents.
+  them always lands on the sphere correctly.
+- **Split characters / Merge pose layers** first turn the view to the pose layer's
+  saved camera (as the pose tool does) and write the new layers onto the sphere from
+  there, one Undo step each. Merge needs every selected pose layer to share that
+  camera; otherwise the status bar says so and nothing changes.
 
 ## Export and saved workflows
 
