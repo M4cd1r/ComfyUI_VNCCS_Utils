@@ -309,6 +309,47 @@ test("the LoRA download enqueues through the shared queue and refreshes the fami
   assert.match(failing.statuses.at(-1)[0], /Pose Studio LoRA download failed: HF 404/);
 });
 
+test("a frozen download status ends the wait; a moving download is never a stall", async () => {
+  // refreshPresetDownloadStatus swallows its own errors, so a dead backend just leaves the
+  // watched status frozen at "downloading": the wait must exit after the stall threshold instead
+  // of polling forever, re-enable the row and say how to recover.
+  const { uc, statuses } = controllerHarness();
+  uc.presetDownloads = {};
+  uc.poseBake.startPoseStudioLoraDownload = async () => {
+    uc.presetDownloads["lora-job"] = { status: "downloading", message: "Downloading", progress: 0.4 };
+    return ["lora-job"];
+  };
+  uc.poseBake.poseLoraPollMs = 1;
+  uc.poseBake.poseLoraStallLimit = 3;
+  uc.refreshPresetDownloadStatus = async () => { /* the map stays unchanged, the callee never rejects */ };
+  uc.poseBake.fetchPoseStudioLoras = async () => ({
+    qwen_image_edit: { installed: { version: "ART_V6", name: "PoseStudio_QiE_ART_V6.safetensors" }, latest: { version: "ART_V6" }, update_available: false },
+  });
+  await uc.poseBake.downloadPoseStudioLora("qwen_image_edit", "ART_V7");
+  assert.match(statuses.at(-1)[0], /shows no progress\. Check for updates or start the download again\./);
+  assert.equal(uc.poseBake.poseLoraStatus().qwen_image_edit.installed.version, "ART_V6", "the report was force-refreshed before the bail-out");
+  // Progress that keeps moving resets the stall: the loop polls until the job settles.
+  const moving = controllerHarness();
+  moving.uc.presetDownloads = {};
+  moving.uc.poseBake.startPoseStudioLoraDownload = async () => {
+    moving.uc.presetDownloads["lora-job"] = { status: "downloading", progress: 0 };
+    return ["lora-job"];
+  };
+  moving.uc.poseBake.poseLoraPollMs = 1;
+  moving.uc.poseBake.poseLoraStallLimit = 2;
+  moving.uc.refreshPresetDownloadStatus = async () => {
+    const job = moving.uc.presetDownloads["lora-job"];
+    job.progress = Math.min(1, job.progress + 0.5);
+    if (job.progress >= 1) job.status = "success";
+  };
+  moving.uc.poseBake.fetchPoseStudioLoras = async () => ({
+    qwen_image_edit: { installed: { version: "ART_V7", name: "PoseStudio_QiE_ART_V7.safetensors" }, latest: { version: "ART_V7" }, update_available: false },
+  });
+  await moving.uc.poseBake.downloadPoseStudioLora("qwen_image_edit", "ART_V7");
+  assert.equal(moving.statuses.some(([text]) => /no progress/.test(text)), false);
+  assert.equal(moving.uc.poseBake.poseLoraStatus().qwen_image_edit.installed.version, "ART_V7");
+});
+
 test("the widget and editor only receive hook calls", () => {
   assert.match(widget, /installUniCanvasCharacterBake\(this, \{ createEditor: \(\) => new UniCanvasPoseEditor\(this\), modelModule: getUniCanvasModelModule \}\)/);
   assert.match(widget, /if \(staging\.bake\) return this\.poseBake\?\.acceptStaged\(staging\)/);

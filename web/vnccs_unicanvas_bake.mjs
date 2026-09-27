@@ -62,6 +62,8 @@ const BAKE_POSE_STUDIO_LORA_DOWNLOAD_ROUTE = "/vnccs/unicanvas/pose_studio_loras
 const POSE_STUDIO_LORAS_TTL = 5 * 60 * 1000;
 const POSE_STUDIO_LORAS_RETRY = 60 * 1000;
 const POSE_STUDIO_LORA_POLL_MS = 2000;
+// Watched download statuses frozen for this many polls (30 s at the 2 s cadence) end the wait.
+const POSE_STUDIO_LORA_STALL_LIMIT = 15;
 
 const clone = cloneJson;
 
@@ -865,19 +867,32 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       const keys = await api.startPoseStudioLoraDownload(family, version);
       loraDownloadKeys = Array.isArray(keys) ? keys.map(String) : [];
       rerenderPoseLoraRow();
-      // Same cadence as the preset card downloads; the row re-renders with every poll. A status
-      // endpoint that keeps failing (backend gone) ends the wait instead of polling forever.
-      let failures = 0;
+      // Same cadence as the preset card downloads; the row re-renders with every poll.
+      // refreshPresetDownloadStatus swallows its own errors, so a dead backend (or a lost job)
+      // leaves the watched statuses frozen instead of failing: a snapshot that stays unchanged
+      // for `poseLoraStallLimit` polls ends the wait — the row re-enables with a message instead
+      // of a frozen progress and a disabled button until reload.
+      const watched = () => JSON.stringify(loraDownloadKeys.map((key) => uc.presetDownloads?.[key]?.status ?? ""));
+      let stall = 0;
+      let snapshot = watched();
       while (loraDownloadKeys.some((key) => ["queued", "downloading"].includes(String(uc.presetDownloads?.[key]?.status)))) {
-        await sleep(POSE_STUDIO_LORA_POLL_MS);
+        await sleep(api.poseLoraPollMs ?? POSE_STUDIO_LORA_POLL_MS);
         if (uc._disposed) return;
-        try {
-          await uc.refreshPresetDownloadStatus?.();
-          failures = 0;
-        } catch (_) {
-          if (++failures >= 3) break;
-        }
+        try { await uc.refreshPresetDownloadStatus?.(); } catch (_) { /* the callee never rejects */ }
         rerenderPoseLoraRow();
+        const next = watched();
+        if (next !== snapshot) {
+          snapshot = next;
+          stall = 0;
+          continue;
+        }
+        if (++stall >= (api.poseLoraStallLimit ?? POSE_STUDIO_LORA_STALL_LIMIT)) {
+          await refreshPoseStudioLoras({ force: true });
+          loraDownloadKeys = [];
+          rerenderPoseLoraRow();
+          uc.setStatus(`The Pose Studio LoRA download for ${bakeFamilyLabel(family)} shows no progress. Check for updates or start the download again.`, true);
+          return;
+        }
       }
       await refreshPoseStudioLoras({ force: true });
     } catch (error) {
@@ -1818,6 +1833,9 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     // replaceable hooks so tests can stub them.
     ensurePoseStudioLora, refreshPoseStudioLoras, downloadPoseStudioLora,
     poseLoraStatus: () => poseLora.byFamily,
+    // Poll cadence and stall threshold of the LoRA download wait (overridable in tests).
+    poseLoraPollMs: POSE_STUDIO_LORA_POLL_MS,
+    poseLoraStallLimit: POSE_STUDIO_LORA_STALL_LIMIT,
     fetchPoseStudioLoras: async () => {
       const res = await fetch(BAKE_POSE_STUDIO_LORAS_ROUTE, { cache: "no-store" });
       const data = await res.json();
