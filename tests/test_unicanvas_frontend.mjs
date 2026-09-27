@@ -162,6 +162,11 @@ test("the preset picker head card reads as a dropdown: chevron, preset count, ar
     assert.match(body, /setAttribute\("aria-haspopup", "listbox"\)/, "the head card must declare aria-haspopup=listbox");
     assert.match(body, /setAttribute\("aria-expanded"/, "the head card must declare aria-expanded");
     assert.match(body, /e\.key === "Enter" \|\| e\.key === " "/, "Enter and Space must toggle the picker");
+    assert.match(body, /\(e\.key === "Enter" \|\| e\.key === " "\) && e\.target !== card\) return/, "Enter/Space must not hijack keys aimed at the focused nested Download button");
+    const guard = body.indexOf("e.target !== card");
+    const esc = body.indexOf('e.key !== "Escape"');
+    assert.ok(guard > -1 && esc > -1 && guard < esc && body.slice(0, guard).indexOf("addEventListener(\"keydown\"") > -1,
+        "the target guard must gate only the Enter/Space branch, ahead of an ungated Escape branch");
     assert.ok(body.includes("card.click()"), "keyboard activation must reuse the delegated click path");
     assert.match(body, /key !== "Escape"/, "Escape must close the open picker");
     assert.ok(source.includes(".vnccs-uc-model-picker.open .vnccs-uc-model-card.head .vnccs-uc-model-card-chevron { rotate:180deg; }"),

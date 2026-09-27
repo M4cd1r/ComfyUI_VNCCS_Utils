@@ -2818,6 +2818,9 @@ class UniCanvasWidget {
       queueMicrotask(syncAriaExpanded);
       card.addEventListener("click", () => queueMicrotask(syncAriaExpanded));
       card.addEventListener("keydown", (e) => {
+        // Enter/Space belong to the focused child (the Download button) when it is the target;
+        // only hijack keys aimed at the card itself. Escape still closes from any descendant.
+        if ((e.key === "Enter" || e.key === " ") && e.target !== card) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           card.click();
