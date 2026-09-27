@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { importUniCanvasWebModule } from "./helpers/web_module.mjs";
 import { REMOVE_BG_METHODS, automaticRemoveBgRequest, removeBgEditLoader, resolveRemoveBgSelection } from "../web/vnccs_unicanvas_remove_bg.mjs";
 import { bakeRemoveBgRequest } from "../web/vnccs_unicanvas_bake.mjs";
 import { AUTO_NAME_MODELS, resolveAutoNameModel, resolveAutoNamingLevel } from "../web/vnccs_unicanvas_naming.mjs";
@@ -9,7 +8,6 @@ import { resolveAutoFile } from "../web/vnccs_unicanvas_filing.mjs";
 import { PERSPECTIVE_TOOL } from "../web/vnccs_unicanvas_scene_place.mjs";
 import { LAYER_MENU_ITEMS } from "../web/vnccs_unicanvas_layer_tools.mjs";
 
-// The shared instance every module under test reads (see tests/helpers/web_module.mjs).
 const {
   UNICANVAS_FEATURE_TOGGLES,
   UNICANVAS_TOGGLE_GROUPS,
@@ -36,7 +34,7 @@ const {
   uniCanvasToggleSettingId,
   uniCanvasRequestOverrides,
   uniCanvasRequestSettings,
-} = await importUniCanvasWebModule("vnccs_unicanvas_feature_toggles.mjs");
+} = await import("../web/vnccs_unicanvas_feature_toggles.mjs");
 
 const read = (name) => readFile(new URL(`../web/${name}`, import.meta.url), "utf8");
 const widgetSource = await read("vnccs_unicanvas.js");

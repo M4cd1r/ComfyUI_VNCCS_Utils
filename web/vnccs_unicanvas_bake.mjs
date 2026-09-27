@@ -21,15 +21,15 @@
  */
 
 import { getPoseCharacterMask, isImageRef, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
-  poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790498789213";
-import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs?v=1790498789213";
-import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs?v=1790498789213";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790498789213";
-import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs?v=1790498789213";
-import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs?v=1790498789213";
-import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790498789213";
-import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
-import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs?v=1790498789213";
+  poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
+import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
+import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
+import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
+import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs";
+import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs";
 
 // Offline fallback for the bake families (the families whose backend descriptor sets
 // capabilities.supports_pose_edit) until /assets has loaded; it also gives the known families

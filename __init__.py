@@ -476,8 +476,8 @@ def _vnccs_read_git_commit(root):
 
 
 def _vnccs_unicanvas_build_info():
-    # Debug identity for the UI: git commit (when the checkout has .git) plus the
-    # same newest-mtime version the frontend staleness gate compares against.
+    # Debug identity for bug reports: git commit (when the checkout has .git) plus the
+    # newest mtime of the UniCanvas web files on disk.
     # The commit is read per call (cheap, once per popover open) so it can never
     # go stale after new commits land without a server restart.
     commit = _vnccs_read_git_commit(os.path.dirname(os.path.abspath(__file__)))
@@ -551,6 +551,21 @@ def _vnccs_register_unicanvas_state_cache():
 
 _vnccs_register_unicanvas_state_cache()
 register_unicanvas_routes()
+
+
+def _vnccs_register_web_cache():
+    # Browsers must revalidate web/ on every page load so an updated extension is never
+    # served from a stale heuristic cache (see api/web_cache.py).
+    try:
+        from server import PromptServer
+        from .api.web_cache import register_web_cache_middleware
+    except Exception:
+        return
+    if not register_web_cache_middleware(PromptServer.instance.app, os.path.dirname(os.path.abspath(__file__))):
+        print("[VNCCS] web cache headers not installed: the server was already running")
+
+
+_vnccs_register_web_cache()
 
 
 def _vnccs_register_sam3d_pose_import():

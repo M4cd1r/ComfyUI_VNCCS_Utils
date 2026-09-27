@@ -8,7 +8,7 @@
  */
 
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790498789213";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import {
     INTERPOLATION_NAMES,
     INTERPOLATION_PRESETS,

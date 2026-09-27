@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790498789213";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 
 // Global Registry Cache to prevent API storms (multiple nodes requesting same data)
 window.VNCCS_REGISTRY = window.VNCCS_REGISTRY || {};

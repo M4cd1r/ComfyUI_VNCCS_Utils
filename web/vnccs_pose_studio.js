@@ -17,7 +17,7 @@ import {
 import { HAND_PRESETS } from "./vnccs_hand_presets.js";
 import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790498789213";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
