@@ -281,3 +281,25 @@ test("a body gesture keeps its pointer capture on the body after a re-render det
   assert.equal(body.captured, 7);
   assert.deepEqual(listeners.map(([on]) => on), ["body", "body", "body"]);
 });
+
+test("a render while the hidden editor steps the layer's studio keeps the frames prepared so far", async () => {
+  const layer = poseLayer();
+  const { uc, panel } = fakeWidget([layer]);
+  panel.open = true;
+  panel.ensureData().fps = 12;
+  const saved = layer.pose.studio;
+  panel.createPoseEditor = null;
+  uc.poseEditor = {
+    async captureAnimationFrames(target, frames, { onFrame }) {
+      // Like the real editor: the live studio replaces the layer's studio while frames render.
+      target.pose.studio = { ...saved, characters: [{ id: 0, animation: animation(12, 12, { loop: false }) }] };
+      for (const frame of frames) {
+        onFrame(frame, canvas(`${target.id}${frame}`));
+        uc.render(); // the page renders between frames
+      }
+      target.pose.studio = saved;
+    },
+  };
+  assert.equal(await panel.preparePoseFrames({ start: 0, end: 3 }), 4);
+  assert.deepEqual(panel.describe().poseFrames.layers.P, [0, 1, 2, 3]);
+});

@@ -171,6 +171,7 @@ class TimelineController {
     this.button = null;
     this.poseFrames = new PoseFrameCache();
     this.preparing = null;
+    this.capturing = null; // { layerId, hash } while the hidden editor renders that layer's frames
     this.exportDialog = null;
     this.createPoseEditor = null;
   }
@@ -337,9 +338,18 @@ class TimelineController {
     const entry = this.poseClip(layer);
     if (!entry || entry.baked || !entry.clip.enabled) return null;
     const studioFrame = studioFrameFor(frame, entry.info, entry.clip, this.data.fps);
-    const found = this.poseFrames.nearest(layer.id, poseLayerHash(layer), studioFrame);
+    const found = this.poseFrames.nearest(layer.id, this.poseHashOf(layer), studioFrame);
     if (!found?.canvas) return null;
     return { canvas: found.canvas, frame: found.frame, exact: found.frame === studioFrame };
+  }
+
+  /**
+   * The pose hash frames of a layer are cached under. While the hidden editor renders a layer's
+   * frames it steps that layer's live studio state, so its hash changes transiently; a render in
+   * between must not treat the frames already prepared as stale (that dropped them).
+   */
+  poseHashOf(layer) {
+    return this.capturing?.layerId === layer.id ? this.capturing.hash : poseLayerHash(layer);
   }
 
   /** Studio frames still missing for scene frames start..end, per animated pose layer. */
@@ -379,6 +389,7 @@ class TimelineController {
       try {
         for (const { layer, hash, frames } of work) {
           if (cancelled?.()) break;
+          this.capturing = { layerId: layer.id, hash };
           await editor.captureAnimationFrames(layer, frames, {
             cancelled,
             onFrame: (frame, canvas) => {
@@ -393,6 +404,7 @@ class TimelineController {
         return done;
       } finally {
         this.preparing = null;
+        this.capturing = null;
         this.renderDock();
         uc.requestRender();
       }
