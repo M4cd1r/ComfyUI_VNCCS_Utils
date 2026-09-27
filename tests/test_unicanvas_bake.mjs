@@ -4,7 +4,7 @@ import fs from "node:fs";
 import {
   alphaBounds, BAKE_FAMILIES, bakeFamilies, bakePickerGroups, bakePoseHash, bakeRefHash, bakeRemoveBgRequest, bakeSettingsPayload, bakeStatus, bakeWorkingRect, boxWithin,
   collectBakeCandidates, dilateAlpha, expandBox, extentBeyond, generateBakeLabel, installUniCanvasCharacterBake,
-  keepOverlappingComponents, normalizePoseBake, orderBakeParts, refreshBakeStatuses, resolveBakeModel, scaleBakeWithPlacement, subtractAlpha,
+  keepOverlappingComponents, normalizePoseBake, orderBakeParts, poseStudioLoraBanner, refreshBakeStatuses, resolveBakeModel, scaleBakeWithPlacement, skipPoseStudioLoraVersion, subtractAlpha,
 } from "../web/vnccs_unicanvas_bake.mjs";
 
 const widget = fs.readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
@@ -255,6 +255,60 @@ test("with nothing to bake GENERATE is today's GENERATE, and a failed bake block
   assert.equal(uc.drawInProgress, false);
 });
 
+test("a missing Pose Studio LoRA blocks the bake; an offline or skipped check never does", async () => {
+  // The backend report says the family's LoRA is not installed: blocked, with a Download hint.
+  const missing = controllerHarness();
+  missing.uc.poseBake.fetchPoseStudioLoras = async () => ({
+    qwen_image_edit: { installed: null, latest: { version: "ART_V6" }, update_available: false },
+  });
+  const blocked = await missing.uc.poseBake.ensurePoseStudioLora("qwen_image_edit");
+  assert.equal(blocked.blocked, true);
+  // HF offline (the fetch fails): the state stays unknown, the bake runs.
+  const offline = controllerHarness();
+  offline.uc.poseBake.fetchPoseStudioLoras = async () => { throw new Error("offline"); };
+  const unknown = await offline.uc.poseBake.ensurePoseStudioLora("qwen_image_edit");
+  assert.equal(unknown.blocked, false);
+  assert.equal(unknown.name, "");
+  // Installed: the highest version's file name rides along, with the settings' strength.
+  const installed = controllerHarness();
+  installed.uc.settings.pose_studio_lora_strength = 1.25;
+  installed.uc.poseBake.fetchPoseStudioLoras = async () => ({
+    qwen_image_edit: { installed: { version: "ART_V6", name: "PoseStudio_QiE_ART_V6.safetensors" }, latest: { version: "ART_V6" }, update_available: false },
+  });
+  const lora = await installed.uc.poseBake.ensurePoseStudioLora("qwen_image_edit");
+  assert.equal(lora.blocked, false);
+  assert.equal(lora.name, "PoseStudio_QiE_ART_V6.safetensors");
+  assert.equal(lora.strength, 1.25);
+  assert.equal(installed.uc.settings.pose_studio_lora_name, "PoseStudio_QiE_ART_V6.safetensors", "the settings key follows the highest installed version");
+  // Out-of-range strengths clamp into 0–1.5; junk reads as the default 1.
+  installed.uc.settings.pose_studio_lora_strength = 9;
+  assert.equal((await installed.uc.poseBake.ensurePoseStudioLora("qwen_image_edit")).strength, 1.5);
+  installed.uc.settings.pose_studio_lora_strength = "junk";
+  assert.equal((await installed.uc.poseBake.ensurePoseStudioLora("qwen_image_edit")).strength, 1);
+});
+
+test("the LoRA download enqueues through the shared queue and refreshes the family report", async () => {
+  const { uc, statuses } = controllerHarness();
+  const posted = [];
+  uc.presetDownloads = {};
+  uc.poseBake.startPoseStudioLoraDownload = async (family, version) => {
+    posted.push([family, version]);
+    uc.presetDownloads["pose_lora:qwen_image_edit:ART_V7"] = { status: "success", progress: 1 };
+    return ["pose_lora:qwen_image_edit:ART_V7"];
+  };
+  uc.poseBake.fetchPoseStudioLoras = async () => ({
+    qwen_image_edit: { installed: { version: "ART_V7", name: "PoseStudio_QiE_ART_V7.safetensors" }, latest: { version: "ART_V7" }, update_available: false },
+  });
+  await uc.poseBake.downloadPoseStudioLora("qwen_image_edit", "ART_V7");
+  assert.deepEqual(posted, [["qwen_image_edit", "ART_V7"]]);
+  assert.deepEqual(uc.poseBake.poseLoraStatus().qwen_image_edit.installed, { version: "ART_V7", name: "PoseStudio_QiE_ART_V7.safetensors" });
+  // A failed enqueue surfaces in the status bar and never throws out of the row's click handler.
+  const failing = controllerHarness();
+  failing.uc.poseBake.startPoseStudioLoraDownload = async () => { throw new Error("HF 404"); };
+  await failing.uc.poseBake.downloadPoseStudioLora("qwen_image_edit", "V9");
+  assert.match(failing.statuses.at(-1)[0], /Pose Studio LoRA download failed: HF 404/);
+});
+
 test("the widget and editor only receive hook calls", () => {
   assert.match(widget, /installUniCanvasCharacterBake\(this, \{ createEditor: \(\) => new UniCanvasPoseEditor\(this\), modelModule: getUniCanvasModelModule \}\)/);
   assert.match(widget, /if \(staging\.bake\) return this\.poseBake\?\.acceptStaged\(staging\)/);
@@ -366,5 +420,135 @@ test("the bake families come from the backend descriptors' supports_pose_edit, w
   assert.deepEqual(bakePickerGroups(presets, { families }).map((group) => group.family), ["new_edit"]);
   assert.deepEqual(resolveBakeModel({}, { currentBase: "new_edit", presets, families }), { useCurrent: true, family: "new_edit" });
   assert.match(resolveBakeModel({}, { currentBase: "sdxl", presets: [], families }).error, /needs New Edit:/);
-  assert.match(resolveBakeModel({}, { currentBase: "sdxl", presets: [] }).error, /needs QiE2511 or Klein9b:/);
+  assert.match(resolveBakeModel({}, { currentBase: "sdxl", presets: [] }).error, /needs QiE2511 or Klein9b or H3 or QI2\.1:/);
+});
+
+const BAKE_TEST_LOADERS = [
+  {
+    key: "checkpoint", label: "Checkpoint",
+    fields: [{ setting: "ckpt_name", label: "Checkpoint", asset: "checkpoints" }],
+    validate: (settings) => (settings.ckpt_name ? null : "Select a checkpoint first"),
+  },
+  {
+    key: "gguf", label: "GGUF",
+    fields: [
+      { setting: "gguf_model_name", label: "GGUF Model", asset: "gguf_models" },
+      { setting: "gguf_arch", label: "Architecture", asset: "gguf_architectures" },
+      { setting: "clip_name", label: "CLIP", asset: "text_encoders" },
+      { setting: "vae_name", label: "VAE", asset: "vae_models" },
+    ],
+    validate: (settings) => (settings.gguf_model_name && settings.clip_name && settings.vae_name ? null : "Select GGUF model, CLIP and VAE first"),
+  },
+];
+const BAKE_CUSTOM_OK = {
+  bake_model_source: "custom",
+  bake_custom: {
+    generation_mode: "qwen_image_edit", model_loader: "gguf", gguf_model_name: "qwen-image-edit-2511-Q5_0.gguf",
+    clip_name: "qwen_2.5_vl.safetensors", vae_name: "qwen_image_vae.safetensors", gguf_arch: "auto",
+  },
+};
+const BAKE_CUSTOM_FAMILIES = [["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"]];
+
+test("the Custom (installed files) source resolves bake_custom through the shared loader definitions", () => {
+  const model = resolveBakeModel(BAKE_CUSTOM_OK, { currentBase: "sdxl", presets: [], families: BAKE_CUSTOM_FAMILIES, loaders: BAKE_TEST_LOADERS });
+  assert.equal(model.family, "qwen_image_edit");
+  assert.equal(model.ready, true);
+  assert.equal(model.custom.gguf_model_name, "qwen-image-edit-2511-Q5_0.gguf");
+  assert.equal(model.custom.clip_name, "qwen_2.5_vl.safetensors");
+  assert.equal(model.custom.gguf_arch, "auto");
+  assert.equal(model.label, "qwen-image-edit-2511-Q5_0");
+  // An incomplete pick (no VAE) reads as an error naming the missing piece, never as a crash.
+  const incomplete = resolveBakeModel(
+    { bake_model_source: "custom", bake_custom: { generation_mode: "qwen_image_edit", model_loader: "gguf", gguf_model_name: "q.gguf", clip_name: "c.safetensors" } },
+    { currentBase: "sdxl", families: BAKE_CUSTOM_FAMILIES, loaders: BAKE_TEST_LOADERS });
+  assert.match(incomplete.error, /incomplete: Select GGUF model, CLIP and VAE first/);
+  // A non-bake family (the scene engine) is a wrong pick: the family must be a bake family.
+  const wrong = resolveBakeModel(
+    { bake_model_source: "custom", bake_custom: { generation_mode: "sdxl", model_loader: "checkpoint", ckpt_name: "a.safetensors" } },
+    { currentBase: "sdxl", families: BAKE_CUSTOM_FAMILIES, loaders: BAKE_TEST_LOADERS });
+  assert.match(wrong.error, /Choose the family/);
+  // Without the hook's definitions (old widget, plain harness) the source degrades to an error.
+  assert.match(resolveBakeModel(BAKE_CUSTOM_OK, { currentBase: "sdxl", families: BAKE_CUSTOM_FAMILIES }).error, /Choose a loader/);
+  assert.match(resolveBakeModel({ bake_model_source: "custom" }, { currentBase: "sdxl", families: BAKE_CUSTOM_FAMILIES, loaders: BAKE_TEST_LOADERS }).error, /Choose the family/);
+});
+
+test("the bake source selects Automatic, the picked preset, or the Custom files; old settings keep working", () => {
+  const presets = [
+    { id: "klein", settings: { generation_mode: "flux_klein" } },
+    { id: "qie", settings: { generation_mode: "qwen_image_edit" } },
+  ];
+  const ready = () => true;
+  const options = { currentBase: "sdxl", presets, presetReady: ready, families: BAKE_CUSTOM_FAMILIES };
+  // "Automatic" ignores the stored preset pick; "preset" honors it; a missing source keeps the
+  // older behavior (the stored preset pick wins).
+  assert.equal(resolveBakeModel({ bake_model_source: "auto", bake_preset_id: "klein" }, options).preset.id, "qie");
+  assert.equal(resolveBakeModel({ bake_model_source: "preset", bake_preset_id: "klein" }, options).preset.id, "klein");
+  assert.equal(resolveBakeModel({ bake_preset_id: "klein" }, options).preset.id, "klein");
+  // The current engine still bakes, whatever the source says.
+  assert.deepEqual(resolveBakeModel({ bake_model_source: "custom", bake_custom: {} }, { ...options, currentBase: "flux_klein" }), { useCurrent: true, family: "flux_klein" });
+});
+
+test("the bake payload carries the custom files and the Pose Studio LoRA, also for useCurrent", () => {
+  const model = resolveBakeModel(BAKE_CUSTOM_OK, { currentBase: "sdxl", presets: [], families: BAKE_CUSTOM_FAMILIES, loaders: BAKE_TEST_LOADERS });
+  const payload = bakeSettingsPayload(
+    { lora_stack: [{ name: "scene-lora" }], pose_studio_lora_strength: 1.25, steps: 30, bake_steps: 6, queued_draw: {} },
+    { model, defaults: { steps: 4, cfg: 1, clip_type: "qwen_image" }, positive: "p", seed: 3, batch: 1,
+      poseStudioLora: { name: "PoseStudio_QiE_ART_V6.safetensors", strength: 1.25 } });
+  assert.equal(payload.model_selection_mode, "custom");
+  assert.equal(payload.generation_mode, "qwen_image_edit");
+  assert.equal(payload.model_loader, "gguf");
+  assert.equal(payload.gguf_model_name, "qwen-image-edit-2511-Q5_0.gguf");
+  assert.equal(payload.clip_name, "qwen_2.5_vl.safetensors");
+  assert.equal(payload.vae_name, "qwen_image_vae.safetensors");
+  assert.equal(payload.gguf_arch, "auto");
+  assert.equal(payload.clip_type, "qwen_image", "the family default survives the pick");
+  assert.deepEqual(payload.lora_stack, []);
+  assert.equal(payload.pose_studio_lora_name, "PoseStudio_QiE_ART_V6.safetensors");
+  assert.equal(payload.pose_studio_lora_strength, 1.25);
+  assert.equal(payload.queued_draw, undefined);
+  // useCurrent carries the LoRA keys too.
+  const current = bakeSettingsPayload({ generation_mode: "qwen_image_edit" }, {
+    model: { useCurrent: true, family: "qwen_image_edit" }, positive: "", seed: 1,
+    poseStudioLora: { name: "PoseStudio_QiE_ART_V6.safetensors", strength: 0.5 },
+  });
+  assert.equal(current.pose_studio_lora_name, "PoseStudio_QiE_ART_V6.safetensors");
+  assert.equal(current.pose_studio_lora_strength, 0.5);
+  // The strength defaults to 1 and clamps into 0–1.5; without a name nothing junk is written.
+  assert.equal(bakeSettingsPayload({}, { model: { useCurrent: true, family: "f" }, positive: "", seed: 1, poseStudioLora: { name: "n", strength: 9 } }).pose_studio_lora_strength, 1.5);
+  const nameless = bakeSettingsPayload({ pose_studio_lora_name: "kept.safetensors" }, { model: { useCurrent: true, family: "f" }, positive: "", seed: 1 });
+  assert.equal(nameless.pose_studio_lora_name, "kept.safetensors", "an unknown status still sends the stored name");
+  assert.equal(nameless.pose_studio_lora_strength, 1);
+});
+
+test("the Pose Studio LoRA banner: update_available, skipping one version, the next higher asks again", () => {
+  const entry = (installed, latest, update = true) => ({
+    installed: installed ? { version: installed, name: `${installed}.safetensors` } : null,
+    latest: latest ? { version: latest, name: `${latest}.safetensors` } : null,
+    update_available: update,
+  });
+  assert.deepEqual(poseStudioLoraBanner(entry("V1", "V2"), {}, "qwen_image_edit"), { installed: "V1", latest: "V2", name: "V2.safetensors" });
+  assert.equal(poseStudioLoraBanner(entry("V1", "V2", false), {}, "f"), null, "no update, no banner");
+  assert.equal(poseStudioLoraBanner(entry("V2", "V2", true), {}, "f"), null, "equal versions are no update");
+  assert.equal(poseStudioLoraBanner(entry(null, "V2"), {}, "f"), null, "nothing installed: the Download row, not the update banner");
+  assert.equal(poseStudioLoraBanner(null, {}, "f"), null);
+  assert.deepEqual(poseStudioLoraBanner(entry("V1", "V2"), null, ""), { installed: "V1", latest: "V2", name: "V2.safetensors" });
+  // Skipping one version silences exactly that version; the next higher one asks again.
+  const skipped = skipPoseStudioLoraVersion({}, "qwen_image_edit", "V2");
+  assert.deepEqual(skipped, { qwen_image_edit: "V2" });
+  assert.equal(poseStudioLoraBanner(entry("V1", "V2"), skipped, "qwen_image_edit"), null);
+  assert.ok(poseStudioLoraBanner(entry("V1", "V3"), skipped, "qwen_image_edit"));
+  assert.deepEqual(poseStudioLoraBanner(entry("V1", "V2"), skipped, "flux_klein"), { installed: "V1", latest: "V2", name: "V2.safetensors" }, "other families are unaffected");
+  // The skip map is a copy: the settings object it came from is never mutated.
+  const stored = { qwen_image_edit: "V1" };
+  skipPoseStudioLoraVersion(stored, "qwen_image_edit", "V2");
+  assert.deepEqual(stored, { qwen_image_edit: "V1" });
+  assert.deepEqual(skipPoseStudioLoraVersion(null, "f", "V1"), { f: "V1" });
+});
+
+test("the bake custom panel reads the loader definitions through the uc.modelLoaderFields hook", () => {
+  assert.match(widget, /function uniCanvasModelLoaderFields\(\)/);
+  assert.match(widget, /this\.modelLoaderFields = uniCanvasModelLoaderFields/);
+  const bake = fs.readFileSync(new URL("../web/vnccs_unicanvas_bake.mjs", import.meta.url), "utf8");
+  assert.match(bake, /uc\.modelLoaderFields\?\.\(\)/);
+  assert.doesNotMatch(bake, /UNICANVAS_MODEL_LOADERS/, "the definitions are never copied into bake.mjs");
 });

@@ -822,6 +822,24 @@ const UNICANVAS_MODEL_LOADERS = {
     },
   },
 };
+// The Bake settings' Custom (installed files) source (vnccs_unicanvas_bake.mjs) builds its loader
+// fields from the same definitions as the main Custom panel; it reads them through this hook
+// (attached as this.modelLoaderFields) instead of copying them, so a loader or field added here
+// appears in both pickers.
+function uniCanvasModelLoaderFields() {
+  return {
+    loaders: Object.values(UNICANVAS_MODEL_LOADERS).map((loader) => ({
+      key: loader.key,
+      label: loader.label,
+      defaults: { ...(loader.defaults || {}) },
+      fields: (loader.fields || []).map((field) => ({ ...field })),
+      validate: loader.validate ? (settings) => loader.validate(settings) : null,
+    })),
+    // The same family detection the main Custom panel applies to a picked model file.
+    detectFamily: (name) => detectUniCanvasModelModule(name)?.key || "",
+  };
+}
+
 const UNICANVAS_MODEL_ALIASES = Object.fromEntries(
   Object.values(UNICANVAS_MODEL_MODULES).flatMap((module) => [[module.key, module.key], ...(module.aliases || []).map((alias) => [alias, module.key])])
 );
@@ -1030,6 +1048,8 @@ class UniCanvasWidget {
     this.assets = { checkpoints: [], diffusion_models: [], gguf_models: [], gguf_architectures: ["auto"], text_encoders: [], vae_models: [], model_patches: [], loras: [], samplers: [], schedulers: [] };
     // Backend model-family descriptors (/vnccs/unicanvas/assets "model_modules"), by key and alias.
     this.modelDescriptors = new Map();
+    // Loader field definitions for the Bake settings' Custom source (uniCanvasModelLoaderFields).
+    this.modelLoaderFields = uniCanvasModelLoaderFields;
     this.checkpoints = [];
     this.presets = [];
     this.presetDownloads = {};

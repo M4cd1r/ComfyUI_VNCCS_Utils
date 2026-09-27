@@ -18,29 +18,50 @@
  *
  * The pure helpers at the top run under Node for tests; installUniCanvasCharacterBake binds the
  * controller onto the widget like the other install* modules.
+ *
+ * The Bake model comes from the settings' Character bake group: the current engine, a preset of a
+ * bake family (Automatic picks the first ready one), or the Custom (installed files) source
+ * (`bake_custom`, validated against the loader definitions the main Custom panel exposes through
+ * `uc.modelLoaderFields`). Every bake family needs its Pose Studio LoRA (the family's highest
+ * installed version, `pose_studio_lora_name`, with `pose_studio_lora_strength`): the settings row
+ * reports the installed version, downloads a missing one through the shared preset queue, and
+ * offers Update / Skip this version when the backend knows a newer one. An offline status check
+ * never blocks a bake.
  */
 
 import { getPoseCharacterMask, isImageRef, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
   poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
-import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
+import { UNICANVAS_PRESET_MODEL_SETTING_KEYS, forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
 import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
 import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
 import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs";
 import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs";
 
 // Offline fallback for the bake families (the families whose backend descriptor sets
 // capabilities.supports_pose_edit) until /assets has loaded; it also gives the known families
 // their short display names and their order.
-export const BAKE_FAMILIES = Object.freeze([["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"]]);
+export const BAKE_FAMILIES = Object.freeze([
+  ["qwen_image_edit", "QiE2511"], ["flux_klein", "Klein9b"], ["minimax_h3", "H3"], ["qwen_image21", "QI2.1"],
+]);
 export const BAKE_STATUSES = Object.freeze(["none", "baked", "stale", "failed"]);
 export const BAKE_DRAW_ROUTE = UNICANVAS_DRAW_ROUTE;
 export const BAKE_REMOVE_BG_ROUTE = "/vnccs/unicanvas/remove_bg";
 // Working rect margin around the pose rect, and crop margin around the solo silhouette.
 export const BAKE_WORK_MARGIN = 0.1;
 export const BAKE_CROP_MARGIN = 0.15;
+// Pose Studio LoRA (the pose edit requirement of every bake family): status from the backend
+// (which caches HuggingFace behind its own TTL), downloads through the shared preset queue.
+const BAKE_POSE_STUDIO_LORAS_ROUTE = "/vnccs/unicanvas/pose_studio_loras";
+const BAKE_POSE_STUDIO_LORA_DOWNLOAD_ROUTE = "/vnccs/unicanvas/pose_studio_loras/download";
+// Frontend guard so a settings open or a bake does not hammer the route; the automatic paths
+// re-check at most once per TTL, and a failed (offline) check backs off before retrying.
+const POSE_STUDIO_LORAS_TTL = 5 * 60 * 1000;
+const POSE_STUDIO_LORAS_RETRY = 60 * 1000;
+const POSE_STUDIO_LORA_POLL_MS = 2000;
 
 const clone = cloneJson;
 
@@ -342,11 +363,6 @@ export function collectBakeCandidates(host, { includeStale = true, hasPart = nul
 }
 
 /**
- * The model a bake runs with: the current engine when it is a bake family, otherwise the Bake
- * model from settings (family, preset, steps / cfg overrides), defaulting to the first ready
- * preset of a bake family.
- */
-/**
  * The bake families as [key, label] pairs: every backend family descriptor that declares
  * capabilities.supports_pose_edit (a descriptor index may list one descriptor under several
  * aliases). Known families keep their fallback label and order; others follow with their own
@@ -379,12 +395,20 @@ export function bakeFamilyLabels(families = BAKE_FAMILIES, separator = " or ") {
   return families.map(([, label]) => label).join(separator);
 }
 
-export function resolveBakeModel(settings, { currentBase, presets = [], presetReady = () => true, baseOf = (mode) => mode, families: bakeList = BAKE_FAMILIES } = {}) {
+/**
+ * The model a bake runs with: the current engine when it is a bake family; otherwise the Bake
+ * model from settings — the Presets source (Automatic = first ready preset, or the picked
+ * preset), or the Custom (installed files) source (`bake_model_source: "custom"`, files from
+ * `bake_custom`, validated against the shared loader definitions passed as `loaders`).
+ */
+export function resolveBakeModel(settings, { currentBase, presets = [], presetReady = () => true, baseOf = (mode) => mode, families: bakeList = BAKE_FAMILIES, loaders = null } = {}) {
   const families = bakeList.map(([key]) => key);
   if (families.includes(currentBase)) return { useCurrent: true, family: currentBase };
+  if (settings?.bake_model_source === "custom") return resolveCustomBakeModel(settings, bakeList, loaders);
   const wanted = families.includes(settings?.bake_model_family) ? settings.bake_model_family : null;
   const ofFamily = (family) => presets.filter((preset) => baseOf(preset?.settings?.generation_mode || preset?.id) === family);
-  const chosen = presets.find((preset) => preset.id === settings?.bake_preset_id);
+  // "Automatic" ignores a stored preset pick; a missing source keeps the older preset behavior.
+  const chosen = settings?.bake_model_source === "auto" ? null : presets.find((preset) => preset.id === settings?.bake_preset_id);
   if (chosen && (!wanted || baseOf(chosen.settings?.generation_mode || chosen.id) === wanted)) {
     return { preset: chosen, family: baseOf(chosen.settings?.generation_mode || chosen.id), ready: presetReady(chosen) };
   }
@@ -395,6 +419,40 @@ export function resolveBakeModel(settings, { currentBase, presets = [], presetRe
     if (wanted && list.length) return { preset: list[0], family, ready: false };
   }
   return { error: `Character bake needs ${bakeFamilyLabels(bakeList)}: choose the Bake model in UniCanvas settings (Character bake).` };
+}
+
+const BAKE_CUSTOM_MODEL_FILE_KEYS = Object.freeze(["ckpt_name", "diffusion_model_name", "gguf_model_name"]);
+
+/** Short label of the custom pick's main model file, for the picker head and the history entry. */
+function bakeCustomLabel(custom) {
+  for (const key of BAKE_CUSTOM_MODEL_FILE_KEYS) {
+    const name = String(custom?.[key] || "").replace(/\\/g, "/").split("/").pop() || "";
+    if (name) return name.replace(/\.(?:safetensors|gguf|ckpt|pt|pth|bin)$/i, "") || key;
+  }
+  return "";
+}
+
+/**
+ * The Custom (installed files) source: the picked files of `settings.bake_custom`, valid only for
+ * a bake family and complete for its loader. `loaders` are the shared definitions via
+ * `uc.modelLoaderFields()`; without them (or with a wrong family or an incomplete pick) the
+ * source reads as an error message, never as a crash.
+ */
+function resolveCustomBakeModel(settings, bakeList, loaders) {
+  const custom = settings?.bake_custom && typeof settings.bake_custom === "object" ? settings.bake_custom : null;
+  const families = bakeList.map(([key]) => key);
+  const family = families.includes(custom?.generation_mode) ? custom.generation_mode : null;
+  if (!family) return { error: "Choose the family of the Custom (installed files) Bake model in UniCanvas settings (Character bake)." };
+  const loader = (Array.isArray(loaders) ? loaders : []).find((item) => item?.key === custom.model_loader) || null;
+  if (!loader) return { error: "Choose a loader for the Custom (installed files) Bake model in UniCanvas settings (Character bake)." };
+  const problem = loader.validate ? loader.validate(custom) : null;
+  if (problem) return { error: `The Custom (installed files) Bake model is incomplete: ${problem}` };
+  const model = {};
+  // The same keys a preset forces (plus the GGUF architecture hint) ride along from the pick.
+  for (const key of [...UNICANVAS_PRESET_MODEL_SETTING_KEYS, "gguf_arch"]) {
+    if (Object.prototype.hasOwnProperty.call(custom, key)) model[key] = clone(custom[key]);
+  }
+  return { custom: model, family, ready: true, label: bakeCustomLabel(custom) || family };
 }
 
 /**
@@ -409,12 +467,21 @@ export function bakePickerGroups(presets, { baseOf = (mode) => mode, familyEnabl
 }
 
 /** Settings for one bake request, built on the scene settings payload. */
-export function bakeSettingsPayload(base, { model, defaults = {}, positive, seed, batch = 1 }) {
+export function bakeSettingsPayload(base, { model, defaults = {}, positive, seed, batch = 1, poseStudioLora = null } = {}) {
   const settings = { ...base };
   if (!model.useCurrent && model.preset) {
     Object.assign(settings, clone(defaults));
     forceUniCanvasPresetModelSettings(settings, model.preset);
     // The scene's LoRAs belong to another family.
+    settings.lora_stack = [];
+  } else if (model.custom) {
+    // The Custom (installed files) pick overrides the family defaults the same way a preset does.
+    Object.assign(settings, clone(defaults));
+    for (const key of [...UNICANVAS_PRESET_MODEL_SETTING_KEYS, "gguf_arch"]) {
+      if (Object.prototype.hasOwnProperty.call(model.custom, key)) settings[key] = model.custom[key];
+    }
+    settings.model_selection_mode = "custom";
+    settings.generation_mode = model.family;
     settings.lora_stack = [];
   }
   const steps = Number(base?.bake_steps), cfg = Number(base?.bake_cfg);
@@ -425,9 +492,38 @@ export function bakeSettingsPayload(base, { model, defaults = {}, positive, seed
   settings.batch_size = Math.max(1, Math.min(8, Math.round(Number(batch) || 1)));
   if (Number.isFinite(Number(seed))) settings.seed = Number(seed);
   settings.seed_mode = "fixed";
+  // Pose edit always needs the family's Pose Studio LoRA: the highest installed version (the
+  // controller resolves it per family) and the strength from the settings row. While the status
+  // is unknown (offline, not checked yet) a name kept in the settings still rides along.
+  const loraName = poseStudioLora?.name ?? base?.pose_studio_lora_name;
+  if (loraName) settings.pose_studio_lora_name = String(loraName);
+  const strength = Number(poseStudioLora?.strength ?? base?.pose_studio_lora_strength ?? 1);
+  settings.pose_studio_lora_strength = Number.isFinite(strength) ? Math.min(1.5, Math.max(0, strength)) : 1;
   delete settings.queued_draw;
   delete settings.draw_id;
   return settings;
+}
+
+/**
+ * The Pose Studio LoRA update banner decision: the backend says a newer version exists
+ * (`update_available`), the family has one installed, and the latest version was not skipped.
+ * Skipping pins exactly one version string, so the next higher version asks again. Null when
+ * nothing should be shown (nothing installed is the Download row, not an update banner).
+ */
+export function poseStudioLoraBanner(entry, skipped = {}, family = "") {
+  const installed = entry?.installed && typeof entry.installed === "object" ? entry.installed : null;
+  const latest = entry?.latest && typeof entry.latest === "object" ? entry.latest : null;
+  if (!installed?.version || !latest?.version || latest.version === installed.version) return null;
+  if (entry.update_available !== true) return null;
+  if (family && skipped?.[family] === latest.version) return null;
+  return { installed: String(installed.version), latest: String(latest.version), name: String(latest.name || installed.name || "") };
+}
+
+/** Skip one version: a copy of `pose_studio_lora_skipped` with `family → version` added. */
+export function skipPoseStudioLoraVersion(skipped, family, version) {
+  const map = skipped && typeof skipped === "object" && !Array.isArray(skipped) ? { ...skipped } : {};
+  if (family && version != null && version !== "") map[String(family)] = String(version);
+  return map;
 }
 
 /**
@@ -492,6 +588,8 @@ export function scaleBakeWithPlacement(layer, map, previousRect) {
  * -------------------------------------------------------------------------------------------- */
 
 const newSeed = () => Math.floor(Math.random() * 2 ** 32);
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function readAlpha(canvas) {
   const data = canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height).data;
@@ -669,6 +767,125 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     else scheduleGenerateLabel();
   }
 
+  /* ---------------- Pose Studio LoRA (the pose edit requirement) ---------------- */
+
+  // Per-widget state: the backend's family report, when it was fetched, the download keys of the
+  // running LoRA job and the render hook of the settings row (set while the popover is open).
+  const poseLora = { byFamily: null, fetchedAt: 0, failedAt: 0, pending: null };
+  let renderPoseLoraRow = null;
+  let loraDownloadKeys = [];
+
+  /** The loader definitions of the main Custom panel, read through the hook — never copied. */
+  const modelLoaderDefs = () => uc.modelLoaderFields?.()?.loaders || null;
+  const detectBakeFamily = (name) => uc.modelLoaderFields?.()?.detectFamily?.(name) || "";
+  const bakeFamilyLabel = (family) => bakeFamilies(uc.modelDescriptors).find(([key]) => key === family)?.[1] || String(family || "");
+
+  /** One family's normalized report from the backend, or null while nothing is known. */
+  function poseLoraEntry(family) {
+    const entry = poseLora.byFamily?.[family];
+    if (!entry || typeof entry !== "object") return null;
+    return {
+      installed: entry.installed && typeof entry.installed === "object" ? entry.installed : null,
+      latest: entry.latest && typeof entry.latest === "object" ? entry.latest : null,
+      updateAvailable: entry.update_available === true,
+    };
+  }
+
+  /** The LoRA of `family`: highest installed version (the backend resolves it) and the strength. */
+  function poseStudioLoraForFamily(family) {
+    const entry = poseLoraEntry(family);
+    const raw = uc.settings?.pose_studio_lora_strength;
+    const strength = Number.isFinite(Number(raw)) ? Math.min(1.5, Math.max(0, Number(raw))) : 1;
+    return {
+      name: String(entry?.installed?.name || uc.settings?.pose_studio_lora_name || ""),
+      strength,
+      installed: Boolean(entry?.installed?.name || entry?.installed?.version),
+    };
+  }
+
+  /** Keeps `pose_studio_lora_name` on the highest installed version of the chosen family. */
+  function syncPoseStudioLoraSetting() {
+    const family = bakeModel().family;
+    const entry = family ? poseLoraEntry(family) : null;
+    if (!entry) return; // nothing known about this family: keep the stored name
+    uc.settings.pose_studio_lora_name = String(entry.installed?.name || "");
+  }
+
+  function rerenderPoseLoraRow() {
+    if (!renderPoseLoraRow) return;
+    try { renderPoseLoraRow(); } catch (_) { /* a closed popover never breaks the refresh */ }
+  }
+
+  /**
+   * Fetches the family report. Automatic calls (settings open, first bake) respect the TTL and
+   * back off after a failure; a network error leaves the state unknown — it never blocks a bake.
+   */
+  function refreshPoseStudioLoras({ force = false } = {}) {
+    if (poseLora.pending) return poseLora.pending;
+    if (!force && (Date.now() - poseLora.fetchedAt < POSE_STUDIO_LORAS_TTL || Date.now() - poseLora.failedAt < POSE_STUDIO_LORAS_RETRY)) {
+      return Promise.resolve(poseLora.byFamily);
+    }
+    poseLora.pending = (async () => {
+      try {
+        const data = await api.fetchPoseStudioLoras();
+        poseLora.byFamily = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+        poseLora.fetchedAt = Date.now();
+        poseLora.failedAt = 0;
+      } catch (_) {
+        poseLora.failedAt = Date.now();
+      } finally {
+        poseLora.pending = null;
+      }
+      syncPoseStudioLoraSetting();
+      rerenderPoseLoraRow();
+      return poseLora.byFamily;
+    })();
+    return poseLora.pending;
+  }
+
+  /**
+   * The bake gate: blocks only when the backend report says the family's LoRA is not installed;
+   * offline or not checked yet, the bake runs (unknown never blocks).
+   */
+  async function ensurePoseStudioLora(family) {
+    if (!poseLora.byFamily && Date.now() - poseLora.fetchedAt >= POSE_STUDIO_LORAS_TTL && Date.now() - poseLora.failedAt >= POSE_STUDIO_LORAS_RETRY) {
+      await refreshPoseStudioLoras();
+    }
+    const entry = poseLoraEntry(family);
+    if (entry) uc.settings.pose_studio_lora_name = String(entry.installed?.name || "");
+    const lora = poseStudioLoraForFamily(family);
+    const known = Boolean(entry);
+    return { ...lora, known, blocked: known && !lora.installed };
+  }
+
+  /** The row's Download / Update: enqueue through the shared queue, poll the shared status. */
+  async function downloadPoseStudioLora(family, version) {
+    if (!family) return;
+    try {
+      const keys = await api.startPoseStudioLoraDownload(family, version);
+      loraDownloadKeys = Array.isArray(keys) ? keys.map(String) : [];
+      rerenderPoseLoraRow();
+      // Same cadence as the preset card downloads; the row re-renders with every poll. A status
+      // endpoint that keeps failing (backend gone) ends the wait instead of polling forever.
+      let failures = 0;
+      while (loraDownloadKeys.some((key) => ["queued", "downloading"].includes(String(uc.presetDownloads?.[key]?.status)))) {
+        await sleep(POSE_STUDIO_LORA_POLL_MS);
+        if (uc._disposed) return;
+        try {
+          await uc.refreshPresetDownloadStatus?.();
+          failures = 0;
+        } catch (_) {
+          if (++failures >= 3) break;
+        }
+        rerenderPoseLoraRow();
+      }
+      await refreshPoseStudioLoras({ force: true });
+    } catch (error) {
+      uc.setStatus(`Pose Studio LoRA download failed: ${error?.message || error}`, true);
+      rerenderPoseLoraRow();
+    }
+  }
+
   /* ---------------- Pipeline ---------------- */
 
   async function prepareEditor(layer) {
@@ -690,7 +907,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   function bakeModel() {
     const presetReady = (preset) => Boolean(uc.presetStatus?.(preset)?.installed);
     const baseOf = (mode) => modelModule(mode)?.base || mode;
-    return resolveBakeModel(uc.settings, { currentBase: uc.getModelBase(), presets: uc.presets || [], presetReady, baseOf, families: bakeFamilies(uc.modelDescriptors) });
+    return resolveBakeModel(uc.settings, {
+      currentBase: uc.getModelBase(), presets: uc.presets || [], presetReady, baseOf,
+      families: bakeFamilies(uc.modelDescriptors), loaders: modelLoaderDefs(),
+    });
   }
 
   /** The cut-out alpha of `crop`, or null when Remove background is switched off. */
@@ -778,6 +998,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const model = bakeModel();
     if (model.error) throw new Error(model.error);
     if (model.ready === false) throw new Error(`The Bake model ${model.preset?.label || model.preset?.id} is not downloaded yet. Download it in the model list first.`);
+    // Pose edit needs the family's Pose Studio LoRA: checked before the first bake of a session
+    // (the backend caches), blocking only on a known-missing install, never while offline.
+    const lora = await ensurePoseStudioLora(model.family);
+    if (lora.blocked) throw new Error(`The Pose Studio LoRA for ${bakeFamilyLabel(model.family)} is not installed. Download it in UniCanvas settings (Character bake).`);
     const editor = await prepareEditor(layer);
     const rect = { ...layer.pose.rect };
     const work = bakeWorkingRect(rect, worldRect());
@@ -788,7 +1012,10 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     const inputs = await editor.bakeInputs(layer, characterId, work, size);
     const anchors = editor.characterAnchors?.(characterId) || null;
     const defaults = model.useCurrent ? {} : (modelModule(model.family)?.defaults || {});
-    const settings = bakeSettingsPayload(uc.makeSettingsPayload(), { model, defaults, positive: inputs.positive, seed, batch });
+    const settings = bakeSettingsPayload(uc.makeSettingsPayload(), {
+      model, defaults, positive: inputs.positive, seed, batch,
+      poseStudioLora: { name: lora.name, strength: lora.strength },
+    });
     const debugId = drawDebugId("bake");
     // History (vnccs_unicanvas_history_gallery.mjs): the caller finishes the run with its results.
     const historyRun = uc.generationHistory?.beginRun("bake", {
@@ -1221,9 +1448,105 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   }
 
   /**
+   * Seeds an empty Custom (installed files) pick from the chosen family's module defaults, so the
+   * panel is usable immediately; keys the user already picked are never overwritten.
+   */
+  function seedBakeCustom() {
+    const s = uc.settings;
+    const families = bakeFamilies(uc.modelDescriptors);
+    const custom = s.bake_custom && typeof s.bake_custom === "object" ? s.bake_custom : (s.bake_custom = {});
+    if (!families.some(([key]) => key === custom.generation_mode)) custom.generation_mode = families[0]?.[0] || "";
+    const defaults = modelModule(custom.generation_mode)?.defaults || {};
+    const loaderKeys = (modelLoaderDefs() || []).map((loader) => loader.key);
+    if (!loaderKeys.includes(custom.model_loader)) {
+      custom.model_loader = loaderKeys.includes(defaults.model_loader) ? defaults.model_loader : (loaderKeys[0] || "");
+    }
+    for (const key of ["ckpt_name", "diffusion_model_name", "gguf_model_name", "clip_name", "vae_name"]) {
+      if (custom[key] == null || custom[key] === "") {
+        const value = defaults[key];
+        if (value != null && value !== "") custom[key] = value;
+      }
+    }
+    if (custom.gguf_arch == null || custom.gguf_arch === "") custom.gguf_arch = "auto";
+    return custom;
+  }
+
+  /**
+   * The Custom (installed files) editor: the family (only bake families), the loader and the
+   * loader's file selects, built from the same loader definitions as the main Custom panel
+   * (`uc.modelLoaderFields`) with the option lists from `uc.assets`. Picking a model file suggests
+   * its family, the way the main panel's file detection does.
+   */
+  function buildCustomBakePanel(commit, render) {
+    const s = uc.settings;
+    const families = bakeFamilies(uc.modelDescriptors);
+    const defs = modelLoaderDefs() || [];
+    const box = document.createElement("div");
+    box.className = "vnccs-uc-model-picker-group vnccs-uc-bake-custom";
+    box.dataset.bakeCustom = "";
+    const title = document.createElement("div");
+    title.className = "vnccs-uc-model-picker-group-title";
+    title.textContent = "Custom (installed files)";
+    box.appendChild(title);
+    const rowOf = (labelText, control) => {
+      const label = document.createElement("label");
+      label.style.cssText = "display:grid; gap:2px; font-size:11px;";
+      label.append(document.createTextNode(labelText), control);
+      return label;
+    };
+    const selectOf = (pairs, current, onChange) => {
+      const select = document.createElement("select");
+      select.className = "vnccs-uc-select";
+      if (!pairs.some(([value]) => value === current)) {
+        const blank = document.createElement("option");
+        blank.value = ""; blank.textContent = "Choose…";
+        select.appendChild(blank);
+      }
+      for (const [value, text] of pairs) {
+        const option = document.createElement("option");
+        option.value = String(value); option.textContent = String(text);
+        select.appendChild(option);
+      }
+      select.value = current != null && current !== "" ? String(current) : "";
+      select.addEventListener("change", () => { onChange(String(select.value)); render(); commit(); });
+      return select;
+    };
+    const custom = () => (s.bake_custom && typeof s.bake_custom === "object" ? s.bake_custom : (s.bake_custom = {}));
+    box.appendChild(rowOf("Family", selectOf(families.map(([key, label]) => [key, label]), custom().generation_mode,
+      (value) => { custom().generation_mode = value; })));
+    if (!defs.length) {
+      const note = document.createElement("div");
+      note.style.cssText = "opacity:.75; font-size:11px;";
+      note.textContent = "The loader definitions are not loaded yet.";
+      box.appendChild(note);
+      return box;
+    }
+    const loaderKey = defs.some((loader) => loader.key === custom().model_loader) ? custom().model_loader : seedBakeCustom().model_loader;
+    box.appendChild(rowOf("Loader", selectOf(defs.map((loader) => [loader.key, loader.label]), loaderKey,
+      (value) => { custom().model_loader = value; })));
+    const loader = defs.find((item) => item.key === loaderKey);
+    for (const field of loader?.fields || []) {
+      const onChange = (value) => {
+        custom()[field.setting] = value;
+        // A picked model file suggests its family (longest matching token wins); the loader and
+        // the other picks stay, the way the main Custom panel keeps them.
+        if (BAKE_CUSTOM_MODEL_FILE_KEYS.includes(field.setting)) {
+          const detected = detectBakeFamily(value);
+          if (detected && detected !== custom().generation_mode && families.some(([key]) => key === detected)) {
+            custom().generation_mode = detected;
+          }
+        }
+      };
+      box.appendChild(rowOf(field.label, selectOf((uc.assets?.[field.asset] || []).map((name) => [name, name]), custom()[field.setting], onChange)));
+    }
+    return box;
+  }
+
+  /**
    * The Bake model picker: the main model picker's preset cards (status, Download), a head card
-   * showing the model bakes use and a menu grouped by bake family. "Automatic" picks the first
-   * ready preset. Its own click handler keeps the cards from selecting the scene preset.
+   * showing the model bakes use and a menu with the Automatic and Custom (installed files)
+   * sources plus one group per bake family. Its own click handler keeps the cards from selecting
+   * the scene preset.
    */
   function buildModelPicker(commit) {
     const s = uc.settings;
@@ -1248,39 +1571,54 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     };
     const render = () => {
       const model = bakeModel();
-      const automatic = !s.bake_preset_id;
+      const automatic = s.bake_model_source !== "custom" && !s.bake_preset_id;
       root.replaceChildren();
       if (model.preset && typeof uc.buildPresetCard === "function") root.appendChild(card(model.preset, { head: true, data: { bakePickerToggle: "1" } }));
       else {
-        const head = plainButton(model.useCurrent ? `Current engine (${bakeFamilyLabels(bakeFamilies(uc.modelDescriptors), " / ")})` : "Choose a Bake model", "vnccs-uc-btn");
+        const head = plainButton(
+          model.useCurrent ? `Current engine (${bakeFamilyLabels(bakeFamilies(uc.modelDescriptors), " / ")})`
+            : model.custom ? `Custom (installed files) (${model.label || model.family})`
+              : "Choose a Bake model",
+          "vnccs-uc-btn");
         head.dataset.bakePickerToggle = "1";
         root.appendChild(head);
       }
       const menu = document.createElement("div");
       menu.className = "vnccs-uc-model-picker-menu";
+      const customSource = s.bake_model_source === "custom";
       const auto = plainButton("Automatic: first ready preset", `vnccs-uc-btn${automatic ? " active" : ""}`);
-      auto.dataset.bakePreset = "";
+      auto.dataset.bakeSource = "auto";
       menu.appendChild(auto);
-      const groups = bakePickerGroups(uc.presets || [], { baseOf, familyEnabled: isUniCanvasFamilyEnabled, current: s.bake_model_family || null, families: bakeFamilies(uc.modelDescriptors) });
-      for (const group of groups) {
-        const box = document.createElement("div");
-        box.className = "vnccs-uc-model-picker-group";
-        const title = document.createElement("div");
-        title.className = "vnccs-uc-model-picker-group-title";
-        title.textContent = group.label;
-        box.appendChild(title);
-        for (const preset of group.presets) {
-          if (typeof uc.buildPresetCard !== "function") continue;
-          box.appendChild(card(preset, { data: { bakePreset: preset.id, bakeFamily: group.family }, selected: !automatic && s.bake_preset_id === preset.id }));
+      const customButton = plainButton("Custom (installed files)", `vnccs-uc-btn${customSource ? " active" : ""}`);
+      customButton.dataset.bakeSource = "custom";
+      customButton.title = "Bake with the model files picked below (the main panel's Custom model)";
+      menu.appendChild(customButton);
+      if (customSource) {
+        menu.appendChild(buildCustomBakePanel(commit, render));
+      } else {
+        const groups = bakePickerGroups(uc.presets || [], { baseOf, familyEnabled: isUniCanvasFamilyEnabled, current: s.bake_model_family || null, families: bakeFamilies(uc.modelDescriptors) });
+        for (const group of groups) {
+          const box = document.createElement("div");
+          box.className = "vnccs-uc-model-picker-group";
+          const title = document.createElement("div");
+          title.className = "vnccs-uc-model-picker-group-title";
+          title.textContent = group.label;
+          box.appendChild(title);
+          for (const preset of group.presets) {
+            if (typeof uc.buildPresetCard !== "function") continue;
+            box.appendChild(card(preset, { data: { bakePreset: preset.id, bakeFamily: group.family }, selected: !automatic && s.bake_preset_id === preset.id }));
+          }
+          menu.appendChild(box);
         }
-        menu.appendChild(box);
       }
       root.append(menu, note);
       note.textContent = model.useCurrent ? `The current engine bakes (it is ${bakeFamilyLabels(bakeFamilies(uc.modelDescriptors))}).`
-        : model.error ? model.error : `Bakes use ${model.preset?.label || model.preset?.id}${model.ready ? "" : " (download it first)"}.`;
+        : model.error ? model.error
+          : model.custom ? `Bakes use ${model.label || model.family} (Custom, installed files).`
+            : `Bakes use ${model.preset?.label || model.preset?.id}${model.ready ? "" : " (download it first)"}.`;
     };
     root.addEventListener("click", (event) => {
-      const target = event.target?.closest?.("[data-preset-download], [data-bake-preset], [data-bake-picker-toggle]");
+      const target = event.target?.closest?.("[data-preset-download], [data-bake-preset], [data-bake-picker-toggle], [data-bake-source]");
       if (!(target instanceof HTMLElement) || !root.contains(target)) return;
       event.preventDefault();
       event.stopPropagation();
@@ -1292,6 +1630,16 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
         root.classList.toggle("open");
         return;
       }
+      if (target.dataset.bakeSource) {
+        s.bake_model_source = target.dataset.bakeSource;
+        if (s.bake_model_source === "auto") s.bake_preset_id = "";
+        if (s.bake_model_source === "custom") seedBakeCustom();
+        render();
+        root.classList.remove("open");
+        commit();
+        return;
+      }
+      s.bake_model_source = "preset";
       s.bake_preset_id = target.dataset.bakePreset || "";
       s.bake_model_family = target.dataset.bakeFamily || "";
       render();
@@ -1299,10 +1647,15 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
       commit();
     });
     render();
+    // The custom panel's native selects (family, loader, files) go through the shared custom
+    // selector like every first-party select; re-renders are covered by its observer.
+    installCustomSelects(root, { theme: "unicanvas" });
     return root;
   }
 
-  /** "Character bake" group of the settings popover. */
+  /**
+   * "Character bake" group of the settings popover.
+   */
   function buildSettings(ui) {
     const { bind, checkboxRow, commit } = ui;
     const s = uc.settings;
@@ -1326,6 +1679,132 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     checkboxRow("Re-bake stale characters on Generate", s.rebake_stale_on_generate !== false, (checked) => {
       s.rebake_stale_on_generate = checked; commit(); scheduleGenerateLabel();
     });
+    buildPoseStudioLoraRow(ui);
+  }
+
+  /**
+   * The Pose Studio LoRA row of the chosen bake family: installed version, strength (0–1.5,
+   * default 1), Check for updates, a Download row while the family has none (bakes stay blocked
+   * until it is installed) and the Update / Skip-this-version banner while a newer version is
+   * available and not skipped. Opened settings and finished refreshes re-render it in place.
+   */
+  function buildPoseStudioLoraRow(ui) {
+    const { bind, commit } = ui;
+    const s = uc.settings;
+    const row = document.createElement("div");
+    row.className = "vnccs-uc-bake-lora-row";
+    row.dataset.poseStudioLora = "";
+    row.style.cssText = "display:grid; gap:4px;";
+    // A div, not the label `bind` makes: the row holds its own labels (the strength slider), and
+    // a label inside a label is invalid.
+    const wrap = bind("Pose Studio LoRA", row);
+    const block = document.createElement("div");
+    block.style.cssText = wrap.style.cssText;
+    block.append(...wrap.childNodes);
+    wrap.replaceWith(block);
+    const progressOf = () => {
+      for (const key of loraDownloadKeys) {
+        const status = uc.presetDownloads?.[key];
+        if (status && ["queued", "downloading"].includes(String(status.status))) {
+          return { percent: Math.round(Number(status.progress) * 100) || 0, message: status.message || "Downloading" };
+        }
+      }
+      return null;
+    };
+    const startDownload = (family, version, button) => {
+      if (button) button.disabled = true;
+      void downloadPoseStudioLora(family, version);
+    };
+    renderPoseLoraRow = () => {
+      const model = bakeModel();
+      const family = model.family || null;
+      row.replaceChildren();
+      if (!family) return; // no resolvable bake family: nothing to show the LoRA of
+      const label = bakeFamilyLabel(family);
+      const entry = poseLoraEntry(family);
+      const known = Boolean(entry);
+      const installed = entry?.installed || null;
+      const progress = progressOf();
+      const status = document.createElement("div");
+      status.style.cssText = "font-size:11px; opacity:.85;";
+      status.textContent = known
+        ? (installed ? `${label}: installed ${installed.version || installed.name || "?"}` : `${label}: not installed`)
+        : `${label}: version unknown`;
+      row.appendChild(status);
+      if (known && !installed) {
+        const note = document.createElement("div");
+        note.style.cssText = "font-size:11px; color:#f0c060;";
+        note.textContent = "Bakes stay blocked until the LoRA is installed.";
+        row.appendChild(note);
+      }
+      // Strength 0–1.5, default 1: the value and the stored setting follow the drag live
+      // (input), the settings persistence commits once per gesture (change).
+      const strengthRow = document.createElement("label");
+      strengthRow.style.cssText = "display:flex; gap:6px; align-items:center; font-size:11px;";
+      const strengthLabel = document.createElement("span");
+      const strength = document.createElement("input");
+      strength.type = "range"; strength.className = "vnccs-uc-range";
+      strength.min = "0"; strength.max = "1.5"; strength.step = "0.05";
+      strength.value = String(poseStudioLoraForFamily(family).strength);
+      strength.dataset.poseStudioLoraStrength = "";
+      const showStrength = () => { strengthLabel.textContent = `Strength ${Number(strength.value).toFixed(2)}`; };
+      showStrength();
+      strength.addEventListener("input", () => {
+        s.pose_studio_lora_strength = Number(strength.value);
+        showStrength();
+      });
+      strength.addEventListener("change", () => commit());
+      strengthRow.append(strengthLabel, strength);
+      row.appendChild(strengthRow);
+      if (progress) {
+        const progressNote = document.createElement("div");
+        progressNote.style.cssText = "font-size:11px; opacity:.85;";
+        progressNote.textContent = `${progress.message} ${progress.percent}%`;
+        row.appendChild(progressNote);
+      }
+      const skipped = s.pose_studio_lora_skipped && typeof s.pose_studio_lora_skipped === "object" ? s.pose_studio_lora_skipped : {};
+      const banner = poseStudioLoraBanner(entry, skipped, family);
+      if (banner) {
+        const bannerBox = document.createElement("div");
+        bannerBox.className = "vnccs-uc-bake-lora-update";
+        bannerBox.dataset.poseStudioLoraUpdate = "";
+        bannerBox.style.cssText = "display:grid; gap:4px; font-size:11px; color:#f0c060;";
+        bannerBox.textContent = `Pose Studio LoRA ${label} ${banner.latest} is available (installed ${banner.installed}).`;
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex; gap:6px;";
+        const update = uc._button("Update", "vnccs-uc-btn", () => startDownload(family, banner.latest, update),
+          "Download the newer version (the installed file stays on disk) and use it right away");
+        update.dataset.poseStudioLoraUpdateButton = "";
+        const skip = uc._button("Skip this version", "vnccs-uc-btn", () => {
+          s.pose_studio_lora_skipped = skipPoseStudioLoraVersion(s.pose_studio_lora_skipped, family, banner.latest);
+          commit();
+          renderPoseLoraRow();
+        }, "Stay on the installed version; the next higher version asks again");
+        skip.dataset.poseStudioLoraSkip = "";
+        actions.append(update, skip);
+        bannerBox.appendChild(actions);
+        row.appendChild(bannerBox);
+      } else if (known && !installed && entry.latest?.version) {
+        const actions = document.createElement("div");
+        const download = uc._button("Download", "vnccs-uc-btn", () => startDownload(family, entry.latest.version, download),
+          "Download the newest Pose Studio LoRA of this family");
+        download.disabled = Boolean(progress);
+        actions.appendChild(download);
+        row.appendChild(actions);
+      }
+      const actions = document.createElement("div");
+      actions.style.cssText = "display:flex; gap:6px;";
+      const check = uc._button("Check for updates", "vnccs-uc-btn", () => {
+        check.disabled = true;
+        void refreshPoseStudioLoras({ force: true });
+      }, "Ask the backend for the newest Pose Studio LoRA versions");
+      check.dataset.poseStudioLoraCheck = "";
+      check.disabled = Boolean(progress);
+      actions.appendChild(check);
+      row.appendChild(actions);
+    };
+    renderPoseLoraRow();
+    void refreshPoseStudioLoras();
   }
 
   const api = {
@@ -1335,6 +1814,27 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
     updateGenerateLabel, candidates: () => collectBakeCandidates(uc, { includeStale: uc.settings?.rebake_stale_on_generate !== false, hasPart }),
     status: (layer, id) => statusOf(layer, id),
     get pending() { return pending; },
+    // Pose Studio LoRA: the status for the settings row and the bake gate, the network steps as
+    // replaceable hooks so tests can stub them.
+    ensurePoseStudioLora, refreshPoseStudioLoras, downloadPoseStudioLora,
+    poseLoraStatus: () => poseLora.byFamily,
+    fetchPoseStudioLoras: async () => {
+      const res = await fetch(BAKE_POSE_STUDIO_LORAS_ROUTE, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || data?.error) throw new Error(data?.error || `Pose Studio LoRA status HTTP ${res.status}`);
+      return data;
+    },
+    startPoseStudioLoraDownload: async (family, version) => {
+      const res = await fetch(BAKE_POSE_STUDIO_LORA_DOWNLOAD_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ family, version }),
+      });
+      const data = await res.json();
+      if (!res.ok || data?.error) throw new Error(data?.error || `Pose Studio LoRA download HTTP ${res.status}`);
+      for (const key of data.queued || []) uc.presetDownloads[key] = { status: "queued", message: "Queued", progress: 0 };
+      return Array.isArray(data.queued) ? data.queued : [];
+    },
     // The pipeline steps, called through this object so tests can replace them.
     runBake, applyBake,
   };
