@@ -224,36 +224,69 @@ test("tool visibility, tab changes and keyboard navigation retain settings and b
     assert.equal(pages[1].hidden, false); assert.equal(tabs.children[1].focused, true);
 });
 
-test("bbox editor geometry follows pan and zoom and clips outside the canvas", () => {
+test("the session viewport covers the whole stage and never clips to the layer rect", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     for (const scale of [.25, .7, 1, 2.5]) {
         host.view = { x: -120, y: 50, scale };
         editor.layout();
         const style = editor.studio.canvasContainer.style;
-        assert.equal(parseFloat(style.left), 320-120+10*scale);
-        assert.equal(parseFloat(style.top), 40+50+20*scale);
-        assert.equal(parseFloat(style.width), 400*scale);
-        assert.equal(parseFloat(style.height), 600*scale);
-        assert.match(style.clipPath, /^inset\(/);
+        assert.equal(parseFloat(style.left), 320, "the viewport fills the stage");
+        assert.equal(parseFloat(style.top), 40);
+        assert.equal(parseFloat(style.width), 1000);
+        assert.equal(parseFloat(style.height), 800);
+        assert.equal(style.clipPath, undefined, "no clip to the layer rect: edge gizmos keep room");
     }
     layer.locked = true; editor.layout(); assert.equal(editor.sidePanel.inert, true);
 });
 
-test("the pose editor surface follows the layer's scene-state offset (#7)", () => {
+test("the session camera maps the capture framing onto the rect one to one (view offset)", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
+    editor.initialized = true; editor.visible = true;
+    const offsets = [];
+    editor.studio.viewer = { camera: { fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop,
+        setViewOffset: (...args) => offsets.push(args) } };
+    editor.studio.canvasContainer.clientWidth = 1000; editor.studio.canvasContainer.clientHeight = 800;
+    // rect (10, 20, 400, 600) at view scale 1, origin at view 0: rect on canvas = (10, 20, 400, 600).
+    host.view = { x: 0, y: 0, scale: 1 };
+    editor.layout();
+    const [cw, ch, ox, oy, w, h] = offsets.at(-1);
+    const close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-6, `${value} ~ ${expected}`);
+    // s = ch/rh = 800/600; ox = cw/2 - s*(rx + rw/2); oy = -s*ry; the window is cw*s x ch*s.
+    close(cw, 1000); close(ch, 800);
+    close(ox, 500 - (800 / 600) * (10 + 200));
+    close(oy, -(800 / 600) * 20);
+    close(w, 1000 * 800 / 600); close(h, 800 * 800 / 600);
+    // Panning and zooming the UniCanvas view re-anchors the offset onto the moved rect.
+    host.view = { x: -120, y: 50, scale: 0.5 };
+    editor.layout();
+    const [rx, ry, rw, rh] = [-120 + 10 * .5, 50 + 20 * .5, 400 * .5, 600 * .5];
+    close(offsets.at(-1)[2], 500 - (800 / rh) * (rx + rw / 2));
+    close(offsets.at(-1)[3], -(800 / rh) * ry);
+    // An unchanged layout does not rewrite the projection.
+    const count = offsets.length; editor.layout(); assert.equal(offsets.length, count);
+});
+
+test("the pose editor session view follows the layer's scene-state offset (#7)", () => {
+    const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
+    editor.initialized = true; editor.visible = true;
+    const offsets = [];
+    editor.studio.viewer = { camera: { fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop,
+        setViewOffset: (...args) => offsets.push(args) } };
     host.view = { x: 0, y: 0, scale: 2 };
+    const close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-6, `${value} ~ ${expected}`);
     let matrix = [1, 0, 0, 1, 30, -12];
     host.getLayerStateOffset = () => ({ x: 30, y: -12 });
     host.getLayerRenderTransform = () => matrix;
     editor.layout();
-    const style = editor.studio.canvasContainer.style;
-    assert.equal(parseFloat(style.left), 320 + (10 + 30) * 2);
-    assert.equal(parseFloat(style.top), 40 + (20 - 12) * 2);
-    assert.equal(parseFloat(style.width), 800, "the offset never resizes the surface");
-    // A scaled timeline frame cannot be matched by the 3D surface: the state offset still applies.
+    // The state offset moves the capture-frame region on the canvas: rect (10,-12) + offset 30/-12
+    // at scale 2 = (80, -16, 800, 1200) on the canvas.
+    const [rx, ry, rw, rh] = [(10 + 30) * 2, (20 - 12) * 2, 400 * 2, 600 * 2];
+    close(offsets.at(-1)[2], 500 - (800 / rh) * (rx + rw / 2));
+    close(offsets.at(-1)[3], -(800 / rh) * ry);
+    close(offsets.at(-1)[4], 1000 * 800 / rh);
+    // A scaled timeline frame cannot be matched by the 3D surface; the identity fallback holds.
     matrix = [1.5, 0, 0, 1.5, 400, 400];
     editor.layout();
-    assert.equal(parseFloat(style.left), 320 + (10 + 30) * 2);
     assert.deepEqual(state.posePlacedRect({ x: 1, y: 2, width: 3, height: 4 }), { x: 1, y: 2, width: 3, height: 4 });
 });
 
@@ -515,7 +548,11 @@ function controlledStudio(load = async () => true) {
             this._viewerInitPromise = Promise.resolve();
             const vector = values => ({ toArray: () => values.slice(), fromArray: v => { values = v.slice(); } });
             const orbitEvents = {};
-            this.viewer = { scene: { background: null }, camera: { position: vector([1,2,3]), fov: 40, zoom: 1, updateProjectionMatrix: noop },
+            const camera = { position: vector([1,2,3]), fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop, updateMatrixWorld: noop,
+                setViewOffset: (fullWidth, fullHeight, offsetX, offsetY, width, height) => {
+                    camera.view = { enabled: true, fullWidth, fullHeight, offsetX, offsetY, width, height };
+                } };
+            this.viewer = { scene: { background: null }, camera,
                 orbit: {
                     target: vector([0,0,0]), update: noop,
                     addEventListener: (name, callback) => (orbitEvents[name] ||= []).push(callback),
@@ -584,7 +621,7 @@ test("panorama cache hydration restores only the matching uploaded character pix
     assert.equal(cached.character.dataURL, "pixels");
 });
 
-test("Pose Studio dimension inputs immediately resize the live bbox surface", () => {
+test("Pose Studio dimension inputs immediately resize the live rect and viewer", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     layer.pose.studio.export = { view_width: 400, view_height: 600 };
     let seen;
@@ -592,7 +629,25 @@ test("Pose Studio dimension inputs immediately resize the live bbox surface", ()
     editor.applyDimensions({ view_width: 640, view_height: 480 });
     assert.equal(layer.pose.rect.width, 640); assert.equal(host.bbox.height, 480);
     assert.deepEqual(seen, [640, 480]);
-    assert.equal(editor.studio.canvasContainer.style.width, "640px");
+    assert.equal(layer.pose.rect.height, 480);
+});
+
+test("captures lift the session view offset for the render and put it back", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    const camera = controlled.instances[0].viewer.camera;
+    assert.ok(camera.view, "a live session anchors the camera on the layer rect");
+    const during = [];
+    const capture = camera.view;
+    camera.setViewOffset = (...args) => { camera.view = { enabled: true, args }; };
+    controlled.instances[0].viewer.capture = (...args) => { during.push(camera.view); return args[8].targetCanvas; };
+    layer.pose.viewport = { position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 };
+    const target = new Element("canvas");
+    editor.captureSurface({ width: 40, height: 60 }, true, target);
+    assert.equal(during[0], null, "the render sees no session view offset");
+    assert.equal(camera.view, capture, "the session view offset is restored afterwards");
+    editor.release();
 });
 
 test("generation reuses the Pose Studio prompt and leaves a rotated panorama camera untouched", async () => {
@@ -665,8 +720,11 @@ test("the ID pass renders each mannequin in its own flat color and restores the 
     const seen = [];
     class MeshBasicMaterial { constructor(options) { Object.assign(this, options); } dispose() { this.disposed = true; } }
     class Color { constructor(r, g, b) { this.rgb = [r, g, b]; } }
+    const vector = values => ({ toArray: () => values.slice(), fromArray: v => { values = v.slice(); } });
     const viewer = { THREE: { MeshBasicMaterial, Color }, skinnedMesh: active, passiveCharacters: new Map([["c2", { mesh: passive }]]),
         scene: { traverse: callback => [active, passive, grid, frame].forEach(callback) }, renderInteractionOverlay: noop,
+        camera: { position: vector([0, 10, 45]), fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop, updateMatrixWorld: noop },
+        orbit: { target: vector([0, 0, 0]), update: noop },
         capture: (width, height, _zoom, _bg, _x, _y, _yaw, _pitch, options) => {
             seen.push({ active: active.material.color.rgb, passive: passive.material.color.rgb, grid: grid.visible, frame: frame.visible,
                 unlit: active.material.toneMapped === false, options });

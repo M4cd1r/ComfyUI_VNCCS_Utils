@@ -85,6 +85,7 @@ export class UniCanvasPoseEditor {
         // A held pointer is an edit gesture in flight (bone drag, gizmo, a side-panel slider):
         // only then do viewport frames re-capture the layer (see editInFlight()).
         this.pointerHeld = false;
+        this.viewOffsetKey = null;
         const trackPointer = event => { this.pointerHeld = event.type === "pointerdown" || Boolean(event.buttons); };
         for (const type of ["pointerdown", "pointerup", "pointercancel"]) {
             globalThis.addEventListener?.(type, trackPointer, { capture: true, signal: this.abort.signal });
@@ -668,32 +669,53 @@ export class UniCanvasPoseEditor {
     layout() {
         if (!this.studio || !this.layer) return;
         if (!this.host.layers.includes(this.layer)) { this.release(); return; }
-        // The surface follows the layer's scene-state offset (and timeline position), like its pixels.
+        // Where the layer renders: its rect through the render transform, like its pixels.
         const rect = posePlacedRect(this.layer.pose.rect, this.host.getLayerRenderTransform?.(this.layer),
             this.host.getLayerStateOffset?.(this.layer));
-        const view = this.host.view, stage = this.host.stageWrap;
+        const stage = this.host.stageWrap;
         const surface = this.studio.canvasContainer;
         // Controls are confined to the stage, leaving model settings, Generate and layers accessible.
         Object.assign(this.controls.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
             width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
         this.controls.inert = this.layer.locked || !this.layer.visible || this.host.hasOpenStagingPanel();
         this.sidePanel.inert = this.layer.locked || !this.layer.visible;
-        surface.style.left = `${stage.offsetLeft + view.x + rect.x * view.scale}px`;
-        surface.style.top = `${stage.offsetTop + view.y + rect.y * view.scale}px`;
-        surface.style.width = `${rect.width * view.scale}px`;
-        surface.style.height = `${rect.height * view.scale}px`;
+        // The session viewport covers the whole stage, not just the layer rect: gizmos, IK
+        // effectors and joints at the frame edges keep room, and the free view can look at the
+        // mannequin from anywhere. The capture frame overlay shows where the rect lands.
+        Object.assign(surface.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
+            width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
         surface.style.opacity = String(this.layer.opacity);
         surface.style.mixBlendMode = this.layer.blendMode === "source-over" ? "normal" : this.layer.blendMode;
         surface.hidden = !this.layer.visible || this.layer.locked || this.host.hasOpenStagingPanel();
-        // The bbox surface is clipped to the canvas region even when it crosses a sidebar.
-        const x = view.x + rect.x * view.scale, y = view.y + rect.y * view.scale;
-        const width = rect.width * view.scale, height = rect.height * view.scale;
-        surface.style.clipPath = `inset(${Math.max(0,-y)}px ${Math.max(0,x+width-stage.clientWidth)}px ${Math.max(0,y+height-stage.clientHeight)}px ${Math.max(0,-x)}px)`;
+        this.syncSessionViewOffset(rect);
         if (!this.visible && this.initialized) {
             const scale = Math.min(1, 1024 / Math.max(rect.width, rect.height));
             this.studio.performViewerResize(Math.round(rect.width * scale), Math.round(rect.height * scale));
         }
         this.refreshCharacterMenu();
+    }
+
+    // Session view model: the viewport camera shows the capture framing so that the pose rect is
+    // that framing, pixel for pixel - entering the session moves nothing on screen. The camera
+    // renders a window of its framing frustum extended over the whole canvas through
+    // camera.setViewOffset: with the framing camera at (rx, ry, rw, rh) on the canvas, the offset
+    // (cw, ch, cw/2 - s*(rx + rw/2), -s*ry, cw*s, ch*s), s = ch/rh, maps the framing exactly onto
+    // the rect region and keeps the rest of the stage live around it. Orbit/pan/wheel only move
+    // the camera; the offset stays, so the rect region always shows what the framing would show.
+    syncSessionViewOffset(rect) {
+        const v = this.studio?.viewer, camera = v?.camera;
+        if (!this.initialized || !this.visible || !this.layer || typeof camera?.setViewOffset !== "function") return;
+        const view = this.host.view;
+        const rx = view.x + rect.x * view.scale, ry = view.y + rect.y * view.scale;
+        const rw = rect.width * view.scale, rh = rect.height * view.scale;
+        const cw = this.studio.canvasContainer.clientWidth, ch = this.studio.canvasContainer.clientHeight;
+        if (!(cw > 0 && ch > 0 && rw > 0 && rh > 0)) return;
+        const key = [rx, ry, rw, rh, cw, ch].map(value => Math.round(value * 100) / 100).join(",");
+        if (key === this.viewOffsetKey) return;
+        this.viewOffsetKey = key;
+        const s = ch / rh;
+        camera.setViewOffset(cw, ch, cw / 2 - s * (rx + rw / 2), -s * ry, cw * s, ch * s);
+        camera.updateProjectionMatrix();
     }
 
     // The persisted capture framing (what the layer pixels show), as a plain camera object.
@@ -721,27 +743,38 @@ export class UniCanvasPoseEditor {
         const target = targetCanvas || (transparent
             ? (this.previewSurface ||= this.host._createCanvas(size.width, size.height))
             : this.host._createCanvas(size.width, size.height));
-        const w = this.studio, v = w.viewer;
+        const w = this.studio;
         // Old contract (pre-0.6.8): the capture renders the STORED framing with zeroed
-        // offsets, never the live inspection camera. Borrow the live camera for the render
-        // and put the inspection view back afterwards, so orbiting cannot bake a view.
+        // offsets, never the live inspection view.
+        return this.captureOnFraming(() =>
+            w.viewer.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                { targetCanvas: target, transparent, hideReference: true, viewport: true }));
+    }
+
+    // One capture batch on the persisted capture framing: the live camera is borrowed, the
+    // session view offset is lifted for the render (the capture is the framing alone, at the
+    // given size), and both are restored afterwards - navigation can never bake a view.
+    captureOnFraming(render, { repaint = true } = {}) {
+        const v = this.studio.viewer;
         const framing = this.layer.pose.viewport || this.snapshotViewerCamera();
         const inspection = this.snapshotViewerCamera();
         this.applyViewerCamera(framing);
+        const view = v.camera.view || null;
+        if (view) { v.camera.view = null; v.camera.updateProjectionMatrix(); }
+        v.camera.updateMatrixWorld?.(true);
         // The temporary camera move must not let the backdrop depth clamp translate anyone.
         if (this.backdrop) this.backdrop.suppressClamp = true;
         try {
-            const result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
-                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
-                { targetCanvas: target, transparent, hideReference: true, viewport: true });
-            return result;
+            return render();
         } finally {
             if (this.backdrop) this.backdrop.suppressClamp = false;
+            if (view) { v.camera.view = view; v.camera.updateProjectionMatrix(); }
             this.applyViewerCamera(inspection);
             // capture() leaves the stored-framing image in the visible buffer (the capture
             // batch repaints it); repaint the inspection view synchronously so navigation
             // never flashes the capture framing.
-            if (this.visible && v.renderer) v.renderer.render(v.scene, v.camera);
+            if (repaint && this.visible && v.renderer) v.renderer.render(v.scene, v.camera);
         }
     }
 
@@ -787,9 +820,10 @@ export class UniCanvasPoseEditor {
         const target = this.host._createCanvas(size.width, size.height);
         let result = null;
         try {
-            result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
-                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
-                { targetCanvas: target, transparent: true, hideReference: true, viewport: true });
+            result = this.captureOnFraming(() =>
+                v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                    w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                    { targetCanvas: target, transparent: true, hideReference: true, viewport: true }), { repaint: false });
         } finally {
             for (const [mesh, material, visible] of swapped) { mesh.material = material; mesh.visible = visible; }
             hidden.forEach(object => { object.visible = true; });
@@ -824,9 +858,10 @@ export class UniCanvasPoseEditor {
         const target = this.host._createCanvas(size.width, size.height);
         let result = null;
         try {
-            result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
-                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
-                { targetCanvas: target, transparent: true, hideReference: true, viewport: true });
+            result = this.captureOnFraming(() =>
+                v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                    w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                    { targetCanvas: target, transparent: true, hideReference: true, viewport: true }), { repaint: false });
         } finally {
             for (const [mesh, previous, visible] of swapped) { mesh.material = previous; mesh.visible = visible; }
             hidden.forEach(object => { object.visible = true; });
@@ -1200,7 +1235,7 @@ export class UniCanvasPoseEditor {
         this.selectController = null;
         this.studio?.dispose();
         this.studio?.container.remove();
-        this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null;
+        this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null; this.viewOffsetKey = null;
         this.characterSelect = null; this.characterMenuKey = null; this.characterBakeSlot = null; this.characterList = null; this.characterRowSelects = null; this.stateKey = null; this.pages = null;
         this.sidePanel?.remove();
         this.controls = null; this.characterMenu = null; this.sidePanel = null; this.editBar = null;
