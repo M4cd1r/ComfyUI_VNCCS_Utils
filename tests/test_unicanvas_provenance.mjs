@@ -111,7 +111,7 @@ test("every layer creation path in the widget sets its origin", () => {
         "UI-added layers default to paint");
     assert.match(method(widget, "async acceptStaging()"), /metaFromStagingSnapshot\(staging\.snapshot\)/);
     assert.match(method(widget, "async importFile(file)"), /createLayerMeta\("import", \{ sourceName/);
-    assert.match(method(widget, "duplicateActiveLayer()"), /createLayerMeta\("duplicate", \{ derivedFrom: layer\.id/);
+    assert.match(method(widget, "duplicateLayer(layer)"), /createLayerMeta\("duplicate", \{ derivedFrom: layer\.id/);
     assert.match(method(widget, "rasterizePoseLayer(layer)"), /createLayerMeta\("rasterize", \{ derivedFrom: layer\.id/);
     assert.match(method(widget, "flattenLayersToMaster()"), /meta: createLayerMeta\("rasterize"\)/);
     assert.match(method(widget, "async importPanorama("), /createLayerMeta\("import", \{ sourceName/);

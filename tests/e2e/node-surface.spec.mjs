@@ -6,7 +6,8 @@ import { importImageLayer, openUnicanvas } from "./helpers/app.mjs";
 // - The UniCanvas node in a workflow hides scene states (#7), the timeline (#9), the VN preview
 //   (#10) and the project / scene selector with history (#22, #24); the standalone tab shows them.
 // - In node fullscreen and in the open standalone tab Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z act on the
-//   UniCanvas history only; inline (not fullscreen) ComfyUI keeps its own keys.
+//   UniCanvas history only. Inline (not fullscreen) the history keys belong to the node while the
+//   pointer is over it (or its canvas has focus); anywhere else ComfyUI keeps its own keys.
 // "Reaches ComfyUI" is observed with a window bubble-phase listener registered by the test: it
 // runs where ComfyUI's keybinding service listens, after any UniCanvas capture.
 const FIXTURE = fileURLToPath(new URL("./fixtures/backdrop.png", import.meta.url));
@@ -84,16 +85,27 @@ test("the standalone tab shows scene states, the VN preview, the timeline and th
   for (const selector of STANDALONE_ONLY) await expect(root.locator(selector).first()).toBeVisible();
 });
 
-test("node: undo keys stay with ComfyUI inline and belong to UniCanvas in fullscreen", async ({ page }) => {
+// A point of the 1280 x 720 viewport well right of the half-scale node.
+const AWAY_FROM_NODE = { x: 1100, y: 420 };
+
+test("node: undo keys follow the pointer inline and belong to UniCanvas in fullscreen", async ({ page }) => {
   const root = await addUniCanvasNode(page);
   await watchWindowHistoryKeys(page);
 
-  // Inline: UniCanvas does not steal Ctrl+Z / Ctrl+Y.
+  // Inline, pointer away from the node: UniCanvas does not steal Ctrl+Z / Ctrl+Y.
+  await page.mouse.move(AWAY_FROM_NODE.x, AWAY_FROM_NODE.y);
   await blurAll(page);
   await page.keyboard.press("Control+z");
   await page.keyboard.press("Control+y");
   expect(await seenKeys(page)).toBe(2);
   expect(await historyCalls(page)).toEqual([]);
+
+  // Inline, pointer over the node: the history keys are the node's, once each, never ComfyUI's.
+  await root.locator("canvas.vnccs-uc-stage").hover({ position: { x: 60, y: 60 } });
+  await page.keyboard.press("Control+z");
+  expect(await seenKeys(page)).toBe(2);
+  expect(await historyCalls(page)).toEqual(["undo"]);
+  await page.mouse.move(AWAY_FROM_NODE.x, AWAY_FROM_NODE.y);
 
   // Fullscreen: every history combo runs the UniCanvas history and stops there.
   await root.locator(".vnccs-uc2-fullscreen-btn").click();
@@ -104,7 +116,7 @@ test("node: undo keys stay with ComfyUI inline and belong to UniCanvas in fullsc
   await page.keyboard.press("Control+Shift+z");
   await page.keyboard.press("Meta+z");
   expect(await seenKeys(page)).toBe(2);
-  expect(await historyCalls(page)).toEqual(["undo", "redo", "redo", "undo"]);
+  expect(await historyCalls(page)).toEqual(["undo", "undo", "redo", "redo", "undo"]);
 
   // A text field keeps its native undo: neither ComfyUI nor the canvas history sees it.
   const prompt = root.locator("textarea").first();
@@ -112,15 +124,16 @@ test("node: undo keys stay with ComfyUI inline and belong to UniCanvas in fullsc
   await prompt.focus();
   await page.keyboard.press("Control+z");
   expect(await seenKeys(page)).toBe(2);
-  expect((await historyCalls(page)).length).toBe(4);
+  expect((await historyCalls(page)).length).toBe(5);
 
-  // Leaving fullscreen gives the keys back to ComfyUI.
+  // Leaving fullscreen gives the keys back to ComfyUI once the pointer is off the node.
   await blurAll(page);
   await page.keyboard.press("Escape");
   await expect(page.locator(".vnccs-uc2-fullscreen-portal")).toHaveCount(0);
+  await page.mouse.move(AWAY_FROM_NODE.x, AWAY_FROM_NODE.y);
   await page.keyboard.press("Control+z");
   expect(await seenKeys(page)).toBe(3);
-  expect((await historyCalls(page)).length).toBe(4);
+  expect((await historyCalls(page)).length).toBe(5);
 });
 
 test("standalone: undo keys act on the UniCanvas history while the tab is open", async ({ page }) => {

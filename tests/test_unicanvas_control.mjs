@@ -238,7 +238,7 @@ test("control layers are saved, restored, duplicated and undone like other layer
   assert.equal(method("serializeLayer(").match(/this\.serializeLayerKindFields\(layer, includeData\)/g)?.length, 2);
   assert.match(method("async applySerializedState("), /isControlLayer\(item\) \? "control"/);
   assert.match(method("async applySerializedState("), /layer\.control = normalizeControlState\(item\.control\)/);
-  assert.match(method("duplicateActiveLayer() {"), /control: normalizeControlState\(layer\.control\)/);
+  assert.match(method("duplicateLayer(layer) {"), /control: normalizeControlState\(layer\.control\)/);
   // Settings edits are layerProps entries: Object.assign restores `control` on undo and redo.
   assert.match(method("applyHistoryEntry("), /entry\.kind === "layerProps"[\s\S]{0,200}Object\.assign\(layer, direction === "undo" \? entry\.before : entry\.after\)/);
 });

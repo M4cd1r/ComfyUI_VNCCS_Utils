@@ -3,10 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  handleUniCanvasHistoryKey,
-  isUniCanvasKeyboardOwner,
-  routeUniCanvasHistoryKey,
-  syncUniCanvasHistoryKeyCapture,
+  COMFY_DIALOG_SELECTOR,
+  isUniCanvasModalOpen,
+  routeUniCanvasCapturedKey,
   uniCanvasHistoryKeyAction,
 } from "../web/vnccs_unicanvas_history_keys.mjs";
 
@@ -27,28 +26,10 @@ function keyEvent(init = {}) {
   return event;
 }
 
-function fakeWidget(state = {}) {
-  const calls = [];
-  return {
-    calls,
-    container: { querySelector: () => (state.modal ? {} : null) },
-    undo() { calls.push("undo"); },
-    redo() { calls.push("redo"); },
-    ...state,
-  };
-}
+const dialogTarget = { closest: (selector) => (selector === COMFY_DIALOG_SELECTOR ? {} : null) };
 
-function fakeWindow() {
-  const listeners = [];
-  return {
-    listeners,
-    addEventListener(type, fn, capture) { listeners.push({ type, fn, capture }); },
-    removeEventListener(type, fn, capture) {
-      const index = listeners.findIndex((item) => item.type === type && item.fn === fn && item.capture === capture);
-      if (index >= 0) listeners.splice(index, 1);
-    },
-    dispatch(event) { for (const item of [...listeners]) if (item.type === "keydown") item.fn(event); },
-  };
+function fakeWidget(state = {}) {
+  return { container: { querySelector: () => (state.modal ? {} : null) }, ...state };
 }
 
 test("Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y redo", () => {
@@ -66,105 +47,52 @@ test("Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y redo", () => {
   assert.equal(uniCanvasHistoryKeyAction(null), null);
 });
 
-test("UniCanvas owns the keys only in fullscreen or in the open standalone tab", () => {
-  assert.equal(isUniCanvasKeyboardOwner(fakeWidget()), false, "inline node: ComfyUI keeps its undo");
-  assert.equal(isUniCanvasKeyboardOwner(fakeWidget({ _vnccsFullscreen: {} })), true);
-  assert.equal(isUniCanvasKeyboardOwner(fakeWidget({ _vnccsStandaloneActive: true })), true);
-  assert.equal(isUniCanvasKeyboardOwner(fakeWidget({ _vnccsStandaloneActive: false })), false, "hidden tab");
-  assert.equal(isUniCanvasKeyboardOwner(fakeWidget({ _vnccsFullscreen: {}, _disposed: true })), false);
-  assert.equal(isUniCanvasKeyboardOwner(null), false);
+test("node mode claims only the history keys; everything else stays with ComfyUI", () => {
+  const node = { fullKeyboard: false, insideWidget: false };
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ ctrlKey: true }), node), "shortcut", "Ctrl+Z runs the UniCanvas history");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ ctrlKey: true, key: "y", code: "KeyY" }), { ...node, insideWidget: true }), "shortcut");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ key: "b", code: "KeyB" }), node), "pass", "tool keys are not claimed");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ key: "b", code: "KeyB" }), { ...node, insideWidget: true }), "pass",
+    "the inline canvas map (container listener) keeps the tool keys");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ ctrlKey: true, key: "s", code: "KeyS" }), node), "pass", "Ctrl+S stays with ComfyUI");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ ctrlKey: true, target: textTarget }), node), "native",
+    "a text field keeps its native undo and ComfyUI does not see it");
 });
 
-test("routing: pass outside, native in text fields, blocked under a modal, else history", () => {
-  const owner = fakeWidget({ _vnccsFullscreen: {} });
-  assert.equal(routeUniCanvasHistoryKey(fakeWidget(), keyEvent({ ctrlKey: true })), "pass");
-  assert.equal(routeUniCanvasHistoryKey(owner, keyEvent({ key: "b", code: "KeyB", ctrlKey: true })), "pass");
-  assert.equal(routeUniCanvasHistoryKey(owner, keyEvent({ ctrlKey: true, target: textTarget })), "native");
-  assert.equal(routeUniCanvasHistoryKey(fakeWidget({ _vnccsFullscreen: {}, modal: true }), keyEvent({ ctrlKey: true })), "blocked");
-  assert.equal(routeUniCanvasHistoryKey(owner, keyEvent({ ctrlKey: true })), "undo");
-  assert.equal(routeUniCanvasHistoryKey(owner, keyEvent({ ctrlKey: true, key: "y", code: "KeyY" })), "redo");
+test("fullscreen / standalone claim every key and hand in-widget keys to UniCanvas's own controls", () => {
+  const outside = { fullKeyboard: true, insideWidget: false };
+  const inside = { fullKeyboard: true, insideWidget: true };
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ key: "b", code: "KeyB" }), outside), "shortcut",
+    "a key with no UniCanvas target is swallowed after the shortcut map");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ ctrlKey: true, key: "s", code: "KeyS" }), outside), "shortcut",
+    "ComfyUI keybinds never fire");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ key: "Enter", code: "Enter" }), inside), "widget",
+    "modals, renames, selects and the panorama sphere receive their keys");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ key: "a", code: "KeyA", target: textTarget }), inside), "widget",
+    "typing in a UniCanvas field reaches its own listeners");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ ctrlKey: true }), inside), "shortcut",
+    "history keys run the UniCanvas history once, from any focus inside the widget");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ ctrlKey: true, target: textTarget }), inside), "native",
+    "Ctrl+Z in a text field is the browser's text undo");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ key: "Escape", code: "Escape", target: dialogTarget }), outside), "pass",
+    "a ComfyUI dialog opened above the tab keeps its keys");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ ctrlKey: true, target: dialogTarget }), outside), "shortcut",
+    "even over a ComfyUI dialog Ctrl+Z never reaches the graph undo");
+  assert.equal(routeUniCanvasCapturedKey(keyEvent({ key: "x", code: "KeyX", target: textTarget }), outside), "native");
 });
 
-test("an owned history key runs the UniCanvas history once and never reaches ComfyUI", () => {
-  const widget = fakeWidget({ _vnccsStandaloneActive: true });
-  const undo = keyEvent({ ctrlKey: true });
-  assert.equal(handleUniCanvasHistoryKey(widget, undo), "undo");
-  assert.ok(undo.immediate && undo.prevented);
-  const redo = keyEvent({ metaKey: true, shiftKey: true, key: "Z" });
-  handleUniCanvasHistoryKey(widget, redo);
-  assert.deepEqual(widget.calls, ["undo", "redo"]);
-
-  // Text fields keep the browser's text undo: propagation stops, the default runs.
-  const text = keyEvent({ ctrlKey: true, target: textTarget });
-  assert.equal(handleUniCanvasHistoryKey(widget, text), "native");
-  assert.ok(text.immediate, "ComfyUI does not see it");
-  assert.equal(text.prevented, false, "native text undo still runs");
-  assert.deepEqual(widget.calls, ["undo", "redo"], "the canvas history is untouched");
-
-  // A modal swallows the key without editing the history.
-  const modalWidget = fakeWidget({ _vnccsFullscreen: {}, modal: true });
-  const blocked = keyEvent({ ctrlKey: true });
-  handleUniCanvasHistoryKey(modalWidget, blocked);
-  assert.ok(blocked.immediate && blocked.prevented);
-  assert.deepEqual(modalWidget.calls, []);
+test("an open widget modal is detected for the shortcut map", () => {
+  assert.equal(isUniCanvasModalOpen(fakeWidget({ modal: true })), true);
+  assert.equal(isUniCanvasModalOpen(fakeWidget()), false);
+  assert.equal(isUniCanvasModalOpen(null), false);
 });
 
-test("outside fullscreen and standalone the event is left alone for ComfyUI", () => {
-  const widget = fakeWidget();
-  const event = keyEvent({ ctrlKey: true });
-  assert.equal(handleUniCanvasHistoryKey(widget, event), "pass");
-  assert.equal(event.stopped, false);
-  assert.equal(event.prevented, false);
-  assert.deepEqual(widget.calls, []);
-});
-
-test("the capture is a window capture-phase listener that follows ownership and is removed", () => {
-  const win = fakeWindow();
-  const widget = fakeWidget();
-  assert.equal(syncUniCanvasHistoryKeyCapture(widget, win), false);
-  assert.equal(win.listeners.length, 0, "inline node: nothing installed");
-
-  widget._vnccsFullscreen = {};
-  assert.equal(syncUniCanvasHistoryKeyCapture(widget, win), true);
-  assert.equal(syncUniCanvasHistoryKeyCapture(widget, win), true);
-  assert.equal(win.listeners.length, 1, "idempotent");
-  assert.deepEqual([win.listeners[0].type, win.listeners[0].capture], ["keydown", true]);
-  const event = keyEvent({ ctrlKey: true });
-  win.dispatch(event);
-  assert.deepEqual(widget.calls, ["undo"]);
-  assert.ok(event.immediate);
-
-  // Leaving fullscreen removes it.
-  widget._vnccsFullscreen = null;
-  syncUniCanvasHistoryKeyCapture(widget, win);
-  assert.equal(win.listeners.length, 0);
-  assert.equal(widget._vnccsHistoryKeyCapture, null);
-
-  // Standalone tab: installed while open, removed when the widget is disposed.
-  widget._vnccsStandaloneActive = true;
-  syncUniCanvasHistoryKeyCapture(widget, win);
-  assert.equal(win.listeners.length, 1);
-  widget._disposed = true;
-  syncUniCanvasHistoryKeyCapture(widget, win);
-  assert.equal(win.listeners.length, 0, "widget removal takes the listener away");
-});
-
-test("fullscreen, the standalone tab and teardown keep the capture in sync", () => {
-  const between = (start, end) => {
-    const from = modesSource.indexOf(start);
-    assert.ok(from >= 0, start);
-    return modesSource.slice(from, modesSource.indexOf(end, from + start.length));
-  };
-  const enter = between("export function enterUniCanvasFullscreen", "export function exitUniCanvasFullscreen");
-  const exit = between("export function exitUniCanvasFullscreen", "function writeStandaloneState");
-  const teardown = between("export function teardownUniCanvasWidgetModes", "function readStandalonePersistedStateValue");
-  const tab = between("const syncStandaloneChrome = () => {", "const setActive");
-  assert.match(enter, /syncUniCanvasHistoryKeyCapture\(widget\)/);
-  assert.match(exit, /widget\._vnccsFullscreen = null;\s*syncUniCanvasHistoryKeyCapture\(widget\)/);
-  assert.match(teardown, /widget\._vnccsStandaloneActive = false;\s*syncUniCanvasHistoryKeyCapture\(widget\)/);
-  assert.match(tab, /widget\._vnccsStandaloneActive = active;/);
-  assert.match(tab, /syncUniCanvasHistoryKeyCapture\(widget\)/);
-  // The fullscreen key shield leaves undo / redo to the capture, whatever has focus.
-  const onKeyDown = enter.match(/const onKeyDown = \(event\) => \{[\s\S]*?\};/)[0];
-  assert.ok(onKeyDown.indexOf("uniCanvasHistoryKeyAction(event)") < onKeyDown.indexOf("handleUniCanvasShortcut"));
+test("one capture owns the keys: no per-surface history listener remains", () => {
+  const count = (needle) => modesSource.split(needle).length - 1;
+  assert.equal(count('window.addEventListener("keydown"'), 1, "a single Ctrl+Z is handled by exactly one listener");
+  assert.ok(!modesSource.includes("syncUniCanvasHistoryKeyCapture"), "the former fullscreen/standalone capture is folded in");
+  assert.ok(modesSource.includes("routeUniCanvasCapturedKey(event, {"), "the capture routes through the shared decision");
+  const keydown = modesSource.slice(modesSource.indexOf("function handleUniCanvasHistoryKeyDown"), modesSource.indexOf("function handleUniCanvasHistoryKeyUp"));
+  assert.ok(keydown.indexOf('if (route === "pass") return;') < keydown.indexOf("uniCanvasHistoryLastClaimAt = Date.now()"),
+    "only claimed keys open the Comfy.Undo / ChangeTracker claim window");
 });
