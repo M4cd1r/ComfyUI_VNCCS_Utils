@@ -666,6 +666,27 @@ test("a rotated timeline frame refuses the pose session until the rest frame", (
     assert.match(String(calls.find(call => call[0] === "status")?.[1] || ""), /rest frame/);
 });
 
+test("joint and anchor projections run on the capture framing, not the inspection view (6g)", () => {
+    const { editor, layer } = harness();
+    layer.pose.viewport = { position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 };
+    editor.layer = layer; editor.initialized = true;
+    // The inspection view was left somewhere else by the free navigation.
+    const vector = values => ({ toArray: () => values.slice(), fromArray: v => { values = v.slice(); } });
+    const camera = { position: vector([90, 80, 70]), fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop, updateMatrixWorld: noop };
+    editor.studio = { viewer: { camera, orbit: { target: vector([0, 0, 0]), update: noop }, skinnedMesh: null, passiveCharacters: new Map() } };
+    const seen = [];
+    editor.withFramingCamera(cam => seen.push([cam.position.toArray(), camera.view]));
+    assert.equal(JSON.stringify(seen[0][0]), JSON.stringify([0, 10, 45]), "the callback sees the framing camera");
+    assert.equal(seen[0][1], null, "the session view offset is lifted for projections");
+    assert.equal(JSON.stringify(camera.position.toArray()), JSON.stringify([90, 80, 70]),
+        "the inspection view is put back afterwards");
+    // The projection helpers route through it (characterAnchors has no mesh here; it must not throw).
+    editor.updateOpenPose();
+    assert.equal(layer.pose.openpose, undefined, "no meshes, no joints - but no projection off the framing either");
+    assert.equal(editor.characterAnchors("character-1"), null);
+    assert.equal(source.match(/withFramingCamera\(camera =>/g).length, 2, "joints and anchors both project on the framing");
+});
+
 test("captures run on the persisted framing; existing layers keep their saved framing", async () => {
     const controlled = controlledStudio();
     const { editor, layer } = harness(controlled.Studio);

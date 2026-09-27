@@ -851,6 +851,26 @@ export class UniCanvasPoseEditor {
         }
     }
 
+    // Runs `fn(camera)` with the camera sitting on the persisted capture framing and the session
+    // view offset lifted - the projection space the layer pixels use. Projections that feed the
+    // pixels (OpenPose joints, character anchors) must match them in any inspection view (6g).
+    withFramingCamera(fn) {
+        const v = this.studio.viewer;
+        const framing = this.layer?.pose?.viewport;
+        if (!framing) return fn(v.camera);
+        const inspection = this.snapshotViewerCamera();
+        this.applyViewerCamera(framing);
+        const view = v.camera.view || null;
+        if (view) { v.camera.view = null; v.camera.updateProjectionMatrix(); }
+        v.camera.updateMatrixWorld?.(true);
+        try {
+            return fn(v.camera);
+        } finally {
+            if (view) { v.camera.view = view; v.camera.updateProjectionMatrix(); }
+            this.applyViewerCamera(inspection);
+        }
+    }
+
     // Every mannequin with its viewer mesh: the active one is the studio's skinned mesh, the
     // others are Pose Studio's passive rigs keyed by character id.
     characterMeshes() {
@@ -1174,71 +1194,77 @@ export class UniCanvasPoseEditor {
      * OpenPose COCO-18 joints of every mannequin, normalized to `pose.rect`, kept on
      * `layer.pose.openpose` (serialized with the pose) for pose ControlNet layers
      * (vnccs_unicanvas_control_scene.mjs). Refreshed with every capture, so a linked control
-     * layer follows the mannequin while it is dragged.
+     * layer follows the mannequin while it is dragged. Projections run on the capture framing
+     * (6g parity): the joints must match the layer pixels, not the current inspection view.
      */
     updateOpenPose() {
-        const v = this.studio?.viewer, THREE = v?.THREE, camera = v?.camera, layer = this.layer;
-        if (!THREE?.Vector3 || !camera || !layer?.pose) return;
-        const people = [];
-        try {
-            for (const [id, mesh] of this.characterMeshes()) {
-                if (mesh.visible === false) continue;
-                mesh.updateMatrixWorld?.(true);
-                const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
-                const worldOf = (name, offset) => {
-                    const object = bone(name);
-                    if (!object) return null;
-                    return offset ? object.localToWorld(new THREE.Vector3(...offset)) : object.getWorldPosition(new THREE.Vector3());
-                };
-                const project = point => {
-                    const projected = new THREE.Vector3(point.x, point.y, point.z).project(camera);
-                    if (projected.z > 1 || projected.z < -1) return null;
-                    return { x: Math.round((projected.x + 1) / 2 * 1e4) / 1e4, y: Math.round((1 - projected.y) / 2 * 1e4) / 1e4 };
-                };
-                people.push({ id, points: openPoseFromRig(worldOf, project) });
-            }
-        } catch (_) { return; }
-        layer.pose.openpose = { key: poseIdKey(layer.pose), people };
+        const v = this.studio?.viewer, THREE = v?.THREE, layer = this.layer;
+        if (!THREE?.Vector3 || !v?.camera || !layer?.pose) return;
+        this.withFramingCamera(camera => {
+            const people = [];
+            try {
+                for (const [id, mesh] of this.characterMeshes()) {
+                    if (mesh.visible === false) continue;
+                    mesh.updateMatrixWorld?.(true);
+                    const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
+                    const worldOf = (name, offset) => {
+                        const object = bone(name);
+                        if (!object) return null;
+                        return offset ? object.localToWorld(new THREE.Vector3(...offset)) : object.getWorldPosition(new THREE.Vector3());
+                    };
+                    const project = point => {
+                        const projected = new THREE.Vector3(point.x, point.y, point.z).project(camera);
+                        if (projected.z > 1 || projected.z < -1) return null;
+                        return { x: Math.round((projected.x + 1) / 2 * 1e4) / 1e4, y: Math.round((1 - projected.y) / 2 * 1e4) / 1e4 };
+                    };
+                    people.push({ id, points: openPoseFromRig(worldOf, project) });
+                }
+            } catch (_) { return; }
+            layer.pose.openpose = { key: poseIdKey(layer.pose), people };
+        });
     }
 
     /**
      * Projected head box and feet contact point of one character, normalized to `pose.rect`, and
-     * its camera depth (`depth`, view-space distance, larger is farther).
+     * its camera depth (`depth`, view-space distance, larger is farther). Like the joints, the
+     * projections run on the capture framing so anchors match the layer pixels in any view (6g).
      */
     characterAnchors(characterId) {
-        const v = this.studio?.viewer, THREE = v?.THREE, camera = v?.camera;
-        if (!THREE?.Vector3 || !camera) return null;
+        const v = this.studio?.viewer, THREE = v?.THREE;
+        if (!THREE?.Vector3 || !v?.camera) return null;
         const mesh = this.characterMeshes().find(([id]) => id === String(characterId))?.[1];
         if (!mesh) return null;
-        const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
-        const project = object => {
-            if (!object) return null;
-            const point = object.getWorldPosition(new THREE.Vector3()).project(camera);
-            return { x: (point.x + 1) / 2, y: (1 - point.y) / 2 };
-        };
-        try {
-            mesh.updateMatrixWorld?.(true);
-            const head = project(bone("head")), neck = project(bone("neck_01"));
-            const feet = ["foot_l", "foot_r", "ball_l", "ball_r"].map(name => project(bone(name))).filter(Boolean);
-            const result = {};
-            if (head) {
-                const aspect = (this.layer?.pose?.rect?.width || 1) / (this.layer?.pose?.rect?.height || 1);
-                const half = Math.max(0.02, neck ? Math.hypot((head.x - neck.x) * aspect, head.y - neck.y) * 1.3 : 0.05);
-                result.head = { x: head.x - half / aspect, y: head.y - half * 1.2, width: 2 * half / aspect, height: half * 2.2 };
-            }
-            if (feet.length) {
-                const lowest = Math.max(...feet.map(point => point.y));
-                result.feet = { x: feet.reduce((sum, point) => sum + point.x, 0) / feet.length, y: lowest };
-            }
-            // Camera depth of the character (view-space distance of its root), for back-to-front order.
-            const root = bone("pelvis") || bone("root") || mesh;
-            if (camera.matrixWorldInverse && root?.getWorldPosition) {
-                camera.updateMatrixWorld?.(true);
-                const depth = -root.getWorldPosition(new THREE.Vector3()).applyMatrix4(camera.matrixWorldInverse).z;
-                if (Number.isFinite(depth)) result.depth = depth;
-            }
-            return result.head || result.feet ? result : null;
-        } catch (_) { return null; }
+        return this.withFramingCamera(camera => {
+            const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
+            const project = object => {
+                if (!object) return null;
+                const point = object.getWorldPosition(new THREE.Vector3()).project(camera);
+                return { x: (point.x + 1) / 2, y: (1 - point.y) / 2 };
+            };
+            try {
+                mesh.updateMatrixWorld?.(true);
+                const head = project(bone("head")), neck = project(bone("neck_01"));
+                const feet = ["foot_l", "foot_r", "ball_l", "ball_r"].map(name => project(bone(name))).filter(Boolean);
+                const result = {};
+                if (head) {
+                    const aspect = (this.layer?.pose?.rect?.width || 1) / (this.layer?.pose?.rect?.height || 1);
+                    const half = Math.max(0.02, neck ? Math.hypot((head.x - neck.x) * aspect, head.y - neck.y) * 1.3 : 0.05);
+                    result.head = { x: head.x - half / aspect, y: head.y - half * 1.2, width: 2 * half / aspect, height: half * 2.2 };
+                }
+                if (feet.length) {
+                    const lowest = Math.max(...feet.map(point => point.y));
+                    result.feet = { x: feet.reduce((sum, point) => sum + point.x, 0) / feet.length, y: lowest };
+                }
+                // Camera depth of the character (view-space distance of its root), for back-to-front order.
+                const root = bone("pelvis") || bone("root") || mesh;
+                if (camera.matrixWorldInverse && root?.getWorldPosition) {
+                    camera.updateMatrixWorld?.(true);
+                    const depth = -root.getWorldPosition(new THREE.Vector3()).applyMatrix4(camera.matrixWorldInverse).z;
+                    if (Number.isFinite(depth)) result.depth = depth;
+                }
+                return result.head || result.feet ? result : null;
+            } catch (_) { return null; }
+        });
     }
 
     /**
