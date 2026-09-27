@@ -159,6 +159,13 @@ test("dependencies: an entry whose requirement is off is off, transitively, and 
   offOnly("groups");
   assert.equal(isUniCanvasEnabled("autoFiling"), false);
   assert.equal(resolveAutoFile({}), false);
+  for (const id of ["group-selected", "ungroup", "remove-from-group"]) {
+    assert.equal(isUniCanvasLayerMenuItemEnabled(id), false, `${id} follows the Groups switch`);
+  }
+  resetUniCanvasToggles();
+  assert.equal(isUniCanvasLayerMenuItemEnabled("group-selected"), true);
+  assert.equal(isUniCanvasLayerMenuItemEnabled("ungroup"), true);
+  assert.equal(isUniCanvasLayerMenuItemEnabled("remove-from-group"), true);
   offOnly("family_qwen_image21");
   assert.equal(isUniCanvasEnabled("qwen21Spectrum"), false);
   assert.equal(isUniCanvasRemoveBgMethodEnabled("edit"), false);

@@ -22,13 +22,17 @@ import {
     topLevelSelection,
     visibleLayerRows,
 } from "../web/vnccs_unicanvas_groups.mjs";
+import { LAYER_MENU_ITEMS, layerMenuItemAvailable, runLayerMenuAction } from "../web/vnccs_unicanvas_layer_tools.mjs";
 
 const widget = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const modes = await readFile(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
+const groupsSource = await readFile(new URL("../web/vnccs_unicanvas_groups.mjs", import.meta.url), "utf8");
+const filingSource = await readFile(new URL("../web/vnccs_unicanvas_filing.mjs", import.meta.url), "utf8");
 
 const layer = (id, extra = {}) => ({ id, name: id, type: "raster", visible: true, locked: false, opacity: 1, blendMode: "source-over", ...extra });
 const group = (id, extra = {}) => createGroupLayer({ id, name: id, ...extra });
 const ids = (layers) => layers.map((item) => item.id);
+const menuItem = (id) => LAYER_MENU_ITEMS.find((item) => item.id === id);
 
 test("groups are canvas-less pass-through folders by default", () => {
     const g = group("g");
@@ -185,4 +189,104 @@ test("the widget routes order, history, rendering and persistence through the gr
     assert.match(widget, /groupId: layer\.groupId \|\| null/);
     assert.match(modes, /widget\.groupSelectedLayers\?\.\(\)/);
     assert.match(modes, /widget\.ungroupActiveLayer\?\.\(\)/);
+});
+
+// The action bar is one row: [New group] [Organize] [Import image]; Group/Ungroup live in the
+// layer context menu (T4).
+test("the layers action bar is a single row with icon buttons before the import button", () => {
+    assert.match(widget, /\.vnccs-uc-layers-top-actions \{[^}]*flex-direction:row/);
+    assert.match(widget, /\.vnccs-uc-layers-top-actions \.vnccs-uc-btn \{ flex:1 1 auto; min-width:0;/);
+    assert.match(widget, /<span>Import Image<\/span>/);
+    assert.match(groupsSource, /GROUP_ICONS\.folderPlus/);
+    assert.match(groupsSource, /dataset\.groupAction = ""/);
+    assert.match(groupsSource, /layersTopActions\?\.prepend\(newGroupButton\)/);
+    assert.match(groupsSource, /"New group \(empty folder\)"/);
+    assert.match(filingSource, /dataset\.organizeLayers = ""/);
+    assert.match(filingSource, /insertBefore\(button, importButton\)/);
+    assert.match(filingSource, /"Organize layers: auto-name \+ file into folders"/);
+    for (const source of [widget, groupsSource, filingSource]) {
+        assert.ok(!source.includes("vnccs-uc-group-actions"), "the old Group/Ungroup button row is gone");
+    }
+});
+
+function menuWidget(layers, { selectedLayerIds = [], activeLayerId = null } = {}) {
+    return {
+        layers,
+        selectedLayerIds,
+        activeLayerId,
+        panorama: null,
+        transformDraft: null,
+        statuses: [],
+        history: [],
+        setStatus(text) { this.statuses.push(text); },
+        normalizeLayerOrder() {},
+        pushHistoryEntry(entry) { this.history.push(entry); },
+        autoNaming: { onLayerStructureChanged() {} },
+        syncPoseToolToActiveLayer() {},
+        renderLayerList() {},
+        requestRender() {},
+        syncLightStateToWidget() {},
+        scheduleFullSync() {},
+        groupSelectedLayers() { return "grouped"; },
+    };
+}
+
+test("the Group menu entries appear only when they apply, with a counted multiselection label", () => {
+    const g = group("g");
+    const child = layer("child", { groupId: "g" });
+    const solo = layer("solo");
+    const stack = normalizeGroupedLayerOrder([g, child, solo]);
+
+    const groupItem = menuItem("group-selected");
+    const ungroupItem = menuItem("ungroup");
+    const removeItem = menuItem("remove-from-group");
+    assert.ok(groupItem && ungroupItem && removeItem);
+
+    const nothing = menuWidget(stack, {});
+    assert.equal(layerMenuItemAvailable(nothing, solo, groupItem), false, "no selection, nothing to group");
+    assert.equal(layerMenuItemAvailable(nothing, solo, ungroupItem), false, "no group in the selection");
+    assert.equal(layerMenuItemAvailable(nothing, solo, removeItem), false, "solo is not inside a group");
+
+    const some = menuWidget(stack, { selectedLayerIds: [child.id, solo.id], activeLayerId: solo.id });
+    assert.equal(layerMenuItemAvailable(some, solo, groupItem), true);
+    assert.equal(groupItem.multiselectLabel(some), "Group 2 layers", "multiselection shows the count");
+    const one = menuWidget(stack, { selectedLayerIds: [child.id], activeLayerId: child.id });
+    assert.equal(layerMenuItemAvailable(one, child, groupItem), true);
+    assert.equal(groupItem.multiselectLabel(one), "Group selected (Ctrl+G)", "a single pick keeps the plain label");
+
+    assert.equal(layerMenuItemAvailable(menuWidget(stack, {}), g, ungroupItem), true, "the right-clicked group is a target");
+    assert.equal(layerMenuItemAvailable(menuWidget(stack, { selectedLayerIds: [g.id] }), solo, ungroupItem), true, "so is a group in the selection");
+    assert.equal(layerMenuItemAvailable(menuWidget(stack, {}), child, removeItem), true, "a layer inside a group can leave it");
+});
+
+test("remove-from-group moves the layer to the parent container as one undo step", () => {
+    const g = group("g");
+    const child = layer("child", { groupId: "g" });
+    const sub = group("sub", { groupId: "g" });
+    const deep = layer("deep", { groupId: "sub" });
+    const uc = menuWidget(normalizeGroupedLayerOrder([g, child, sub, deep]), { selectedLayerIds: [deep.id], activeLayerId: deep.id });
+    assert.equal(runLayerMenuAction(uc, deep, menuItem("remove-from-group")), true);
+    assert.equal(uc.history.length, 1);
+    assert.equal(uc.history[0].kind, "groupStructure");
+    assert.equal(deep.groupId, "g", "the layer left the subgroup for the parent container");
+    assert.deepEqual(ids(uc.layers), ["g", "child", "sub", "deep"], "it lands right below its old folder");
+    const restored = restoreGroupStructure(uc.layers, uc.history[0].before);
+    assert.equal(restored.find((item) => item.id === "deep").groupId, "sub", "undo puts it back");
+});
+
+test("ungroup from the menu dissolves every group in the selection", () => {
+    const g1 = group("g1");
+    const g2 = group("g2");
+    const a = layer("a", { groupId: "g1" });
+    const b = layer("b", { groupId: "g2" });
+    const solo = layer("solo");
+    const stack = normalizeGroupedLayerOrder([g1, a, g2, b, solo]);
+    // A right-click on an unselected row never changes the selection, so the entry still
+    // targets the selection's groups.
+    const uc = menuWidget(stack, { selectedLayerIds: [g1.id, g2.id], activeLayerId: g1.id });
+    assert.equal(runLayerMenuAction(uc, solo, menuItem("ungroup")), true);
+    assert.equal(uc.history.length, 2, "one groupStructure entry per ungrouped group");
+    assert.equal(g1.type, "group");
+    assert.ok(!uc.layers.includes(g1) && !uc.layers.includes(g2));
+    assert.deepEqual([a.groupId, b.groupId], [null, null]);
 });

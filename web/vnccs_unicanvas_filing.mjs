@@ -18,6 +18,7 @@
 import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
 import { captureGroupStructure, createGroupLayer, getGroupDescendants, isGroupLayer, normalizeGroupedLayerOrder } from "./vnccs_unicanvas_groups.mjs";
 import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
+import { applyRulesName, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
 import { CATEGORY_CHARACTERS, CATEGORY_OTHER, LAYER_CATEGORIES, layerCategory, layerCharacterName } from "./vnccs_unicanvas_naming_rules.mjs";
 
 export const AUTO_FILE_SETTING = "auto_file_layers";
@@ -128,6 +129,54 @@ export function fileLayers(uc, plan) {
   return { kind: "groupStructure", before, after: captureGroupStructure(uc.layers), activeBefore, activeAfter: uc.activeLayerId };
 }
 
+// Organize renames layers and files them as ONE undo step (owner decision): the name changes
+// ride the same groupStructure entry as the structure, applied by the registered history kind.
+
+const nameRecordOf = (layer) => ({ id: layer.id, name: layer.name, nameSource: layer.nameSource || null });
+
+function captureLayerNames(layers) {
+  return layers.filter((layer) => !isMaskSectionLayer(layer)).map(nameRecordOf);
+}
+
+/** The (name, nameSource) changes since `before`, as [{ id, before, after }] records. */
+function collectNameChanges(before, layers) {
+  const previous = new Map(before.map((record) => [record.id, record]));
+  const changes = [];
+  for (const layer of layers) {
+    if (isMaskSectionLayer(layer)) continue;
+    const was = previous.get(layer.id);
+    if (!was || (was.name === layer.name && (was.nameSource || null) === (layer.nameSource || null))) continue;
+    changes.push({ id: layer.id, before: { name: was.name, nameSource: was.nameSource || null }, after: nameRecordOf(layer) });
+  }
+  return changes;
+}
+
+/** Applies the recorded name changes of one Organize entry ("undo" restores, "redo" reapplies). */
+function applyNameChanges(uc, changes, direction) {
+  for (const change of changes || []) {
+    const layer = uc.layers.find((item) => item.id === change.id);
+    if (!layer) continue;
+    const value = direction === "undo" ? change.before : change.after;
+    layer.name = value.name;
+    layer.nameSource = value.nameSource;
+  }
+}
+
+function revertNameChanges(uc, changes) {
+  applyNameChanges(uc, changes, "undo");
+  for (const change of changes) uc.refreshLayerRow?.(change.id);
+}
+
+/** Organize's auto-name pass: rules names for unfiled layers named "auto" (user/import stay). */
+function applyAutoNames(uc) {
+  if (resolveAutoNamingLevel(uc.settings) === "off") return;
+  const pinnedId = pinnedIdOf(uc);
+  for (const layer of uc.layers) {
+    if (layer.nameSource !== "auto" || layer.shadow || !isUnfiledLayer(layer, { pinnedId })) continue;
+    applyRulesName(uc, layer);
+  }
+}
+
 function entryCreates(entry, layerId) {
   if (!entry) return false;
   if (entry.kind === "historyGroup") return (entry.entries || []).some((child) => entryCreates(child, layerId));
@@ -157,11 +206,15 @@ export function autoFileLayer(uc, layer) {
   return true;
 }
 
+// Folder with a sparkle at its corner: Organize = auto-name + file into folders.
+const ORGANIZE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 11a1.5 1.5 0 0 1 1.5-1.5h3.5l1.5 1.5h6a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5Z"/><path d="m18.5 3 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>`;
+
 const ORGANIZE_CSS = `
 .vnccs-uc-organize-list { display:flex; flex-direction:column; gap:4px; max-height:320px; overflow:auto; margin:8px 0; }
 .vnccs-uc-organize-row { display:flex; align-items:center; gap:8px; font-size:12px; }
 .vnccs-uc-organize-row span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-organize-row .vnccs-uc-organize-target { color:var(--uc-muted, #9aa); margin-left:auto; }
+.vnccs-uc-organize-rename { display:flex; align-items:center; gap:6px; font-size:12px; margin:0 0 8px; }
 `;
 
 function injectOrganizeStyles(uc) {
@@ -173,8 +226,8 @@ function injectOrganizeStyles(uc) {
   doc.head.appendChild(style);
 }
 
-/** The preview dialog: resolves to the checked plan steps, or null on cancel. */
-function chooseFilingPlan(uc, plan) {
+/** The preview dialog: resolves to the checked moves plus the rename choice, or null on cancel. */
+function chooseFilingPlan(uc, plan, renames = []) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div"); overlay.className = "vnccs-uc-modal-overlay";
     const modal = document.createElement("div"); modal.className = "vnccs-uc-modal vnccs-uc-organize";
@@ -182,13 +235,18 @@ function chooseFilingPlan(uc, plan) {
     modal.setAttribute("aria-label", "Organize layers");
     const title = document.createElement("div"); title.className = "vnccs-uc-modal-title"; title.textContent = "Organize layers";
     const message = document.createElement("div"); message.className = "vnccs-uc-modal-message";
-    message.textContent = "Move these layers into folders. Folders you made and layers already in a folder stay as they are.";
+    message.textContent = renames.length
+      ? "Rename these layers to their automatic names and move them into folders. Folders you made and layers already in a folder stay as they are."
+      : "Move these layers into folders. Folders you made and layers already in a folder stay as they are.";
     const list = document.createElement("div"); list.className = "vnccs-uc-organize-list";
+    const nameBefore = new Map(renames.map((change) => [change.id, change.before.name]));
     const boxes = plan.map((step) => {
       const row = document.createElement("label"); row.className = "vnccs-uc-organize-row";
       row.dataset.organizeLayer = step.layerId;
       const box = document.createElement("input"); box.type = "checkbox"; box.checked = true;
-      const name = document.createElement("span"); name.textContent = step.name;
+      const was = nameBefore.get(step.layerId);
+      const name = document.createElement("span"); name.textContent = was ? `${was} → ${step.name}` : step.name;
+      if (was) name.title = `${was} → ${step.name}`;
       const target = document.createElement("span"); target.className = "vnccs-uc-organize-target"; target.textContent = `-> ${step.path}`;
       row.append(box, name, target); list.append(row);
       return box;
@@ -197,9 +255,23 @@ function chooseFilingPlan(uc, plan) {
     const close = (value) => { overlay.remove(); previousFocus?.focus?.(); resolve(value); };
     const actions = document.createElement("div"); actions.className = "vnccs-uc-modal-actions";
     const cancel = uc._button("Cancel", "vnccs-uc-btn", () => close(null));
-    const apply = uc._button("Move", "vnccs-uc-btn primary", () => close(plan.filter((_, index) => boxes[index].checked)));
+    const apply = uc._button("Move", "vnccs-uc-btn primary", () => close({
+      steps: plan.filter((_, index) => boxes[index].checked),
+      rename: renameBox?.checked === true,
+    }));
     apply.dataset.organizeApply = "";
-    actions.append(cancel, apply); modal.append(title, message, list, actions); overlay.append(modal);
+    let renameBox = null;
+    if (renames.length) {
+      const renameLabel = document.createElement("label"); renameLabel.className = "vnccs-uc-organize-rename";
+      renameBox = document.createElement("input"); renameBox.type = "checkbox"; renameBox.checked = true;
+      renameBox.dataset.organizeRename = "";
+      renameLabel.append(renameBox, document.createTextNode("Rename layers"));
+      modal.append(title, message, list, renameLabel, actions);
+    } else {
+      modal.append(title, message, list, actions);
+    }
+    actions.append(cancel, apply);
+    overlay.append(modal);
     overlay.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") { e.preventDefault(); close(null); }
@@ -208,29 +280,47 @@ function chooseFilingPlan(uc, plan) {
   });
 }
 
-/** Layers header "Organize": preview, then one groupStructure entry for the checked moves. */
+/**
+ * Layers header "Organize": auto-name the unfiled "auto" layers, preview, then apply the checked
+ * moves and the renames as ONE groupStructure entry (owner decision: one undo step for both).
+ */
 export async function organizeLayers(uc) {
   if (uc.transformDraft) {
     uc.setStatus("Apply or cancel the active transform first", true);
     return false;
   }
+  const namesBefore = captureLayerNames(uc.layers);
+  applyAutoNames(uc);
   await uc.autoNaming?.categorizeUnfiled?.();
   uc.normalizeLayerOrder();
+  const renames = collectNameChanges(namesBefore, uc.layers);
+  for (const change of renames) uc.refreshLayerRow?.(change.id);
   const plan = planFiling(uc.layers, { pinnedId: pinnedIdOf(uc) });
   if (!plan.length) {
+    revertNameChanges(uc, renames);
     uc.setStatus("Organize: every layer is already in a folder");
     return false;
   }
-  const chosen = await chooseFilingPlan(uc, plan);
-  if (!chosen?.length) return false;
-  const entry = fileLayers(uc, chosen);
-  if (!entry) return false;
+  const chosen = await chooseFilingPlan(uc, plan, renames);
+  if (!chosen?.steps.length) {
+    revertNameChanges(uc, renames);
+    return false;
+  }
+  if (!chosen.rename) revertNameChanges(uc, renames);
+  const entry = fileLayers(uc, chosen.steps);
+  if (!entry) {
+    if (chosen.rename) revertNameChanges(uc, renames);
+    return false;
+  }
+  const renamed = chosen.rename ? renames.length : 0;
+  if (renamed) entry.names = renames;
   uc.pushHistoryEntry(entry);
   uc.renderLayerList();
   uc.requestRender();
   uc.syncLightStateToWidget();
   uc.scheduleFullSync?.();
-  uc.setStatus(`Organized ${chosen.length} layer${chosen.length === 1 ? "" : "s"} into folders`);
+  uc.setStatus(`Organized ${chosen.steps.length} layer${chosen.steps.length === 1 ? "" : "s"} into folders`
+    + (renamed ? ` and renamed ${renamed} layer${renamed === 1 ? "" : "s"}` : ""));
   return true;
 }
 
@@ -240,8 +330,15 @@ export function installUniCanvasFiling(uc) {
   injectOrganizeStyles(uc);
   uc.organizeLayers = () => organizeLayers(uc);
   uc.autoFileLayer = (layer) => autoFileLayer(uc, layer);
-  const button = uc._button("Organize", "vnccs-uc-btn", () => organizeLayers(uc), "Organize layers: file unfiled layers into category folders (with a preview)");
+  // Renames recorded by an Organize entry ride the same groupStructure step: the widget's own
+  // groupStructure restore handles order and parents, this applies the names on undo and redo.
+  uc.registerHistoryKind?.("groupStructure", (entry, direction) => applyNameChanges(uc, entry.names, direction));
+  const button = uc._button(ORGANIZE_ICON, "vnccs-uc-icon", () => organizeLayers(uc), "Organize layers: auto-name + file into folders");
   button.dataset.organizeLayers = "";
-  (uc.layersTopActions?.querySelector?.(".vnccs-uc-group-actions") || uc.layersTopActions)?.append(button);
+  // The row is [New group] [Organize] [Import image]: the icon sits before the import button,
+  // which fills the remaining width (vnccs_unicanvas_groups.mjs prepends the New group icon).
+  const importButton = uc.layersTopActions?.querySelector?.(".vnccs-uc-btn");
+  if (importButton) uc.layersTopActions.insertBefore(button, importButton);
+  else uc.layersTopActions?.append(button);
   return uc;
 }

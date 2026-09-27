@@ -320,6 +320,7 @@ export function topLevelSelection(layers, ids) {
 
 const GROUP_ICONS = {
   folder: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>`,
+  folderPlus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 10.5v5"/><path d="M9.5 13h5"/></svg>`,
   open: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
   closed: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`,
   eye: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="3"/></svg>`,
@@ -354,8 +355,6 @@ const GROUP_CSS = `
 .vnccs-uc-folder-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
 .vnccs-uc-folder-opacity { color:var(--uc-muted); font-size:10px; font-variant-numeric:tabular-nums; }
 .vnccs-uc-folder .vnccs-uc-icon { width:26px; height:26px; }
-.vnccs-uc-group-actions { display:flex; gap:6px; }
-.vnccs-uc-group-actions .vnccs-uc-btn { flex:1 1 0; min-width:0; }
 `;
 
 function injectGroupStyles(uc) {
@@ -1099,16 +1098,13 @@ export function installUniCanvasGroups(uc) {
   uc.syncGroupSubhead = (layer) => syncGroupSubhead(uc, layer);
   uc.syncLayerSelectionClasses = () => syncSelectionClasses(uc);
 
-  const actions = document.createElement("div");
-  actions.className = "vnccs-uc-group-actions";
-  actions.append(
-    uc._button("New group", "vnccs-uc-btn", () => addEmptyGroup(uc), "New empty group"),
-    uc._button("Group", "vnccs-uc-btn", () => groupSelectedLayers(uc), "Group selected layers (Ctrl+G)"),
-    uc._button("Ungroup", "vnccs-uc-btn", () => ungroupLayer(uc, uc.activeLayer), "Ungroup the selected group (Ctrl+Shift+G)"),
-  );
-  // Settings > VNCCS > UniCanvas > Groups hides these (vnccs_unicanvas_feature_toggles.mjs).
-  for (const button of actions.children) button.dataset.groupAction = "";
-  uc.layersTopActions?.append(actions);
+  // One icon button replaces the old New group / Group / Ungroup row: grouping and ungrouping
+  // live in the layer context menu (vnccs_unicanvas_layer_tools.mjs). It sits first in the
+  // layers-top-actions row, before the Organize and Import image buttons.
+  const newGroupButton = uc._button(GROUP_ICONS.folderPlus, "vnccs-uc-icon", () => addEmptyGroup(uc), "New group (empty folder)");
+  // Settings > VNCCS > UniCanvas > Groups hides this (vnccs_unicanvas_feature_toggles.mjs).
+  newGroupButton.dataset.groupAction = "";
+  uc.layersTopActions?.prepend(newGroupButton);
 
   // Rows are not focusable; the list takes focus so Ctrl+G works right after a selection click.
   if (uc.layerList) {

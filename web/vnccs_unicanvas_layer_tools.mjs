@@ -36,7 +36,7 @@ import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelectio
 import { buildKeepMask } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
+import { captureGroupStructure, isGroupLayer, isLayerEffectivelyVisible, normalizeGroupedLayerOrder, parentGroupOf, topLevelSelection, ungroupLayer } from "./vnccs_unicanvas_groups.mjs";
 import { canCastShadow, isHarmonizeCharacter } from "./vnccs_unicanvas_harmonize.mjs";
 import { poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { isUniCanvasLayerMenuItemEnabled, isUniCanvasRemoveBgAvailable } from "./vnccs_unicanvas_feature_toggles.mjs";
@@ -62,6 +62,9 @@ const MENU_ICONS = {
   detach: `<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="18" rx="7" ry="2"/><path d="m8 5 8 8M16 5l-8 8"/></svg>`,
   sparkle: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></svg>`,
   occluder: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="11" height="12" rx="1.5"/><path d="M10 5h9a2 2 0 0 1 2 2v10"/></svg>`,
+  folderPlus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 10.5v5"/><path d="M9.5 13h5"/></svg>`,
+  folderMinus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9.5 13h5"/></svg>`,
+  folderOut: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 15.5V9.5"/><path d="m9.5 11.5 2.5-2.5 2.5 2.5"/></svg>`,
   more: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18" cy="12" r="1.3"/></svg>`,
 };
 
@@ -69,6 +72,14 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "duplicate", label: "Duplicate layer", group: "Layer", icon: MENU_ICONS.duplicate },
   { id: "move-up", label: "Move up", group: "Layer", icon: MENU_ICONS.up },
   { id: "move-down", label: "Move down", group: "Layer", icon: MENU_ICONS.down },
+  // Group/Ungroup left the panel action bar for the context menu (groupSelected / ungroup).
+  { id: "group-selected", label: "Group selected (Ctrl+G)", group: "Group", icon: MENU_ICONS.folderPlus, needsSelection: true,
+    multiselectLabel: (uc) => {
+      const count = groupSelectionPicks(uc).length;
+      return count > 1 ? `Group ${count} layers` : "Group selected (Ctrl+G)";
+    } },
+  { id: "ungroup", label: "Ungroup (Ctrl+Shift+G)", group: "Group", icon: MENU_ICONS.folderMinus, needsGroupTarget: true },
+  { id: "remove-from-group", label: "Remove from group", group: "Group", icon: MENU_ICONS.folderOut, inGroupOnly: true },
   { id: "copy-clipboard", label: "Copy to clipboard", group: "Content", icon: MENU_ICONS.clipboard },
   { id: "save-image", label: "Save image", group: "Content", icon: MENU_ICONS.image },
   { id: "remove-bg", label: "Remove background", group: "Enhance", icon: MENU_ICONS.person },
@@ -89,6 +100,49 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "create-occluder", label: "Create foreground occluder", group: "Harmonize", icon: MENU_ICONS.occluder, characterOnly: true },
 ]);
 
+// The picks "Group selected" would group (same fallback and exclusions as groupSelectedLayers).
+function groupSelectionPicks(uc) {
+  const ids = (uc.selectedLayerIds?.length ? uc.selectedLayerIds : [uc.activeLayerId]).filter(Boolean);
+  return topLevelSelection(uc.layers, ids).filter((layer) => layer.id !== uc.panorama?.settings?.baseLayerId);
+}
+
+// Every group the Ungroup entry would dissolve: the groups in the selection plus the
+// right-clicked layer itself (a right-click never changes the selection).
+function groupTargetsInSelection(uc, layer) {
+  const ids = new Set([...(uc.selectedLayerIds || []), layer?.id].filter(Boolean));
+  return uc.layers.filter((item) => ids.has(item.id) && isGroupLayer(item));
+}
+
+/** Move a layer (with its subtree) out of its folder into the folder's own parent container. */
+function removeLayerFromGroup(uc, layer) {
+  const parent = parentGroupOf(uc.layers, layer);
+  if (!parent) return false;
+  if (uc.transformDraft) {
+    uc.setStatus("Apply or cancel the active transform first", true);
+    return false;
+  }
+  uc.normalizeLayerOrder?.();
+  const before = captureGroupStructure(uc.layers);
+  const activeBefore = uc.activeLayerId;
+  layer.groupId = parent.groupId || null;
+  uc.normalizeLayerOrder?.();
+  uc.pushHistoryEntry({ kind: "groupStructure", before, after: captureGroupStructure(uc.layers), activeBefore, activeAfter: uc.activeLayerId });
+  uc.autoNaming?.onLayerStructureChanged?.();
+  uc.syncPoseToolToActiveLayer?.();
+  uc.renderLayerList?.();
+  uc.requestRender?.();
+  uc.syncLightStateToWidget?.();
+  uc.scheduleFullSync?.();
+  return true;
+}
+
+/** Ungroup every group the entry targets (the selection's groups and the right-clicked group). */
+function ungroupSelectionGroups(uc, layer) {
+  let ungrouped = 0;
+  for (const group of groupTargetsInSelection(uc, layer)) if (ungroupLayer(uc, group)) ungrouped += 1;
+  return ungrouped > 0;
+}
+
 // Split needs 2+ mannequins; merge needs this layer inside a multi-selection of 2+ pose layers.
 export function layerMenuItemAvailable(uc, layer, item) {
   if (item.poseOnly && layer?.type !== "pose") return false;
@@ -100,6 +154,9 @@ export function layerMenuItemAvailable(uc, layer, item) {
     const selected = new Set(uc.selectedLayerIds || []);
     if (!selected.has(layer.id) || uc.layers.filter((entry) => selected.has(entry.id) && entry.type === "pose").length < 2) return false;
   }
+  if (item.needsSelection && groupSelectionPicks(uc).length < 1) return false;
+  if (item.needsGroupTarget && groupTargetsInSelection(uc, layer).length < 1) return false;
+  if (item.inGroupOnly && !parentGroupOf(uc.layers, layer)) return false;
   return true;
 }
 
@@ -785,7 +842,8 @@ function openLayerContextMenu(uc, layer, e) {
     entry.type = "button";
     entry.className = "vnccs-uc-layer-menu-item";
     entry.dataset.menuItem = item.id;
-    entry.innerHTML = `${item.icon}<span>${escapeText(item.label)}</span>`;
+    const label = typeof item.multiselectLabel === "function" ? item.multiselectLabel(uc, layer) : item.label;
+    entry.innerHTML = `${item.icon}<span>${escapeText(label)}</span>`;
     entry.style.cssText = LAYER_MENU_ITEM_CSS;
     const icon = entry.querySelector("svg");
     if (icon) icon.style.cssText = LAYER_MENU_ICON_CSS;
@@ -826,10 +884,13 @@ function openLayerContextMenu(uc, layer, e) {
   uc._vnccsLayerMenu = menu;
 }
 
-function runLayerMenuAction(uc, layer, item, point = null) {
+export function runLayerMenuAction(uc, layer, item, point = null) {
   if (item.id === "duplicate") return typeof uc.duplicateLayer === "function" ? uc.duplicateLayer(layer) : undefined;
   if (item.id === "move-up") return typeof uc.moveLayerOrder === "function" ? uc.moveLayerOrder(layer, -1) : undefined;
   if (item.id === "move-down") return typeof uc.moveLayerOrder === "function" ? uc.moveLayerOrder(layer, 1) : undefined;
+  if (item.id === "group-selected") return typeof uc.groupSelectedLayers === "function" ? uc.groupSelectedLayers() : undefined;
+  if (item.id === "ungroup") return ungroupSelectionGroups(uc, layer);
+  if (item.id === "remove-from-group") return removeLayerFromGroup(uc, layer);
   if (item.id === "copy-clipboard") return copyLayerToClipboard(uc, layer);
   if (item.id === "save-image") return saveLayerAsImage(uc, layer);
   if (item.id === "remove-bg") return removeLayerBackground(uc, layer);

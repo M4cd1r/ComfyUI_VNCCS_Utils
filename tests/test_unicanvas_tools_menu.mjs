@@ -13,6 +13,9 @@ const MENU_LABELS = [
   "Duplicate layer",
   "Move up",
   "Move down",
+  "Group selected (Ctrl+G)",
+  "Ungroup (Ctrl+Shift+G)",
+  "Remove from group",
   "Copy to clipboard",
   "Save image",
   "Remove background",
@@ -33,6 +36,7 @@ const MENU_LABELS = [
 
 const MENU_GROUPS = [
   "Layer", "Layer", "Layer",
+  "Group", "Group", "Group",
   "Content", "Content",
   "Enhance", "Enhance", "Enhance",
   "Name",
@@ -75,11 +79,11 @@ test("brushHardness is a brush-engine setting with radial-gradient stamps", () =
   assert.match(inputTools, /addEventListener\("input"/, "the hardness slider must update continuously from input events");
 });
 
-test("layer context menu groups all nineteen labeled entries", () => {
+test("layer context menu groups all twenty-two labeled entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 19, "the shipped menu must define exactly nineteen entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 22, "the shipped menu must define exactly twenty-two entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.group), MENU_GROUPS, "every menu entry must carry its group label");
   assert.deepEqual(LAYER_MENU_ITEMS.filter((item) => item.poseOnly).map((item) => item.id),
