@@ -26,6 +26,7 @@ from .models.qwen_image21 import (
     resolve_qwen21_turbo_lora,
 )
 from .paths import _get_full_path_agnostic
+from .pose_studio_loras import enqueue_pose_studio_lora_download, pose_studio_loras_status
 from .presets import (
     _PRESET_DOWNLOAD_STATUS,
     _enqueue_preset_download,
@@ -37,6 +38,7 @@ from .presets import (
 from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress
 from .projects import project_routes
 from .remove_bg import _run_unicanvas_remove_bg
+from .route_utils import RouteError, json_route, read_json_object
 from .save_output import _run_unicanvas_save_output
 from .segment import _run_unicanvas_segment
 
@@ -88,6 +90,22 @@ async def _run_logged(topic: str, worker, payload: dict[str, Any]) -> dict[str, 
     return result
 
 
+async def _pose_studio_loras_status_work(request):
+    """Per-family installed/latest/update_available; ?refresh=1 bypasses the TTL cache."""
+    refresh = str(request.query.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
+    return await asyncio.to_thread(pose_studio_loras_status, refresh)
+
+
+async def _pose_studio_loras_download_work(request):
+    body = await read_json_object(request)
+    family = str(body.get("family") or "")
+    version = str(body.get("version") or "")
+    try:
+        return await asyncio.to_thread(enqueue_pose_studio_lora_download, family, version)
+    except ValueError as exc:
+        raise RouteError(str(exc), 400) from None
+
+
 def register_unicanvas_routes() -> None:
     try:
         from aiohttp import web
@@ -117,6 +135,19 @@ def register_unicanvas_routes() -> None:
             return web.json_response(_get_unicanvas_assets())
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
+
+    PromptServer.instance.routes.get("/vnccs/unicanvas/pose_studio_loras")(
+        json_route(
+            web, _content_length_ok, _MAX_UPLOAD_BYTES, _pose_studio_loras_status_work,
+            subject="Pose Studio LoRAs", failure="Pose Studio LoRA lookup failed",
+        )
+    )
+    PromptServer.instance.routes.post("/vnccs/unicanvas/pose_studio_loras/download")(
+        json_route(
+            web, _content_length_ok, _MAX_UPLOAD_BYTES, _pose_studio_loras_download_work,
+            subject="Pose Studio LoRA download", failure="Pose Studio LoRA download failed",
+        )
+    )
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas/presets")
     async def vnccs_unicanvas_presets(_request):

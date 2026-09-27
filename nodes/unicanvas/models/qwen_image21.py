@@ -23,6 +23,11 @@ from ..debug import _conditioning_debug, _latent_debug, _uc_log, debug_enabled
 from ..loaders import _load_generation_assets
 from ..loras import LoraRequirement
 from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
+from ..pose_studio_loras import (
+    POSE_STUDIO_LORA_NAME_SETTING,
+    POSE_STUDIO_LORA_STRENGTH_SETTING,
+    pose_studio_lora_requirement,
+)
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 
@@ -105,6 +110,10 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "qwen_lora_strength": 1.0,
     "qwen21_opaque_output": False,
     "qwen21_aspect_preset": "",
+    # Pose Studio LoRA (pose_studio_loras.py): "auto" resolves to the highest
+    # installed version while pose layers are drawn.
+    POSE_STUDIO_LORA_NAME_SETTING: "",
+    POSE_STUDIO_LORA_STRENGTH_SETTING: 1.0,
     "lora_stack": [],
     "spectrum": dict(QWEN21_SPECTRUM_DEFAULTS),
 }
@@ -264,6 +273,17 @@ def _apply_qwen21_spectrum(model: Any, gen_settings: dict[str, Any], draw_id: st
 
 # Editing prompts are short imperatives with a preserve clause (Qwen-Image-2.1 prompt guide,
 # https://github.com/kjranyone/qwen-image-2.1-prompt-guide - image-editing.md).
+#
+# FLAG (owner review pending): upstream VNCCS (@next) ships Pose Studio prompt templates for
+# QIE2511, Klein9b and MiniMax H3 only - there is NO Qwen-Image-2.1 template upstream (checked
+# control_center.json, workflows/ and nodes/character_generator.py). The template below was
+# therefore written QIE-style over this family's <image N> slot labels; the controller will
+# surface it in the PR for the owner's review.
+QWEN_IMAGE21_POSE_TEMPLATE = (
+    "Draw the character from <image2> in the exact body pose of <image1>. "
+    "Keep the face, hairstyle, clothing and background of <image2> unchanged."
+)
+
 QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
     hint="Change X to Y. Keep everything else unchanged.",
     guide=(
@@ -276,11 +296,15 @@ QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
         "modify) and <image2>, <image3>, ... are donors of a person, product, background or style "
         "(\"Place <image2>'s character in <image1>. Keep hairstyle, clothing and facial features "
         "identical.\"). For inpaint describe only the masked region; for outpaint describe what "
-        "extends into the empty area. Text to keep or write goes in quotes, verbatim."
+        "extends into the empty area. Text to keep or write goes in quotes, verbatim.\n\n"
+        "Pose Studio layers: <image1> becomes the pose render and <image2> the background with "
+        "the character (other references drop out for that draw), and the VNCCS Pose Studio LoRA "
+        "is applied. Template: \"" + QWEN_IMAGE21_POSE_TEMPLATE + "\""
     ),
     examples=(
         "Change the background to a sunset beach. Keep the subject, pose, and lighting unchanged.",
         "Re-render <image1> in the art style of <image2>. Preserve subject identity, clothing, and layout.",
+        QWEN_IMAGE21_POSE_TEMPLATE,
     ),
     sources=("https://github.com/kjranyone/qwen-image-2.1-prompt-guide/blob/main/skills/qwen-image-prompt-en/references/image-editing.md",),
 )
@@ -307,6 +331,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             *(STANDARD_TASKS[key].with_prompt_guide(QWEN_IMAGE21_EDIT_PROMPT_GUIDE) for key in ("image_to_image", "inpaint", "outpaint")),
         ),
         references=ReferenceInputs(max_images=10, slot_label="<image{n}>"),
+        supports_pose_edit=True,
         default_loader="diffusion_model",
         prompt_guide=PromptGuide(
             hint="Fluent English sentences, subject first; text to draw goes in \"double quotes\"",
@@ -355,6 +380,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             dedupe_from_stack=True,
             description="Qwen-Image-2.1 LoRA (Viggle turbo downloads on first use)",
         ),
+        pose_studio_lora_requirement("qwen_image21"),
     )
 
     def uses_edit_masked_latents(self, mode: str) -> bool:

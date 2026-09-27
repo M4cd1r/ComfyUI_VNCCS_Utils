@@ -11,6 +11,12 @@ import torch
 from ..comfy_bridge import _call_comfy_node
 from ..control_net import load_control_net_patch
 from ..debug import _uc_log
+from ..loras import LoraRequirement
+from ..pose_studio_loras import (
+    POSE_STUDIO_LORA_NAME_SETTING,
+    POSE_STUDIO_LORA_STRENGTH_SETTING,
+    pose_studio_lora_requirement,
+)
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import (
     CANVAS_TASKS,
@@ -44,6 +50,16 @@ MINIMAX_H3_CONTROL_NET = ControlNetSupport(
     supports_range=True,
 )
 
+# Pose Studio template ported from upstream VNCCS (@next, nodes/character_generator.py,
+# H3_POSE_PROMPT - the generator wires ref_image_1 = pose render, ref_image_2 = character,
+# exactly like the generic pose slots in models/base.py). The upstream string concatenation
+# dropped a space ("image2keep emotion"); the port fixes the punctuation and uses the
+# family's <Picture N> slot labels.
+MINIMAX_H3_POSE_EXAMPLE = (
+    "Draw the character from <Picture 2>, keep the emotion. Do not draw a shadow. "
+    "Solid vibrant green background, 4k quality, sharp lines, detailed eyes."
+)
+
 
 @dataclass(frozen=True)
 class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
@@ -68,6 +84,7 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         ),
         references=ReferenceInputs(max_images=10, slot_label="<Picture {n}>"),
         control_net=MINIMAX_H3_CONTROL_NET,
+        supports_pose_edit=True,
         prompt_guide=PromptGuide(
             hint="Keep the identity from <Picture 2>. Use the pose from <Picture 3>.",
             guide=(
@@ -78,6 +95,11 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
                 "explicit assignments win over what the prompt does not mention. Keep it "
                 "preservation-first: say what must stay, then the one change you want, and that the "
                 "result must visibly show it.\n\n"
+                "Pose Studio layers: <Picture 1> becomes the pose render and <Picture 2> the "
+                "background with the character (other references drop out for that draw), and the "
+                "VNCCS Pose Studio LoRA is applied. The upstream template then reads: \""
+                + MINIMAX_H3_POSE_EXAMPLE
+                + "\"\n\n"
                 "Load the MiniMax H3 diffusion model, its Qwen3-VL text encoder (CLIP type minimax) "
                 "and the video VAE in the loader, or link a VNCSS Config node. No mask is required: "
                 "the bbox is the working area. There is no negative prompt.\n\n"
@@ -86,6 +108,7 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
             examples=(
                 "Keep the identity, face, hair, clothing, camera and environment from <Picture 1>. "
                 "Use the body pose and limb positions from <Picture 2>. The final pose must visibly match <Picture 2>.",
+                MINIMAX_H3_POSE_EXAMPLE,
             ),
             negative_prompt=False,
             sources=(
@@ -105,14 +128,31 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         "denoise": 1.0,
         "frame_count": 5,
         "ref_image_size": "match",
+        # Pose Studio LoRA (pose_studio_loras.py): "auto" resolves to the highest
+        # installed version while pose layers are drawn.
+        POSE_STUDIO_LORA_NAME_SETTING: "",
+        POSE_STUDIO_LORA_STRENGTH_SETTING: 1.0,
     })
     is_edit_model: bool = True
+    lora_requirements: tuple[LoraRequirement, ...] = (pose_studio_lora_requirement("minimax_h3"),)
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return False
 
     def uses_differential_diffusion(self, mode: str) -> bool:
         return False
+
+    def prepare_pose_edit(self, ctx) -> None:
+        # A pose bake is a full-strength img2img region edit: validate_request has
+        # already accepted the image_to_image task, and the generic pose slots
+        # (models/base.py) wire <Picture 1> = pose render, <Picture 2> = character.
+        super().prepare_pose_edit(ctx)
+        # The REF2VA step count follows the family's steps widget, kept inside the
+        # widget's 1..60 range even when a bake preset forgets to sync it.
+        raw_steps = ctx.settings.get("minimax_h3_steps") or ctx.settings.get("steps") or self.defaults.get("steps", 20)
+        steps = max(1, min(60, int(raw_steps)))
+        ctx.request.steps = steps
+        ctx.settings["steps"] = steps
 
     def encode_prompt(self, clip: Any, text: str, gen_settings: dict[str, Any]):
         # The H3 conditioning (prompt + reference pictures) is built in one call
