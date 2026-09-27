@@ -429,6 +429,8 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-infer-scale { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; min-height:34px; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-infer-scale .vnccs-uc-range { width:100%; accent-color:var(--uc-accent); }
 .vnccs-uc-infer-size { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+/* Double-click the W×H digits swaps in this input; typing drives the slider live. */
+.vnccs-uc-infer-size-edit { width:76px; min-width:0; padding:1px 4px; text-align:right; font:inherit; font-weight:700; font-variant-numeric:tabular-nums; color:var(--uc-text, #e8e8f0); background:rgba(0,0,0,.4); border:1px solid var(--uc-accent, #ff8fa3); border-radius:4px; outline:none; }
 /* No text selection inside the widget; inputs/prompts, dialogs, help text, layer menu, toasts and
    the status/debug line stay selectable (the star-plus-exceptions form is deliberate: user-select
    inheritance from a root rule is unreliable across browsers, and backticks are illegal inside a
@@ -769,7 +771,9 @@ const UNICANVAS_MODEL_MODULES = {
     label: "Qwen Edit",
     base: "qwen_image_edit",
     isEditModel: true,
-    detect: ["qwen-image-edit", "qwen_image_edit", "qwen-edit", "qwen"],
+    // No bare "qwen" here: it swallowed the whole Qwen family, including Qwen-Image-2.1
+    // (qwen_image_21_int8_convrot.safetensors flipped the node to Qwen Edit + GGUF).
+    detect: ["qwen-image-edit", "qwen_image_edit", "qwen-edit", "qwen_edit"],
     defaults: {
       generation_mode: "qwen_image_edit",
       model_loader: "gguf",
@@ -872,6 +876,26 @@ function uniCanvasModelDetectMatches(name, pattern) {
     return new RegExp(`(^|[\\s_./\\\\-])${escaped}($|[\\s_./\\\\-])`, "i").test(source);
   }
   return source.includes(token);
+}
+
+// Family detection for a picked model file. A file name can carry tokens of several families
+// (e.g. a broad "qwen" token plus Qwen-Image-2.1's "qwen_image_21"), so the longest matching
+// token wins; a short token can never shadow the family the file actually belongs to.
+function detectUniCanvasModelModule(name) {
+  const source = String(name || "").toLowerCase();
+  if (!source) return null;
+  let best = null;
+  let bestLength = 0;
+  for (const module of Object.values(UNICANVAS_MODEL_MODULES)) {
+    for (const pattern of module.detect || []) {
+      const token = String(pattern || "");
+      if (token.length <= bestLength) continue;
+      if (!uniCanvasModelDetectMatches(source, token)) continue;
+      best = module;
+      bestLength = token.length;
+    }
+  }
+  return best;
 }
 
 function getUniCanvasModelModule(mode) {
@@ -1313,14 +1337,14 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="presets">
         <div data-preset-card-list data-config-override></div>
-        <label class="vnccs-uc-infer-scale"><span>Inference scale</span><input class="vnccs-uc-range" data-setting="inference_scale" type="range" min="0.5" max="3" step="0.05" value="${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 3)}"><span class="vnccs-uc-infer-size" data-inference-size></span></label>
+        <label class="vnccs-uc-infer-scale"><span>Inference scale</span><input class="vnccs-uc-range" data-setting="inference_scale" type="range" min="0.5" max="3" step="0.05" value="${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 3)}"><span class="vnccs-uc-infer-size" data-inference-size title="Double-click to type a width (1536), size (1536x1024) or scale (1.5)"></span></label>
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="custom">
         <div class="vnccs-uc-mode-loader-row">
           <label class="vnccs-uc-field" data-mode-control>Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
           <label class="vnccs-uc-field" data-config-override>Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
         </div>
-        <label class="vnccs-uc-infer-scale"><span>Inference scale</span><input class="vnccs-uc-range" data-setting="inference_scale" type="range" min="0.5" max="3" step="0.05" value="${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 3)}"><span class="vnccs-uc-infer-size" data-inference-size></span></label>
+        <label class="vnccs-uc-infer-scale"><span>Inference scale</span><input class="vnccs-uc-range" data-setting="inference_scale" type="range" min="0.5" max="3" step="0.05" value="${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 3)}"><span class="vnccs-uc-infer-size" data-inference-size title="Double-click to type a width (1536), size (1536x1024) or scale (1.5)"></span></label>
         ${loaderFields}
         <label class="vnccs-uc-field" data-family-field="krea2_edit" data-config-override title="Krea2 Identity Edit adapter: required for editing with this model">
           Edit LoRA<select class="vnccs-uc-select" data-setting="krea2_edit_lora_name"></select>
@@ -2557,6 +2581,13 @@ class UniCanvasWidget {
       }
       this.clearInputHistoryMarker(target);
     });
+    // Double-click the inference "W×H" digits to type an exact value; the typed value drives the slider.
+    this.left.addEventListener("dblclick", (e) => {
+      const span = e.target?.closest?.("[data-inference-size]");
+      if (!span) return;
+      e.preventDefault();
+      this.startInferenceSizeEdit(span);
+    });
     this.setTool(this.tool, true);
   }
 
@@ -3240,14 +3271,16 @@ class UniCanvasWidget {
       if (!this._isConfigLinked()) this.applyInferenceModuleDefaults(loader.forcedMode);
       return;
     }
-    const name = String(this.getSelectedModelNameForLoader() || "").toLowerCase();
-    if (!name) return;
-    for (const module of Object.values(UNICANVAS_MODEL_MODULES)) {
-      if ((module.detect || []).some((pattern) => uniCanvasModelDetectMatches(name, pattern))) {
-        this.applyInferenceModuleDefaults(module.key, { preserveModelSelection: true });
-        return;
-      }
-    }
+    const module = detectUniCanvasModelModule(this.getSelectedModelNameForLoader());
+    if (!module) return;
+    // The picked file already belongs to the active family: keep every setting the user tuned.
+    if (getUniCanvasModelModule(this.settings.generation_mode).key === module.key) return;
+    // A picked file only switches the family. The file was chosen inside the current loader's own
+    // panel, so the loader stays (a safetensors edit model must not flip the node to the family's
+    // default GGUF loader and strand the picked file), and the family defaults must not replace the
+    // model names the user just chose.
+    this.applyInferenceModuleDefaults(module.key, { preserveModelSelection: true });
+    this.settings.model_loader = loader.key;
   }
 
   getModelBase() {
@@ -3300,8 +3333,75 @@ class UniCanvasWidget {
   updateInferenceSizeLabels(size = this.getInferenceSize()) {
     const text = `${size.width}×${size.height}`;
     this.container.querySelectorAll("[data-inference-size]").forEach((el) => {
+      if (el.querySelector(".vnccs-uc-infer-size-edit")) return; // an open size edit hosts its own input
       if (el.textContent !== text) el.textContent = text;
     });
+  }
+
+  // Double-click on the "W×H" digits: swap in a text input, apply every keystroke to the slider
+  // live, commit on Enter/blur, Escape restores. Visible feedback may never wait for the blur.
+  startInferenceSizeEdit(span) {
+    if (span.querySelector(".vnccs-uc-infer-size-edit")) return;
+    const edit = document.createElement("input");
+    edit.type = "text";
+    edit.className = "vnccs-uc-infer-size-edit";
+    edit.lang = "en-US";
+    edit.inputMode = "decimal";
+    edit.spellcheck = false;
+    edit.setAttribute("aria-label", "Inference size");
+    edit.title = "Width (1536), size (1536x1024) or scale (1.5)";
+    edit.value = String(this.getInferenceSize().width);
+    span.textContent = "";
+    span.append(edit);
+    edit.focus();
+    edit.select();
+    let finished = false;
+    const finish = (apply) => {
+      if (finished) return;
+      finished = true;
+      if (apply) this.applyInferenceSizeText(edit.value);
+      edit.remove(); // back to the digits; also clears the updateInferenceSizeLabels guard
+      this.updateInferenceSizeLabels();
+    };
+    edit.addEventListener("input", () => this.applyInferenceSizeText(edit.value));
+    edit.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+    edit.addEventListener("blur", () => finish(true));
+    edit.addEventListener("dblclick", (e) => e.stopPropagation());
+  }
+
+  // Inverse of getInferenceSize(): "1536" or "1536x1024" targets a size, a value within the
+  // slider range ("1.5", "2") a raw scale. The result snaps to the slider step so the range
+  // input, the digits and the setting never disagree about where the thumb stands.
+  applyInferenceSizeText(text) {
+    const normalized = String(text ?? "").trim().toLowerCase().replaceAll(",", ".");
+    if (!normalized) return false;
+    const parts = normalized.split(/[x×*]/).map((part) => Number(part.trim())).filter((n) => Number.isFinite(n) && n > 0);
+    if (!parts.length) return false;
+    let scale;
+    if (parts.length === 1 && parts[0] <= 3) {
+      scale = parts[0];
+    } else {
+      const rect = this.bbox;
+      const aspect = Math.max(64, Math.round(rect.width)) / Math.max(64, Math.round(rect.height));
+      const targetArea = parts.length >= 2 ? parts[0] * parts[1] : (parts[0] * parts[0]) / aspect;
+      scale = Math.sqrt(targetArea) / this.getOptimalDimension();
+    }
+    scale = Number((Math.round(scale / 0.05) * 0.05).toFixed(2)); // kill the x.05000000001 snap noise
+    scale = Math.min(3, Math.max(0.5, scale));
+    if (!Number.isFinite(scale) || scale <= 0) return false;
+    this.settings.inference_scale = scale;
+    this.syncInferenceControls();
+    this.syncSettingsToWidget();
+    return true;
   }
 
   getDenoiseControlSetting() {

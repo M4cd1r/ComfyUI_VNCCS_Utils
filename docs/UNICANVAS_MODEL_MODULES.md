@@ -285,7 +285,12 @@ until it is painted on, and Relink restores the link.
 
 The frontend registry in `web/vnccs_unicanvas.js` must include the mode label,
 defaults, aliases, and `detect` keywords. `detect` is used to switch Mode
-automatically when the selected model filename matches a known family.
+automatically when the selected model filename matches a known family. The most
+specific keyword wins (the longest matching token), so a broad keyword of one
+family can never shadow a more precise one of another. Picking a file only
+switches the family: the loader and the model names the user picked are kept
+(a safetensors edit model must not flip the node to the family's default GGUF
+loader), and a file that already belongs to the active family changes nothing.
 
 For models loaded by existing loader types, no new UI fields are needed. The
 loader controls which model file selectors are shown:
