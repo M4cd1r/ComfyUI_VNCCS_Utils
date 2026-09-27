@@ -90,6 +90,9 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
 .vnccs-uc-fullscreen .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
+/* Tool settings open beside the toolbar, never over it: the toolbar is 16px + 92px wide at its
+   own zoom, so at half zoom its right edge sits at 54px (+ a gap) in the settings' units. */
+.vnccs-uc-fullscreen .vnccs-uc-tool-settings, body.${UNICANVAS_STANDALONE_BODY_CLASS} .vnccs-uc-tool-settings { --vnccs-uc-tool-settings-left: 66px; }
 `;
 
 export function ensureUniCanvasModeStyles() {
