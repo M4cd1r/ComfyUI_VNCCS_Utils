@@ -21,8 +21,8 @@
  * the "New ControlNet layer" action, the overlay and the draw hand-off onto the widget.
  */
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499067345";
-import { clamp, finite } from "./vnccs_unicanvas_util.mjs?v=1790499067345";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499231125";
+import { clamp, finite } from "./vnccs_unicanvas_util.mjs?v=1790499231125";
 
 export const CONTROL_LAYER_TYPE = "control";
 export const CONTROL_OVERLAY_COLOR = "rgba(72, 196, 255, 0.55)";

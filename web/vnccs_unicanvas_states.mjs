@@ -22,9 +22,9 @@
  * rest onto the widget like installUniCanvasGroups.
  */
 
-import { getGroupDescendants, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible, topLevelSelection } from "./vnccs_unicanvas_groups.mjs?v=1790499067345";
-import { isZeroStateOffset, normalizeStateOffset, sameStateOffset } from "./vnccs_unicanvas_state_offset.mjs?v=1790499067345";
-import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs?v=1790499067345";
+import { getGroupDescendants, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible, topLevelSelection } from "./vnccs_unicanvas_groups.mjs?v=1790499231125";
+import { isZeroStateOffset, normalizeStateOffset, sameStateOffset } from "./vnccs_unicanvas_state_offset.mjs?v=1790499231125";
+import { isUniCanvasFeatureAvailable } from "./vnccs_unicanvas_surface.mjs?v=1790499231125";
 
 export const SCENE_STATE_HISTORY_KINDS = new Set(["applySceneState", "sceneStates", "sceneStateOffset"]);
 export const MOVE_SCOPE_STATE = "state";
@@ -39,7 +39,7 @@ const clamp01 = (value, fallback = 1) => (Number.isFinite(Number(value)) ? Math.
 // Pure helpers ---------------------------------------------------------------------------------
 
 // The offset shape (a move plus an optional depth scale) lives in vnccs_unicanvas_state_offset.mjs.
-export { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, feetPlacement } from "./vnccs_unicanvas_state_offset.mjs?v=1790499067345";
+export { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, feetPlacement } from "./vnccs_unicanvas_state_offset.mjs?v=1790499231125";
 
 const isZeroOffset = isZeroStateOffset;
 

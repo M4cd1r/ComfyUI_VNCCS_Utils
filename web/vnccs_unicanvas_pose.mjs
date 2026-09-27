@@ -1,10 +1,10 @@
 /** Pose Studio host contract and image preparation for UniCanvas pose layers. */
 import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499067345";
-import { applyMannequinMeshMorphs, composePoseReference, isImageRef, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, posePromptMappingForLayer, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs?v=1790499067345";
-import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs?v=1790499067345";
-import { openPoseFromRig } from "./vnccs_unicanvas_control_scene.mjs?v=1790499067345";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499231125";
+import { applyMannequinMeshMorphs, composePoseReference, isImageRef, poseAtPanoramaCamera, poseStudioCharacters, poseCharacterRef, poseCharacterPrompt, poseCharacterIssues, setPoseCharacterRef, setPoseCharacterPrompt, reconcilePoseCharacterRefs, poseIdKey, posePromptMappingForLayer, posePlacedRect, POSE_ID_COLORS } from "./vnccs_unicanvas_pose_state.mjs?v=1790499231125";
+import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs?v=1790499231125";
+import { openPoseFromRig } from "./vnccs_unicanvas_control_scene.mjs?v=1790499231125";
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 const styles = `

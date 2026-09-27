@@ -17,7 +17,7 @@
  * import and one install call (kept merge-friendly for parallel branches).
  */
 
-import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790499067345";
+import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790499231125";
 
 export const BRUSH_FAMILY_TOOLS = new Set(["brush", "eraser", "mask"]);
 export const BRUSH_SIZE_MIN = 1;

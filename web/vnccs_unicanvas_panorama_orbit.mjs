@@ -1,4 +1,4 @@
-import { normalizePanorama } from "./vnccs_unicanvas_panorama.mjs?v=1790499067345";
+import { normalizePanorama } from "./vnccs_unicanvas_panorama.mjs?v=1790499231125";
 
 const RAD = Math.PI / 180;
 const AXES = [

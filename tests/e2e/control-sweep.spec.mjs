@@ -185,6 +185,25 @@ async function stubDraw(page, images = [FIXTURE_DATA_URL]) {
   return bodies;
 }
 
+async function sweepEditRefs(s, refs) {
+  const { page, root } = s;
+  await refs.click();
+  const popover = root.locator("[data-edit-refs-popover]");
+  await expect(popover).toBeVisible();
+  const button = await refs.boundingBox();
+  const box = await popover.boundingBox();
+  expect(Math.abs(box.y - (button.y + button.height)), "the popover opens under the clicked button").toBeLessThan(40);
+  const badge = refs.locator("[data-edit-refs-badge]");
+  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), popover.locator("button", { hasText: "Add image" }).click()]);
+  await chooser.setFiles(CHARACTER);
+  await expect(popover.locator(".vnccs-uc-refs-cell")).toHaveCount(1);
+  await expect(badge).toHaveText("1");
+  await popover.locator(".vnccs-uc-refs-cell button").first().click();
+  await expect(popover.locator(".vnccs-uc-refs-cell")).toHaveCount(0);
+  await popover.locator("button", { hasText: "Close" }).click();
+  await expect(popover).toHaveCount(0);
+}
+
 async function sweepGenerationPanel(s) {
   const { page, root } = s;
   const setting = async (key) => (await s.settings())[key];
@@ -269,15 +288,10 @@ async function sweepGenerationPanel(s) {
   for (const value of modes) {
     await s.pick(mode, value);
     await expect.poll(() => setting("generation_mode")).toBe(value);
-    // Family panels that appear for this mode render without errors; the edit-refs button opens.
+    // Family panels that appear for this mode render without errors; the visible refs button opens
+    // its popover next to itself, adds and removes a reference image, and closes.
     const refs = root.locator('[data-action="edit-refs"]:visible').first();
-    if (await refs.count()) {
-      await refs.click();
-      const modal = root.locator(".vnccs-uc-modal").last();
-      await expect(modal).toBeVisible();
-      await modal.locator("button", { hasText: /^(Close|Cancel|Done)$/ }).first().click();
-      await expect(modal).toBeHidden();
-    }
+    if (await refs.count()) await sweepEditRefs(s, refs);
   }
   await s.pick(mode, "sdxl");
   await s.pick(loader, "checkpoint");
@@ -330,25 +344,32 @@ async function sweepGenerationPanel(s) {
   await expect.poll(async () => (await s.hook("getStaging")).length, { timeout: 30_000 }).toBeGreaterThan(0);
   const staging = root.locator(".vnccs-uc-staging-popover").first();
   await expect(staging).toBeVisible();
-  for (const title of ["Next result", "Previous result"]) {
-    const button = staging.locator(`[title="${title}"]`);
-    if (await button.isEnabled()) await button.click();
+  const count = staging.locator(".vnccs-uc-staging-count").first();
+  await expect.poll(async () => (await s.hook("getStaging")).length, { timeout: 30_000 }).toBe(2);
+  for (const title of ["Previous result", "Next result"]) {
+    const before = await count.textContent();
+    await staging.locator(`[title="${title}"]`).click();
+    await expect(count, `${title} changes the shown result`).not.toHaveText(before);
   }
-  const hide = staging.locator('[title="Hide result preview"]');
-  await hide.click();
-  await hide.click();
+  const toggle = staging.locator('[title="Hide result preview"], [title="Show result preview"]');
+  await expect(toggle).toHaveAttribute("title", "Hide result preview");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("title", "Show result preview");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("title", "Hide result preview");
   const accepted = await s.newLayerAfter(() => staging.locator('[title="Accept as layer"]').click());
   expect(accepted.type).toBe("raster");
   await s.expectUndoRedo(async () => (await s.layers()).some((l) => l.id === accepted.id), false, true);
-  if ((await s.hook("getStaging")).length) {
-    await staging.locator('[title="Discard"]').click();
-    await expect.poll(async () => (await s.hook("getStaging")).length).toBe(0);
-  } else {
+  // Discard removes the shown result; each press leaves one fewer.
+  if (!(await s.hook("getStaging")).length) {
     await root.locator("button", { hasText: "GENERATE" }).first().click();
     await expect.poll(async () => (await s.hook("getStaging")).length, { timeout: 30_000 }).toBeGreaterThan(0);
-    await staging.locator('[title="Discard"]').click();
-    await expect.poll(async () => (await s.hook("getStaging")).length).toBe(0);
   }
+  for (let left = (await s.hook("getStaging")).length; left > 0; left -= 1) {
+    await staging.locator('[title="Discard"]').click();
+    await expect.poll(async () => (await s.hook("getStaging")).length).toBe(left - 1);
+  }
+  await expect(staging).toBeHidden();
 
   // Standalone only: Save to output (stubbed) and New canvas (confirm).
   if (s.kind === "standalone") {

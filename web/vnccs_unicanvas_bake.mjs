@@ -21,15 +21,15 @@
  */
 
 import { getPoseCharacterMask, isImageRef, movePanoramaToPoseCamera, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
-  poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790499067345";
-import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs?v=1790499067345";
-import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs?v=1790499067345";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790499067345";
-import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs?v=1790499067345";
-import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs?v=1790499067345";
-import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790499067345";
-import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs?v=1790499067345";
-import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs?v=1790499067345";
+  poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790499231125";
+import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs?v=1790499231125";
+import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs?v=1790499231125";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790499231125";
+import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs?v=1790499231125";
+import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs?v=1790499231125";
+import { filterUniCanvasChoices, isUniCanvasEnabled, isUniCanvasFamilyEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790499231125";
+import { cloneJson, fnv1aHex } from "./vnccs_unicanvas_util.mjs?v=1790499231125";
+import { UNICANVAS_DRAW_ROUTE, drawDebugId, requestDirectDraw, runExclusiveGeneration } from "./vnccs_unicanvas_draw_client.mjs?v=1790499231125";
 
 // Offline fallback for the bake families (the families whose backend descriptor sets
 // capabilities.supports_pose_edit) until /assets has loaded; it also gives the known families

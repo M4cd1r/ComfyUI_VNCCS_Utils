@@ -41,8 +41,8 @@
  * `installUniCanvasHarmonize` and the serialize / history hooks exported here.
  */
 
-import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790499067345";
-import { buildStagingSnapshot, createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790499067345";
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790499231125";
+import { buildStagingSnapshot, createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790499231125";
 import {
   SCENE_LIGHT_HISTORY_KIND,
   backgroundDepth,
@@ -52,16 +52,16 @@ import {
   renderSceneLightControls,
   shadowGroundDirection,
   shadowLengthFactor,
-} from "./vnccs_unicanvas_scene_place.mjs?v=1790499067345";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790499067345";
-import { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, stateOffsetRestRect } from "./vnccs_unicanvas_state_offset.mjs?v=1790499067345";
-import { currentNormalPass, isImageLayer } from "./vnccs_unicanvas_pose_state.mjs?v=1790499067345";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499067345";
+} from "./vnccs_unicanvas_scene_place.mjs?v=1790499231125";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790499231125";
+import { normalizeStateOffset, stateOffsetMatrix, stateOffsetPoint, stateOffsetRect, stateOffsetRestRect } from "./vnccs_unicanvas_state_offset.mjs?v=1790499231125";
+import { currentNormalPass, isImageLayer } from "./vnccs_unicanvas_pose_state.mjs?v=1790499231125";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790499231125";
 // Import cycle with the layer tools (they list this module's menu entries): only functions and
 // constants read at call time cross it.
-import { COLOR_MATCH_METHODS, COLOR_MATCH_ROUTE, COLOR_MATCH_STRENGTH_MAX, placeInHost } from "./vnccs_unicanvas_layer_tools.mjs?v=1790499067345";
-import { escapeHtml, finiteOrNull } from "./vnccs_unicanvas_util.mjs?v=1790499067345";
-import { drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs?v=1790499067345";
+import { COLOR_MATCH_METHODS, COLOR_MATCH_ROUTE, COLOR_MATCH_STRENGTH_MAX, placeInHost } from "./vnccs_unicanvas_layer_tools.mjs?v=1790499231125";
+import { escapeHtml, finiteOrNull } from "./vnccs_unicanvas_util.mjs?v=1790499231125";
+import { drawDebugId, requestDirectDraw, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs?v=1790499231125";
 
 export const SHADOW_KINDS = Object.freeze(["contact", "cast"]);
 export const SHADOW_LAYER_HISTORY_KIND = "shadowLayer";

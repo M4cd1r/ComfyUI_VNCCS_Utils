@@ -15,10 +15,10 @@
  * planFiling / applyFilingPlan are pure (Node tests); the rest binds onto the widget.
  */
 
-import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790499067345";
-import { captureGroupStructure, createGroupLayer, getGroupDescendants, isGroupLayer, normalizeGroupedLayerOrder } from "./vnccs_unicanvas_groups.mjs?v=1790499067345";
-import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790499067345";
-import { CATEGORY_CHARACTERS, CATEGORY_OTHER, LAYER_CATEGORIES, layerCategory, layerCharacterName } from "./vnccs_unicanvas_naming_rules.mjs?v=1790499067345";
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790499231125";
+import { captureGroupStructure, createGroupLayer, getGroupDescendants, isGroupLayer, normalizeGroupedLayerOrder } from "./vnccs_unicanvas_groups.mjs?v=1790499231125";
+import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790499231125";
+import { CATEGORY_CHARACTERS, CATEGORY_OTHER, LAYER_CATEGORIES, layerCategory, layerCharacterName } from "./vnccs_unicanvas_naming_rules.mjs?v=1790499231125";
 
 export const AUTO_FILE_SETTING = "auto_file_layers";
 export const CANONICAL_FOLDER_ORDER = Object.freeze(["Overlays", "Effects", "Lighting", "Characters", "Props", "Background", "Other"]);
