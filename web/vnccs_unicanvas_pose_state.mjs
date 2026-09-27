@@ -489,8 +489,31 @@ export function mergePoseCache(live, cached) {
     return result;
 }
 
+const PANORAMA_CAMERA_KEYS = ["yaw", "pitch", "roll", "fov"];
+const cameraValue = (camera, key) => Number(camera?.[key] ?? (key === "fov" ? 90 : 0));
+
+/** Whether two panorama cameras ({ yaw, pitch, roll, fov }) look the same way; null matches only null. */
+export function samePanoramaCamera(a, b) {
+    if (!a || !b) return !a && !b;
+    return PANORAMA_CAMERA_KEYS.every(key => Math.abs(cameraValue(a, key) - cameraValue(b, key)) < 1e-6);
+}
+
 export function poseAtPanoramaCamera(layer, panorama) {
     const anchor = layer?.pose?.panoramaCamera;
-    return !panorama || !anchor || ["yaw", "pitch", "roll", "fov"].every(key =>
-        Math.abs(Number(anchor[key] ?? (key === "fov" ? 90 : 0)) - Number(panorama.settings[key] ?? (key === "fov" ? 90 : 0))) < 1e-6);
+    return !panorama || !anchor || samePanoramaCamera(anchor, panorama.settings);
+}
+
+/**
+ * Turns a panorama document to the camera a pose layer was posed from, committing the current
+ * view first (what the pose tool does before editing). No-op outside panoramas or when the view
+ * is already there; returns whether the camera moved.
+ */
+export function movePanoramaToPoseCamera(panorama, layer) {
+    const camera = layer?.pose?.panoramaCamera;
+    if (!panorama || !camera || poseAtPanoramaCamera(layer, panorama)) return false;
+    panorama.commit();
+    const { yaw, pitch, roll, fov } = camera;
+    panorama.setCamera({ yaw, pitch, roll, fov });
+    panorama.flushCamera();
+    return true;
 }

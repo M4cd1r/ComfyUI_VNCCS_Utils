@@ -20,7 +20,7 @@
  * controller onto the widget like the other install* modules.
  */
 
-import { getPoseCharacterMask, isImageRef, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
+import { getPoseCharacterMask, isImageRef, movePanoramaToPoseCamera, poseAtPanoramaCamera, poseCharacterIssues, poseCharacterPrompt,
   poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { studioCharacterList } from "./vnccs_unicanvas_pose_scene.mjs";
 import { forceUniCanvasPresetModelSettings } from "./vnccs_unicanvas_presets.mjs";
@@ -674,13 +674,7 @@ export function installUniCanvasCharacterBake(uc, { createEditor, modelModule = 
   async function prepareEditor(layer) {
     const editor = ensureEditor();
     if (!editor) throw new Error("The pose editor is not available.");
-    if (uc.panorama && layer.pose.panoramaCamera && !poseAtPanoramaCamera(layer, uc.panorama)) {
-      // Bakes run in the pose layer's own camera.
-      uc.panorama.commit();
-      const { yaw, pitch, roll, fov } = layer.pose.panoramaCamera;
-      uc.panorama.setCamera({ yaw, pitch, roll, fov });
-      uc.panorama.flushCamera();
-    }
+    movePanoramaToPoseCamera(uc.panorama, layer); // bakes run in the pose layer's own camera
     await editor.activate(layer, { show: editingLayer(layer) });
     await editor.flush();
     if (editor.layer !== layer || !uc.layers.includes(layer)) throw new Error("The pose layer changed. Bake again.");

@@ -274,6 +274,75 @@ test("merge replaces the selected pose layers with one layer holding every manne
     assert.match(uc.statuses.at(-1)[0], /two or more pose layers/);
 });
 
+function fakePanorama(settings) {
+    const calls = [];
+    return { settings: { yaw: 0, pitch: 0, roll: 0, fov: 90, ...settings }, calls, pending: null,
+        commit() { calls.push("commit"); }, setCamera(value) { this.pending = value; calls.push("setCamera"); },
+        flushCamera() { if (this.pending) Object.assign(this.settings, this.pending); this.pending = null; calls.push("flush"); },
+        commitLayer(layer) { calls.push(["commitLayer", layer.id, { ...this.settings }]); } };
+}
+
+test("panorama split turns to the pose layer's camera and writes every part onto the sphere (#4)", async () => {
+    const camera = { yaw: 40, pitch: -10, roll: 0, fov: 70 };
+    const original = poseLayer("pose", [character("c1", 0), character("c2", 1)], { panoramaCamera: { ...camera } });
+    const uc = sceneHost([original]);
+    uc.panorama = fakePanorama({ yaw: 0 });
+    const editor = { layer: null, async activate(layer) { this.layer = layer; }, async flush() {}, release() { this.layer = null; },
+        captureSoloPass: (size) => new PixelCanvas(size.width, size.height) };
+    scene.installUniCanvasPoseScene(uc, { createEditor: () => editor });
+    const created = await uc.splitPoseCharacters(original);
+    assert.equal(created.length, 2);
+    assert.deepEqual(uc.panorama.calls.slice(0, 3), ["commit", "setCamera", "flush"], "the view moves to the saved camera first");
+    const commits = uc.panorama.calls.filter(call => Array.isArray(call));
+    assert.deepEqual(commits.map(call => call[1]), created.map(item => item.id));
+    for (const call of commits) assert.ok(state.samePanoramaCamera(call[2], camera), "written from the pose layer's camera");
+    assert.ok(created.every(item => state.samePanoramaCamera(item.pose.panoramaCamera, camera)));
+    assert.equal(uc.history.length, 1, "one history entry");
+    assert.equal(uc.statuses.some(([, error]) => error), false);
+});
+
+test("panorama merge needs one shared camera, moves there and writes the merged layer onto the sphere (#4)", () => {
+    const camera = { yaw: 90, pitch: 0, roll: 0, fov: 60 };
+    const a = poseLayer("a", [character("c1", 0)], { panoramaCamera: { ...camera } });
+    const b = poseLayer("b", [character("c1", 0)], { panoramaCamera: { ...camera, yaw: 91 } });
+    for (const layer of [a, b]) layer.canvas = new PixelCanvas(8, 8);
+    const uc = sceneHost([a, b]);
+    uc.panorama = fakePanorama({ yaw: 0 });
+    uc.selectedLayerIds = ["a", "b"];
+    scene.installUniCanvasPoseScene(uc, {});
+    assert.equal(uc.mergePoseLayers(), null);
+    assert.match(uc.statuses.at(-1)[0], /same panorama view/);
+    assert.equal(uc.statuses.at(-1)[1], true);
+    assert.deepEqual(uc.panorama.calls, [], "a refused merge leaves the view alone");
+    assert.equal(uc.history.length, 0);
+
+    b.pose.panoramaCamera.yaw = 90;
+    const merged = uc.mergePoseLayers();
+    assert.ok(merged);
+    assert.deepEqual(uc.panorama.calls.slice(0, 3), ["commit", "setCamera", "flush"]);
+    const commit = uc.panorama.calls.find(call => Array.isArray(call));
+    assert.equal(commit[1], merged.id);
+    assert.ok(state.samePanoramaCamera(commit[2], camera));
+    assert.ok(state.samePanoramaCamera(merged.pose.panoramaCamera, camera));
+    assert.equal(uc.history.length, 1);
+    // Outside a panorama the cameras do not matter.
+    assert.equal(scene.mergePoseIssue([a, { ...b, pose: { ...b.pose, panoramaCamera: null } }]), null);
+});
+
+test("samePanoramaCamera compares yaw, pitch, roll and fov with defaults; null matches only null", () => {
+    assert.equal(state.samePanoramaCamera({ yaw: 1 }, { yaw: 1, pitch: 0, roll: 0, fov: 90 }), true);
+    assert.equal(state.samePanoramaCamera({ yaw: 1 }, { yaw: 2 }), false);
+    assert.equal(state.samePanoramaCamera(null, null), true);
+    assert.equal(state.samePanoramaCamera(null, { yaw: 0 }), false);
+    const panorama = fakePanorama({ yaw: 5 });
+    const layer = { pose: { panoramaCamera: { yaw: 5, pitch: 0, roll: 0, fov: 90 } } };
+    assert.equal(state.movePanoramaToPoseCamera(panorama, layer), false, "already there");
+    assert.equal(state.movePanoramaToPoseCamera(null, layer), false);
+    layer.pose.panoramaCamera.yaw = 6;
+    assert.equal(state.movePanoramaToPoseCamera(panorama, layer), true);
+    assert.equal(panorama.settings.yaw, 6);
+});
+
 test("the layer menu offers split for multi-character layers and merge for pose multi-selections", () => {
     const split = LAYER_MENU_ITEMS.find(item => item.id === "split-characters");
     const merge = LAYER_MENU_ITEMS.find(item => item.id === "merge-pose-layers");
