@@ -1,3 +1,4 @@
+import { crc32, deflateSync } from "node:zlib";
 import { test, expect } from "@playwright/test";
 import { addPoseCharacter, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
 
@@ -9,10 +10,37 @@ const CARD = ".vnccs-uc-pose-side .vnccs-uc-pose-character";
 const hook = (page, name, ...args) => page.evaluate(([fn, rest]) => globalThis.__VNCCS_UC_E2E__[fn](...rest), [name, args]);
 const bake = (page, id) => hook(page, "getPoseBake", id);
 
-// 2x2 PNGs: a red "generated" image and an opaque white remove-background mask.
+/** A solid opaque RGB PNG, built in memory. */
+function solidPng(width, height, [r, g, b]) {
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x += 1) row.set([r, g, b], 1 + x * 3);
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(Buffer.concat(Array.from({ length: height }, () => row)))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+// A red "generated" image at a model-like resolution (the bake cuts the character out along the
+// mannequin silhouette scaled to the result, which a 2x2 image cannot hold), a 2x2 red reference
+// and an opaque white remove-background mask.
 const PNG_RED = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGO4o6EBRAwQCgAjrgSxn17XlQAAAABJRU5ErkJggg==";
 const PNG_WHITE = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=";
-const RED_URL = `data:image/png;base64,${PNG_RED}`;
+const RED_URL = `data:image/png;base64,${solidPng(512, 512, [255, 0, 0]).toString("base64")}`;
 const WHITE_URL = `data:image/png;base64,${PNG_WHITE}`;
 const reference = (name) => ({ name, mimeType: "image/png", buffer: Buffer.from(PNG_RED, "base64") });
 
