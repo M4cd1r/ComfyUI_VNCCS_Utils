@@ -75,8 +75,9 @@ async function waitSaved(page) {
 }
 
 export const SCENARIOS = {
-  // #9: a character keyed at frame 0 and 20 (x + 200 px), scrubbed to frame 10 with its row
-  // expanded, so the dock shows the keys and the canvas the interpolated position.
+  // #9 / #33: a character keyed at frame 0 and 20 (x + 200 px, scale 110 %, rotation 12 deg),
+  // scrubbed to frame 10 with its row expanded and the Move tool active, so the dock shows the
+  // keys and the canvas the interpolated frame with its scale / rotation key handles.
   timeline: {
     shot: ".vnccs-unicanvas",
     measure: "[data-timeline-dock]",
@@ -92,15 +93,19 @@ export const SCENARIOS = {
         await input.fill(String(frame));
         await input.dispatchEvent("input");
       };
-      const x = page.locator(`${dock} [data-tl="field-x"]`).first();
-      for (const [frame, value] of [[0, "0"], [20, "200"]]) {
+      const keys = { x: ["0", "200"], scale: ["100", "110"], rotation: ["0", "12"] };
+      for (const [index, frame] of [0, 20].entries()) {
         await setFrame(frame);
-        await x.fill(value);
-        await x.dispatchEvent("input");
-        await x.dispatchEvent("change");
+        for (const [name, values] of Object.entries(keys)) {
+          const field = page.locator(`${dock} [data-tl="field-${name}"]`).first();
+          await field.fill(values[index]);
+          await field.dispatchEvent("input");
+          await field.dispatchEvent("change");
+        }
       }
       await page.locator(`${dock} .vnccs-uc-tl-expand[data-expand="${layerId}"]`).click();
       await setFrame(10);
+      await page.locator(`${SHELL} .vnccs-uc-tool[data-tool="move"]`).first().click();
       await page.waitForTimeout(800);
     },
   },
@@ -255,17 +260,23 @@ export const SCENARIOS = {
     },
   },
   // #50: ComfyUI settings switch off the brush, the eraser, mask layers, scene states and the VN
-  // preview; the standalone widget hides them live (restored in `cleanup`).
+  // preview; the standalone widget hides them live (restored in `cleanup`). The Settings dialog is
+  // open over the tab (it used to open behind it).
   "feature-toggles": {
-    shot: SHELL,
-    measure: ".vnccs-uc-tools",
+    shot: "body",
+    measure: '[role="dialog"][aria-labelledby="global-settings"]',
     toggles: ["Tools.tool_brush", "Tools.tool_eraser", "LayerTypes.maskLayers", "Features.sceneStates", "Features.vnPreview"],
     async run(page) {
       await openStandalone(page);
       for (const key of this.toggles) {
         await page.evaluate((id) => globalThis.app.extensionManager.setting.set(id, false), `VNCCS.UniCanvas.${key}`);
       }
-      await page.waitForTimeout(800);
+      // ComfyUI Settings opened from the sidebar shows on top of the tab, on the UniCanvas switches.
+      await page.getByRole("button", { name: /^Settings/ }).first().click();
+      const dialog = page.locator('[role="dialog"][aria-labelledby="global-settings"]');
+      await dialog.waitFor();
+      await dialog.getByPlaceholder(/Search Settings/).fill("UniCanvas");
+      await page.waitForTimeout(1_200);
     },
     async cleanup(page, { baseURL }) {
       for (const key of this.toggles) await page.request.post(`${baseURL}/api/settings/VNCCS.UniCanvas.${key}`, { data: true });
