@@ -15,10 +15,10 @@
 
 import { MAX_POSE_STUDIO_CHARACTERS, nextCharacterColor, nextCharacterId, nextCharacterSlot, normalizeCharacterColor,
   normalizePoseStudioCharacters } from "./vnccs_pose_characters.mjs";
-import { getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
-import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
-import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { cloneJson } from "./vnccs_unicanvas_util.mjs";
+import { getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790498789213";
+import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs?v=1790498789213";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790498789213";
+import { cloneJson } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
 
 const clone = cloneJson;
 const newId = () => (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`);

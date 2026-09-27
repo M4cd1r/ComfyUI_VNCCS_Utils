@@ -7,14 +7,14 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { renderExportFrame } from "./vnccs_unicanvas_animation_export.mjs";
-import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
-import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
-import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs";
-import { isUniCanvasEnabled, isUniCanvasToolEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
-import { isUniCanvasModalOpen, isUniCanvasTextTarget, syncUniCanvasHistoryKeyCapture, uniCanvasHistoryKeyAction } from "./vnccs_unicanvas_history_keys.mjs";
-import { isUniCanvasFeatureAvailable, isUniCanvasStandalone, markUniCanvasStandaloneNode } from "./vnccs_unicanvas_surface.mjs";
-import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
+import { renderExportFrame } from "./vnccs_unicanvas_animation_export.mjs?v=1790498789213";
+import { createLayerMeta, normalizeLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790498789213";
+import { describeDepthScaleDrag, measureLayerCharacter, normalizeSceneLight, normalizeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs?v=1790498789213";
+import { describeHarmonize, describeShadow } from "./vnccs_unicanvas_harmonize.mjs?v=1790498789213";
+import { isUniCanvasEnabled, isUniCanvasToolEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790498789213";
+import { isUniCanvasModalOpen, isUniCanvasTextTarget, routeUniCanvasCapturedKey, uniCanvasHistoryKeyAction } from "./vnccs_unicanvas_history_keys.mjs?v=1790498789213";
+import { isUniCanvasFeatureAvailable, isUniCanvasStandalone, markUniCanvasStandaloneNode } from "./vnccs_unicanvas_surface.mjs?v=1790498789213";
+import { currentPoseId, getPoseCharacterMask, poseCharacterPrompt, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs?v=1790498789213";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -63,7 +63,6 @@ const UNICANVAS_MODE_STYLES = `
 i.${UNICANVAS_SIDEBAR_ICON_CLASS} { display: inline-block; width: 1.6em; height: 1.6em; background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat; }
 .vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: ${UNICANVAS_STANDALONE_Z_INDEX}; background: #0e0b12; }
 .vnccs-uc2-standalone-shell > .vnccs-unicanvas { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; }
-.vnccs-uc2-config-hint { margin: 2px 8px 0; padding: 6px 8px; border: 1px dashed rgba(255, 143, 163, 0.35); border-radius: 8px; color: #f3c9d2; font-size: 12px; line-height: 1.3; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfy-menu,
@@ -82,8 +81,6 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .vnccs-uc2-true-fullscreen svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .vnccs-uc2-true-fullscreen.active { border-color: rgba(255, 143, 163, 0.7); background: rgba(255, 143, 163, 0.18); color: #ffdce5; }
 .vnccs-uc2-true-fullscreen:hover { background: var(--uc-hover, rgba(255, 255, 255, 0.1)); }
-.vnccs-uc2-output-actions { display: flex; gap: 6px; padding: 8px 8px 0; }
-.vnccs-uc2-output-actions .vnccs-uc-btn { flex: 1 1 auto; }
 .vnccs-uc2-toasts { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 6px; width: min(420px, calc(100% - 24px)); pointer-events: none; }
 .vnccs-uc2-toast { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px 9px 12px; border: 1px solid rgba(80, 200, 140, 0.55); border-left-width: 3px; border-radius: 10px; background: rgba(18, 15, 26, 0.96); color: #e8e8f0; font: 12px/1.35 inherit; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); pointer-events: auto; }
 .vnccs-uc2-toast.error { border-color: rgba(229, 72, 77, 0.75); }
@@ -97,9 +94,19 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
 .vnccs-uc-fullscreen .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
-/* Tool settings open beside the toolbar, never over it: the toolbar is 16px + 92px wide at its
-   own zoom, so at half zoom its right edge sits at 54px (+ a gap) in the settings' units. */
-.vnccs-uc-fullscreen .vnccs-uc-tool-settings, body.${UNICANVAS_STANDALONE_BODY_CLASS} .vnccs-uc-tool-settings { --vnccs-uc-tool-settings-left: 66px; }
+/* ComfyUI's own dialogs (Settings, confirmers) and their dimming scrim must open
+   ABOVE the standalone shell and the fullscreen portal, never behind them. The
+   standalone shell already sits below ComfyUI's dialog layers (UNICANVAS_STANDALONE_Z_INDEX);
+   the fullscreen portal covers everything, so the dialogs are lifted over both. The
+   stylesheet flag beats the inline z-index that PrimeVue/Reka set on the masks. */
+body:has(.vnccs-uc2-standalone-shell) .p-dialog-mask,
+body:has(.vnccs-uc2-fullscreen-portal) .p-dialog-mask,
+body:has(.vnccs-uc2-standalone-shell) .comfy-modal,
+body:has(.vnccs-uc2-fullscreen-portal) .comfy-modal,
+body:has(.vnccs-uc2-standalone-shell) [role="dialog"],
+body:has(.vnccs-uc2-fullscreen-portal) [role="dialog"],
+body:has(.vnccs-uc2-standalone-shell) [role="alertdialog"],
+body:has(.vnccs-uc2-fullscreen-portal) [role="alertdialog"] { z-index: 2147484000 !important; }
 `;
 
 export function ensureUniCanvasModeStyles() {
@@ -111,7 +118,7 @@ export function ensureUniCanvasModeStyles() {
   document.head.appendChild(style);
 }
 
-// Text-field and modal checks live with the undo / redo capture (vnccs_unicanvas_history_keys.mjs).
+// Text-field and modal checks live with the key routing (vnccs_unicanvas_history_keys.mjs).
 export { isUniCanvasModalOpen, isUniCanvasTextTarget };
 
 function isUniCanvasCanvasFocused(widget, event) {
@@ -145,7 +152,7 @@ function consumeUniCanvasShortcut(event) {
   event.stopPropagation();
 }
 
-export function handleUniCanvasShortcut(widget, event) {
+export function handleUniCanvasShortcut(widget, event, options = null) {
   if (!widget || !event || isUniCanvasTextTarget(event)) return false;
   // An open modal owns the keyboard: Enter activates its confirm button and
   // Escape closes the modal instead of leaving fullscreen or switching tools.
@@ -156,6 +163,11 @@ export function handleUniCanvasShortcut(widget, event) {
     return true;
   }
   const key = String(event.key || "");
+  // An open layer menu or color-match preview takes Esc before any tool or fullscreen exit.
+  if (key === "Escape" && widget.dismissLayerPopups?.()) {
+    consumeUniCanvasShortcut(event);
+    return true;
+  }
   // Pose editing owns Enter/Esc first: both save the pose and leave the editor (a Pose
   // Studio dialog keeps them). A second Esc then leaves fullscreen.
   if ((key === "Escape" || key === "Enter") && widget.tool === "pose" && widget.poseEditSession
@@ -171,18 +183,50 @@ export function handleUniCanvasShortcut(widget, event) {
     else widget.cancelTransformDraft?.();
     return true;
   }
-  // Undo / redo are not handled here. In fullscreen and the standalone tab the history key
-  // capture (vnccs_unicanvas_history_keys.mjs) owns them; inline on the node they stay with
-  // ComfyUI's own undo / redo (m4cd1r, #33).
+  // Pose editing: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z walk the mannequin's history from anywhere in
+  // the widget (the Pose Studio viewport has focus then, not the canvas).
+  const historyAction = uniCanvasHistoryKeyAction(event);
+  if (historyAction && widget.tool === "pose" && widget.poseEditSession
+    && widget.container?.contains?.(event.target)) {
+    consumeUniCanvasShortcut(event);
+    if (historyAction === "redo") widget.redo();
+    else widget.undo();
+    return true;
+  }
+  // Esc leaves the active tool before it leaves fullscreen: brush/eraser/mask/...
+  // return to Move layer on the first Esc, and the next Esc (tool is move/pan
+  // then) reaches the fullscreen exit below. Move/pan pass straight through.
+  if (key === "Escape" && widget.tool !== "move" && widget.tool !== "pan") {
+    consumeUniCanvasShortcut(event);
+    widget.setTool("move");
+    return true;
+  }
   // Esc exits fullscreen from anywhere inside the fullscreen (chrome behavior).
   if (key === "Escape" && widget._vnccsFullscreen) {
     consumeUniCanvasShortcut(event);
     exitUniCanvasFullscreen(widget);
     return true;
   }
+  const lower = key.toLowerCase();
+  const modifier = event.ctrlKey || event.metaKey;
+  // History: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y (lower === "z" || lower === "y", any keyboard layout).
+  // In fullscreen and in the standalone tab the keys count no matter which element inside the
+  // widget holds the focus (the window capture already routes them here; the focus may sit on a
+  // panel button); in node mode the capture passes historyBypass while the widget owns the keys
+  // (pointer over it or its canvas focused); elsewhere the canvas still has to hold the focus.
+  const historyFocusBypass = Boolean(widget._vnccsFullscreen)
+    || (Boolean(widget.standalone) && Boolean(widget.container?.isConnected))
+    || Boolean(options?.historyBypass);
+  if (historyAction) {
+    if (!historyFocusBypass && !isUniCanvasCanvasFocused(widget, event)) return false;
+    consumeUniCanvasShortcut(event);
+    if (historyAction === "redo") widget.redo();
+    else widget.undo();
+    return true;
+  }
   // Layer groups (Plan 05): Ctrl+G groups the selection, Ctrl+Shift+G ungroups. They also work
   // from the layer list, where the selection is made.
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && key.toLowerCase() === "g" && isUniCanvasEnabled("groups")
+  if (modifier && !event.altKey && lower === "g" && isUniCanvasEnabled("groups")
     && (isUniCanvasCanvasFocused(widget, event) || widget.layerList?.contains?.(event.target))) {
     consumeUniCanvasShortcut(event);
     if (event.shiftKey) widget.ungroupActiveLayer?.();
@@ -192,8 +236,6 @@ export function handleUniCanvasShortcut(widget, event) {
   // The rest of the shortcut map is active only while the canvas has focus
   // (spec 5), fullscreen or not.
   if (!isUniCanvasCanvasFocused(widget, event)) return false;
-  const lower = key.toLowerCase();
-  const modifier = event.ctrlKey || event.metaKey;
   // Scene states (issue #7): Alt+1..9 applies state 1-9. The code keeps it layout-independent
   // (Alt+digit types other characters on some keyboards).
   const stateDigit = /^Digit([1-9])$/.exec(String(event.code || "")) || /^[1-9]$/.exec(key);
@@ -255,8 +297,252 @@ function installUniCanvasShortcuts(widget) {
     });
   }
   widget.container.addEventListener("keydown", (event) => {
-    handleUniCanvasShortcut(widget, event);
+    // A key an inner control already used (the panorama sphere, a custom select, the timeline
+    // dock) runs no shortcut on top.
+    if (!event.defaultPrevented) handleUniCanvasShortcut(widget, event);
   });
+}
+
+// ---------------------------------------------------------------------------
+// History isolation: Ctrl+Z / Ctrl+Y never reach ComfyUI's graph undo/redo
+// while a UniCanvas surface owns the interaction
+// ---------------------------------------------------------------------------
+
+// ComfyUI's keybind handler listens on window in the BUBBLE phase
+// (useEventListener in GraphView.vue) and routes Ctrl+Z / Ctrl+Y to the
+// Comfy.Undo / Comfy.Redo commands, which revert the node workflow. A stray
+// key pressed while the user works inside a UniCanvas surface must never get
+// there: undoing the graph re-configures the node, which collapses an open
+// fullscreen and "refreshes" the workflow under the user's hands.
+//
+// A UniCanvas surface owns the history keys when
+//   - the standalone tab is active (its shell covers the whole app),
+//   - the widget is in fullscreen, or
+//   - the last pointerdown landed inside the widget (node mode; the DOM
+//     widget does not hold keyboard focus reliably) or its canvas is focused.
+// The capture listeners below register at module import, so they always run
+// before the bubble-phase keybind handler; a focused text field keeps its
+// native undo in every case.
+const uniCanvasModeWidgets = new Set();
+// Fullscreen/standalone keys the capture let through to UniCanvas's own controls (route "widget").
+const uniCanvasWidgetRoutedKeys = new WeakSet();
+let standaloneHistoryWidget = null;
+let uniCanvasHistoryLastClaimAt = 0;
+
+// Hover tracking: in node mode the widget does not hold keyboard focus, so the
+// mouse being over the widget is what makes Ctrl+Z belong to it. pointerover
+// targets only land inside the container while the widget actually receives
+// pointer events (ComfyUI toggles that as the mouse crosses the node).
+function trackUniCanvasPointerHover(event) {
+  for (const widget of uniCanvasModeWidgets) {
+    widget._vnccsPointerHover = Boolean(widget.container?.isConnected && widget.container.contains(event.target));
+  }
+}
+
+function uniCanvasHistoryOwner(event) {
+  if (document.body.classList.contains(UNICANVAS_STANDALONE_BODY_CLASS) && standaloneHistoryWidget) {
+    return standaloneHistoryWidget;
+  }
+  for (const widget of uniCanvasModeWidgets) {
+    if (widget._vnccsFullscreen) return widget;
+  }
+  for (const widget of uniCanvasModeWidgets) {
+    if (widget._vnccsPointerHover || widget._vnccsPointerInside || isUniCanvasCanvasFocused(widget, event)) return widget;
+  }
+  return null;
+}
+
+// Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y (no Alt): key === "z" || key === "y", read
+// layout-independently by uniCanvasHistoryKeyAction (vnccs_unicanvas_history_keys.mjs).
+function isUniCanvasHistoryCombo(event) {
+  return Boolean(uniCanvasHistoryKeyAction(event));
+}
+
+function uniCanvasOwnsFullKeyboard(widget) {
+  // Fullscreen and the standalone shell cover the whole app: no key may reach
+  // ComfyUI there at all. Node mode only claims the history keys (below).
+  return Boolean(widget?._vnccsFullscreen)
+    || (isUniCanvasStandalone(widget) && document.body.classList.contains(UNICANVAS_STANDALONE_BODY_CLASS));
+}
+
+function uniCanvasKeyRoute(widget, event) {
+  return routeUniCanvasCapturedKey(event, {
+    fullKeyboard: uniCanvasOwnsFullKeyboard(widget),
+    insideWidget: Boolean(event.target && widget.container?.contains?.(event.target)),
+  });
+}
+
+function handleUniCanvasHistoryKeyDown(event) {
+  // Belt and braces: the tracker gate must exist before its rAF callback runs.
+  installUniCanvasChangeTrackerGate();
+  const widget = uniCanvasHistoryOwner(event);
+  if (!widget || widget._disposed) return;
+  // Node mode only claims Ctrl+Z / Ctrl+Y; fullscreen/standalone (uniCanvasOwnsFullKeyboard(widget))
+  // claim everything except keys for a ComfyUI dialog opened above them.
+  const route = uniCanvasKeyRoute(widget, event);
+  if (route === "pass") return;
+  uniCanvasHistoryLastClaimAt = Date.now();
+  // Visible trace so the user can see who took the key (status line of the widget).
+  if (isUniCanvasHistoryCombo(event)) {
+    const label = uniCanvasHistoryKeyAction(event) === "redo" ? "Redo" : "Undo";
+    widget.setStatus?.(`[VNCCS UniCanvas] ${label} key captured`);
+  }
+  // A fullscreen/standalone key aimed inside the widget reaches UniCanvas's own controls
+  // (modals, renames, custom selects, the panorama sphere, the timeline dock, the layer menu's
+  // document listener); the container runs the shortcut map and the document edge stops it
+  // before ComfyUI's window keybindings (stopUniCanvasKeyAtDocumentEdge).
+  if (route === "widget") {
+    uniCanvasWidgetRoutedKeys.add(event);
+    return;
+  }
+  if (isUniCanvasTextTarget(event)) {
+    // A focused text field keeps its native editing and undo; ComfyUI still
+    // never sees the key.
+    event.stopImmediatePropagation();
+    return;
+  }
+  // Run the widget map first (undo/redo, tool shortcuts, modal and pose
+  // contracts); swallow the key even when the map declines or throws, so
+  // nothing ever falls through to the graph. Tab keeps its default when the
+  // map did not take it, so focus traversal inside the panels keeps working.
+  widget._vnccsHistoryOwner = true;
+  let handled;
+  try {
+    handled = handleUniCanvasShortcut(widget, event, { historyBypass: true });
+  } catch (err) {
+    console.error("[VNCCS UniCanvas] shortcut handling failed; key stays captured", err);
+  } finally {
+    delete widget._vnccsHistoryOwner;
+  }
+  event.stopImmediatePropagation();
+  if (!handled && event.key !== "Tab") event.preventDefault();
+}
+
+// keyup / keypress follow the keydown routing: keys aimed inside the widget travel on and stop
+// at the document edge, ComfyUI dialogs keep theirs, the rest stops here.
+function claimUniCanvasKeyFollowUp(event, widget) {
+  const route = uniCanvasKeyRoute(widget, event);
+  if (route === "widget") uniCanvasWidgetRoutedKeys.add(event);
+  return route === "shortcut";
+}
+
+function handleUniCanvasHistoryKeyUp(event) {
+  const widget = uniCanvasHistoryOwner(event);
+  if (!widget) return;
+  if (!claimUniCanvasKeyFollowUp(event, widget)) return;
+  if (isUniCanvasTextTarget(event)) return;
+  if (!uniCanvasOwnsFullKeyboard(widget) && !isUniCanvasHistoryCombo(event)) return;
+  event.stopImmediatePropagation();
+}
+
+function handleUniCanvasHistoryKeyPress(event) {
+  const widget = uniCanvasHistoryOwner(event);
+  if (!widget) return;
+  if (!claimUniCanvasKeyFollowUp(event, widget)) return;
+  if (isUniCanvasTextTarget(event)) return;
+  if (!uniCanvasOwnsFullKeyboard(widget)) return;
+  event.stopImmediatePropagation();
+}
+
+// The document is the last stop before ComfyUI's window keybindings: a key routed to UniCanvas's
+// own controls ends here, after every document listener (UniCanvas's layer menu, Pose Studio
+// dialogs) has seen it. stopPropagation, not stopImmediatePropagation, on purpose.
+function stopUniCanvasKeyAtDocumentEdge(event) {
+  if (uniCanvasWidgetRoutedKeys.has(event)) event.stopPropagation();
+}
+
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  window.addEventListener("keydown", handleUniCanvasHistoryKeyDown, true);
+  window.addEventListener("keyup", handleUniCanvasHistoryKeyUp, true);
+  window.addEventListener("keypress", handleUniCanvasHistoryKeyPress, true);
+  document.addEventListener("pointerover", trackUniCanvasPointerHover, true);
+  for (const type of ["keydown", "keyup", "keypress"]) document.addEventListener(type, stopUniCanvasKeyAtDocumentEdge);
+}
+
+// Belt and braces for the non-keyboard paths (Edit menu, command palette):
+// route the core commands through a gate while a UniCanvas surface owns the
+// session. Installed lazily on first mode entry - by then ComfyUI has
+// registered its core commands.
+let uniCanvasUndoGateInstalled = false;
+
+function uniCanvasOwnsHistorySession() {
+  if (document.body.classList.contains(UNICANVAS_STANDALONE_BODY_CLASS) && standaloneHistoryWidget) return true;
+  for (const widget of uniCanvasModeWidgets) {
+    if (widget._vnccsFullscreen) return true;
+  }
+  // Node mode: a history key we just claimed also owns the session - the
+  // command executes synchronously right after the keydown capture, so a
+  // short claim window is enough to catch late dispatch paths.
+  return Date.now() - uniCanvasHistoryLastClaimAt < 1500;
+}
+
+function installUniCanvasGraphUndoGate() {
+  if (uniCanvasUndoGateInstalled) return;
+  // ComfyUI's command store is a Pinia store exposing only `commands` and
+  // `execute` (no getCommand/commandsById), so the only reliable seam is the
+  // execute dispatcher itself: wrap it once and refuse Comfy.Undo / Comfy.Redo
+  // while a UniCanvas surface owns the history. This covers the Edit menu,
+  // the command palette and any keybind route - the graph can never revert.
+  const commandStore = app?.extensionManager?.command;
+  if (!commandStore || typeof commandStore.execute !== "function" || commandStore._vnccsGate) return;
+  const originalExecute = commandStore.execute;
+  commandStore._vnccsGate = true;
+  commandStore.execute = async function (commandId, ...rest) {
+    const id = String(commandId || "");
+    if ((id === "Comfy.Undo" || id === "Comfy.Redo") && uniCanvasOwnsHistorySession()) return;
+    return originalExecute.call(this, commandId, ...rest);
+  };
+  uniCanvasUndoGateInstalled = true;
+}
+
+// ComfyUI's ChangeTracker.init() registers its OWN window-capture keydown listener
+// before any extension loads, and defers the actual work to requestAnimationFrame
+// before calling changeTracker.undoRedo(event). That path never touches the command
+// store, and stopImmediatePropagation cannot cancel an already-scheduled rAF - so
+// the graph reloads (app.loadGraphData) and the node is torn down, which is what
+// collapsed fullscreen and "refreshed the workflow" for the user. The only seam
+// that covers it is the tracker itself: patch its prototype once so undo/redo
+// refuse to run while a UniCanvas surface owns the history keys.
+let uniCanvasChangeTrackerGateInstalled = false;
+
+function uniCanvasChangeTracker() {
+  try {
+    return app?.extensionManager?.workflow?.activeWorkflow?.changeTracker ?? null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function installUniCanvasChangeTrackerGate() {
+  if (uniCanvasChangeTrackerGateInstalled) return;
+  const tracker = uniCanvasChangeTracker();
+  const proto = tracker ? Object.getPrototypeOf(tracker) : null;
+  if (!proto || typeof proto.undoRedo !== "function") return;
+  if (!proto._vnccsTrackerGate) {
+    const originalUndoRedo = proto.undoRedo;
+    const originalUndo = proto.undo;
+    const originalRedo = proto.redo;
+    proto._vnccsTrackerGate = true;
+    proto.undoRedo = async function (event) {
+      // Claim the key (true = handled) so the tracker's own listener stops here
+      // instead of falling through to captureCanvasState.
+      if (uniCanvasOwnsHistorySession()) return true;
+      return originalUndoRedo.call(this, event);
+    };
+    if (typeof originalUndo === "function") {
+      proto.undo = async function (...args) {
+        if (uniCanvasOwnsHistorySession()) return undefined;
+        return originalUndo.apply(this, args);
+      };
+    }
+    if (typeof originalRedo === "function") {
+      proto.redo = async function (...args) {
+        if (uniCanvasOwnsHistorySession()) return undefined;
+        return originalRedo.apply(this, args);
+      };
+    }
+  }
+  uniCanvasChangeTrackerGateInstalled = true;
 }
 
 function toggleUniCanvasTrueFullscreen(widget) {
@@ -310,42 +596,8 @@ export function enterUniCanvasFullscreen(widget) {
   // The vertical tools column renders 50% smaller while fullscreen (user request).
   container.classList.add(UNICANVAS_FULLSCREEN_CLASS);
 
-  // Keyboard isolation for the duration of the fullscreen: window-level
-  // capture-phase listeners swallow every key event that is not targeted at
-  // input/textarea/select/[contenteditable], so LiteGraph and ComfyUI
-  // shortcuts receive nothing. An open widget modal keeps its own Enter and
-  // Escape contract, and the UniCanvas shortcut map runs first so the canvas
-  // keeps its own keys.
-  const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape");
-  // The focused panorama sphere rotates with the keyboard; this shield would otherwise stop its
-  // keys before they reach it, so it gets them first.
-  const orbitTarget = (event) => (widget.panoramaOrbit && event.target === widget.panoramaOrbit.canvas ? widget.panoramaOrbit : null);
-  const onKeyDown = (event) => {
-    // Undo / redo belong to the history key capture (vnccs_unicanvas_history_keys.mjs), from any focus.
-    if (uniCanvasHistoryKeyAction(event)) return;
-    if (isUniCanvasTextTarget(event)) return;
-    if (modalOwnsKey(event)) return;
-    orbitTarget(event)?.keyDown(event);
-    if (!event.defaultPrevented) handleUniCanvasShortcut(widget, event);
-    event.stopImmediatePropagation();
-    event.preventDefault();
-  };
-  const onKeyUp = (event) => {
-    if (isUniCanvasTextTarget(event)) return;
-    if (modalOwnsKey(event)) return;
-    orbitTarget(event)?.keyUp(event);
-    event.stopImmediatePropagation();
-    event.preventDefault();
-  };
-  const onKeyPress = (event) => {
-    if (isUniCanvasTextTarget(event)) return;
-    if (modalOwnsKey(event)) return;
-    event.stopImmediatePropagation();
-    event.preventDefault();
-  };
-  window.addEventListener("keydown", onKeyDown, true);
-  window.addEventListener("keyup", onKeyUp, true);
-  window.addEventListener("keypress", onKeyPress, true);
+  // Keyboard isolation needs no listener here: the window capture registered at import
+  // (handleUniCanvasHistoryKeyDown) claims every key while widget._vnccsFullscreen is set.
   const onFullscreenChange = () => {
     if (!widget._vnccsFullscreen) return;
     trueFullscreenBtn.classList.toggle("active", Boolean(document.fullscreenElement));
@@ -361,13 +613,15 @@ export function enterUniCanvasFullscreen(widget) {
     trueFullscreenBtn,
     restoreParent,
     restoreNextSibling,
-    onKeyDown,
-    onKeyUp,
-    onKeyPress,
     onFullscreenChange,
   };
-  syncUniCanvasHistoryKeyCapture(widget);
+  installUniCanvasGraphUndoGate();
+  installUniCanvasChangeTrackerGate();
   syncUniCanvasFullscreenButton(widget);
+  // The graph canvas behind the portal may still hold keyboard focus (entering
+  // fullscreen is mouse-only); pull focus into the widget so keys are aimed at
+  // UniCanvas from the first press.
+  widget.canvas?.focus?.({ preventScroll: true });
   // The ResizeObserver re-lays out; the view fits the new size.
   widget.resize();
   widget.fitView();
@@ -377,9 +631,6 @@ export function enterUniCanvasFullscreen(widget) {
 export function exitUniCanvasFullscreen(widget) {
   const state = widget?._vnccsFullscreen;
   if (!state) return;
-  window.removeEventListener("keydown", state.onKeyDown, true);
-  window.removeEventListener("keyup", state.onKeyUp, true);
-  window.removeEventListener("keypress", state.onKeyPress, true);
   document.removeEventListener("fullscreenchange", state.onFullscreenChange);
   widget.container._vnccsUniCanvasGraphNavigationSuspended = false;
   widget.container.classList.remove(UNICANVAS_FULLSCREEN_CLASS);
@@ -399,7 +650,9 @@ export function exitUniCanvasFullscreen(widget) {
     }
   }
   widget._vnccsFullscreen = null;
-  syncUniCanvasHistoryKeyCapture(widget);
+  // The hover seen inside the portal is stale once it is gone; the next pointer movement over
+  // the inline node claims the history keys again.
+  widget._vnccsPointerHover = false;
   syncUniCanvasFullscreenButton(widget);
   if (!widget._disposed) {
     widget.resize();
@@ -543,7 +796,11 @@ export async function saveUniCanvasOutput(widget, layerId = null) {
 }
 
 export async function newUniCanvasDocument(widget) {
-  const confirmed = await widget.confirmInWidget("New", "Are you sure?", "Confirm");
+  const confirmed = await widget.confirmInWidget(
+    "New canvas",
+    "Are you sure?\nConfirmation will delete <b>all layers</b> in canvas.",
+    "Confirm"
+  );
   if (!confirmed) return;
   // Clear every layer and image, then create one fresh base layer for new work.
   widget.stagingItems = [];
@@ -566,11 +823,13 @@ function installUniCanvasOutputActions(widget) {
   // Only the standalone tab needs these: on a node the composite already goes to the
   // node's image output, so Save to output would just duplicate it.
   if (!isUniCanvasStandalone(widget)) return;
-  const row = document.createElement("div");
-  row.className = "vnccs-uc2-output-actions";
-  row.append(widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas"));
-  widget.left.insertBefore(row, widget.left.firstChild);
-  widget._vnccsOutputActions = row;
+  // New canvas sits centered in the top toolbar (between the undo/redo/Fit cluster and
+  // the grid/gear/exit cluster) instead of a row above GENERATE; the CSS centers it
+  // absolutely so the two clusters keep their layout.
+  const newCanvasButton = widget._button(
+    "New canvas", "vnccs-uc-btn vnccs-uc-new-canvas", () => void newUniCanvasDocument(widget), "New canvas"
+  );
+  widget.settingsBar?.appendChild(newCanvasButton);
   const saveRow = document.createElement("div");
   saveRow.className = "vnccs-uc2-save-actions";
   saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"));
@@ -581,12 +840,14 @@ function installUniCanvasOutputActions(widget) {
 export function installUniCanvasWidgetModes(widget) {
   if (!widget || widget._vnccsModesInstalled) return widget;
   widget._vnccsModesInstalled = true;
+  uniCanvasModeWidgets.add(widget);
   ensureUniCanvasModeStyles();
   installUniCanvasShortcuts(widget);
   installUniCanvasFullscreenButton(widget);
   installUniCanvasOutputActions(widget);
+  installUniCanvasGraphUndoGate();
+  installUniCanvasChangeTrackerGate();
   if (isUniCanvasStandalone(widget)) {
-    installStandaloneEngineNote(widget);
     installStandalonePersistence(widget);
   }
   return widget;
@@ -595,16 +856,6 @@ export function installUniCanvasWidgetModes(widget) {
 // ---------------------------------------------------------------------------
 // Standalone sidebar mode: "Unicanvas" tab, chrome hiding, local persistence
 // ---------------------------------------------------------------------------
-
-function installStandaloneEngineNote(widget) {
-  const note = document.createElement("div");
-  note.className = "vnccs-uc2-config-hint";
-  note.textContent = "External VNCSS Config is node-mode only.";
-  const modelTabs = widget.promptBox?.querySelector(".vnccs-uc-model-tabs");
-  if (modelTabs) modelTabs.insertAdjacentElement("afterend", note);
-  else widget.promptBox?.appendChild(note);
-  widget._vnccsStandaloneEngineNote = note;
-}
 
 function writeStandaloneState(widget, state) {
   // Mirrors saveLocalStateBackup's degradation: persistence stops (after one
@@ -689,9 +940,8 @@ export function teardownUniCanvasWidgetModes(widget) {
   // Runs from widget.dispose()/onRemoved and from the standalone tab destroy():
   // leave fullscreen (without touching a disposed widget) and flush/clear the
   // pending standalone persistence timer.
+  uniCanvasModeWidgets.delete(widget);
   exitUniCanvasFullscreen(widget);
-  widget._vnccsStandaloneActive = false;
-  syncUniCanvasHistoryKeyCapture(widget);
   flushStandalonePersistence(widget);
 }
 
@@ -836,8 +1086,6 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
 
   const syncStandaloneChrome = () => {
     if (!widget) return;
-    // The open tab owns undo / redo; a hidden one gives them back to ComfyUI.
-    widget._vnccsStandaloneActive = active;
     if (active) {
       if (widget._vnccsFullscreen) exitUniCanvasFullscreen(widget);
       if (!shell) {
@@ -865,7 +1113,6 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       if (!parking) parking = document.createDocumentFragment();
       (mountContainer?.isConnected ? mountContainer : parking).appendChild(widget.container);
     }
-    syncUniCanvasHistoryKeyCapture(widget);
     widget.resize?.();
     widget.requestRender?.();
   };
@@ -886,6 +1133,8 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
     containerObserver?.disconnect();
     containerObserver = null;
     mountContainer = null;
+    // The history-isolation capture must never undo into a disposed widget.
+    standaloneHistoryWidget = null;
     // Flush and clear the pending persistence timer before disposal.
     teardownUniCanvasWidgetModes(widget);
     widget?.dispose?.();
@@ -901,6 +1150,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
     render(container) {
       mountContainer = container;
       if (!widget) widget = createStandaloneWidget(UniCanvasWidgetClass);
+      standaloneHistoryWidget = widget;
       // Read-only E2E hook (tests/e2e): exposes full-resolution layer pixels
       // and a deep clone of a live pose layer's layer.pose for assertions.
       // No behavior change.

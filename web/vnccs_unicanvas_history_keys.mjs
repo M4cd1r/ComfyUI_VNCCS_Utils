@@ -1,22 +1,26 @@
 /**
- * VNCCS UniCanvas - undo / redo key capture.
+ * VNCCS UniCanvas - key routing for the keyboard isolation.
  *
- * While UniCanvas owns the screen (the node in fullscreen, or the standalone tab while it is
- * open) Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z (Cmd on macOS) act only on the UniCanvas history and never
- * reach ComfyUI's own undo / redo. A window capture-phase listener sees the keys before any
- * ComfyUI or LiteGraph handler and stops them there:
- * - in a text field the browser's native text undo still runs (only propagation stops);
- * - with a widget modal open the keys are swallowed without touching the history;
- * - anywhere else they run `widget.undo()` / `widget.redo()` (pose edits and the timeline dock
- *   share that history).
- * Outside those surfaces the capture is not installed and ComfyUI keeps its normal keys; the
- * focused inline canvas keeps its own local shortcut map (vnccs_unicanvas_modes.mjs).
+ * vnccs_unicanvas_modes.mjs registers ONE set of window capture-phase key listeners (keydown,
+ * keyup, keypress) at import. They run before ComfyUI's keybindings, LiteGraph and the change
+ * tracker's own undo; this module holds the pure decisions they take, so they run in `node --test`:
  *
- * No import-time side effects and no ComfyUI app import, so it runs in `node --test`.
+ * - Node mode: only Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y are claimed, and only while the
+ *   widget owns them (pointer over it, last pointerdown inside it, or its canvas focused). Every
+ *   other key stays with ComfyUI and the focused inline canvas map.
+ * - Fullscreen and the open standalone tab: every key is claimed; ComfyUI keybindings never fire.
+ *   A key aimed at UniCanvas's own controls travels on to them (modals, renames, custom selects,
+ *   the panorama sphere, the timeline dock) and the widget container stops it on its way out; a
+ *   key aimed at a ComfyUI dialog opened above the tab stays with that dialog.
+ * - A focused text field keeps its native editing and undo in every case.
+ *
+ * No import-time side effects and no ComfyUI app import.
  */
 
 const TEXT_TARGET_SELECTOR = "input, textarea, select, [contenteditable]";
 const MODAL_SELECTOR = ".vnccs-uc-modal-overlay";
+/** ComfyUI's own dialogs, lifted above the fullscreen portal and the standalone shell. */
+export const COMFY_DIALOG_SELECTOR = ".p-dialog-mask, .p-dialog, .comfy-modal, [role=\"dialog\"], [role=\"alertdialog\"]";
 
 export function isUniCanvasTextTarget(event) {
   const target = event?.target;
@@ -45,57 +49,22 @@ export function uniCanvasHistoryKeyAction(event) {
   return null;
 }
 
-/** Whether UniCanvas owns the history keys: the node in fullscreen or the open standalone tab. */
-export function isUniCanvasKeyboardOwner(widget) {
-  return Boolean(widget && !widget._disposed && (widget._vnccsFullscreen || widget._vnccsStandaloneActive));
-}
-
 /**
- * What the capture does with a keydown: "pass" (not a history key, ComfyUI may have it),
- * "native" (text field: native text undo, ComfyUI does not see it), "blocked" (a widget modal
- * is open) or the history action "undo" / "redo".
+ * What the capture does with a key event while `widget` owns the keyboard route:
+ * - "pass": not claimed (node mode and not a history key, or a key for a ComfyUI dialog);
+ * - "widget": fullscreen/standalone key aimed inside the widget: it reaches UniCanvas's own
+ *   controls and the widget container stops it before ComfyUI;
+ * - "native": a history key in a text field, or any key in a text field outside the widget:
+ *   native editing and undo run, propagation stops;
+ * - "shortcut": the capture runs the UniCanvas shortcut map (history included) and swallows it.
+ * `fullKeyboard` is true in fullscreen and the open standalone tab; `insideWidget` whether the
+ * target sits in the widget container.
  */
-export function routeUniCanvasHistoryKey(widget, event) {
-  const action = uniCanvasHistoryKeyAction(event);
-  if (!action || !isUniCanvasKeyboardOwner(widget)) return "pass";
+export function routeUniCanvasCapturedKey(event, { fullKeyboard = false, insideWidget = false } = {}) {
+  const history = Boolean(uniCanvasHistoryKeyAction(event));
+  if (!fullKeyboard && !history) return "pass";
+  if (!history && insideWidget) return "widget";
+  if (!history && event?.target?.closest?.(COMFY_DIALOG_SELECTOR)) return "pass";
   if (isUniCanvasTextTarget(event)) return "native";
-  if (isUniCanvasModalOpen(widget)) return "blocked";
-  return action;
-}
-
-/** Runs a keydown through the capture; returns the route taken. */
-export function handleUniCanvasHistoryKey(widget, event) {
-  const route = routeUniCanvasHistoryKey(widget, event);
-  if (route === "pass") return route;
-  // Stop every later listener (ComfyUI's keybindings and change tracker, LiteGraph, the
-  // fullscreen shield) so the key acts exactly once.
-  event.stopImmediatePropagation?.();
-  if (route === "native") return route;
-  event.preventDefault?.();
-  if (route === "undo") widget.undo?.();
-  else if (route === "redo") widget.redo?.();
-  return route;
-}
-
-/**
- * Installs or removes the capture to match `isUniCanvasKeyboardOwner(widget)`. Idempotent; call
- * it after entering / leaving fullscreen or the standalone tab and on teardown.
- */
-export function syncUniCanvasHistoryKeyCapture(widget, target = typeof window === "undefined" ? null : window) {
-  if (!widget) return false;
-  const installed = widget._vnccsHistoryKeyCapture;
-  if (isUniCanvasKeyboardOwner(widget)) {
-    if (installed || !target?.addEventListener) return Boolean(installed);
-    const onKeyDown = (event) => {
-      handleUniCanvasHistoryKey(widget, event);
-    };
-    target.addEventListener("keydown", onKeyDown, true);
-    widget._vnccsHistoryKeyCapture = { target, onKeyDown };
-    return true;
-  }
-  if (installed) {
-    installed.target.removeEventListener("keydown", installed.onKeyDown, true);
-    widget._vnccsHistoryKeyCapture = null;
-  }
-  return false;
+  return "shortcut";
 }

@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 
 export const LAYER_TYPES = { pose: "pose" };
 
-// The standalone sidebar tab is opt-in (ComfyUI setting, off by default).
+// The standalone sidebar tab is a ComfyUI setting, enabled by default.
 export const STANDALONE_SETTING_ID = "VNCCS.UniCanvas.StandaloneSidebar";
 const UNICANVAS_TAB =
   '[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon';
@@ -39,14 +39,31 @@ export async function openUnicanvas(page, { navigate = true } = {}) {
 }
 
 /**
- * An "outside" click that closes UniCanvas popovers: the empty middle of the stage's top bar.
+ * An "outside" click that closes UniCanvas popovers: an empty stretch of the stage's top bar.
  * Not a page corner - ComfyUI's workflow tab sits there beside the standalone tab, and its
- * hover preview (a ComfyUI popover, above the tab) would then cover the widget.
+ * hover preview (a ComfyUI popover, above the tab) would then cover the widget. Not the bar's
+ * middle either: the New canvas button sits there. The point is the middle of the widest gap
+ * between the bar's controls, read from the live layout.
  */
 export async function clickOutsidePopovers(page) {
-  const bar = page.locator(".vnccs-uc2-standalone-shell .vnccs-uc-bottom").first();
-  const box = await bar.boundingBox();
-  await page.mouse.click(box.x + box.width / 2, box.y + Math.min(6, box.height / 2));
+  const point = await page.evaluate(() => {
+    const bar = document.querySelector(".vnccs-uc2-standalone-shell .vnccs-uc-bottom");
+    const box = bar.getBoundingClientRect();
+    const y = box.y + Math.min(6, box.height / 2);
+    const spans = [...bar.querySelectorAll("button, select, input, label, [role=button]")]
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => [r.left, r.right])
+      .sort((a, b) => a[0] - b[0]);
+    let best = { from: box.left, to: box.left };
+    let cursor = box.left;
+    for (const [left, right] of [...spans, [box.right, box.right]]) {
+      if (left - cursor > best.to - best.from) best = { from: cursor, to: left };
+      cursor = Math.max(cursor, right);
+    }
+    return { x: (best.from + best.to) / 2, y };
+  });
+  await page.mouse.click(point.x, point.y);
 }
 
 /** Import an image file as a raster layer through the Layers "Import Image" button. */

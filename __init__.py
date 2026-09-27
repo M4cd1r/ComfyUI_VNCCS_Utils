@@ -435,6 +435,65 @@ def _vnccs_read_unicanvas_state_cache_file(state_id):
         pass
     return entry
 
+def _vnccs_read_git_commit(root):
+    # Short HEAD commit of the checkout, read from the .git files (the security scan forbids
+    # spawning git): a worktree's .git is a "gitdir: <path>" file, HEAD is a ref or a detached
+    # hash, and the ref may be loose (in the worktree or the common dir) or packed.
+    try:
+        git_path = os.path.join(root, ".git")
+        git_dir = git_path
+        if os.path.isfile(git_path):
+            with open(git_path, "r", encoding="utf-8") as handle:
+                line = handle.read().strip()
+            if not line.startswith("gitdir:"):
+                return ""
+            git_dir = os.path.normpath(os.path.join(root, line[len("gitdir:"):].strip()))
+        with open(os.path.join(git_dir, "HEAD"), "r", encoding="utf-8") as handle:
+            head = handle.read().strip()
+        if not head.startswith("ref:"):
+            return head[:7]
+        ref = head[len("ref:"):].strip()
+        common_dir = git_dir
+        commondir_file = os.path.join(git_dir, "commondir")
+        if os.path.isfile(commondir_file):
+            with open(commondir_file, "r", encoding="utf-8") as handle:
+                common_dir = os.path.normpath(os.path.join(git_dir, handle.read().strip()))
+        for base in (git_dir, common_dir):
+            ref_path = os.path.join(base, *ref.split("/"))
+            if os.path.isfile(ref_path):
+                with open(ref_path, "r", encoding="utf-8") as handle:
+                    return handle.read().strip()[:7]
+        packed_refs = os.path.join(common_dir, "packed-refs")
+        if os.path.isfile(packed_refs):
+            with open(packed_refs, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    parts = line.strip().split(" ")
+                    if len(parts) == 2 and parts[1] == ref:
+                        return parts[0][:7]
+    except (OSError, ValueError):
+        pass
+    return ""
+
+
+def _vnccs_unicanvas_build_info():
+    # Debug identity for the UI: git commit (when the checkout has .git) plus the
+    # same newest-mtime version the frontend staleness gate compares against.
+    # The commit is read per call (cheap, once per popover open) so it can never
+    # go stale after new commits land without a server restart.
+    commit = _vnccs_read_git_commit(os.path.dirname(os.path.abspath(__file__)))
+    version = 0
+    try:
+        import re
+        web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+        pattern = re.compile(r"^vnccs_(unicanvas|custom_select|pose_studio).*\.(js|mjs)$")
+        for name in os.listdir(web_dir):
+            if pattern.match(name):
+                version = max(version, int(os.stat(os.path.join(web_dir, name)).st_mtime * 1000))
+    except Exception:
+        pass
+    return {"commit": commit or None, "version": str(version)}
+
+
 def _vnccs_register_unicanvas_state_cache():
     try:
         from server import PromptServer
@@ -469,6 +528,10 @@ def _vnccs_register_unicanvas_state_cache():
             return web.json_response({"status": "ok", "state_id": state_id})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/build_info")
+    async def vnccs_unicanvas_build_info(request):
+        return web.json_response(_vnccs_unicanvas_build_info())
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas_state/{state_id}")
     async def vnccs_unicanvas_state_get(request):

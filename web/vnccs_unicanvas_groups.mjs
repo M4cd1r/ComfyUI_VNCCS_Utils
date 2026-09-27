@@ -22,9 +22,9 @@
  * onto the widget like installUniCanvasLayerTools.
  */
 
-import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs";
-import { isImageLayer } from "./vnccs_unicanvas_pose_state.mjs";
-import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { isMaskSectionLayer } from "./vnccs_unicanvas_control.mjs?v=1790498789213";
+import { isImageLayer } from "./vnccs_unicanvas_pose_state.mjs?v=1790498789213";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790498789213";
 
 export const GROUP_LAYER_TYPE = "group";
 export const PASS_THROUGH = "pass-through";
@@ -477,8 +477,7 @@ export function moveLayerInStack(uc, sourceId, targetId, placement = "before") {
 }
 
 /** Up/down buttons: swap with the neighbouring sibling inside the same container. */
-function moveLayerAmongSiblings(uc, direction) {
-  const layer = uc.activeLayer;
+function moveLayerAmongSiblings(uc, direction, layer = uc.activeLayer) {
   if (!layer || isMaskSectionLayer(layer)) return false;
   if (transformBusy(uc)) return true;
   uc.normalizeLayerOrder();
@@ -1090,7 +1089,7 @@ export function installUniCanvasGroups(uc) {
   uc.deleteGroup = (group, mode) => deleteGroup(uc, group, mode);
   uc.confirmDeleteGroup = (group) => confirmDeleteGroup(uc, group);
   uc.moveLayerInStack = (sourceId, targetId, placement) => moveLayerInStack(uc, sourceId, targetId, placement);
-  uc.moveLayerAmongSiblings = (direction) => moveLayerAmongSiblings(uc, direction);
+  uc.moveLayerAmongSiblings = (direction, layer) => moveLayerAmongSiblings(uc, direction, layer || uc.activeLayer);
   uc.createFolderRow = (layer) => createFolderRow(uc, layer);
   uc.decorateLayerRow = (row, layer) => decorateLayerRow(uc, row, layer);
   uc.onLayerRowClick = (layerId, event) => handleLayerRowClick(uc, layerId, event);

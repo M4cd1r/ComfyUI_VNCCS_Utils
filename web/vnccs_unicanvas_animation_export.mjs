@@ -16,8 +16,8 @@
  *    composite (the export is a UI action).
  */
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790498789213";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
 
 export const ANIMATION_ROUTE = "/vnccs/unicanvas/animation";
 export const EXPORT_FORMATS = Object.freeze([

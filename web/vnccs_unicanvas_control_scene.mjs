@@ -27,10 +27,10 @@
  * panel section, the layer menu entries and the pose link onto the widget.
  */
 
-import { isControlLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
-import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs";
-import { clamp, finite, rectsIntersect } from "./vnccs_unicanvas_util.mjs";
+import { isControlLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs?v=1790498789213";
+import { isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790498789213";
+import { stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs?v=1790498789213";
+import { clamp, finite, rectsIntersect } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
 
 export const CONTROL_PREPROCESS_ROUTE = "/vnccs/unicanvas/control_preprocess";
 export const CONTROL_SOURCE_MAX_SIDE = 2048;

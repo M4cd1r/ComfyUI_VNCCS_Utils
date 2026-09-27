@@ -67,14 +67,66 @@ test("edit model reference images upload next to Steps with per-family slot mark
 });
 
 test("settings popover carries the anchored class and size contract", () => {
-    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*min-width:\s*400px/,
-        "the settings popover must be at least 400px wide");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*width:\s*440px/,
+        "the settings popover must have the hard 440px width");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*height:\s*min\(560px,\s*72vh\)/,
+        "the settings popover must use the hard 560px/72vh height");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*overflow-y:\s*auto/,
+        "the settings popover content must scroll inside the hard size");
     assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*font-size:\s*13px/,
         "the settings popover must use the larger 13px type");
-    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*max-height:\s*70vh/,
-        "the settings popover must cap its height at 70vh");
     assert.match(source, /anchorPopoverTo\(panel,\s*this\.gearBtn,\s*this\.container\)/,
         "the settings popover must be anchored under the gear inside the widget");
+});
+
+test("the Seed dice starts active on a fresh canvas", () => {
+    assert.match(source, /const DEFAULT_SEED_MODE = "randomize"/,
+        "the random seed mode must be the declared default");
+    assert.match(source, /seed_mode: DEFAULT_SEED_MODE/,
+        "fresh settings must default to the random seed mode");
+    const sync = source.match(/syncSeedModeControl\(\) \{([\s\S]*?)\n  \}/);
+    assert.ok(sync, "syncSeedModeControl missing");
+    assert.match(sync[1], /DEFAULT_SEED_MODE/,
+        "the dice highlight must read the same default");
+    assert.match(source, /if \(\(this\.settings\.seed_mode \|\| DEFAULT_SEED_MODE\) === "randomize"\) \{/,
+        "GENERATE must draw a fresh seed while the random mode is on");
+    assert.match(source, /=== "randomize" \? "fixed" : "randomize"/,
+        "the dice must still toggle back to a fixed seed");
+    assert.match(source, /seed_mode_user_set = true/,
+        "clicking the dice must record the explicit choice");
+    const migrate = source.match(/applySeedModeDefault\(\) \{([\s\S]*?)\n  \}/);
+    assert.ok(migrate, "applySeedModeDefault missing");
+    assert.match(migrate[1], /seed_mode_user_set === true/,
+        "an explicit dice choice must survive restores");
+    assert.match(migrate[1], /= DEFAULT_SEED_MODE/,
+        "states saved with the old default adopt the random dice");
+    const restoreCalls = (source.match(/this\.applySeedModeDefault\(\);/g) || []).length;
+    assert.ok(restoreCalls >= 2, "both restore paths (state and workflow settings) must migrate");
+});
+
+test("tool settings dock above the Layers section in the right sidebar", () => {
+    assert.match(source, /this\.side\.insertBefore\(this\.toolSettingsSection, layersSection\)/,
+        "tool settings must dock as a sidebar section above Layers");
+    assert.match(source, /vnccs-uc-tool-settings-section/,
+        "the docked tool settings must be styled as a sidebar section");
+    assert.match(source, /if \(this\.toolSettingsSection\) this\.toolSettingsSection\.hidden = true;/,
+        "tools without settings (move/pan/sam/bbox) must collapse the whole section");
+    assert.match(source, /this\.showToolSettingsPanel\(`\$\{title\} Settings`, html\.join\(""\)\)/,
+        "the section head must carry the active tool's title");
+    assert.match(source, /if \(this\.toolSettingsTitle\) this\.toolSettingsTitle\.textContent = title;/,
+        "showToolSettingsPanel must title the docked section");
+    assert.ok(!/\.vnccs-uc-tool-settings \{ position:absolute/.test(source),
+        "the old stage-overlay positioning must be gone");
+});
+
+test("feature panels (perspective, shadows) open the docked tool-settings section", async () => {
+    // The section is hidden by default; a feature module that only filled the inner panel left
+    // its controls (Calibrate, Scene light) invisible once tool settings moved into the sidebar.
+    for (const file of ["vnccs_unicanvas_scene_place.mjs", "vnccs_unicanvas_harmonize.mjs"]) {
+        const text = await readFile(new URL(`../web/${file}`, import.meta.url), "utf8");
+        assert.match(text, /uc\.showToolSettingsPanel\(/, `${file} must show its panel through showToolSettingsPanel`);
+        assert.ok(!/toolSettings\.classList\.add\("visible"\)/.test(text), `${file} must not toggle the inner panel by hand`);
+    }
 });
 
 test("a linked VNCSS Config greys out every UniCanvas control it overrides", () => {

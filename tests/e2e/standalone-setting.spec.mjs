@@ -8,7 +8,9 @@ test.afterEach(async ({ page }) => {
   await setStandaloneSidebar(page, true);
 });
 
-test("the standalone Unicanvas sidebar tab is opt-in and follows the ComfyUI setting live", async ({ page }) => {
+test("the standalone Unicanvas sidebar tab is on by default and follows the ComfyUI setting live", async ({ page }) => {
+  // The setting defaults to true; the store may still carry an explicit false from
+  // an older profile, so force it off before asserting the removal behavior.
   await setStandaloneSidebar(page, false);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator(".side-bar-button, [class*='side-bar']").first()).toBeVisible({ timeout: 60_000 });

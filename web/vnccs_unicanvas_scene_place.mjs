@@ -28,10 +28,10 @@
  * serialize / history hooks exported here.
  */
 
-import { groupChainOf, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs";
-import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs";
-import { feetPlacement, isZeroStateOffset, stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs";
-import { finiteOrNull } from "./vnccs_unicanvas_util.mjs";
+import { groupChainOf, isGroupLayer, isLayerEffectivelyLocked, isLayerEffectivelyVisible } from "./vnccs_unicanvas_groups.mjs?v=1790498789213";
+import { isUniCanvasEnabled } from "./vnccs_unicanvas_feature_toggles.mjs?v=1790498789213";
+import { feetPlacement, isZeroStateOffset, stateOffsetPoint } from "./vnccs_unicanvas_state_offset.mjs?v=1790498789213";
+import { finiteOrNull } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
 
 export const DEPTH_ROUTE = "/vnccs/unicanvas/depth";
 export const PERSPECTIVE_TOOL = "perspective";
@@ -900,13 +900,11 @@ function formatNumber(value) {
 }
 
 function renderPerspectivePanel(uc) {
-  const panel = uc.toolSettings;
   const perspective = perspectiveState(uc);
   const state = uc._scenePlace;
   const ref = perspective.referenceHeight;
   const button = (action, label, title, extra = "") => `<button class="vnccs-uc-btn" type="button" data-scene-action="${action}" title="${title}" ${extra}>${label}</button>`;
   const html = [
-    `<div class="vnccs-uc-tool-settings-title">Perspective Settings</div>`,
     `<div class="vnccs-uc-transform-hint" data-scene-info>Horizon y: ${formatNumber(perspective.horizonY)} · Reference: ${ref ? `${Math.round(ref.heightPx)} px at y ${Math.round(ref.feetY)}` : "not set"}</div>`,
     `<div class="vnccs-uc-transform-actions">${[
       button("calibrate", "Calibrate from selected character", "Use the selected character's feet and height as the reference"),
@@ -920,8 +918,7 @@ function renderPerspectivePanel(uc) {
   }
   html.push(`<div class="vnccs-uc-transform-hint">Drag the horizon line · the dot moves the vanishing point · figure feet: walk it along the ground · figure head: set its height</div>`);
   html.push(renderSceneLightControls(uc));
-  panel.innerHTML = html.join("");
-  panel.classList.add("visible");
+  uc.showToolSettingsPanel("Perspective Settings", html.join(""));
 }
 
 function calibrateFromSelected(uc) {

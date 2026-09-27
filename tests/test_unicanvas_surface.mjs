@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { resetUniCanvasToggles, setUniCanvasToggleValue, UNICANVAS_FEATURE_TOGGLES } from "../web/vnccs_unicanvas_feature_toggles.mjs";
+import { importUniCanvasWebModule } from "./helpers/web_module.mjs";
 import {
   UNICANVAS_NODE_SURFACE_CLASS,
   UNICANVAS_STANDALONE_ONLY_FEATURES,
@@ -14,6 +14,9 @@ import {
   uniCanvasNodeSurfaceCss,
   uniCanvasSurface,
 } from "../web/vnccs_unicanvas_surface.mjs";
+
+// The shared instance surface.mjs reads (see tests/helpers/web_module.mjs).
+const { resetUniCanvasToggles, setUniCanvasToggleValue, UNICANVAS_FEATURE_TOGGLES } = await importUniCanvasWebModule("vnccs_unicanvas_feature_toggles.mjs");
 
 const read = (name) => readFile(new URL(`../web/${name}`, import.meta.url), "utf8");
 

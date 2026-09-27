@@ -2,40 +2,40 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
-import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs";
-import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs";
-import { installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
+import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790498789213";
+import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs?v=1790498789213";
+import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs?v=1790498789213";
+import { installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs?v=1790498789213";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaDocument, isPanoramaCandidate, trimPanoramaHistory, isPanoramaLayer, panoramaLayerSettings,
   panoramaSettingsFromState, migratePanoramaState, stateHasPanorama, PANORAMA_STATE_VERSION,
-  PANORAMA_VIEW_HISTORY_KIND, applyPanoramaViewHistory } from "./vnccs_unicanvas_panorama.mjs";
-import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vnccs_unicanvas_panorama_panel.mjs";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
-import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
-import { installUniCanvasSceneStates, normalizeStateOffset, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs";
-import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs";
-import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs";
-import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs";
-import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs";
-import { applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs";
-import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs";
-import { installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs";
-import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs";
-import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs";
-import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs";
-import { installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs";
-import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
-import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
-import { AUTO_FILE_SETTING, installUniCanvasFiling, resolveAutoFile } from "./vnccs_unicanvas_filing.mjs";
+  PANORAMA_VIEW_HISTORY_KIND, applyPanoramaViewHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790498789213";
+import { PANORAMA_ICON, PANORAMA_PANEL_CSS, buildPanoramaLayerPanel } from "./vnccs_unicanvas_panorama_panel.mjs?v=1790498789213";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790498789213";
+import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790498789213";
+import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790498789213";
+import { installUniCanvasSceneStates, normalizeStateOffset, stateOffsetMatrix } from "./vnccs_unicanvas_states.mjs?v=1790498789213";
+import { installUniCanvasPoseScene } from "./vnccs_unicanvas_pose_scene.mjs?v=1790498789213";
+import { installUniCanvasVnPreview } from "./vnccs_unicanvas_vn_preview.mjs?v=1790498789213";
+import { installUniCanvasTimeline } from "./vnccs_unicanvas_timeline.mjs?v=1790498789213";
+import { buildPsdChildren, countPsdLayers } from "./vnccs_unicanvas_psd_export.mjs?v=1790498789213";
+import { applyMatrix, invertMatrix, isTranslationMatrix, transformRectBounds } from "./vnccs_unicanvas_timeline_core.mjs?v=1790498789213";
+import { compositeLayerStack, installUniCanvasGroups, isGroupLayer, isLayerEffectivelyVisible, layerDropPlacement, normalizeGroupedLayerOrder, restoreGroupStructure, serializeGroupLayer, createGroupLayer, visibleLayerRows } from "./vnccs_unicanvas_groups.mjs?v=1790498789213";
+import { installUniCanvasScenePlace, restoreSceneLight, restoreScenePerspective, serializeSceneLight, serializeScenePerspective } from "./vnccs_unicanvas_scene_place.mjs?v=1790498789213";
+import { HARMONIZE_DEFAULT_PROMPT, HARMONIZE_PROMPT_SETTING, installUniCanvasHarmonize, normalizeShadow, serializeShadow } from "./vnccs_unicanvas_harmonize.mjs?v=1790498789213";
+import { installUniCanvasProjects } from "./vnccs_unicanvas_project.mjs?v=1790498789213";
+import { installUniCanvasLibrary } from "./vnccs_unicanvas_library.mjs?v=1790498789213";
+import { installUniCanvasHistory } from "./vnccs_unicanvas_history_gallery.mjs?v=1790498789213";
+import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790498789213";
+import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs?v=1790498789213";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs?v=1790498789213";
+import { AUTO_FILE_SETTING, installUniCanvasFiling, resolveAutoFile } from "./vnccs_unicanvas_filing.mjs?v=1790498789213";
 import {
   pickRenderLodScale, clearRenderLodCaches, RENDER_LOD_OVERSAMPLE, PLAYBACK_LOD_OVERSAMPLE, PLAYBACK_LOD_CACHE_KEY,
-} from "./vnccs_unicanvas_render_lod.mjs";
-import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs";
+} from "./vnccs_unicanvas_render_lod.mjs?v=1790498789213";
+import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs?v=1790498789213";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790498789213";
 import {
   TRANSFORM_MODE_LABELS,
   applyHomography,
@@ -67,22 +67,22 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./vnccs_unicanvas_transform.mjs";
+} from "./vnccs_unicanvas_transform.mjs?v=1790498789213";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./vnccs_unicanvas_presets.mjs";
+} from "./vnccs_unicanvas_presets.mjs?v=1790498789213";
 import {
   installUniCanvasWidgetModes,
   readUniCanvasStandaloneSetting,
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./vnccs_unicanvas_modes.mjs";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
-import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs";
-import { installUniCanvasControlScene, normalizeControlSource } from "./vnccs_unicanvas_control_scene.mjs";
-import { applyUniCanvasSurface } from "./vnccs_unicanvas_surface.mjs";
+} from "./vnccs_unicanvas_modes.mjs?v=1790498789213";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790498789213";
+import { installUniCanvasControl, isControlLayer, isMaskSectionLayer, normalizeControlState } from "./vnccs_unicanvas_control.mjs?v=1790498789213";
+import { installUniCanvasControlScene, normalizeControlSource } from "./vnccs_unicanvas_control_scene.mjs?v=1790498789213";
+import { applyUniCanvasSurface } from "./vnccs_unicanvas_surface.mjs?v=1790498789213";
 import {
   bindUniCanvasFeatureToggles,
   buildUniCanvasToggleSettings,
@@ -98,10 +98,72 @@ import {
   syncUniCanvasSelectOptions,
   uniCanvasRequestOverrides,
   uniCanvasRequestSettings,
-} from "./vnccs_unicanvas_feature_toggles.mjs";
-import { escapeHtml, randomId, stagePopoverBottom } from "./vnccs_unicanvas_util.mjs";
-import { runExclusiveGeneration, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs";
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
+} from "./vnccs_unicanvas_feature_toggles.mjs?v=1790498789213";
+import { escapeHtml, randomId, stagePopoverBottom } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
+import { runExclusiveGeneration, setGenerationLock } from "./vnccs_unicanvas_draw_client.mjs?v=1790498789213";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790498789213";
+import { installUniCanvasHelpTooltips } from "./vnccs_unicanvas_help.mjs?v=1790498789213";
+
+// ---------------------------------------------------------------------------
+// Staleness gate: keep the tab's extension code in sync with the files on disk
+// ---------------------------------------------------------------------------
+
+// ComfyUI tabs live for hours and neither hash navigation nor heuristic HTTP
+// caching picks up changed extension files, so a tab can run code that no
+// longer matches web/ on disk. The constant below is regenerated by
+// scripts/bump_unicanvas_version.mjs whenever any UniCanvas web file changes.
+// This probe fetches the served entry with cache: "no-store", compares
+// versions, and reloads the page once when they differ (a sessionStorage guard
+// prevents reload loops; matching versions clear it again).
+const VNCCS_UNICANVAS_VERSION = "1790498789213";
+(() => {
+  if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
+  const guardKey = "vnccs-unicanvas-version-reload";
+  const checkStaleness = async () => {
+    try {
+      const res = await fetch(import.meta.url, { cache: "no-store" });
+      if (!res.ok) return;
+      const served = (await res.text()).match(/VNCCS_UNICANVAS_VERSION = "([^"]+)"/);
+      const servedVersion = served ? served[1] : null;
+      if (!servedVersion || servedVersion === VNCCS_UNICANVAS_VERSION) {
+        sessionStorage.removeItem(guardKey);
+        return;
+      }
+      const lastReload = Number(sessionStorage.getItem(guardKey) || 0);
+      if (Date.now() - lastReload < 20000) {
+        console.warn("[VNCCS UniCanvas] extension files changed on disk; if the UI still misbehaves, hard-reload with Ctrl+Shift+R");
+        return;
+      }
+      sessionStorage.setItem(guardKey, String(Date.now()));
+      location.reload();
+    } catch (_err) { /* the probe is best effort */ }
+  };
+  checkStaleness();
+  setInterval(checkStaleness, 90000);
+})();
+
+// Self-contained safety net for the history keys: while the fullscreen portal
+// or the standalone shell is open, Ctrl+Z / Ctrl+Y must never fall through to
+// ComfyUI's graph undo (which reverts the workflow and collapses fullscreen).
+// vnccs_unicanvas_modes.mjs owns the full keyboard contract; this shield only
+// exists so that even a stale cached modes module cannot leak the keys, and it
+// is deliberately dependency-free (no imports, hardcoded markers).
+(() => {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  window.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const key = String(event.key || "").toLowerCase();
+    if (key !== "z" && key !== "y") return;
+    const target = event.target;
+    if (target?.closest?.("input, textarea, select, [contenteditable]")) return;
+    const fullscreenOpen = Boolean(document.querySelector(".vnccs-uc2-fullscreen-portal"));
+    const standaloneOpen = document.body.classList.contains("vnccs-unicanvas-standalone-mode");
+    if (!fullscreenOpen && !standaloneOpen) return;
+    event.stopImmediatePropagation();
+    event.preventDefault();
+  }, true);
+})();
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -146,7 +208,7 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-denoise-control .vnccs-uc-range { width:100%; }
 /* Same box as the batch field next to GENERATE, so both cards line up. */
 .vnccs-uc-denoise-control .vnccs-uc-input { width:46px; height:34px; box-sizing:border-box; padding:0 4px; text-align:center; font-weight:800; }
-.vnccs-uc-layers-section { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+.vnccs-uc-layers-section { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow-y:auto; overflow-x:hidden; }
 .vnccs-uc-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 9px; color:var(--uc-accent); font-weight:700; border-bottom:1px solid var(--uc-border); }
 .vnccs-uc-section-title { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-section-actions { flex:0 0 auto; display:flex; gap:4px; align-items:center; }
@@ -177,11 +239,17 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-thumb { width:34px; height:34px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.04); object-fit:cover; display:block; }
 .vnccs-uc-layer-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
-.vnccs-uc-bottom { grid-column:2; grid-row:1; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
+.vnccs-uc-bottom { grid-column:2; grid-row:1; position:relative; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
+/* Standalone "New canvas" button: centered in the top bar without disturbing the
+   left (undo/redo/Fit) and right (grid/gear/exit) flex clusters. */
+.vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:50%; transform:translateX(-50%); }
 .vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; zoom:var(--vnccs-uc-ui-scale); transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:9px; padding:12px; border:1px solid var(--uc-border); border-radius:18px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; max-height:calc((100% - 16px) / var(--vnccs-uc-ui-scale)); overflow-y:auto; overflow-x:hidden; }
-.vnccs-uc-tool-settings { position:absolute; z-index:6; left:var(--vnccs-uc-tool-settings-left, 120px); top:52px; zoom:var(--vnccs-uc-ui-scale); display:none; max-height:calc((100% - 68px) / var(--vnccs-uc-ui-scale)); overflow-y:auto; overflow-x:hidden; box-sizing:border-box; flex-direction:column; gap:10px; width:248px; padding:14px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.86); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
+/* Tool settings are a docked sidebar section above Layers (no stage overlay anymore):
+   the section head carries the tool title, the body scrolls if a transform session
+   grows tall, and Layers keeps flex:1 so it shrinks while the dock is shown. */
+.vnccs-uc-tool-settings-section { flex:0 1 auto; min-height:0; display:flex; flex-direction:column; }
+.vnccs-uc-tool-settings { display:none; flex-direction:column; gap:10px; padding:10px 12px; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
 .vnccs-uc-tool-settings.visible { display:flex; }
-.vnccs-uc-tool-settings-title { color:var(--uc-accent); font-weight:800; font-size:14px; }
 .vnccs-uc-tool-setting { display:grid; grid-template-columns:72px minmax(0,1fr); align-items:center; gap:10px; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-tool-setting-label { color:var(--uc-muted); font-size:12px; line-height:1; white-space:nowrap; }
 .vnccs-uc-tool-setting:has(.vnccs-uc-tool-setting-value) { grid-template-columns:72px minmax(0,1fr) 38px; }
@@ -307,6 +375,11 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-draw-footer { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding-top:2px; }
 .vnccs-uc-layers-footer { padding:6px; border-top:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
 .vnccs-uc-layers-footer .vnccs-uc-btn { width:100%; }
+/* PSD export/import share one grouped 50/50 row under the Flatten button. */
+.vnccs-uc-psd-row { display:grid; grid-template-columns:auto minmax(0,1fr) minmax(0,1fr); gap:6px; align-items:center; }
+.vnccs-uc-psd-label { color:var(--uc-muted); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+.vnccs-uc-psd-row .vnccs-uc-btn { display:inline-flex; align-items:center; justify-content:center; gap:5px; padding:0 6px; min-width:0; }
+.vnccs-uc-psd-row .vnccs-uc-btn svg { width:14px; height:14px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .vnccs-uc-file { display:none; }
 .vnccs-uc-row { display:flex; gap:6px; align-items:center; }
 .vnccs-uc-staging-popover {
@@ -341,11 +414,33 @@ ${PANORAMA_PANEL_CSS}
 .vnccs-uc-settings-section > summary { cursor:pointer; padding:7px 0; font-weight:700; color:var(--uc-accent, #ff8fa3); list-style-position:inside; }
 .vnccs-uc-settings-section-body { display:grid; gap:8px; padding:0 0 10px; }
 .vnccs-uc-settings-popover {
-  position:absolute; z-index:30; min-width:400px; max-width:min(520px, calc(100% - 8px));
-  max-height:70vh; overflow-y:auto; padding:12px; border-radius:10px;
+  position:absolute; z-index:30; width:440px;
+  height:min(560px, 72vh); overflow-y:auto; overscroll-behavior:contain; padding:12px; border-radius:10px;
   background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.18);
   box-shadow:0 12px 32px rgba(0,0,0,.55); color:#e8e8f0; font-family:sans-serif; font-size:13px; display:grid; gap:8px;
+  box-sizing:border-box;
 }
+/* Help "?" buttons. The tooltip text is rendered by the shared body-level layer
+   (see vnccs_unicanvas_help.mjs): a pseudo-element tooltip would be clipped by the
+   sidebars' scroll containers, so the icons only carry data-tip. */
+.vnccs-uc-field-head .vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border); color:var(--uc-muted); font-size:10px; line-height:1; cursor:help; }
+.vnccs-uc-field-head { display:flex; align-items:center; gap:5px; min-width:0; }
+/* Inference scale: Denoise-style slider row with a live W×H size preview (duplicates the HUD chip). */
+.vnccs-uc-infer-scale { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; min-height:34px; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-infer-scale .vnccs-uc-range { width:100%; accent-color:var(--uc-accent); }
+.vnccs-uc-infer-size { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+/* No text selection inside the widget; inputs/prompts, dialogs, help text, layer menu, toasts and
+   the status/debug line stay selectable (the star-plus-exceptions form is deliberate: user-select
+   inheritance from a root rule is unreliable across browsers, and backticks are illegal inside a
+   template-literal stylesheet). */
+.vnccs-unicanvas, .vnccs-unicanvas * { user-select:none; -webkit-user-select:none; }
+.vnccs-unicanvas input, .vnccs-unicanvas textarea,
+.vnccs-unicanvas .vnccs-uc-modal, .vnccs-unicanvas .vnccs-uc-prompt-guide-body,
+.vnccs-unicanvas .vnccs-uc-help, .vnccs-unicanvas .vnccs-uc-layer-menu,
+.vnccs-unicanvas .vnccs-uc2-toast,
+.vnccs-unicanvas .vnccs-uc-progress-label { user-select:text; -webkit-user-select:text; }
+/* Build identity shown in the settings popover for bug reports. */
+.vnccs-unicanvas .vnccs-uc-build-info { margin-top: 8px; font-size: 11px; line-height: 1.4; color: var(--uc-muted); user-select: text; -webkit-user-select: text; }
 `;
 
 if (!document.getElementById("vnccs-unicanvas-styles")) {
@@ -556,6 +651,8 @@ const RENDER_LOD_MIN_CANVAS_SIDE = 1024;
 const UNICANVAS_LAYOUT_BASE_WIDTH = 320 / 0.2035;
 const UNICANVAS_LAYOUT_BASE_HEIGHT = 34 / 0.0311;
 const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "batch_size", "anima_lllite_strength", "fun_controlnet_strength", "minimax_h3_steps", "krea2_likeness"]);
+// The Seed dice starts active: every fresh canvas draws a new seed per run.
+const DEFAULT_SEED_MODE = "randomize";
 const UNICANVAS_MODEL_MODULES = {
   sdxl: {
     key: "sdxl",
@@ -824,7 +921,7 @@ function makeDefaultUniCanvasSettings() {
     positive: "",
     negative: "",
     seed: 0,
-    seed_mode: "fixed",
+    seed_mode: DEFAULT_SEED_MODE,
     batch_size: 1,
     denoise: 0.65,
     grow_mask_by: 6,
@@ -1140,11 +1237,41 @@ class UniCanvasWidget {
     );
     this.flattenLayersFooter = document.createElement("div");
     this.flattenLayersFooter.className = "vnccs-uc-layers-footer";
+    // PSD export/import share one grouped row: a small "PSD" group label plus two
+    // equal buttons. Reviewer icon semantics: Export = upload (send layers out),
+    // Import = download (bring a PSD file in).
+    const PSD_ROW_EXPORT_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 20h16"/></svg>`;
+    const PSD_ROW_IMPORT_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></svg>`;
+    this.psdImportInput = document.createElement("input");
+    this.psdImportInput.className = "vnccs-uc-file";
+    this.psdImportInput.type = "file";
+    this.psdImportInput.accept = ".psd,application/octet-stream";
+    this.psdExportBtn = this._button(`${PSD_ROW_EXPORT_ICON}<span>Export</span>`, "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD");
+    this.psdImportBtn = this._button(`${PSD_ROW_IMPORT_ICON}<span>Import</span>`, "vnccs-uc-btn", () => this.psdImportInput.click(), "Import layers from a PSD file");
+    const psdRow = document.createElement("div");
+    psdRow.className = "vnccs-uc-psd-row";
+    const psdRowLabel = document.createElement("span");
+    psdRowLabel.className = "vnccs-uc-psd-label";
+    psdRowLabel.textContent = "PSD";
+    psdRow.append(psdRowLabel, this.psdExportBtn, this.psdImportBtn);
     this.flattenLayersFooter.append(
       this._button("Flatten layers", "vnccs-uc-btn danger", () => this.confirmFlattenLayers(), "Flatten all layers"),
-      this._button("Export Layers as PSD", "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD")
+      psdRow,
+      this.psdImportInput
     );
-    this.flattenLayersFooter.lastElementChild.dataset.psdAction = "export";
+    // Settings > VNCCS > UniCanvas > PSD import/export hides everything marked data-psd-action.
+    psdRow.dataset.psdAction = "row";
+    this.psdExportBtn.dataset.psdAction = "export";
+    this.psdImportBtn.dataset.psdAction = "import";
+    // installUniCanvasLayerTools wires the PSD parse path through this explicit hook:
+    // this footer is the single owner of the row and its hidden file picker.
+    this.wirePsdImport = (onPickFile) => {
+      this.psdImportInput.addEventListener("change", () => {
+        const file = this.psdImportInput.files?.[0];
+        this.psdImportInput.value = "";
+        onPickFile?.(file);
+      });
+    };
     const layersBody = document.createElement("div");
     layersBody.className = "vnccs-uc-layers-section";
     layersBody.append(this.layerSubhead, this.layersTopActions, this.layerList, this.flattenLayersFooter);
@@ -1186,14 +1313,14 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="presets">
         <div data-preset-card-list data-config-override></div>
-        <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
+        <label class="vnccs-uc-infer-scale"><span>Inference scale</span><input class="vnccs-uc-range" data-setting="inference_scale" type="range" min="0.5" max="3" step="0.05" value="${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 3)}"><span class="vnccs-uc-infer-size" data-inference-size></span></label>
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="custom">
         <div class="vnccs-uc-mode-loader-row">
           <label class="vnccs-uc-field" data-mode-control>Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
           <label class="vnccs-uc-field" data-config-override>Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
         </div>
-        <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
+        <label class="vnccs-uc-infer-scale"><span>Inference scale</span><input class="vnccs-uc-range" data-setting="inference_scale" type="range" min="0.5" max="3" step="0.05" value="${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 3)}"><span class="vnccs-uc-infer-size" data-inference-size></span></label>
         ${loaderFields}
         <label class="vnccs-uc-field" data-family-field="krea2_edit" data-config-override title="Krea2 Identity Edit adapter: required for editing with this model">
           Edit LoRA<select class="vnccs-uc-select" data-setting="krea2_edit_lora_name"></select>
@@ -1201,12 +1328,10 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-turbo-section" data-turbo-panel data-config-override></div>
       <div class="vnccs-uc-h3-panel" data-h3-panel style="display:none">
-        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
-        <div class="vnccs-uc-h3-hint">REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.</div>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-tip="REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.">?</span></span><input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
       </div>
       <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
-        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (Krea2 Edit: 1, others: up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
-        <div class="vnccs-uc-h3-hint" data-edit-steps-hint></div>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-edit-steps-help data-tip hidden>?</span></span><input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (Krea2 Edit: 1, others: up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
       </div>
       <div class="vnccs-uc-generation-grid">
         <label class="vnccs-uc-field" data-generic-steps>Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
@@ -1269,7 +1394,21 @@ class UniCanvasWidget {
     this.stageWrap.appendChild(this.tools);
     this.toolSettings = document.createElement("div");
     this.toolSettings.className = "vnccs-uc-tool-settings";
-    this.stageWrap.appendChild(this.toolSettings);
+    // Tool settings dock in the right sidebar as a section ABOVE Layers (item 6):
+    // the Layers section keeps flex:1 and shrinks while a tool is active. The
+    // section head carries the active tool's title ("Brush Settings", ...);
+    // renderToolSettings() fills the body and collapses the section when the
+    // active tool has no settings.
+    this.toolSettingsTitle = document.createElement("span");
+    this.toolSettingsTitle.className = "vnccs-uc-section-title";
+    this.toolSettingsHead = document.createElement("div");
+    this.toolSettingsHead.className = "vnccs-uc-section-head";
+    this.toolSettingsHead.append(this.toolSettingsTitle);
+    this.toolSettingsSection = document.createElement("div");
+    this.toolSettingsSection.className = "vnccs-uc-section vnccs-uc-tool-settings-section";
+    this.toolSettingsSection.hidden = true;
+    this.toolSettingsSection.append(this.toolSettingsHead, this.toolSettings);
+    this.side.insertBefore(this.toolSettingsSection, layersSection);
 
     this.settingsBar = document.createElement("div");
     this.settingsBar.className = "vnccs-uc-settings";
@@ -1593,7 +1732,11 @@ class UniCanvasWidget {
       titleEl.textContent = title;
       const messageEl = document.createElement("div");
       messageEl.className = "vnccs-uc-modal-message";
-      messageEl.textContent = message;
+      // Callers pass our own literal copy (never user text), so innerHTML is
+      // safe here: the New canvas copy uses <b> emphasis plus a literal \n,
+      // which pre-line turns into a line break.
+      messageEl.innerHTML = message;
+      messageEl.style.whiteSpace = "pre-line";
       const actions = document.createElement("div");
       actions.className = "vnccs-uc-modal-actions";
       const cancel = this._button("Cancel", "vnccs-uc-btn", () => close(false), "Cancel");
@@ -2023,13 +2166,12 @@ class UniCanvasWidget {
     if (!this.toolSettings) return;
     const controls = this.getToolSettingControls();
     if (!controls.length) {
-      this.toolSettings.classList.remove("visible");
-      this.toolSettings.innerHTML = "";
+      this.hideToolSettingsPanel();
       return;
     }
     const titleMap = { brush: "Brush", eraser: "Eraser", mask: "Mask Brush", rect: "Rectangle", lasso: "Lasso", resize: "Transform" };
     const title = titleMap[this.tool] || this.tool;
-    const html = [`<div class="vnccs-uc-tool-settings-title">${this._escape(title)} Settings</div>`];
+    const html = [];
     if (controls.includes("brushSize")) {
       html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Size</span><input class="vnccs-uc-range" type="range" min="1" max="220" value="${this.brushSize}" data-control="brushSize"></label>`);
     }
@@ -2066,8 +2208,27 @@ class UniCanvasWidget {
       ].join("")}</div>`);
       html.push(`<div class="vnccs-uc-transform-hint">Drag inside: move · outside: rotate (Shift 15°) · corner: scale (Shift ratio, Alt center) · Ctrl+corner: distort · Ctrl+edge: skew · Ctrl+Alt+Shift+corner: perspective · Enter apply · Esc cancel</div>`);
     }
-    this.toolSettings.innerHTML = html.join("");
+    this.showToolSettingsPanel(`${title} Settings`, html.join(""));
+  }
+
+  /**
+   * Fills the docked tool-settings section (above the layers) and shows it. Every panel goes
+   * through here - the base tools and the feature modules (perspective, shadows) alike - so the
+   * section title and visibility always follow the content.
+   */
+  showToolSettingsPanel(title, html) {
+    if (!this.toolSettings) return;
+    this.toolSettings.innerHTML = html;
     this.toolSettings.classList.add("visible");
+    if (this.toolSettingsTitle) this.toolSettingsTitle.textContent = title;
+    if (this.toolSettingsSection) this.toolSettingsSection.hidden = false;
+  }
+
+  hideToolSettingsPanel() {
+    if (!this.toolSettings) return;
+    this.toolSettings.classList.remove("visible");
+    this.toolSettings.innerHTML = "";
+    if (this.toolSettingsSection) this.toolSettingsSection.hidden = true;
   }
 
   renderSamPanel() {
@@ -2207,7 +2368,10 @@ class UniCanvasWidget {
       if (!(btn instanceof HTMLElement)) return;
       if (btn.dataset.action === "seed-mode") {
         e.preventDefault();
-        this.settings.seed_mode = (this.settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
+        this.settings.seed_mode = (this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize" ? "fixed" : "randomize";
+        // The dice is a deliberate choice: it survives restores even when the
+        // built-in default changes again.
+        this.settings.seed_mode_user_set = true;
         this.syncSeedModeControl();
         this.syncSettingsToWidget();
       } else if (btn.dataset.action === "edit-refs") {
@@ -2744,8 +2908,12 @@ class UniCanvasWidget {
     if (editStepsPanel) {
       const hint = editStepsHints[moduleKey] || "";
       editStepsPanel.style.display = hint ? "" : "none";
-      const hintEl = editStepsPanel.querySelector("[data-edit-steps-hint]");
-      if (hintEl) hintEl.textContent = hint;
+      // The hint text lives on the "?" button next to Steps (shared hover tooltip) instead of a static div.
+      const helpBtn = editStepsPanel.querySelector("[data-edit-steps-help]");
+      if (helpBtn) {
+        helpBtn.dataset.tip = hint;
+        helpBtn.hidden = !hint;
+      }
     }
     const genericSteps = this.container.querySelector("[data-generic-steps]");
     if (genericSteps) {
@@ -2991,6 +3159,8 @@ class UniCanvasWidget {
 
   normalizeGenerationSettings() {
     this.forceSelectedPresetModelSettings();
+    // The scale sliders span 0.5–3; anything else (restored or preset-driven) is pulled back in.
+    this.settings.inference_scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
     this.settings.model_loader = loader.key;
     if (this.settings.model_selection_mode !== "presets") {
@@ -3103,7 +3273,7 @@ class UniCanvasWidget {
       width: Math.max(64, Math.round(rect.width)),
       height: Math.max(64, Math.round(rect.height)),
     };
-    const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
+    const scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
     const targetSide = this.getOptimalDimension() * scale;
     const targetArea = targetSide * targetSide;
     const aspectRatio = originalSize.width / originalSize.height;
@@ -3116,10 +3286,22 @@ class UniCanvasWidget {
   }
 
   syncInferenceControls(source = null) {
-    const scaleInput = this.container.querySelector('[data-setting="inference_scale"]');
-    const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
+    // Both panels (Presets and Custom) carry an inference scale slider; keep them in lockstep.
+    const scaleInputs = this.container.querySelectorAll('[data-setting="inference_scale"]');
+    const scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
     this.settings.inference_scale = scale;
-    if (scaleInput && scaleInput !== source) scaleInput.value = this.formatSettingNumber(scale, 3);
+    scaleInputs.forEach((scaleInput) => {
+      if (scaleInput !== source) scaleInput.value = this.formatSettingNumber(scale, 3);
+    });
+    this.updateInferenceSizeLabels();
+  }
+
+  // Live "W×H" preview(s) next to the inference scale sliders; duplicates the HUD `infer` chip.
+  updateInferenceSizeLabels(size = this.getInferenceSize()) {
+    const text = `${size.width}×${size.height}`;
+    this.container.querySelectorAll("[data-inference-size]").forEach((el) => {
+      if (el.textContent !== text) el.textContent = text;
+    });
   }
 
   getDenoiseControlSetting() {
@@ -3273,6 +3455,7 @@ class UniCanvasWidget {
   updateHud() {
     if (!this.hud) return;
     const inferenceSize = this.getInferenceSize();
+    this.updateInferenceSizeLabels(inferenceSize);
     this.updateZoomResetButton();
     const hudHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
     if (hudHTML !== this.lastHudHTML) {
@@ -5141,6 +5324,9 @@ class UniCanvasWidget {
     const hideMaskOverlays = this.hasOpenStagingPanel();
     // Groups: pass-through children draw in place, isolated groups through a scratch surface.
     compositeLayerStack(ctx, this.layers, (ctx, layer) => {
+      // While the pose editor is open, its live viewport draws the mannequin from the
+      // inspection camera; the baked capture-framing pixels must not ghost underneath.
+      if (this.poseEditor?.hidesLayerPixels(layer)) return;
       if (hideMaskOverlays && isMaskSectionLayer(layer)) return;
       if (isControlLayer(layer)) {
         this.controlLayers?.drawControlOverlay(ctx, layer);
@@ -5197,6 +5383,7 @@ class UniCanvasWidget {
     // VN preview: screen-space preview pass only (never in drawFlattenedLayers / makeExportCanvas).
     this.vnPreview?.drawOverlay(ctx, w, h);
     const inferenceSize = this.getInferenceSize();
+    this.updateInferenceSizeLabels(inferenceSize);
     this.updateZoomResetButton();
     const hudHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
     if (hudHTML !== this.lastHudHTML) {
@@ -6345,10 +6532,10 @@ class UniCanvasWidget {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
     }
-    if (this.layers.find(layer => layer.id === id)?.type === "pose") {
-      this.poseEditor?.commit();
-      this.recordHistoryBefore();
-    }
+    this.poseEditor?.commit();
+    // Every delete is undoable: the snapshot clones pixels, so undo restores
+    // the removed layer exactly (raster and mask layers included).
+    this.recordHistoryBefore();
     if (this.poseEditor?.layer?.id === id) this.poseEditor.release();
     this.layers = this.layers.filter((l) => l.id !== id);
     if (this.activeLayerId === id) {
@@ -6362,11 +6549,16 @@ class UniCanvasWidget {
   }
 
   duplicateActiveLayer() {
+    return this.duplicateLayer(this.activeLayer);
+  }
+
+  // Duplicates any layer (context-menu target or the active one); still exactly
+  // ONE addLayer history entry per duplicated layer.
+  duplicateLayer(layer) {
     if (this.transformDraft) {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
     }
-    const layer = this.activeLayer;
     if (!layer) return;
     if (isGroupLayer(layer)) return this.duplicateGroup(layer);
     this.panorama?.commitLayer(layer);
@@ -6413,15 +6605,24 @@ class UniCanvasWidget {
   }
 
   moveActiveLayer(direction) {
+    // Strict active-id lookup, exactly as before the refactor (no layers[0] fallback).
+    const layer = this.layers.find((l) => l.id === this.activeLayerId);
+    if (!layer) return;
+    return this.moveLayerOrder(layer, direction);
+  }
+
+  // Moves any layer within its same-type (raster vs mask) section; deliberately
+  // NO history entry, same as the header icon buttons always behaved.
+  moveLayerOrder(layer, direction) {
     if (this.transformDraft) {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
     }
-    const index = this.layers.findIndex((l) => l.id === this.activeLayerId);
+    if (!layer) return;
+    const index = this.layers.findIndex((l) => l.id === layer.id);
     if (index < 0) return;
-    const layer = this.layers[index];
     if (!isMaskSectionLayer(layer)) {
-      this.moveLayerAmongSiblings(direction);
+      this.moveLayerAmongSiblings(direction, layer);
       return;
     }
     const sameType = this.layers
@@ -6918,7 +7119,7 @@ class UniCanvasWidget {
       this.setStatus(validationError, true);
       return;
     }
-    if ((this.settings.seed_mode || "fixed") === "randomize") {
+    if ((this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize") {
       this.settings.seed = this.generateRandomSeed();
       this.syncPromptControls();
       this.flushSettingsToWidget();
@@ -7606,10 +7807,18 @@ class UniCanvasWidget {
     this.container.querySelectorAll(".vnccs-uc-textarea").forEach((textarea) => this.resizeTextareaToContent(textarea));
   }
 
+  // Canvases saved before the random-by-default change carry the old "fixed"
+  // default although the dice was never clicked: only an explicit choice
+  // (seed_mode_user_set, written by the dice) pins the mode across restores.
+  applySeedModeDefault() {
+    if (this.settings.seed_mode_user_set === true) return;
+    this.settings.seed_mode = DEFAULT_SEED_MODE;
+  }
+
   syncSeedModeControl() {
     const btn = this.container.querySelector('[data-action="seed-mode"]');
     if (!btn) return;
-    const randomMode = (this.settings.seed_mode || "fixed") === "randomize";
+    const randomMode = (this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize";
     btn.classList.toggle("active", randomMode);
     btn.title = randomMode ? "Random seed" : "Fixed seed";
     btn.setAttribute("aria-pressed", randomMode ? "true" : "false");
@@ -8126,6 +8335,7 @@ class UniCanvasWidget {
   applySerializedSettings(settings) {
     if (!settings || typeof settings !== "object") return;
     this.settings = { ...this.settings, ...settings };
+    this.applySeedModeDefault();
     this.syncPromptControls();
   }
 
@@ -8221,6 +8431,7 @@ class UniCanvasWidget {
       restoreScenePerspective(this, state.scenePerspective);
       restoreSceneLight(this, state.sceneLight);
       this.settings = { ...this.settings, ...(state.settings || {}) };
+      this.applySeedModeDefault();
       if (layers.length) {
         this.layers = layers;
         this.normalizeLayerOrder();
@@ -8638,6 +8849,18 @@ class UniCanvasWidget {
     // Asset library (vnccs_unicanvas_library.mjs): save the generation settings as a preset.
     if (this.library && sectionOn("library")) this.library.buildSettingsSection(section("library", "Asset library"));
 
+    // Build identity for bug reports: git commit + web file version.
+    const buildInfo = document.createElement("div");
+    buildInfo.className = "vnccs-uc-build-info";
+    buildInfo.textContent = "UniCanvas build: loading...";
+    buildInfo.title = "Commit and web file version - copy this into bug reports";
+    fetch("/vnccs/unicanvas/build_info", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((info) => {
+        buildInfo.textContent = "UniCanvas build: " + (info.commit || "unknown") + " - files " + (info.version || "?");
+      })
+      .catch(() => { buildInfo.textContent = "UniCanvas build: unavailable"; });
+    panel.appendChild(buildInfo);
     const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
       panel.remove();
       this._vnccsSettingsPopover = null;
@@ -8736,7 +8959,7 @@ app.registerExtension({
       name: "Show the standalone UniCanvas sidebar tab",
       tooltip: "Adds a UniCanvas workspace to the ComfyUI sidebar that works without a node or workflow.",
       type: "boolean",
-      defaultValue: false,
+      defaultValue: true,
       onChange(value) {
         // Before setup() the sidebar API may not exist yet; setup() applies the stored value.
         if (app.extensionManager?.registerSidebarTab) syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, value === true);
@@ -8749,7 +8972,13 @@ app.registerExtension({
   },
   setup() {
     bindUniCanvasFeatureToggles(app);
-    // Optional standalone Unicanvas sidebar tab (no node, no workflow), off by default.
+    // Help "?" tooltips render in a body-level layer so no sidebar clips them.
+    installUniCanvasHelpTooltips();
+    // Optional standalone Unicanvas sidebar tab (no node, no workflow), enabled by default.
+    fetch("/vnccs/unicanvas/build_info", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((info) => console.info("[VNCCS UniCanvas] build " + (info.commit || "unknown") + " - files " + (info.version || "?")))
+      .catch(() => {});
     syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, readUniCanvasStandaloneSetting());
     if (app._vnccsUniCanvasPanoramaQueueSync) return;
     const queuePrompt = app.queuePrompt;

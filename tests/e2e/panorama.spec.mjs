@@ -142,7 +142,7 @@ test("PSD export keeps the full equirectangular size", async ({ page }) => {
   await rotate(page, "ArrowRight", 9);
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    root(page).getByRole("button", { name: "Export Layers as PSD" }).click(),
+    root(page).locator('.vnccs-uc-psd-row [data-psd-action="export"]').click(),
   ]);
   const psd = fs.readFileSync(await download.path());
   expect(psd.subarray(0, 4).toString()).toBe("8BPS");
