@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { importImageLayer, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { noisePng } from "./helpers/png.mjs";
 
 // Plan 06 (#9): the scene timeline. Standalone only; no GPU. One raster "character" drawn with
 // the rect tool is keyed at two frames and scrubbed; bounds come from the read-only E2E hook.
@@ -292,4 +296,41 @@ test("timeline pose animation: prepared frames play and the last cached frame sh
   await expect.poll(async () => (await timeline(page)).poseFrames.layers[pose.id]?.length ?? 0, { timeout: 120_000 }).toBe(12);
   expect((await timeline(page)).poseDisplay[pose.id]).toMatchObject({ studioFrame: 9, shownFrame: 9 });
   expect((await comparePixels(page, await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 0))).diff).toBeGreaterThan(0);
+});
+
+test("timeline playback draws a lighter frame and pausing renders the frame at full quality", async ({ page }) => {
+  // A large noise image, zoomed out below 50 %: playback samples it from a half-size copy, so a
+  // paused stage that kept the playback frame would differ from a full-quality render.
+  const dir = join(tmpdir(), "vnccs-timeline-e2e");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "noise-1600.png");
+  writeFileSync(file, noisePng(1600, 7, 1200));
+  await openUnicanvas(page);
+  await importImageLayer(page, file);
+  const box = await page.locator(STAGE).first().boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  for (let i = 0; i < 6; i += 1) await page.mouse.wheel(0, 240);
+  await page.mouse.move(box.x + 2, box.y + 2);
+  await openTimeline(page);
+  const rotation = control(page, "field-rotation");
+  for (const [frame, value] of [[0, "0"], [71, "20"]]) {
+    await setFrame(page, frame);
+    await rotation.fill(value);
+    await rotation.dispatchEvent("input");
+    await rotation.dispatchEvent("change");
+  }
+  await setFrame(page, 0);
+  const stagePixels = () => page.evaluate(async (selector) => {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return document.querySelector(selector).toDataURL("image/png");
+  }, STAGE);
+
+  await control(page, "play").click();
+  await page.waitForTimeout(2_500); // the playback copies build on idle time within the first second
+  await control(page, "play").click();
+  const paused = await stagePixels();
+  const frame = (await timeline(page)).timeline.currentFrame;
+  expect(frame).toBeGreaterThan(0);
+  await setFrame(page, frame); // a plain full-quality render of the same frame
+  expect(await stagePixels()).toBe(paused);
 });

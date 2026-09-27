@@ -523,10 +523,13 @@ class TimelineController {
   }
 
   pause() {
+    const wasPlaying = this.playing;
     this.playing = false;
     if (this.playRaf) cancelAnimationFrame(this.playRaf);
     this.playRaf = 0;
     this.syncHeader();
+    // Playback draws a lighter frame; the paused frame renders at full quality.
+    if (wasPlaying) this.uc.requestRender?.();
   }
 
   togglePlay() {

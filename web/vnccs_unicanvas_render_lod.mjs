@@ -13,3 +13,21 @@ export function pickRenderLodScale(targetScale) {
   }
   return best;
 }
+
+// Stage oversampling for still frames: LOD copies keep 2.25x the screen density so an inactive
+// layer stays sharp at the current zoom.
+export const RENDER_LOD_OVERSAMPLE = 2.25;
+
+// Timeline playback redraws every layer on every frame: source pixels at screen density are
+// enough for a moving frame (the lightweight preview of the realtime rule); pausing renders the
+// frame at full quality again. On a CPU rasterizer this halves the cost of rotated 1080p layers.
+export const PLAYBACK_LOD_OVERSAMPLE = 1;
+export const PLAYBACK_LOD_CACHE_KEY = "_playbackLodCache";
+
+/** Every per-layer LOD cache; a pixel change clears them all. */
+export const RENDER_LOD_CACHE_KEYS = Object.freeze(["_renderLodCache", "_hiresRenderLodCache", PLAYBACK_LOD_CACHE_KEY]);
+
+export function clearRenderLodCaches(layer) {
+  if (!layer) return;
+  for (const key of RENDER_LOD_CACHE_KEYS) layer[key] = null;
+}

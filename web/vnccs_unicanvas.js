@@ -31,7 +31,9 @@ import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
 import { describeKeepAreas } from "./vnccs_unicanvas_remove_bg_keep.mjs";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAMING_LEVELS, AUTO_NAMING_SETTING, installUniCanvasAutoNaming, resolveAutoNameModel, resolveAutoNamingLevel } from "./vnccs_unicanvas_naming.mjs";
 import { AUTO_FILE_SETTING, installUniCanvasFiling, resolveAutoFile } from "./vnccs_unicanvas_filing.mjs";
-import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
+import {
+  pickRenderLodScale, clearRenderLodCaches, RENDER_LOD_OVERSAMPLE, PLAYBACK_LOD_OVERSAMPLE, PLAYBACK_LOD_CACHE_KEY,
+} from "./vnccs_unicanvas_render_lod.mjs";
 import { buildStagingSnapshot, bumpLayerPixelRevision, cloneLayerMeta, createLayerMeta, formatProvenanceTooltip, metaFromStagingSnapshot, normalizeLayerMeta, setLayerOrigin } from "./vnccs_unicanvas_provenance.mjs";
 import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs";
 import {
@@ -546,7 +548,6 @@ const STATE_UPLOAD_DEBOUNCE_MS = 1200;
 const HISTORY_LIMIT = 20;
 const MOVE_SNAP_GRID_SIZE = 64;
 const RENDER_LOD_MIN_CANVAS_SIDE = 1024;
-const RENDER_LOD_OVERSAMPLE = 2.25;
 
 const UNICANVAS_LAYOUT_BASE_WIDTH = 320 / 0.2035;
 const UNICANVAS_LAYOUT_BASE_HEIGHT = 34 / 0.0311;
@@ -1724,8 +1725,7 @@ class UniCanvasWidget {
     if (this.panorama) layer._panoramaDirty = true;
     layer._boundsCache = undefined;
     layer._thumbCache = undefined;
-    layer._renderLodCache = null;
-    layer._hiresRenderLodCache = null;
+    clearRenderLodCaches(layer);
   }
 
   invalidateLayerThumbnail(layer) {
@@ -1738,8 +1738,7 @@ class UniCanvasWidget {
     bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
-    layer._renderLodCache = null;
-    layer._hiresRenderLodCache = null;
+    clearRenderLodCaches(layer);
   }
 
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
@@ -1747,8 +1746,7 @@ class UniCanvasWidget {
     bumpLayerPixelRevision(layer);
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
-    layer._renderLodCache = null;
-    layer._hiresRenderLodCache = null;
+    clearRenderLodCaches(layer);
     if (!expandOnly) {
       layer._boundsCache = undefined;
       return;
@@ -5199,6 +5197,9 @@ class UniCanvasWidget {
 
   drawMaskLayer(ctx, layer) {
     if (this.hasOpenStagingPanel()) return;
+    // Nothing edits the mask while the timeline plays: measure its bounds once instead of tinting
+    // the whole canvas on every frame, and skip an empty one.
+    if (this.timelinePanel?.playing && this.getLayerAlphaBounds(layer) === null) return;
     const crop = this.getVisibleLayerCrop(layer.canvas, this.getLayerRenderBounds(layer));
     if (!crop) return;
     const lod = this.shouldUseLayerLod(layer) ? this.getRenderLodCanvas(layer, layer.canvas, "_renderLodCache") : null;
@@ -5265,10 +5266,10 @@ class UniCanvasWidget {
     ctx.drawImage(canvas, crop.sx, crop.sy, crop.sw, crop.sh, crop.dx, crop.dy, crop.sw, crop.sh);
   }
 
-  drawLayerCanvasVisibleWithLod(ctx, layer, canvas, contentBounds = null, cacheKey = "_renderLodCache") {
+  drawLayerCanvasVisibleWithLod(ctx, layer, canvas, contentBounds = null, cacheKey = "_renderLodCache", oversample = RENDER_LOD_OVERSAMPLE) {
     const crop = this.getVisibleLayerCrop(canvas, contentBounds);
     if (!crop) return;
-    const lod = this.getRenderLodCanvas(layer, canvas, cacheKey);
+    const lod = this.getRenderLodCanvas(layer, canvas, cacheKey, oversample);
     if (!lod) {
       ctx.drawImage(canvas, crop.sx, crop.sy, crop.sw, crop.sh, crop.dx, crop.dy, crop.sw, crop.sh);
       return;
@@ -5341,7 +5342,9 @@ class UniCanvasWidget {
       // The source crop is the visible rect mapped back into the layer's rest space.
       this._visibleWorldRectForRender = visibleWorld ? transformRectBounds(inverse, visibleWorld) : null;
       try {
-        if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+        if (this._visibleWorldRectForRender && this.timelinePanel?.playing) {
+          this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer), PLAYBACK_LOD_CACHE_KEY, PLAYBACK_LOD_OVERSAMPLE);
+        } else if (this._visibleWorldRectForRender && useLod) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
         else if (this._visibleWorldRectForRender) this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
         else ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
       } finally {
@@ -5409,8 +5412,8 @@ class UniCanvasWidget {
     ctx.drawImage(source, sx * scaleX, sy * scaleY, worldRect.width * scaleX, worldRect.height * scaleY, destRect.x, destRect.y, destRect.width, destRect.height);
   }
 
-  getRenderLodCanvas(layer, sourceCanvas, cacheKey = "_renderLodCache") {
-    const scale = this.getRenderLodScale(sourceCanvas);
+  getRenderLodCanvas(layer, sourceCanvas, cacheKey = "_renderLodCache", oversample = RENDER_LOD_OVERSAMPLE) {
+    const scale = this.getRenderLodScale(sourceCanvas, oversample);
     if (scale >= 1) return null;
     const cache = layer[cacheKey];
     if (cache?.source === sourceCanvas && cache.scale === scale && cache.width === sourceCanvas.width && cache.height === sourceCanvas.height) {
@@ -5468,10 +5471,10 @@ class UniCanvasWidget {
     return layer[cacheKey];
   }
 
-  getRenderLodScale(canvas) {
+  getRenderLodScale(canvas, oversample = RENDER_LOD_OVERSAMPLE) {
     if (!canvas || Math.max(canvas.width, canvas.height) < RENDER_LOD_MIN_CANVAS_SIDE) return 1;
     const dpr = window.devicePixelRatio || 1;
-    return pickRenderLodScale(this.view.scale * dpr * RENDER_LOD_OVERSAMPLE);
+    return pickRenderLodScale(this.view.scale * dpr * oversample);
   }
 
   getLayerRenderBounds(layer) {
