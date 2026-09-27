@@ -530,9 +530,10 @@ test("a restore that throws after the panels applied rolls the timeline and scen
   assert.deepEqual(w.restoredStates.at(-1)?.states.map((state) => state.id), ["st1"], "the rollback restores the snapshot");
 });
 
-test("a throwing scene state or timeline restore keeps the loaded canvas", async () => {
+test("a throwing timeline restore keeps the loaded canvas and the new scene's states", async () => {
   const w = oldSceneWidget();
-  w.restoreSceneStates = () => { throw new Error("panel boom"); };
+  const oldTimeline = w.timeline;
+  w.timelinePanel = { restore: () => { throw new Error("dock boom"); } };
   const warn = console.warn;
   console.warn = () => {};
   let ok;
@@ -544,6 +545,34 @@ test("a throwing scene state or timeline restore keeps the loaded canvas", async
   assert.equal(ok, true, "a panel error must not fail (and roll back) the canvas restore");
   assert.deepEqual(w.layers.map((layer) => layer.id), ["L2"]);
   assert.equal(w.activeLayerId, "L2");
+  assert.notEqual(w.timeline, oldTimeline, "the old scene's timeline never survives onto the new scene");
+  assert.equal(w.timeline, null, "a failed dock restore falls back to no timeline");
+  assert.deepEqual(w.sceneStates.states.map((state) => state.id), ["st9"], "the new scene's states stay applied");
+  assert.match(w.statusCalls.at(-1).text, /Scene data could not be fully restored/);
+  assert.equal(w.statusCalls.at(-1).isError, true);
+});
+
+test("a throwing scene state restore leaves no old timeline or states for the next autosave", async () => {
+  const w = oldSceneWidget();
+  const oldTimeline = w.timeline;
+  w.restoreSceneStates = () => { throw new Error("panel boom"); };
+  const warn = console.warn;
+  console.warn = () => {};
+  let ok;
+  try {
+    ok = await w.applySerializedState(nextSceneState());
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(ok, true, "a panel error must not fail (and roll back) the canvas restore");
+  assert.deepEqual(w.layers.map((layer) => layer.id), ["L2"]);
+  assert.notEqual(w.timeline, oldTimeline, "the old scene's timeline never survives onto the new scene");
+  assert.equal(w.timeline, null);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(w.sceneStates)),
+    { activeStateId: null, moveScope: null, newLayersHidden: false, states: [] },
+    "the old scene's states are not left on the new scene",
+  );
   assert.match(w.statusCalls.at(-1).text, /Scene data could not be fully restored/);
   assert.equal(w.statusCalls.at(-1).isError, true);
 });

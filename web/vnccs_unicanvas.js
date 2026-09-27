@@ -8518,6 +8518,17 @@ class UniCanvasWidget {
       } catch (panelErr) {
         console.warn("[VNCCS UniCanvas] Scene state or timeline restore failed; the loaded scene stays", panelErr);
         this.setStatus(`Scene data could not be fully restored: ${panelErr.message || panelErr}`, true);
+        // Realign the panel models with the loaded scene: a partial failure (one panel restored,
+        // the other not, or one throwing before its assignment) must never leave the old scene's
+        // timeline or states on the widget, where the next autosave would write them into this
+        // scene. Both are cleared first to the models a scene without such data carries, so even
+        // a failing retry cannot leave the old scene's data behind.
+        this.timeline = null;
+        this.sceneStates = { activeStateId: null, moveScope: null, newLayersHidden: false, states: [] };
+        try {
+          this.restoreSceneStates?.(state.sceneStates);
+          this.timelinePanel?.restore(state.timeline);
+        } catch (_) { /* the loaded scene keeps the empty models */ }
       }
       this.syncPromptControls();
       this.updateSnapButton();
