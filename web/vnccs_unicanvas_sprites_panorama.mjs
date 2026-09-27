@@ -19,7 +19,7 @@
  * panorama draws straight into `layer.canvas`). Pure helpers run under Node for tests.
  */
 
-import { sphereToView, viewToSphere } from "./vnccs_unicanvas_panorama.mjs?v=1790497347734";
+import { sphereToView, viewToSphere } from "./vnccs_unicanvas_panorama.mjs?v=1790498789213";
 
 export const SPRITE_CAMERA_KEYS = Object.freeze(["yaw", "pitch", "roll", "fov"]);
 

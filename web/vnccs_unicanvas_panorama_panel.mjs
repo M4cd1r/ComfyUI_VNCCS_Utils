@@ -1,10 +1,10 @@
 // Panorama view panel: the orientation sphere, exact camera, projection and navigation-quality
 // controls, and Reset / Cancel / Save. It is shown only during a panorama view session (#33),
 // which the panorama layer's globe button opens. The widget only builds it and calls update().
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790497347734";
-import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790497347734";
-import { PANORAMA_NAVIGATION_QUALITY, PANORAMA_PROJECTIONS, isPanoramaLayer, normalizePanorama } from "./vnccs_unicanvas_panorama.mjs?v=1790497347734";
-import { PanoramaViewSession } from "./vnccs_unicanvas_panorama_view.mjs?v=1790497347734";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790498789213";
+import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790498789213";
+import { PANORAMA_NAVIGATION_QUALITY, PANORAMA_PROJECTIONS, isPanoramaLayer, normalizePanorama } from "./vnccs_unicanvas_panorama.mjs?v=1790498789213";
+import { PanoramaViewSession } from "./vnccs_unicanvas_panorama_view.mjs?v=1790498789213";
 
 // Globe with a view cone: the panorama layer's row button.
 export const PANORAMA_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="3.6" ry="8.5"/><path d="M3.5 12h17"/></svg>';

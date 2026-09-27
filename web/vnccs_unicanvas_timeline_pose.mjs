@@ -16,7 +16,7 @@
  */
 
 import { clamp, finiteNumber } from "./vnccs_animation_core.mjs";
-import { hashString } from "./vnccs_unicanvas_timeline_core.mjs?v=1790497347734";
+import { hashString } from "./vnccs_unicanvas_timeline_core.mjs?v=1790498789213";
 
 export const POSE_FRAME_CACHE_BYTES = 256 * 1024 * 1024;
 export const POSE_BAKED_NOTE = "baked characters use 2D motion and sprite variants";

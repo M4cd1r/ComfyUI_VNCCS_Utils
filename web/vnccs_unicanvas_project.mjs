@@ -22,9 +22,9 @@
  * The widget only calls installUniCanvasProjects() and a few `widget.projectSession?.` hooks.
  */
 
-import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790497347734";
-import { uniCanvasSurface } from "./vnccs_unicanvas_surface.mjs?v=1790497347734";
-import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs?v=1790497347734";
+import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs?v=1790498789213";
+import { uniCanvasSurface } from "./vnccs_unicanvas_surface.mjs?v=1790498789213";
+import { ensureStyleTag } from "./vnccs_unicanvas_util.mjs?v=1790498789213";
 
 export const PROJECTS_BASE = "/vnccs/unicanvas/projects";
 export const PROJECT_POINTER_KEY = "vnccs-unicanvas-standalone-project";
