@@ -133,7 +133,8 @@ test("sprite set: create, add presets, generate missing in one undo step, switch
   }
   // `,` / `.` cycle variants while the canvas has focus.
   const beforeKey = (await sprite(page, id)).activeVariantId;
-  await page.locator(STAGE).hover();
+  // The shortcut map is canvas-focused (like every tool key); the variant button kept focus.
+  await page.locator(STAGE).focus();
   await page.keyboard.press(".");
   await expect.poll(async () => (await sprite(page, id)).activeVariantId).not.toBe(beforeKey);
   await page.keyboard.press(",");

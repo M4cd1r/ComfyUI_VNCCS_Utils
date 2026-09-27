@@ -19,7 +19,8 @@ const layers = (page) => hook(page, "listLayers");
 
 async function snapshot(page) {
   const out = {};
-  for (const layer of await layers(page)) out[layer.id] = (await hook(page, "getLayerPixels", layer.id)).dataURL;
+  // A layer still loading after a reload has no canvas yet: null, so a poll keeps waiting.
+  for (const layer of await layers(page)) out[layer.id] = (await hook(page, "getLayerPixels", layer.id))?.dataURL ?? null;
   return out;
 }
 

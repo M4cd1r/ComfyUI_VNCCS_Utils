@@ -84,3 +84,15 @@ export async function setLayerNaming(page, { level, autoFile } = {}) {
   await panel.locator('button:has-text("Close")').click();
   await expect(panel).toHaveCount(0);
 }
+
+/**
+ * Add a mannequin in the embedded Pose Studio: the slot buttons sit in the "Characters" section
+ * of the pose side "Scene" tab, which starts collapsed. `slot` is 1-based ("Add Character 2").
+ */
+export async function addPoseCharacter(page, slot) {
+  const side = page.locator(".vnccs-uc-pose-side");
+  await side.getByRole("tab", { name: "Scene" }).click();
+  const section = side.locator(".vnccs-ps-characters-section");
+  if (await section.evaluate((el) => el.classList.contains("collapsed"))) await section.locator(".vnccs-ps-section-header").click();
+  await side.locator(`[aria-label="Add Character ${slot}"]`).click();
+}

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { addPoseCharacter, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
 
 // Plan 01 (#4): several mannequins in one pose layer, one reference each, exact per-character
 // masks from the ID pass, and split / merge of pose layers. Nothing here runs inference.
@@ -65,7 +65,7 @@ test("two mannequins bind their own references, get disjoint masks and split int
   expect((await scene(page, pose.id)).hasCharacterRefs).toBe(false);
 
   // Add a second mannequin in the embedded studio: the card switches to one row per mannequin.
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-count`)).toHaveText("1/2 characters bound");
   await uploadFor(page, 1, reference("bob.png", PNG_BLUE));
@@ -104,7 +104,7 @@ test("removing a mannequin drops its reference", async ({ page }) => {
   await openUnicanvas(page);
   await openPoseTool(page);
   const pose = await poseLayer(page);
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
   await uploadFor(page, 1, reference("bob.png", PNG_BLUE));
   await expect.poll(async () => (await scene(page, pose.id)).characters[1]?.ref?.name ?? null).toBe("bob.png");
@@ -144,7 +144,7 @@ test("an interaction preset keeps bound references and bodies by slot", async ({
   await openUnicanvas(page);
   await openPoseTool(page);
   const pose = await poseLayer(page);
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
   await uploadFor(page, 0, reference("alice.png", PNG_RED));
   await uploadFor(page, 1, reference("bob.png", PNG_BLUE));
@@ -174,7 +174,7 @@ test("a multi-character pose sets the active layer's mannequins in order and und
   await openPoseTool(page);
   const pose = await poseLayer(page);
   for (const slot of [2, 3]) {
-    await page.locator(`.vnccs-uc-pose-side [aria-label="Add Character ${slot}"]`).click();
+    await addPoseCharacter(page, slot);
     await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(slot, { timeout: 30_000 });
   }
   await uploadFor(page, 0, reference("alice.png", PNG_RED));

@@ -191,12 +191,31 @@ async function addShadow(page, sourceId, label) {
   });
 }
 
+/**
+ * Pans the view (Pan tool) until a world point sits at the stage centre, clear of the floating
+ * tool-settings panel, then returns to the Move tool (the active shadow layer keeps the gizmo).
+ */
+async function revealOnStage(page, world) {
+  const box = await page.locator(stage).first().boundingBox();
+  const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const at = await client(page, world);
+  await page.locator(`${shell} .vnccs-uc-tool[data-tool="pan"]`).click();
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down();
+  await page.mouse.move(center.x + (center.x - at.x), center.y + (center.y - at.y), { steps: 6 });
+  await page.mouse.up();
+  await page.locator(`${shell} .vnccs-uc-tool[data-tool="move"]`).click();
+  const now = await client(page, world);
+  expect(Math.abs(now.x - center.x)).toBeLessThan(4);
+}
+
 async function setLight(page, key, value) {
   await page.locator(`${shell} [data-light-control="${key}"]`).fill(String(value));
 }
 
 test("shadow layers follow their character live, obey the light, detach, undo and persist", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // newLayerAfter counts exactly one new layer
   await newLayerAfter(page, () => importImageLayer(page, BACKDROP));
   const figure = await newLayerAfter(page, () => importImageLayer(page, CHARACTER));
   const start = await character(page, figure.id);
@@ -248,6 +267,7 @@ test("shadow layers follow their character live, obey the light, detach, undo an
   await expect.poll(async () => (await centroid(page, cast.id)).x - moved.feet.x).toBeGreaterThan(10);
 
   // A light gesture on the sun handle is one undo entry.
+  await revealOnStage(page, moved.feet);
   const lightBefore = await hook(page, "getSceneLight");
   const radius = Math.max(24, moved.rect.height * 0.6);
   const reach = radius * (0.12 + 0.88 * (1 - lightBefore.elevation / 90));
@@ -284,6 +304,7 @@ test("shadow layers follow their character live, obey the light, detach, undo an
 
 test("dragging the sun turns the cast shadow live, always away from the light (#19)", async ({ page }) => {
   await openUnicanvas(page);
+  await setLayerNaming(page, { autoFile: false }); // newLayerAfter counts exactly one new layer
   await newLayerAfter(page, () => importImageLayer(page, BACKDROP));
   const figure = await newLayerAfter(page, () => importImageLayer(page, CHARACTER));
   const start = await character(page, figure.id);
@@ -295,6 +316,7 @@ test("dragging the sun turns the cast shadow live, always away from the light (#
 
   // The sun handle sits on an ellipse around the feet (same geometry as the gizmo); drag it along
   // that ellipse from the left (270) through the front (0) to the right (90) without releasing.
+  await revealOnStage(page, start.feet);
   const light = await hook(page, "getSceneLight");
   const radius = Math.max(24, start.rect.height * 0.6);
   const reach = radius * (0.12 + 0.88 * (1 - light.elevation / 90));

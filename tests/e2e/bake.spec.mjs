@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
+import { addPoseCharacter, openPoseTool, openUnicanvas, poseLayer } from "./helpers/app.mjs";
 
 // Plan 02 (#5): character bake and scene Generate. /vnccs/unicanvas/draw and
 // /vnccs/unicanvas/remove_bg are stubbed with in-memory PNGs, so nothing runs inference.
@@ -106,7 +106,7 @@ test("a manual bake is staged, accepted and shown; Show mannequin needs no histo
 
   // Editing the pose makes the bake stale; its pixels stay visible after saving.
   await page.locator(`${SHELL} [data-layer-id="${pose.id}"] .vnccs-uc-layer-edit-pose`).click();
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await page.locator('.vnccs-uc-pose-side [aria-label="Remove Character 2"]').click();
   await page.locator('[role="dialog"] button, [class*="modal"] button', { hasText: /^Remove/ }).last().click();
   const box = await page.locator(STAGE).first().boundingBox();
@@ -125,7 +125,7 @@ test("GENERATE bakes the bound mannequin only, runs the scene pass, and one undo
   await useBakeEngine(page);
   await openPoseTool(page);
   const pose = await poseLayer(page);
-  await page.locator('.vnccs-uc-pose-side [aria-label="Add Character 2"]').click();
+  await addPoseCharacter(page, 2);
   await expect(page.locator(`${CARD} .vnccs-uc-pose-character-item`)).toHaveCount(2, { timeout: 30_000 });
   const row = page.locator(`${CARD} .vnccs-uc-pose-character-item`).first();
   const [chooser] = await Promise.all([page.waitForEvent("filechooser"), row.getByRole("button", { name: "Upload image" }).click()]);
