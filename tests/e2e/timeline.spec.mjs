@@ -147,14 +147,28 @@ test("timeline: keys, scrub, hold, auto-key off, seeded blink, undo and reload",
 // Plan 06.2 (#18): animation export and pose animation. The export routes are stubbed with
 // page.route (nothing is encoded); pose frames are real mannequin renders on the CPU lane.
 
-async function readPixels(page, dataUrls) {
-  return page.evaluate(async (urls) => Promise.all(urls.map(async (url) => {
-    const bitmap = await createImageBitmap(await (await fetch(url)).blob());
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(bitmap, 0, 0);
-    return { width: bitmap.width, height: bitmap.height, data: Array.from(ctx.getImageData(0, 0, bitmap.width, bitmap.height).data) };
-  })), dataUrls);
+/**
+ * Compares two PNG data URLs in the page (1024 px frames are too large to ship as arrays):
+ * both sizes, the number of differing RGBA values and whether `a` has any opaque pixel.
+ */
+async function comparePixels(page, a, b) {
+  return page.evaluate(async ([first, second]) => {
+    const read = async (url) => {
+      const bitmap = await createImageBitmap(await (await fetch(url)).blob());
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmap, 0, 0);
+      return { width: bitmap.width, height: bitmap.height, data: ctx.getImageData(0, 0, bitmap.width, bitmap.height).data };
+    };
+    const [x, y] = await Promise.all([read(first), read(second)]);
+    let diff = Math.abs(x.data.length - y.data.length);
+    let opaque = false;
+    for (let i = 0; i < Math.min(x.data.length, y.data.length); i += 1) {
+      if (x.data[i] !== y.data[i]) diff += 1;
+      if (i % 4 === 3 && x.data[i] > 0) opaque = true;
+    }
+    return { a: { width: x.width, height: x.height }, b: { width: y.width, height: y.height }, diff, opaque };
+  }, [a, b]);
 }
 
 test("timeline export: a PNG sequence streams N ordered frames equal to the scrubbed frames", async ({ page }) => {
@@ -211,14 +225,12 @@ test("timeline export: a PNG sequence streams N ordered frames equal to the scru
   for (const k of [0, 3, 5]) {
     await setFrame(page, k);
     const scrubbed = await hook(page, "renderTimelineFrame", (await timeline(page)).timeline.currentFrame);
-    const [exported, expected] = await readPixels(page, [received[k], scrubbed]);
-    expect(exported.width).toBe(expected.width);
-    expect(exported.height).toBe(expected.height);
-    expect(exported.data).toEqual(expected.data);
+    const compared = await comparePixels(page, received[k], scrubbed);
+    expect(compared.a).toEqual(compared.b);
+    expect(compared.diff, `export frame ${k} equals scrubbed frame ${k}`).toBe(0);
   }
   // Frames differ where the layer moved.
-  const [first, last] = await readPixels(page, [received[0], received[5]]);
-  expect(first.data).not.toEqual(last.data);
+  expect((await comparePixels(page, received[0], received[5])).diff).toBeGreaterThan(0);
   expect(hero.id).toBeTruthy();
 });
 
@@ -270,14 +282,14 @@ test("timeline pose animation: prepared frames play and the last cached frame sh
   // Frame 9 is missing: the last cached frame (3) shows, identical to scene frame 3.
   await setFrame(page, 9);
   expect((await timeline(page)).poseDisplay[pose.id]).toMatchObject({ studioFrame: 9, shownFrame: 3 });
-  const [held, three] = await readPixels(page, [await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 3)]);
-  expect(held.data).toEqual(three.data);
-  expect(held.data.some((value, index) => index % 4 === 3 && value > 0)).toBe(true);
+  const held = await comparePixels(page, await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 3));
+  expect(held.a).toEqual(held.b);
+  expect(held.diff).toBe(0);
+  expect(held.opaque).toBe(true);
 
   // Prepare pose frames fills the rest; frame 9 now shows its own render.
   await control(page, "prepare-pose").click();
   await expect.poll(async () => (await timeline(page)).poseFrames.layers[pose.id]?.length ?? 0, { timeout: 120_000 }).toBe(12);
   expect((await timeline(page)).poseDisplay[pose.id]).toMatchObject({ studioFrame: 9, shownFrame: 9 });
-  const [nine, zero] = await readPixels(page, [await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 0)]);
-  expect(nine.data).not.toEqual(zero.data);
+  expect((await comparePixels(page, await hook(page, "renderTimelineFrame", 9), await hook(page, "renderTimelineFrame", 0))).diff).toBeGreaterThan(0);
 });
