@@ -869,7 +869,10 @@ function createStateRow(uc, state, index) {
     e.stopPropagation();
     startRename(uc, state, name);
   });
-  row.addEventListener("pointerenter", () => previewSceneState(uc, state.id));
+  // Preview on real pointer movement only: the panel re-renders on apply / undo, and the browser
+  // then sends pointerenter to the new row under a resting pointer, which would silently swap the
+  // canvas to the hovered state right after an undo.
+  row.addEventListener("pointermove", () => previewSceneState(uc, state.id));
   row.addEventListener("pointerleave", () => endPreview(uc));
   row.addEventListener("dragstart", (e) => {
     endPreview(uc);
