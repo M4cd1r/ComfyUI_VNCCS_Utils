@@ -11,8 +11,18 @@ const noop = () => {};
 class Element {
     constructor(tag = "div") {
         this.tagName = tag.toUpperCase(); this.children = []; this.events = {}; this.style = { setProperty(key, value) { this[key] = value; } };
-        this.attrs = {}; this.classList = { add: noop, remove: noop, toggle: noop };
-        this.scrollTop = 0; this.scrollLeft = 0; this.clientWidth = 1000; this.clientHeight = 800;
+        this.attrs = {}; this.scrollTop = 0; this.scrollLeft = 0; this.clientWidth = 1000; this.clientHeight = 800;
+        const classes = new Set();
+        this.classList = {
+            add: (...names) => names.forEach(name => classes.add(name)),
+            remove: (...names) => names.forEach(name => classes.delete(name)),
+            toggle: (name, force) => {
+                const next = force === undefined ? !classes.has(name) : Boolean(force);
+                if (next) classes.add(name); else classes.delete(name);
+                return next;
+            },
+            contains: name => classes.has(name),
+        };
     }
     appendChild(child) { child.parentElement?.removeChild(child); this.children.push(child); child.parentElement = this; return child; }
     append(...children) { children.forEach(child => this.appendChild(child)); }
@@ -103,6 +113,7 @@ function selectionHarness() {
         setVisible: show => calls.push(["visible", show]), layout: noop,
         activate: async (selected, options) => calls.push(["activate", selected.id, options.show]),
         setCharacterOpen: open => calls.push(["character", open]),
+        resetInspectionView: () => calls.push(["resetView"]),
         generation: async selected => { calls.push(["generation", selected.id]); throw new Error("Capture stopped by test"); },
     };
     return { host, layer, raster, calls };
@@ -507,6 +518,53 @@ test("serialized pose, move history, node output and PSD use the same dedicated 
     assert.match(ucSource, /isImageLayer\(layer\) && isLayerEffectivelyVisible\(this\.layers, layer\)/);
     assert.match(ucSource, /pose_edit: poseRequest\?\.pose_edit/);
     assert.match(ucSource, /positive: poseRequest\.positive, denoise: 1/);
+});
+
+test("a moved view shows the capture frame and dims the stack until Reset view or Home", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    const studio = controlled.instances[0];
+    const framing = JSON.parse(JSON.stringify(layer.pose.viewport));
+    assert.equal(editor.resetBtn.disabled, true, "aligned at session start: nothing to reset");
+    assert.equal(editor.frameEl.classList.contains("on"), false);
+    assert.equal(editor.shade.classList.contains("on"), false);
+
+    // Orbit away: the view stays where the user left it, the frame shows what will be captured
+    // and the 2D stack dims (it is no longer aligned with the rect). No snap on release.
+    studio.viewer.orbit.fire("start");
+    studio.viewer.camera.position.fromArray([90, 80, 70]);
+    studio.viewer.orbit.fire("end");
+    assert.equal(editor.frameEl.classList.contains("on"), true, "the capture frame shows while misaligned");
+    assert.equal(editor.shade.classList.contains("on"), true, "the 2D stack dims while misaligned");
+    assert.equal(editor.resetBtn.disabled, false);
+    assert.equal(JSON.stringify(layer.pose.viewport), JSON.stringify(framing), "navigation never rewrites the framing");
+
+    editor.resetBtn.fire("click");
+    assert.equal(JSON.stringify(studio.viewer.camera.position.toArray()), JSON.stringify(framing.position),
+        "Reset view returns the camera to the framing");
+    assert.equal(editor.frameEl.classList.contains("on"), false);
+    assert.equal(editor.resetBtn.disabled, true);
+
+    // Home does the same from the keyboard; the wheel toggles the frame too.
+    studio.viewer.camera.position.fromArray([5, 6, 7]);
+    studio.canvas.fire("wheel", { deltaY: -100 });
+    assert.equal(editor.frameEl.classList.contains("on"), true);
+    studio.canvasContainer.fire("keydown", { key: "Home", target: new Element() });
+    assert.equal(JSON.stringify(studio.viewer.camera.position.toArray()), JSON.stringify(framing.position));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(editor.inspecting, false);
+    editor.release();
+});
+
+test("Save pose and Cancel put the preview camera back on the capture framing", () => {
+    const { host, layer, calls } = selectionHarness();
+    host.editPoseLayer(layer);
+    host.finishPoseEdit(true);
+    assert.ok(calls.some(call => call[0] === "resetView"), "session end resets the preview camera");
+    host.editPoseLayer(layer);
+    host.finishPoseEdit(false);
+    assert.equal(calls.filter(call => call[0] === "resetView").length, 2, "Cancel resets it too");
 });
 
 test("captures run on the persisted framing; existing layers keep their saved framing", async () => {

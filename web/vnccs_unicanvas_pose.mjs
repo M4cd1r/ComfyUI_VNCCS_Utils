@@ -46,6 +46,10 @@ const styles = `
 .vnccs-uc-pose-editbar { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); display:flex; align-items:center; gap:8px; max-width:calc(100% - 24px); padding:6px 8px 6px 12px; box-sizing:border-box; border:1px solid var(--uc-border); border-radius:12px; background:rgba(14,11,20,.94); box-shadow:0 12px 32px rgba(0,0,0,.45); pointer-events:auto; zoom:var(--vnccs-uc-ui-scale); z-index:3; }
 .vnccs-uc-pose-editbar strong { color:var(--uc-accent, #ff8fa3); font-size:12px; white-space:nowrap; }
 .vnccs-uc-pose-editbar .vnccs-uc-pose-hint { color:var(--uc-muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.vnccs-uc-pose-root > .vnccs-uc-pose-shade { position:absolute; background:rgba(6,4,12,.55); opacity:0; pointer-events:none; }
+.vnccs-uc-pose-root > .vnccs-uc-pose-shade.on { opacity:1; }
+.vnccs-uc-pose-root > .vnccs-uc-pose-capture-frame { position:absolute; border:2px solid #ffa500; box-shadow:0 0 0 1px rgba(0,0,0,.55), inset 0 0 20px rgba(255,165,0,.14); opacity:0; pointer-events:none; }
+.vnccs-uc-pose-root > .vnccs-uc-pose-capture-frame.on { opacity:1; }
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap { position:absolute; flex:none; min-width:0; min-height:0; margin:0; padding:0; background:transparent; border:0; border-radius:0; pointer-events:auto; overflow:hidden; }
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap canvas { background:transparent; }
 .vnccs-uc-pose-root > [class*="modal"], .vnccs-uc-pose-root > .vnccs-ps-manager, .vnccs-uc-pose-root > .vnccs-ps-manager-detail-strip { pointer-events:auto; }
@@ -185,19 +189,24 @@ export class UniCanvasPoseEditor {
                 this.saveCaptureFraming();
             }
             // Inspection-only navigation: moving the camera must never bake pixels, persist a
-            // viewport or touch the mannequin, so orbit end no longer commits anything.
+            // viewport or touch the mannequin, so orbit end no longer commits anything. It does
+            // refresh the alignment feedback (capture frame, dim, Reset view).
             studio.viewer.orbit.addEventListener("start", () => {
                 if (this.token === token) this.inspecting = true;
             });
             studio.viewer.orbit.addEventListener("end", () => {
-                if (this.token === token) this.inspecting = false;
+                if (this.token === token) { this.inspecting = false; this.updateViewAlignment(); }
             });
             // Wheel dollying bypasses OrbitControls events; keep captures out of its frames.
             studio.canvas.addEventListener("wheel", () => {
                 if (this.token !== token) return;
                 this.inspecting = true;
+                this.updateViewAlignment();
                 clearTimeout(this.wheelInspectionTimer);
-                this.wheelInspectionTimer = setTimeout(() => { this.inspecting = false; }, 160);
+                this.wheelInspectionTimer = setTimeout(() => {
+                    this.inspecting = false;
+                    this.updateViewAlignment();
+                }, 160);
             }, { passive: true });
             this.initialized = true;
             this.layout();
@@ -220,6 +229,12 @@ export class UniCanvasPoseEditor {
         const studio = this.studio, root = studio.container;
         const controls = document.createElement("div"); controls.className = "vnccs-uc-pose-controls";
         this.controls = controls;
+        // Alignment feedback lives between the 2D stack and the viewport: while the free view is
+        // away from the capture framing, a dim covers the stage (the layers below are no longer
+        // aligned with the rect) and the orange capture frame shows what will be captured.
+        const shade = document.createElement("div"); shade.className = "vnccs-uc-pose-shade";
+        const frame = document.createElement("div"); frame.className = "vnccs-uc-pose-capture-frame";
+        this.shade = shade; this.frameEl = frame;
         // While editing, the right sidebar (denoise, masks, layers) is replaced by this panel.
         const side = document.createElement("div"); side.className = "vnccs-uc-pose-side";
         const head = document.createElement("div"); head.className = "vnccs-uc-pose-side-head";
@@ -230,6 +245,7 @@ export class UniCanvasPoseEditor {
         const tabs = document.createElement("div"); tabs.className = "vnccs-uc-pose-tabs";
         tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "Pose settings");
         dock.appendChild(tabs);
+        root.appendChild(shade);
         root.appendChild(studio.canvasContainer);
         // Keep shared scene state and action references alive without a second action toolbar.
         studio.centerPanel.hidden = true;
@@ -275,6 +291,8 @@ export class UniCanvasPoseEditor {
         side.append(head, this.buildCharacterMenu(), dock);
         controls.append(this.buildEditBar());
         root.appendChild(controls);
+        // The capture frame reads above the viewport, but never takes pointers from it.
+        root.appendChild(frame);
         this.sidePanel = side;
         this.dock = dock;
         this.pages = panels;
@@ -305,17 +323,27 @@ export class UniCanvasPoseEditor {
             element.addEventListener("pointerdown", event => event.stopPropagation());
             element.addEventListener("wheel", event => event.stopPropagation(), { passive: true });
         }
+        // Home puts the free view back on the capture framing straight from the viewport.
+        studio.canvasContainer.addEventListener("keydown", event => {
+            if (event.key !== "Home" || event.target.closest?.("input, textarea, select")) return;
+            event.preventDefault();
+            this.resetInspectionView();
+        });
     }
 
     buildEditBar() {
         const bar = document.createElement("div"); bar.className = "vnccs-uc-pose-editbar";
         const title = document.createElement("strong"); title.textContent = "Editing pose";
         const hint = document.createElement("span"); hint.className = "vnccs-uc-pose-hint";
-        hint.textContent = "Left: joints · Right-drag: orbit · Middle: pan · Wheel: zoom - inspect only, the camera never changes the layer";
+        hint.textContent = "Right-drag: orbit view · Middle: pan · Wheel: zoom · the layer keeps its 2D framing";
+        const reset = this.host._button("Reset view", "vnccs-uc-btn", () => this.resetInspectionView(), "Put the editing view back on the capture frame (Home)");
+        reset.classList.add("vnccs-uc-pose-reset");
+        reset.disabled = true;
+        this.resetBtn = reset;
         const library = this.host._button("Pose Library", "vnccs-uc-btn", () => this.studio?.showLibraryModal?.(), "Load a pose from the Pose Library");
         const cancel = this.host._button("Cancel", "vnccs-uc-btn", () => this.host.finishPoseEdit(false), "Discard this edit session and restore the pose");
         const save = this.host._button("Save pose", "vnccs-uc-btn primary", () => this.host.finishPoseEdit(true), "Keep the pose and leave the editor (Enter / Esc)");
-        bar.append(title, hint, library, cancel, save);
+        bar.append(title, hint, reset, library, cancel, save);
         this.editBar = bar;
         return bar;
     }
@@ -687,12 +715,28 @@ export class UniCanvasPoseEditor {
         surface.style.opacity = String(this.layer.opacity);
         surface.style.mixBlendMode = this.layer.blendMode === "source-over" ? "normal" : this.layer.blendMode;
         surface.hidden = !this.layer.visible || this.layer.locked || this.host.hasOpenStagingPanel();
+        this.layoutOverlays(rect);
         this.syncSessionViewOffset(rect);
+        this.updateViewAlignment();
         if (!this.visible && this.initialized) {
             const scale = Math.min(1, 1024 / Math.max(rect.width, rect.height));
             this.studio.performViewerResize(Math.round(rect.width * scale), Math.round(rect.height * scale));
         }
         this.refreshCharacterMenu();
+    }
+
+    // The dim covers the stage; the capture frame sits exactly where the rect renders.
+    layoutOverlays(rect) {
+        const stage = this.host.stageWrap, view = this.host.view;
+        if (this.shade) {
+            Object.assign(this.shade.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
+                width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
+        }
+        if (this.frameEl) {
+            Object.assign(this.frameEl.style, { left: `${stage.offsetLeft + view.x + rect.x * view.scale}px`,
+                top: `${stage.offsetTop + view.y + rect.y * view.scale}px`,
+                width: `${rect.width * view.scale}px`, height: `${rect.height * view.scale}px` });
+        }
     }
 
     // Session view model: the viewport camera shows the capture framing so that the pose rect is
@@ -726,6 +770,38 @@ export class UniCanvasPoseEditor {
 
     saveCaptureFraming() {
         this.layer.pose.viewport = this.snapshotViewerCamera();
+        // The Scene sliders re-seeded the framing the camera is sitting on: aligned again.
+        this.updateViewAlignment();
+    }
+
+    // True while the inspection camera sits exactly on the persisted capture framing.
+    viewMatchesFraming() {
+        const viewport = this.layer?.pose?.viewport;
+        if (!this.initialized || !viewport) return true;
+        const live = this.snapshotViewerCamera();
+        return JSON.stringify(live) === JSON.stringify({
+            position: viewport.position, target: viewport.target, fov: viewport.fov, zoom: viewport.zoom || 1,
+        });
+    }
+
+    // Reset view (bar button / Home): the free view returns to the capture framing, so the rect
+    // region shows the layer's pixels one to one again. The session keeps running.
+    resetInspectionView() {
+        const viewport = this.layer?.pose?.viewport;
+        if (!this.studio || !viewport) return;
+        this.applyViewerCamera(viewport);
+        this.updateViewAlignment();
+        if (this.visible) this.studio.viewer.requestRender?.();
+    }
+
+    // Realtime alignment feedback: capture frame over the rect, dim over the 2D stack, and the
+    // Reset view button enabled, exactly while the view differs from the framing.
+    updateViewAlignment() {
+        if (!this.frameEl) return;
+        const aligned = this.viewMatchesFraming();
+        this.frameEl.classList.toggle("on", !aligned);
+        this.shade?.classList.toggle("on", !aligned);
+        if (this.resetBtn) this.resetBtn.disabled = aligned;
     }
 
     applyViewerCamera(camera) {
@@ -1239,6 +1315,7 @@ export class UniCanvasPoseEditor {
         this.characterSelect = null; this.characterMenuKey = null; this.characterBakeSlot = null; this.characterList = null; this.characterRowSelects = null; this.stateKey = null; this.pages = null;
         this.sidePanel?.remove();
         this.controls = null; this.characterMenu = null; this.sidePanel = null; this.editBar = null;
+        this.shade = null; this.frameEl = null; this.resetBtn = null;
         this.host.container.classList.remove("vnccs-uc-pose-active", "vnccs-uc-pose-editing");
     }
     dispose() { this.release(); this.abort.abort(); }

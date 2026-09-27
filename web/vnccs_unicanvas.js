@@ -2072,6 +2072,9 @@ class UniCanvasWidget {
     if (!session?.view) return;
     this.view = { ...session.view };
     this.intendedScale = session.intendedScale ?? this.view.scale;
+    // Session view model: leaving the edit also puts the preview camera back on the capture
+    // framing, so re-entering the session starts exactly on the layer's pixels again.
+    this.poseEditor?.resetInspectionView?.();
     this.poseEditor?.layout();
     this.requestRender();
   }
