@@ -778,7 +778,7 @@ test("panorama cache hydration restores only the matching uploaded character pix
     assert.equal(cached.character.dataURL, "pixels");
 });
 
-test("Pose Studio dimension inputs immediately resize the live rect and viewer", () => {
+test("Pose Studio dimension inputs resize the rect around its center (6f)", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     layer.pose.studio.export = { view_width: 400, view_height: 600 };
     let seen;
@@ -787,6 +787,13 @@ test("Pose Studio dimension inputs immediately resize the live rect and viewer",
     assert.equal(layer.pose.rect.width, 640); assert.equal(host.bbox.height, 480);
     assert.deepEqual(seen, [640, 480]);
     assert.equal(layer.pose.rect.height, 480);
+    // The center stays: the figure keeps its world-px scale instead of jumping with the corner.
+    assert.equal(JSON.stringify([layer.pose.rect.x, layer.pose.rect.y]), JSON.stringify([10 - 120, 20 + 60]),
+        "anchored at the rect center (center (210, 320) is kept)");
+    // A rect that no longer matches the bbox leaves the bbox alone.
+    host.bbox = { x: 0, y: 0, width: 64, height: 64 };
+    editor.applyDimensions({ view_width: 320, view_height: 240 });
+    assert.equal(host.bbox.width, 64);
 });
 
 test("captures lift the session view offset for the render and put it back", async () => {

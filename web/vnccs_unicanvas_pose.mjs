@@ -1028,7 +1028,11 @@ export class UniCanvasPoseEditor {
         const width = Math.max(64, Math.min(4096, Math.round(Number(params.view_width) || rect.width)));
         const height = Math.max(64, Math.min(4096, Math.round(Number(params.view_height) || rect.height)));
         if (rect.width === width && rect.height === height) return;
-        const next = { ...rect, width, height };
+        // Anchor the resize at the rect center (6f): the camera framing is unchanged, so the
+        // figure keeps its world-px scale and stays put instead of jumping with the top-left
+        // corner while the canvas grows and shrinks around it.
+        const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+        const next = { x: cx - width / 2, y: cy - height / 2, width, height };
         if (!this.host.ensureWorldRectBounds(next, 0)) return;
         const bbox = this.host.bbox;
         const followsBbox = ["x", "y", "width", "height"].every(key => bbox[key] === rect[key]);
