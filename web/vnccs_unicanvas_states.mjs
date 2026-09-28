@@ -278,6 +278,44 @@ export function hideLayerInOtherStates(scene, layer) {
   }
 }
 
+/** The states that switch the sprite layer's variant (the rasterize confirm list). */
+export function spriteVariantStateRefs(scene, spriteLayerId) {
+  const refs = [];
+  for (const state of scene?.states || []) {
+    const variantId = state.layers?.[spriteLayerId]?.spriteVariantId;
+    if (typeof variantId === "string" && variantId) refs.push({ stateId: state.id, name: state.name, variantId });
+  }
+  return refs;
+}
+
+/**
+ * Rasterize rewrite (vnccs_unicanvas_sprites.mjs): a state that switched the sprite's variant
+ * now shows exactly that child layer; a state that only stored the sprite's visibility or
+ * opacity moves it to the group. Mutates the states in place; the caller records the whole
+ * change as one sceneStates history entry. Returns whether anything changed.
+ */
+export function rewriteSpriteStateRefs(scene, spriteLayerId, groupId, variantLayerIds) {
+  let changed = false;
+  for (const state of scene?.states || []) {
+    const layers = state.layers || (state.layers = {});
+    const entry = layers[spriteLayerId];
+    if (!entry) continue;
+    delete layers[spriteLayerId];
+    changed = true;
+    const groupEntry = { ...(layers[groupId] || {}) };
+    if (entry.opacity !== undefined) groupEntry.opacity = entry.opacity;
+    const variantId = typeof entry.spriteVariantId === "string" ? entry.spriteVariantId : null;
+    if (entry.visible === false) groupEntry.visible = false;
+    else if (variantId && variantLayerIds.has(variantId)) {
+      for (const [variant, childId] of variantLayerIds) {
+        layers[childId] = { ...(layers[childId] || {}), visible: variant === variantId };
+      }
+    } else groupEntry.visible = true;
+    if (Object.keys(groupEntry).length) layers[groupId] = groupEntry;
+  }
+  return changed;
+}
+
 export const isLayerReferenced = (scene, layerId) => (scene?.states || []).some((state) => state.layers && layerId in state.layers);
 
 /** The effective move scope: explicit, else "this state" once more than one state exists. */

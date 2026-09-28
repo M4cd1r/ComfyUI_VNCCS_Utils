@@ -338,6 +338,57 @@ export function pruneTimelineTargets(timeline, targetIds) {
   return changed;
 }
 
+/** Every sprite-variant string parameter an effect carries (blink's variantId, talk's pair), or []. */
+const effectVariantParams = (effect) => Object.entries(effect?.params || {})
+  .filter(([name, value]) => (name === "variantId" || name.endsWith("VariantId")) && typeof value === "string" && value)
+  .map(([name, value]) => ({ param: name, variantId: value }));
+
+/**
+ * The timeline's sprite-variant references for one sprite layer (the rasterize confirm list):
+ * `spriteVariant` step keys and variant effects (blink, talk).
+ */
+export function spriteVariantTimelineRefs(timeline, spriteLayerId) {
+  const refs = [];
+  const track = timeline?.tracks?.[trackIdFor(spriteLayerId, "spriteVariant")];
+  for (const key of track?.keys || []) refs.push({ kind: "key", frame: key.frame, variantId: key.value });
+  for (const effect of timeline?.effects || []) {
+    if (effect.target !== spriteLayerId) continue;
+    for (const { param, variantId } of effectVariantParams(effect)) {
+      refs.push({ kind: "effect", effect: effect.kind, label: EFFECT_KINDS[effect.kind]?.label || effect.kind, param, variantId });
+    }
+  }
+  return refs;
+}
+
+/**
+ * Rasterize rewrite (vnccs_unicanvas_sprites.mjs): the sprite's `spriteVariant` step track
+ * becomes `visible` keys on the child layers (`variantLayerIds` maps variant id -> child layer
+ * id); variant effects (blink, talk) cannot be translated to layer visibility and are removed.
+ * Mutates the timeline in place; the caller records it as one timeline history entry.
+ * Returns `{ changed, removedEffects }` for the status warning.
+ */
+export function rewriteSpriteTimelineRefs(timeline, spriteLayerId, variantLayerIds) {
+  let changed = false;
+  const removedEffects = [];
+  const trackId = trackIdFor(spriteLayerId, "spriteVariant");
+  const track = timeline?.tracks?.[trackId];
+  if (track?.keys?.length) {
+    for (const key of track.keys) {
+      for (const [variant, childId] of variantLayerIds) setKey(timeline, childId, "visible", key.frame, variant === key.value);
+    }
+    delete timeline.tracks[trackId];
+    changed = true;
+  }
+  const effects = timeline?.effects || [];
+  timeline.effects = effects.filter((effect) => {
+    if (effect.target !== spriteLayerId || !effectVariantParams(effect).length) return true;
+    removedEffects.push(effect);
+    return false;
+  });
+  if (removedEffects.length) changed = true;
+  return { changed, removedEffects };
+}
+
 // Evaluation ------------------------------------------------------------------------------------
 
 function lerp(a, b, t) { return a + (b - a) * t; }

@@ -87,7 +87,11 @@ export const LAYER_MENU_ITEMS = Object.freeze([
   { id: "color-match", label: "Color match to below", group: "Enhance", icon: MENU_ICONS.droplet },
   { id: "auto-name", label: "Auto-name", group: "Name", icon: MENU_ICONS.tag },
   { id: "edit-pose", label: "Edit pose", group: "Pose", icon: MENU_ICONS.pose, poseOnly: true },
-  { id: "rasterize", label: "Rasterize", group: "Pose", icon: MENU_ICONS.raster, poseOnly: true },
+  // The one common Rasterize entry: pose layers and sprite sets alike (sprite sets rasterize
+  // into a layer group, vnccs_unicanvas_sprites.mjs). The poseOnly gate is lifted for it by
+  // the rasterizable condition in layerMenuItemAvailable below.
+  { id: "rasterize", label: "Rasterize", group: "Pose", icon: MENU_ICONS.raster, poseOnly: true, rasterizable: true,
+    multiselectLabel: (_uc, layer) => (layer?.type === "sprite" ? "Rasterize to layers (group)" : "Rasterize") },
   { id: "bake-characters", label: "Bake characters", group: "Pose", icon: MENU_ICONS.bake, poseOnly: true },
   { id: "split-characters", label: "Split characters to layers", group: "Pose", icon: MENU_ICONS.split, poseOnly: true, multiCharacter: true },
   { id: "merge-pose-layers", label: "Merge pose layers", group: "Pose", icon: MENU_ICONS.merge, poseOnly: true, poseSelection: true },
@@ -144,8 +148,12 @@ function ungroupSelectionGroups(uc, layer) {
 }
 
 // Split needs 2+ mannequins; merge needs this layer inside a multi-selection of 2+ pose layers.
+// Rasterize covers pose layers and sprite sets (a sprite with its variant state) alike.
+const isRasterizableLayer = (layer) => layer?.type === "pose" || (layer?.type === "sprite" && Boolean(layer.sprite));
+
 export function layerMenuItemAvailable(uc, layer, item) {
-  if (item.poseOnly && layer?.type !== "pose") return false;
+  if (item.poseOnly && !item.rasterizable && layer?.type !== "pose") return false;
+  if (item.rasterizable && !isRasterizableLayer(layer)) return false;
   if (item.shadowSourceOnly && !canCastShadow(layer)) return false;
   if (item.shadowOnly && !layer?.shadow) return false;
   if (item.characterOnly && !isHarmonizeCharacter(uc, layer)) return false;
@@ -904,6 +912,11 @@ export function runLayerMenuAction(uc, layer, item, point = null) {
   if (item.id === "harmonize") return uc.openHarmonizePanel?.(layer, point);
   if (item.id === "create-occluder") return uc.createForegroundOccluder?.(layer);
   if (item.id === "rasterize") {
+    if (layer?.type === "sprite") {
+      if (typeof uc.rasterizeSpriteLayer === "function") return uc.rasterizeSpriteLayer(layer);
+      uc.setStatus("[VNCCS UniCanvas] Sprite tools are not available.");
+      return undefined;
+    }
     if (typeof uc.rasterizePoseLayer === "function") return uc.rasterizePoseLayer(layer);
     uc.setStatus(POSE_TOOLS_UNAVAILABLE);
     return undefined;

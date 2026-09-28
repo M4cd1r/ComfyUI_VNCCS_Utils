@@ -37,9 +37,12 @@ import { alphaBounds, dilateAlpha } from "./vnccs_unicanvas_bake.mjs";
 import { isImageRef, poseCharacterRef, poseStudioCharacters } from "./vnccs_unicanvas_pose_state.mjs";
 import { automaticRemoveBgRequest } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoAcceptedHistoryItem } from "./vnccs_unicanvas_history_gallery.mjs";
-import { captureGroupStructure } from "./vnccs_unicanvas_groups.mjs";
+import { captureGroupStructure, createGroupLayer, PASS_THROUGH } from "./vnccs_unicanvas_groups.mjs";
+import { placeInHost } from "./vnccs_unicanvas_layer_tools.mjs";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { createLayerMeta } from "./vnccs_unicanvas_provenance.mjs";
+import { rewriteSpriteStateRefs, snapshotSceneStates, spriteVariantStateRefs } from "./vnccs_unicanvas_states.mjs";
+import { EFFECT_KINDS, rewriteSpriteTimelineRefs, snapshotTimeline, spriteVariantTimelineRefs, TIMELINE_HISTORY_KIND } from "./vnccs_unicanvas_timeline_core.mjs";
 import { applyHomography, draftPlacement, draftRestBounds, homographyFromUnitSquare, invertAffine, transformDraftBounds } from "./vnccs_unicanvas_transform.mjs";
 import { createSpriteSurface, normalizeSpriteCamera } from "./vnccs_unicanvas_sprites_panorama.mjs";
 import { cloneJson, uniqueId } from "./vnccs_unicanvas_util.mjs";
@@ -487,6 +490,7 @@ const SPRITE_PANEL_CSS = `
 .vnccs-uc-sprite-panel[hidden] { display:none; }
 .vnccs-uc-sprite-title { display:flex; justify-content:space-between; gap:6px; font-weight:600; }
 .vnccs-uc-sprite-title span { opacity:.7; font-weight:400; }
+.vnccs-uc-sprite-title-actions { display:flex; align-items:center; gap:6px; }
 .vnccs-uc-sprite-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:4px; max-height:220px; overflow:auto; }
 .vnccs-uc-sprite-thumb { display:flex; flex-direction:column; align-items:center; gap:2px; padding:3px; border:1px solid transparent; border-radius:6px; background:rgba(0,0,0,.25); color:inherit; cursor:pointer; font-size:10px; min-width:0; }
 .vnccs-uc-sprite-thumb canvas { width:100%; aspect-ratio:1; background:repeating-conic-gradient(#2a2a33 0% 25%, #1e1e26 0% 50%) 50% / 10px 10px; border-radius:4px; }
@@ -501,6 +505,14 @@ const SPRITE_PANEL_CSS = `
 .vnccs-uc-sprite-face canvas { width:100%; display:block; border-radius:6px; background:repeating-conic-gradient(#2a2a33 0% 25%, #1e1e26 0% 50%) 50% / 10px 10px; }
 .vnccs-uc-sprite-custom { display:flex; flex-direction:column; gap:4px; }
 .vnccs-uc-sprite-custom textarea { min-height:38px; resize:vertical; }
+/* Sprite layer rows: a frame-stack icon in the type caption, a highlighted border (like pose
+   rows) and one more column for the show-panel button (the style rides along with the panel). */
+.vnccs-uc-layer[data-layer-type="sprite"] { grid-template-columns:34px minmax(0,1fr) 28px 28px 28px; }
+.vnccs-uc-layer[data-layer-type="sprite"]:not(.active):not(.locked) { border-color:rgba(255,143,163,.45); }
+.vnccs-uc-layer-type .vnccs-uc-sprite-type-icon { display:inline-block; width:11px; height:11px; vertical-align:-1px; margin-right:3px; fill:none; stroke:#ff8fa3; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.vnccs-uc-layer-type .vnccs-uc-sprite-type-icon svg { width:100%; height:100%; display:block; }
+.vnccs-uc-sprite-toast { position:absolute; z-index:45; max-width:320px; padding:8px 10px; border:1px solid rgba(255,143,163,.5); border-radius:8px; background:rgba(20,16,30,.97); color:#e8e8f0; font-size:11px; line-height:1.35; box-shadow:0 8px 24px rgba(0,0,0,.45); pointer-events:none; }
+.vnccs-uc-sprite-rasterize-refs { margin:6px 0; padding-left:18px; max-height:180px; overflow:auto; font-size:11px; line-height:1.45; }
 `;
 
 export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
@@ -989,8 +1001,27 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     uc.renderLayerList();
     uc.requestRender();
     uc.syncToNode?.();
-    uc.setStatus(sprite.faceRect ? `Sprite set created for ${name}.` : `Sprite set created for ${name}: drag the face area in the sprite panel before generating expressions.`);
+    uc.setStatus(sprite.faceRect
+      ? `Sprite set created for ${name} above ${layer.name}; the source is hidden. Rasterize turns it back into layers.`
+      : `Sprite set created for ${name}: drag the face area in the sprite panel before generating expressions. The source is hidden; Rasterize turns the set back into layers.`);
+    announceCreated(spriteLayer, layer.name);
     return spriteLayer;
+  }
+
+  /** Short toast next to the new layer row: why the source vanished and what Rasterize does. */
+  function announceCreated(spriteLayer, sourceName) {
+    if (typeof document === "undefined" || !uc.container) return;
+    uc.container.querySelector?.("[data-sprite-toast]")?.remove();
+    const toast = document.createElement("div");
+    toast.className = "vnccs-uc-sprite-toast";
+    toast.dataset.spriteToast = "";
+    toast.textContent = `Created a sprite set layer above ${sourceName}; the source is hidden. Rasterize turns it back into layers.`;
+    uc.container.appendChild(toast);
+    const row = uc.layerList?.querySelector?.(`[data-layer-id="${spriteLayer.id}"]`);
+    const box = row?.getBoundingClientRect?.();
+    placeInHost(uc.container, toast, box ? box.left : 16, box ? box.bottom + 6 : 16);
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => toast.remove(), 8000);
   }
 
   /** Layer menu "Split variant to layer": the active variant as a new raster layer. */
@@ -1017,6 +1048,174 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     uc.syncToNode?.();
     uc.setStatus(`Copied ${variant.name} to a new layer.`);
     return copy;
+  }
+
+  /* ---------------- Rasterize (sprite set -> layer group) ---------------- */
+
+  /** The frame-stack glyph of the sprite type, shared by the row caption and the panel button. */
+  const SPRITE_TYPE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/></svg>`;
+
+  const esc = (value) => (typeof uc._escape === "function" ? uc._escape(value) : String(value));
+
+  /** The sprite layer-row type caption: frame-stack icon, active variant and variant count. */
+  function rowTypeHTML(layer) {
+    if (!isSprite(layer)) return null;
+    const sprite = layer.sprite;
+    const active = variantOf(layer, sprite.activeVariantId)?.name || "";
+    const count = sprite.variants.length;
+    return `<span class="vnccs-uc-sprite-type-icon">${SPRITE_TYPE_ICON}</span>Sprite set · ${esc(active)} · ${count} variant${count === 1 ? "" : "s"}${layer.visible ? "" : " hidden"}`;
+  }
+
+  /** Shows the sprite panel (and scrolls to it); the row button tells the user where it lives. */
+  function focusPanel(layer) {
+    if (!isSprite(layer)) return;
+    if (uc.activeLayerId !== layer.id) uc.setActiveLayer?.(layer.id);
+    else renderPanel();
+    panel?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }
+
+  /** The variant references the document still holds for this sprite layer (states + timeline). */
+  function collectRasterizeRefs(layer) {
+    const refs = [];
+    for (const ref of spriteVariantStateRefs(uc.sceneStates, layer.id)) {
+      refs.push({ ...ref, kind: "state", where: `Scene state "${ref.name}"`, variant: variantOf(layer, ref.variantId)?.name || ref.variantId });
+    }
+    for (const ref of spriteVariantTimelineRefs(uc.timeline, layer.id)) {
+      const variant = variantOf(layer, ref.variantId)?.name || ref.variantId;
+      refs.push(ref.kind === "key"
+        ? { ...ref, where: `Timeline frame ${ref.frame}`, variant }
+        : { ...ref, where: `Timeline ${ref.label} effect`, variant });
+    }
+    return refs;
+  }
+
+  /** Modal confirm listing every reference a rasterize rewrites or drops (browser only). */
+  function confirmRasterize(layer, refs) {
+    return new Promise((resolve) => {
+      if (typeof document === "undefined" || !uc.container) { resolve(true); return; }
+      const overlay = document.createElement("div");
+      overlay.className = "vnccs-uc-modal-overlay";
+      const modal = document.createElement("div");
+      modal.className = "vnccs-uc-modal";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+      modal.setAttribute("aria-label", "Rasterize sprite set");
+      const title = document.createElement("div");
+      title.className = "vnccs-uc-modal-title";
+      title.textContent = `Rasterize ${layer.name} to layers?`;
+      const message = document.createElement("div");
+      message.className = "vnccs-uc-modal-message";
+      message.textContent = "The sprite set becomes a layer group with one raster layer per ready variant. Scene states and the timeline keep working through the new layers, but these variant switches have to be rewritten:";
+      const list = document.createElement("ul");
+      list.className = "vnccs-uc-sprite-rasterize-refs";
+      for (const ref of refs) {
+        const item = document.createElement("li");
+        item.textContent = `${ref.where}: variant ${ref.variant}${ref.kind === "effect" ? " (the effect is removed)" : ""}`;
+        list.appendChild(item);
+      }
+      const previousFocus = document.activeElement;
+      const close = (value) => { overlay.remove(); previousFocus?.focus?.(); resolve(value); };
+      const actions = document.createElement("div");
+      actions.className = "vnccs-uc-modal-actions";
+      const cancel = uc._button("Cancel", "vnccs-uc-btn", () => close(false));
+      const run = uc._button("Rasterize", "vnccs-uc-btn", () => close(true));
+      actions.append(cancel, run);
+      modal.append(title, message, list, actions);
+      overlay.append(modal);
+      overlay.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Escape") { e.preventDefault(); close(false); }
+      });
+      uc.container.appendChild(overlay);
+      run.focus();
+    });
+  }
+
+  /**
+   * "Rasterize to layers": the sprite set becomes a layer group at the sprite's place, one
+   * raster layer per ready variant (base at the bottom, the active one visible, the rest
+   * hidden; empty and failed variants are skipped). Scene-state and timeline variant
+   * references are rewritten to the children, the group takes over opacity, blend, visibility
+   * and lock, and the whole operation is ONE undo step. The Groups feature toggle does not
+   * gate this: the group is the result, not a grouping tool.
+   */
+  async function rasterizeSpriteSet(layer, { confirm = confirmRasterize } = {}) {
+    if (!isSprite(layer)) return null;
+    if (layer.locked) { uc.setStatus("Unlock the sprite layer first.", true); return null; }
+    if (uc.transformDraft) { uc.setStatus("Apply or cancel the active transform first", true); return null; }
+    if (busy.size || uc.stagingItems?.length) { uc.setStatus("Accept or discard the sprite results in progress before rasterizing.", true); return null; }
+    syncFromCanvas(layer);
+    const ready = readyVariants(layer.sprite);
+    if (!ready.length) { uc.setStatus("The sprite set has no generated variant to rasterize.", true); return null; }
+    const refs = collectRasterizeRefs(layer);
+    if (refs.length && !(await confirm(layer, refs))) { uc.setStatus("Rasterize canceled."); return null; }
+
+    const sprite = layer.sprite;
+    const structureBefore = captureGroupStructure(uc.layers);
+    const activeBefore = uc.activeLayerId;
+    const statesBefore = snapshotSceneStates(uc.sceneStates);
+    const timelineBefore = snapshotTimeline(uc.timeline);
+
+    // The group replaces the sprite layer: same stack place, same parent, same visibility,
+    // opacity and blend (a plain source-over reads as pass-through), same lock.
+    const group = createGroupLayer({
+      name: layer.name,
+      groupId: layer.groupId || null,
+      visible: layer.visible !== false,
+      locked: layer.locked === true,
+      opacity: layer.opacity,
+      blendMode: layer.blendMode && layer.blendMode !== "source-over" ? layer.blendMode : PASS_THROUGH,
+      meta: createLayerMeta("rasterize", { derivedFrom: layer.id, ...(layer.meta?.character ? { character: layer.meta.character } : {}) }),
+    });
+    // The base variant sits at the bottom of the group; the others keep their order above it.
+    const bottom = ready.find((variant) => variant.id === neutralVariant(sprite)?.id) || ready[0];
+    const ordered = [...ready.filter((variant) => variant !== bottom), bottom];
+    const children = ordered.map((variant) => {
+      const child = uc.addLayer("raster", `${sprite.characterName} ${variant.name}`, false, true,
+        createLayerMeta("rasterize", { derivedFrom: layer.id, ...(layer.meta?.character ? { character: layer.meta.character } : {}) }));
+      child.groupId = group.id;
+      child.visible = variant.id === sprite.activeVariantId;
+      return child;
+    });
+    const variantLayerIds = new Map(ordered.map((variant, index) => [variant.id, children[index].id]));
+
+    // Same stack place: right where the sprite layer was, its children below the group head.
+    const below = uc.layers[uc.layers.indexOf(layer) + 1] || null;
+    uc.layers = uc.layers.filter((item) => item !== layer && !children.includes(item));
+    const at = below ? uc.layers.indexOf(below) : uc.layers.length;
+    uc.layers.splice(Math.max(0, at < 0 ? uc.layers.length : at), 0, group, ...children);
+    uc.normalizeLayerOrder();
+    for (const [index, variant] of ordered.entries()) surface.write(children[index], variant.pixels, sprite.rect, sprite.panoramaCamera);
+
+    // References: scene states switch the child layers, the timeline track becomes visible
+    // keys; variant effects (blink, talk) cannot be translated and are dropped.
+    const statesChanged = rewriteSpriteStateRefs(uc.sceneStates, layer.id, group.id, variantLayerIds);
+    const timeline = uc.timeline || null;
+    const timelineRefs = timeline ? rewriteSpriteTimelineRefs(timeline, layer.id, variantLayerIds) : { changed: false, removedEffects: [] };
+
+    // One history entry for the whole operation; undoing re-applies the timeline, the states
+    // and then the structure, which brings the untouched sprite layer object back.
+    const entries = [{ kind: "groupStructure", before: structureBefore, after: captureGroupStructure(uc.layers), activeBefore, activeAfter: group.id }];
+    if (statesChanged) entries.push({ kind: "sceneStates", before: statesBefore, after: snapshotSceneStates(uc.sceneStates) });
+    if (timelineRefs.changed) entries.push({ kind: TIMELINE_HISTORY_KIND, before: timelineBefore, after: snapshotTimeline(timeline) });
+    uc.pushHistoryEntry({ kind: "historyGroup", entries });
+
+    uc.autoNaming?.onLayerStructureChanged?.();
+    uc.activeLayerId = group.id;
+    uc.selectedLayerIds = [group.id];
+    uc.syncActiveLayerControls?.();
+    uc.syncPoseToolToActiveLayer?.();
+    uc.renderLayerList();
+    uc.requestRender();
+    uc.syncToNode?.();
+    const skipped = sprite.variants.length - ready.length;
+    const dropped = timelineRefs.removedEffects.map((effect) => EFFECT_KINDS[effect.kind]?.label || effect.kind);
+    const notes = [
+      skipped ? `${skipped} empty or failed variant${skipped === 1 ? "" : "s"} skipped` : "",
+      dropped.length ? `${dropped.join(", ")} effect${dropped.length === 1 ? "" : "s"} removed` : "",
+    ].filter(Boolean).join("; ");
+    uc.setStatus(`Rasterized ${layer.name} to a group with ${children.length} layer${children.length === 1 ? "" : "s"}${notes ? ` (${notes})` : ""}.`);
+    return group;
   }
 
   /* ---------------- Generation ---------------- */
@@ -1339,6 +1538,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     panel.className = "vnccs-uc-sprite-panel";
     panel.dataset.spritePanel = "";
     panel.hidden = true;
+    panel.title = "A sprite set holds several pixel-aligned variants of one character and shows one at a time. Rasterize to layers turns it back into a layer group.";
     panel.append(style);
     const anchor = uc.denoiseControl?.nextSibling || null;
     if (anchor && anchor.parentNode === uc.left) uc.left.insertBefore(panel, anchor);
@@ -1425,7 +1625,18 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
     const ready = readyVariants(sprite).length;
     const title = document.createElement("div");
     title.className = "vnccs-uc-sprite-title";
-    title.innerHTML = `<div>Sprite set · ${uc._escape(sprite.characterName)}</div><span>${ready}/${sprite.variants.length} ready</span>`;
+    const heading = document.createElement("div");
+    heading.innerHTML = `<div>Sprite set · ${esc(sprite.characterName)}</div><span>${esc(layer.name)}</span>`;
+    const headRight = document.createElement("div");
+    headRight.className = "vnccs-uc-sprite-title-actions";
+    const counter = document.createElement("span");
+    counter.textContent = `${ready}/${sprite.variants.length} ready`;
+    const rasterize = button("Rasterize to layers", "rasterize", "Turn this sprite set into a layer group: one raster layer per ready variant, one undo step");
+    rasterize.dataset.spriteRasterize = "";
+    rasterize.disabled = !ready || uc.drawInProgress || layer.locked || busy.size > 0 || Boolean(uc.stagingItems?.length);
+    rasterize.addEventListener("click", () => void rasterizeSpriteSet(layer));
+    headRight.append(counter, rasterize);
+    title.append(heading, headRight);
     const grid = document.createElement("div");
     grid.className = "vnccs-uc-sprite-grid";
     grid.dataset.spriteGrid = "";
@@ -1538,7 +1749,7 @@ export function installUniCanvasSprites(uc, { modelModule = () => null } = {}) {
 
   const api = {
     isSprite, syncFromCanvas, snapshot, restoreSnapshot, cloneLayerFields, serialize, restore, loadSet, attachSet, onMove, onTransform, onDepthScale, onStroke,
-    setActiveVariant, applyVariantHistory, cycleActive, preview, endPreview, createFromLayer, splitVariantToLayer,
+    setActiveVariant, applyVariantHistory, cycleActive, preview, endPreview, createFromLayer, splitVariantToLayer, rasterizeSpriteSet, focusPanel, rowTypeHTML,
     addPresets, addCustom, removeVariant, setPaintAll, stageVariant, generateMissing, acceptStaged, renderPanel,
     /** Shows the active variant again after something else (a scene state) switched it. */
     redraw(layer) {
