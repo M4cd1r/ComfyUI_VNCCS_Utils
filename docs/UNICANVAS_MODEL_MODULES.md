@@ -91,6 +91,29 @@ lora_requirements = (
 Other options: `require_positive_strength`, `draw_modes` (only for some modes)
 and `resolver` / `resolve_match` (e.g. a lazy download on first use).
 
+## Pose Edit And The Pose Studio LoRA
+
+The families whose capabilities declare `supports_pose_edit` (`qwen_image_edit`,
+`flux_klein`, `minimax_h3`, `qwen_image21`) implement the `prepare_pose_edit`
+hook: a character bake (or a pose edit) sends exactly two images - `image1`, the
+posed mannequin over the studio background, and `image2`, the lower visible
+layers plus the character reference(s). How `image2` is encoded into the
+family's reference slots is the family adapter's own business (ordered
+references for QiE2511, appended reference latents for Klein9b, and so on).
+
+Pose edit requires the family's **Pose Studio LoRA**. Every pose-edit draw
+carries `pose_studio_lora_name` - the highest installed version of the family -
+and `pose_studio_lora_strength` (0-1.5, default 1), and the backend applies that
+LoRA to the draw. The widget resolves the version from
+`GET /vnccs/unicanvas/pose_studio_loras` (per family `installed`, `latest`,
+`update_available`, with HuggingFace cached behind the backend) and downloads a
+missing or newer version through `POST
+/vnccs/unicanvas/pose_studio_loras/download` (`{"family", "version"}`), which
+enqueues through the shared preset download queue. The Character bake settings
+show the installed version, the strength and the update banner; a bake of a
+family whose LoRA is known to be missing is blocked in the UI until it is
+downloaded, and an offline status check never blocks.
+
 ## Layer Tool Registries
 
 Blend modes (`render.BLEND_MODES`, `register_blend_mode`), panorama projections
