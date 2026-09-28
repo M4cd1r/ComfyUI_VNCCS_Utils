@@ -46,6 +46,10 @@ const styles = `
 .vnccs-uc-pose-editbar { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); display:flex; align-items:center; gap:8px; max-width:calc(100% - 24px); padding:6px 8px 6px 12px; box-sizing:border-box; border:1px solid var(--uc-border); border-radius:12px; background:rgba(14,11,20,.94); box-shadow:0 12px 32px rgba(0,0,0,.45); pointer-events:auto; zoom:var(--vnccs-uc-ui-scale); z-index:3; }
 .vnccs-uc-pose-editbar strong { color:var(--uc-accent, #ff8fa3); font-size:12px; white-space:nowrap; }
 .vnccs-uc-pose-editbar .vnccs-uc-pose-hint { color:var(--uc-muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.vnccs-uc-pose-root > .vnccs-uc-pose-shade { position:absolute; background:rgba(6,4,12,.55); opacity:0; pointer-events:none; }
+.vnccs-uc-pose-root > .vnccs-uc-pose-shade.on { opacity:1; }
+.vnccs-uc-pose-root > .vnccs-uc-pose-capture-frame { position:absolute; border:2px solid #ffa500; box-shadow:0 0 0 1px rgba(0,0,0,.55), inset 0 0 20px rgba(255,165,0,.14); opacity:0; pointer-events:none; }
+.vnccs-uc-pose-root > .vnccs-uc-pose-capture-frame.on { opacity:1; }
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap { position:absolute; flex:none; min-width:0; min-height:0; margin:0; padding:0; background:transparent; border:0; border-radius:0; pointer-events:auto; overflow:hidden; }
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap canvas { background:transparent; }
 .vnccs-uc-pose-root > [class*="modal"], .vnccs-uc-pose-root > .vnccs-ps-manager, .vnccs-uc-pose-root > .vnccs-ps-manager-detail-strip { pointer-events:auto; }
@@ -85,6 +89,7 @@ export class UniCanvasPoseEditor {
         // A held pointer is an edit gesture in flight (bone drag, gizmo, a side-panel slider):
         // only then do viewport frames re-capture the layer (see editInFlight()).
         this.pointerHeld = false;
+        this.viewOffsetKey = null;
         const trackPointer = event => { this.pointerHeld = event.type === "pointerdown" || Boolean(event.buttons); };
         for (const type of ["pointerdown", "pointerup", "pointercancel"]) {
             globalThis.addEventListener?.(type, trackPointer, { capture: true, signal: this.abort.signal });
@@ -184,19 +189,24 @@ export class UniCanvasPoseEditor {
                 this.saveCaptureFraming();
             }
             // Inspection-only navigation: moving the camera must never bake pixels, persist a
-            // viewport or touch the mannequin, so orbit end no longer commits anything.
+            // viewport or touch the mannequin, so orbit end no longer commits anything. It does
+            // refresh the alignment feedback (capture frame, dim, Reset view).
             studio.viewer.orbit.addEventListener("start", () => {
                 if (this.token === token) this.inspecting = true;
             });
             studio.viewer.orbit.addEventListener("end", () => {
-                if (this.token === token) this.inspecting = false;
+                if (this.token === token) { this.inspecting = false; this.updateViewAlignment(); }
             });
             // Wheel dollying bypasses OrbitControls events; keep captures out of its frames.
             studio.canvas.addEventListener("wheel", () => {
                 if (this.token !== token) return;
                 this.inspecting = true;
+                this.updateViewAlignment();
                 clearTimeout(this.wheelInspectionTimer);
-                this.wheelInspectionTimer = setTimeout(() => { this.inspecting = false; }, 160);
+                this.wheelInspectionTimer = setTimeout(() => {
+                    this.inspecting = false;
+                    this.updateViewAlignment();
+                }, 160);
             }, { passive: true });
             this.initialized = true;
             this.layout();
@@ -219,6 +229,12 @@ export class UniCanvasPoseEditor {
         const studio = this.studio, root = studio.container;
         const controls = document.createElement("div"); controls.className = "vnccs-uc-pose-controls";
         this.controls = controls;
+        // Alignment feedback lives between the 2D stack and the viewport: while the free view is
+        // away from the capture framing, a dim covers the stage (the layers below are no longer
+        // aligned with the rect) and the orange capture frame shows what will be captured.
+        const shade = document.createElement("div"); shade.className = "vnccs-uc-pose-shade";
+        const frame = document.createElement("div"); frame.className = "vnccs-uc-pose-capture-frame";
+        this.shade = shade; this.frameEl = frame;
         // While editing, the right sidebar (denoise, masks, layers) is replaced by this panel.
         const side = document.createElement("div"); side.className = "vnccs-uc-pose-side";
         const head = document.createElement("div"); head.className = "vnccs-uc-pose-side-head";
@@ -229,6 +245,7 @@ export class UniCanvasPoseEditor {
         const tabs = document.createElement("div"); tabs.className = "vnccs-uc-pose-tabs";
         tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "Pose settings");
         dock.appendChild(tabs);
+        root.appendChild(shade);
         root.appendChild(studio.canvasContainer);
         // Keep shared scene state and action references alive without a second action toolbar.
         studio.centerPanel.hidden = true;
@@ -274,6 +291,8 @@ export class UniCanvasPoseEditor {
         side.append(head, this.buildCharacterMenu(), dock);
         controls.append(this.buildEditBar());
         root.appendChild(controls);
+        // The capture frame reads above the viewport, but never takes pointers from it.
+        root.appendChild(frame);
         this.sidePanel = side;
         this.dock = dock;
         this.pages = panels;
@@ -304,17 +323,27 @@ export class UniCanvasPoseEditor {
             element.addEventListener("pointerdown", event => event.stopPropagation());
             element.addEventListener("wheel", event => event.stopPropagation(), { passive: true });
         }
+        // Home puts the free view back on the capture framing straight from the viewport.
+        studio.canvasContainer.addEventListener("keydown", event => {
+            if (event.key !== "Home" || event.target.closest?.("input, textarea, select")) return;
+            event.preventDefault();
+            this.resetInspectionView();
+        });
     }
 
     buildEditBar() {
         const bar = document.createElement("div"); bar.className = "vnccs-uc-pose-editbar";
         const title = document.createElement("strong"); title.textContent = "Editing pose";
         const hint = document.createElement("span"); hint.className = "vnccs-uc-pose-hint";
-        hint.textContent = "Left: joints · Right-drag: orbit · Middle: pan · Wheel: zoom - inspect only, the camera never changes the layer";
+        hint.textContent = "Right-drag: orbit view · Middle: pan · Wheel: zoom · the layer keeps its 2D framing";
+        const reset = this.host._button("Reset view", "vnccs-uc-btn", () => this.resetInspectionView(), "Put the editing view back on the capture frame (Home)");
+        reset.classList.add("vnccs-uc-pose-reset");
+        reset.disabled = true;
+        this.resetBtn = reset;
         const library = this.host._button("Pose Library", "vnccs-uc-btn", () => this.studio?.showLibraryModal?.(), "Load a pose from the Pose Library");
         const cancel = this.host._button("Cancel", "vnccs-uc-btn", () => this.host.finishPoseEdit(false), "Discard this edit session and restore the pose");
         const save = this.host._button("Save pose", "vnccs-uc-btn primary", () => this.host.finishPoseEdit(true), "Keep the pose and leave the editor (Enter / Esc)");
-        bar.append(title, hint, library, cancel, save);
+        bar.append(title, hint, reset, library, cancel, save);
         this.editBar = bar;
         return bar;
     }
@@ -668,32 +697,69 @@ export class UniCanvasPoseEditor {
     layout() {
         if (!this.studio || !this.layer) return;
         if (!this.host.layers.includes(this.layer)) { this.release(); return; }
-        // The surface follows the layer's scene-state offset (and timeline position), like its pixels.
+        // Where the layer renders: its rect through the render transform, like its pixels.
         const rect = posePlacedRect(this.layer.pose.rect, this.host.getLayerRenderTransform?.(this.layer),
             this.host.getLayerStateOffset?.(this.layer));
-        const view = this.host.view, stage = this.host.stageWrap;
+        const stage = this.host.stageWrap;
         const surface = this.studio.canvasContainer;
         // Controls are confined to the stage, leaving model settings, Generate and layers accessible.
         Object.assign(this.controls.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
             width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
         this.controls.inert = this.layer.locked || !this.layer.visible || this.host.hasOpenStagingPanel();
         this.sidePanel.inert = this.layer.locked || !this.layer.visible;
-        surface.style.left = `${stage.offsetLeft + view.x + rect.x * view.scale}px`;
-        surface.style.top = `${stage.offsetTop + view.y + rect.y * view.scale}px`;
-        surface.style.width = `${rect.width * view.scale}px`;
-        surface.style.height = `${rect.height * view.scale}px`;
+        // The session viewport covers the whole stage, not just the layer rect: gizmos, IK
+        // effectors and joints at the frame edges keep room, and the free view can look at the
+        // mannequin from anywhere. The capture frame overlay shows where the rect lands.
+        Object.assign(surface.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
+            width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
         surface.style.opacity = String(this.layer.opacity);
         surface.style.mixBlendMode = this.layer.blendMode === "source-over" ? "normal" : this.layer.blendMode;
         surface.hidden = !this.layer.visible || this.layer.locked || this.host.hasOpenStagingPanel();
-        // The bbox surface is clipped to the canvas region even when it crosses a sidebar.
-        const x = view.x + rect.x * view.scale, y = view.y + rect.y * view.scale;
-        const width = rect.width * view.scale, height = rect.height * view.scale;
-        surface.style.clipPath = `inset(${Math.max(0,-y)}px ${Math.max(0,x+width-stage.clientWidth)}px ${Math.max(0,y+height-stage.clientHeight)}px ${Math.max(0,-x)}px)`;
+        this.layoutOverlays(rect);
+        this.syncSessionViewOffset(rect);
+        this.updateViewAlignment();
         if (!this.visible && this.initialized) {
             const scale = Math.min(1, 1024 / Math.max(rect.width, rect.height));
             this.studio.performViewerResize(Math.round(rect.width * scale), Math.round(rect.height * scale));
         }
         this.refreshCharacterMenu();
+    }
+
+    // The dim covers the stage; the capture frame sits exactly where the rect renders.
+    layoutOverlays(rect) {
+        const stage = this.host.stageWrap, view = this.host.view;
+        if (this.shade) {
+            Object.assign(this.shade.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
+                width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
+        }
+        if (this.frameEl) {
+            Object.assign(this.frameEl.style, { left: `${stage.offsetLeft + view.x + rect.x * view.scale}px`,
+                top: `${stage.offsetTop + view.y + rect.y * view.scale}px`,
+                width: `${rect.width * view.scale}px`, height: `${rect.height * view.scale}px` });
+        }
+    }
+
+    // Session view model: the viewport camera shows the capture framing so that the pose rect is
+    // that framing, pixel for pixel - entering the session moves nothing on screen. The camera
+    // renders a window of its framing frustum extended over the whole canvas through
+    // camera.setViewOffset: with the framing camera at (rx, ry, rw, rh) on the canvas, the offset
+    // (cw, ch, cw/2 - s*(rx + rw/2), -s*ry, cw*s, ch*s), s = ch/rh, maps the framing exactly onto
+    // the rect region and keeps the rest of the stage live around it. Orbit/pan/wheel only move
+    // the camera; the offset stays, so the rect region always shows what the framing would show.
+    syncSessionViewOffset(rect) {
+        const v = this.studio?.viewer, camera = v?.camera;
+        if (!this.initialized || !this.visible || !this.layer || typeof camera?.setViewOffset !== "function") return;
+        const view = this.host.view;
+        const rx = view.x + rect.x * view.scale, ry = view.y + rect.y * view.scale;
+        const rw = rect.width * view.scale, rh = rect.height * view.scale;
+        const cw = this.studio.canvasContainer.clientWidth, ch = this.studio.canvasContainer.clientHeight;
+        if (!(cw > 0 && ch > 0 && rw > 0 && rh > 0)) return;
+        const key = [rx, ry, rw, rh, cw, ch].map(value => Math.round(value * 100) / 100).join(",");
+        if (key === this.viewOffsetKey) return;
+        this.viewOffsetKey = key;
+        const s = ch / rh;
+        camera.setViewOffset(cw, ch, cw / 2 - s * (rx + rw / 2), -s * ry, cw * s, ch * s);
+        camera.updateProjectionMatrix();
     }
 
     // The persisted capture framing (what the layer pixels show), as a plain camera object.
@@ -704,6 +770,38 @@ export class UniCanvasPoseEditor {
 
     saveCaptureFraming() {
         this.layer.pose.viewport = this.snapshotViewerCamera();
+        // The Scene sliders re-seeded the framing the camera is sitting on: aligned again.
+        this.updateViewAlignment();
+    }
+
+    // True while the inspection camera sits exactly on the persisted capture framing.
+    viewMatchesFraming() {
+        const viewport = this.layer?.pose?.viewport;
+        if (!this.initialized || !viewport) return true;
+        const live = this.snapshotViewerCamera();
+        return JSON.stringify(live) === JSON.stringify({
+            position: viewport.position, target: viewport.target, fov: viewport.fov, zoom: viewport.zoom || 1,
+        });
+    }
+
+    // Reset view (bar button / Home): the free view returns to the capture framing, so the rect
+    // region shows the layer's pixels one to one again. The session keeps running.
+    resetInspectionView() {
+        const viewport = this.layer?.pose?.viewport;
+        if (!this.studio || !viewport) return;
+        this.applyViewerCamera(viewport);
+        this.updateViewAlignment();
+        if (this.visible) this.studio.viewer.requestRender?.();
+    }
+
+    // Realtime alignment feedback: capture frame over the rect, dim over the 2D stack, and the
+    // Reset view button enabled, exactly while the view differs from the framing.
+    updateViewAlignment() {
+        if (!this.frameEl) return;
+        const aligned = this.viewMatchesFraming();
+        this.frameEl.classList.toggle("on", !aligned);
+        this.shade?.classList.toggle("on", !aligned);
+        if (this.resetBtn) this.resetBtn.disabled = aligned;
     }
 
     applyViewerCamera(camera) {
@@ -721,27 +819,55 @@ export class UniCanvasPoseEditor {
         const target = targetCanvas || (transparent
             ? (this.previewSurface ||= this.host._createCanvas(size.width, size.height))
             : this.host._createCanvas(size.width, size.height));
-        const w = this.studio, v = w.viewer;
+        const w = this.studio;
         // Old contract (pre-0.6.8): the capture renders the STORED framing with zeroed
-        // offsets, never the live inspection camera. Borrow the live camera for the render
-        // and put the inspection view back afterwards, so orbiting cannot bake a view.
+        // offsets, never the live inspection view.
+        return this.captureOnFraming(() =>
+            w.viewer.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                { targetCanvas: target, transparent, hideReference: true, viewport: true }));
+    }
+
+    // One capture batch on the persisted capture framing: the live camera is borrowed, the
+    // session view offset is lifted for the render (the capture is the framing alone, at the
+    // given size), and both are restored afterwards - navigation can never bake a view.
+    captureOnFraming(render, { repaint = true } = {}) {
+        const v = this.studio.viewer;
         const framing = this.layer.pose.viewport || this.snapshotViewerCamera();
         const inspection = this.snapshotViewerCamera();
         this.applyViewerCamera(framing);
-        // The temporary camera move must not let the backdrop depth clamp translate anyone.
-        if (this.backdrop) this.backdrop.suppressClamp = true;
+        const view = v.camera.view || null;
+        if (view) { v.camera.view = null; v.camera.updateProjectionMatrix(); }
+        v.camera.updateMatrixWorld?.(true);
         try {
-            const result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
-                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
-                { targetCanvas: target, transparent, hideReference: true, viewport: true });
-            return result;
+            return render();
         } finally {
-            if (this.backdrop) this.backdrop.suppressClamp = false;
+            if (view) { v.camera.view = view; v.camera.updateProjectionMatrix(); }
             this.applyViewerCamera(inspection);
             // capture() leaves the stored-framing image in the visible buffer (the capture
             // batch repaints it); repaint the inspection view synchronously so navigation
             // never flashes the capture framing.
-            if (this.visible && v.renderer) v.renderer.render(v.scene, v.camera);
+            if (repaint && this.visible && v.renderer) v.renderer.render(v.scene, v.camera);
+        }
+    }
+
+    // Runs `fn(camera)` with the camera sitting on the persisted capture framing and the session
+    // view offset lifted - the projection space the layer pixels use. Projections that feed the
+    // pixels (OpenPose joints, character anchors) must match them in any inspection view (6g).
+    withFramingCamera(fn) {
+        const v = this.studio.viewer;
+        const framing = this.layer?.pose?.viewport;
+        if (!framing) return fn(v.camera);
+        const inspection = this.snapshotViewerCamera();
+        this.applyViewerCamera(framing);
+        const view = v.camera.view || null;
+        if (view) { v.camera.view = null; v.camera.updateProjectionMatrix(); }
+        v.camera.updateMatrixWorld?.(true);
+        try {
+            return fn(v.camera);
+        } finally {
+            if (view) { v.camera.view = view; v.camera.updateProjectionMatrix(); }
+            this.applyViewerCamera(inspection);
         }
     }
 
@@ -787,9 +913,10 @@ export class UniCanvasPoseEditor {
         const target = this.host._createCanvas(size.width, size.height);
         let result = null;
         try {
-            result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
-                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
-                { targetCanvas: target, transparent: true, hideReference: true, viewport: true });
+            result = this.captureOnFraming(() =>
+                v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                    w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                    { targetCanvas: target, transparent: true, hideReference: true, viewport: true }), { repaint: false });
         } finally {
             for (const [mesh, material, visible] of swapped) { mesh.material = material; mesh.visible = visible; }
             hidden.forEach(object => { object.visible = true; });
@@ -824,9 +951,10 @@ export class UniCanvasPoseEditor {
         const target = this.host._createCanvas(size.width, size.height);
         let result = null;
         try {
-            result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
-                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
-                { targetCanvas: target, transparent: true, hideReference: true, viewport: true });
+            result = this.captureOnFraming(() =>
+                v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                    w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                    { targetCanvas: target, transparent: true, hideReference: true, viewport: true }), { repaint: false });
         } finally {
             for (const [mesh, previous, visible] of swapped) { mesh.material = previous; mesh.visible = visible; }
             hidden.forEach(object => { object.visible = true; });
@@ -920,7 +1048,11 @@ export class UniCanvasPoseEditor {
         const width = Math.max(64, Math.min(4096, Math.round(Number(params.view_width) || rect.width)));
         const height = Math.max(64, Math.min(4096, Math.round(Number(params.view_height) || rect.height)));
         if (rect.width === width && rect.height === height) return;
-        const next = { ...rect, width, height };
+        // Anchor the resize at the rect center (6f): the camera framing is unchanged, so the
+        // figure keeps its world-px scale and stays put instead of jumping with the top-left
+        // corner while the canvas grows and shrinks around it.
+        const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+        const next = { x: cx - width / 2, y: cy - height / 2, width, height };
         if (!this.host.ensureWorldRectBounds(next, 0)) return;
         const bbox = this.host.bbox;
         const followsBbox = ["x", "y", "width", "height"].every(key => bbox[key] === rect[key]);
@@ -976,17 +1108,6 @@ export class UniCanvasPoseEditor {
             if (token !== this.token || !this.studio) return;
             this.commit();
         }, 250);
-    }
-
-    // A depth clamp moved a character: persist it once per frame, like any other studio edit.
-    scheduleBackdropSync() {
-        if (this.backdropSyncFrame) return;
-        const token = this.token;
-        this.backdropSyncFrame = requestAnimationFrame(() => {
-            this.backdropSyncFrame = null;
-            if (token !== this.token || !this.studio) return;
-            this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
-        });
     }
 
     async flush() {
@@ -1073,71 +1194,77 @@ export class UniCanvasPoseEditor {
      * OpenPose COCO-18 joints of every mannequin, normalized to `pose.rect`, kept on
      * `layer.pose.openpose` (serialized with the pose) for pose ControlNet layers
      * (vnccs_unicanvas_control_scene.mjs). Refreshed with every capture, so a linked control
-     * layer follows the mannequin while it is dragged.
+     * layer follows the mannequin while it is dragged. Projections run on the capture framing
+     * (6g parity): the joints must match the layer pixels, not the current inspection view.
      */
     updateOpenPose() {
-        const v = this.studio?.viewer, THREE = v?.THREE, camera = v?.camera, layer = this.layer;
-        if (!THREE?.Vector3 || !camera || !layer?.pose) return;
-        const people = [];
-        try {
-            for (const [id, mesh] of this.characterMeshes()) {
-                if (mesh.visible === false) continue;
-                mesh.updateMatrixWorld?.(true);
-                const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
-                const worldOf = (name, offset) => {
-                    const object = bone(name);
-                    if (!object) return null;
-                    return offset ? object.localToWorld(new THREE.Vector3(...offset)) : object.getWorldPosition(new THREE.Vector3());
-                };
-                const project = point => {
-                    const projected = new THREE.Vector3(point.x, point.y, point.z).project(camera);
-                    if (projected.z > 1 || projected.z < -1) return null;
-                    return { x: Math.round((projected.x + 1) / 2 * 1e4) / 1e4, y: Math.round((1 - projected.y) / 2 * 1e4) / 1e4 };
-                };
-                people.push({ id, points: openPoseFromRig(worldOf, project) });
-            }
-        } catch (_) { return; }
-        layer.pose.openpose = { key: poseIdKey(layer.pose), people };
+        const v = this.studio?.viewer, THREE = v?.THREE, layer = this.layer;
+        if (!THREE?.Vector3 || !v?.camera || !layer?.pose) return;
+        this.withFramingCamera(camera => {
+            const people = [];
+            try {
+                for (const [id, mesh] of this.characterMeshes()) {
+                    if (mesh.visible === false) continue;
+                    mesh.updateMatrixWorld?.(true);
+                    const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
+                    const worldOf = (name, offset) => {
+                        const object = bone(name);
+                        if (!object) return null;
+                        return offset ? object.localToWorld(new THREE.Vector3(...offset)) : object.getWorldPosition(new THREE.Vector3());
+                    };
+                    const project = point => {
+                        const projected = new THREE.Vector3(point.x, point.y, point.z).project(camera);
+                        if (projected.z > 1 || projected.z < -1) return null;
+                        return { x: Math.round((projected.x + 1) / 2 * 1e4) / 1e4, y: Math.round((1 - projected.y) / 2 * 1e4) / 1e4 };
+                    };
+                    people.push({ id, points: openPoseFromRig(worldOf, project) });
+                }
+            } catch (_) { return; }
+            layer.pose.openpose = { key: poseIdKey(layer.pose), people };
+        });
     }
 
     /**
      * Projected head box and feet contact point of one character, normalized to `pose.rect`, and
-     * its camera depth (`depth`, view-space distance, larger is farther).
+     * its camera depth (`depth`, view-space distance, larger is farther). Like the joints, the
+     * projections run on the capture framing so anchors match the layer pixels in any view (6g).
      */
     characterAnchors(characterId) {
-        const v = this.studio?.viewer, THREE = v?.THREE, camera = v?.camera;
-        if (!THREE?.Vector3 || !camera) return null;
+        const v = this.studio?.viewer, THREE = v?.THREE;
+        if (!THREE?.Vector3 || !v?.camera) return null;
         const mesh = this.characterMeshes().find(([id]) => id === String(characterId))?.[1];
         if (!mesh) return null;
-        const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
-        const project = object => {
-            if (!object) return null;
-            const point = object.getWorldPosition(new THREE.Vector3()).project(camera);
-            return { x: (point.x + 1) / 2, y: (1 - point.y) / 2 };
-        };
-        try {
-            mesh.updateMatrixWorld?.(true);
-            const head = project(bone("head")), neck = project(bone("neck_01"));
-            const feet = ["foot_l", "foot_r", "ball_l", "ball_r"].map(name => project(bone(name))).filter(Boolean);
-            const result = {};
-            if (head) {
-                const aspect = (this.layer?.pose?.rect?.width || 1) / (this.layer?.pose?.rect?.height || 1);
-                const half = Math.max(0.02, neck ? Math.hypot((head.x - neck.x) * aspect, head.y - neck.y) * 1.3 : 0.05);
-                result.head = { x: head.x - half / aspect, y: head.y - half * 1.2, width: 2 * half / aspect, height: half * 2.2 };
-            }
-            if (feet.length) {
-                const lowest = Math.max(...feet.map(point => point.y));
-                result.feet = { x: feet.reduce((sum, point) => sum + point.x, 0) / feet.length, y: lowest };
-            }
-            // Camera depth of the character (view-space distance of its root), for back-to-front order.
-            const root = bone("pelvis") || bone("root") || mesh;
-            if (camera.matrixWorldInverse && root?.getWorldPosition) {
-                camera.updateMatrixWorld?.(true);
-                const depth = -root.getWorldPosition(new THREE.Vector3()).applyMatrix4(camera.matrixWorldInverse).z;
-                if (Number.isFinite(depth)) result.depth = depth;
-            }
-            return result.head || result.feet ? result : null;
-        } catch (_) { return null; }
+        return this.withFramingCamera(camera => {
+            const bone = name => mesh.skeleton?.bones?.find(item => item.name === name) || mesh.getObjectByName?.(name) || null;
+            const project = object => {
+                if (!object) return null;
+                const point = object.getWorldPosition(new THREE.Vector3()).project(camera);
+                return { x: (point.x + 1) / 2, y: (1 - point.y) / 2 };
+            };
+            try {
+                mesh.updateMatrixWorld?.(true);
+                const head = project(bone("head")), neck = project(bone("neck_01"));
+                const feet = ["foot_l", "foot_r", "ball_l", "ball_r"].map(name => project(bone(name))).filter(Boolean);
+                const result = {};
+                if (head) {
+                    const aspect = (this.layer?.pose?.rect?.width || 1) / (this.layer?.pose?.rect?.height || 1);
+                    const half = Math.max(0.02, neck ? Math.hypot((head.x - neck.x) * aspect, head.y - neck.y) * 1.3 : 0.05);
+                    result.head = { x: head.x - half / aspect, y: head.y - half * 1.2, width: 2 * half / aspect, height: half * 2.2 };
+                }
+                if (feet.length) {
+                    const lowest = Math.max(...feet.map(point => point.y));
+                    result.feet = { x: feet.reduce((sum, point) => sum + point.x, 0) / feet.length, y: lowest };
+                }
+                // Camera depth of the character (view-space distance of its root), for back-to-front order.
+                const root = bone("pelvis") || bone("root") || mesh;
+                if (camera.matrixWorldInverse && root?.getWorldPosition) {
+                    camera.updateMatrixWorld?.(true);
+                    const depth = -root.getWorldPosition(new THREE.Vector3()).applyMatrix4(camera.matrixWorldInverse).z;
+                    if (Number.isFinite(depth)) result.depth = depth;
+                }
+                return result.head || result.feet ? result : null;
+            } catch (_) { return null; }
+        });
     }
 
     /**
@@ -1192,18 +1319,17 @@ export class UniCanvasPoseEditor {
         this.inspecting = false;
         clearTimeout(this.commitTimer); this.commitTimer = null;
         clearTimeout(this.wheelInspectionTimer); this.wheelInspectionTimer = null;
-        if (this.backdropSyncFrame) cancelAnimationFrame(this.backdropSyncFrame);
-        this.backdropSyncFrame = null;
         this.backdrop?.dispose(); this.backdrop = null; this.meshKey = null;
         this.selectController?.disconnect();
         this.uiAbort?.abort(); this.uiAbort = null;
         this.selectController = null;
         this.studio?.dispose();
         this.studio?.container.remove();
-        this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null;
+        this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null; this.viewOffsetKey = null;
         this.characterSelect = null; this.characterMenuKey = null; this.characterBakeSlot = null; this.characterList = null; this.characterRowSelects = null; this.stateKey = null; this.pages = null;
         this.sidePanel?.remove();
         this.controls = null; this.characterMenu = null; this.sidePanel = null; this.editBar = null;
+        this.shade = null; this.frameEl = null; this.resetBtn = null;
         this.host.container.classList.remove("vnccs-uc-pose-active", "vnccs-uc-pose-editing");
     }
     dispose() { this.release(); this.abort.abort(); }

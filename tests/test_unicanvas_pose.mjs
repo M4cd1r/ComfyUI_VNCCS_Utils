@@ -5,14 +5,26 @@ import vm from "node:vm";
 import * as state from "../web/vnccs_unicanvas_pose_state.mjs";
 import * as control from "../web/vnccs_unicanvas_control.mjs";
 import * as toggles from "../web/vnccs_unicanvas_feature_toggles.mjs";
+import * as transform from "../web/vnccs_unicanvas_transform.mjs";
+import * as timelineCore from "../web/vnccs_unicanvas_timeline_core.mjs";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
 
 const noop = () => {};
 class Element {
     constructor(tag = "div") {
         this.tagName = tag.toUpperCase(); this.children = []; this.events = {}; this.style = { setProperty(key, value) { this[key] = value; } };
-        this.attrs = {}; this.classList = { add: noop, remove: noop, toggle: noop };
-        this.scrollTop = 0; this.scrollLeft = 0; this.clientWidth = 1000; this.clientHeight = 800;
+        this.attrs = {}; this.scrollTop = 0; this.scrollLeft = 0; this.clientWidth = 1000; this.clientHeight = 800;
+        const classes = new Set();
+        this.classList = {
+            add: (...names) => names.forEach(name => classes.add(name)),
+            remove: (...names) => names.forEach(name => classes.delete(name)),
+            toggle: (name, force) => {
+                const next = force === undefined ? !classes.has(name) : Boolean(force);
+                if (next) classes.add(name); else classes.delete(name);
+                return next;
+            },
+            contains: name => classes.has(name),
+        };
     }
     appendChild(child) { child.parentElement?.removeChild(child); this.children.push(child); child.parentElement = this; return child; }
     append(...children) { children.forEach(child => this.appendChild(child)); }
@@ -26,7 +38,7 @@ class Element {
     fire(name, extra = {}) { for (const callback of this.events[name] || []) callback({ preventDefault: noop, stopPropagation: noop, ...extra }); }
     contains(target) { return this === target || this.children.some(child => child.contains(target)); }
     focus() { this.focused = true; }
-    getContext() { return this.ctx ||= { calls: [], save: noop, restore: noop,
+    getContext() { return this.ctx ||= { calls: [], save: noop, restore: noop, translate: noop, transform: noop, setTransform: noop,
         clearRect: (...args) => this.ctx.calls.push(["clear", ...args]),
         fillRect: (...args) => this.ctx.calls.push(["fill", ...args]),
         drawImage: (...args) => this.ctx.calls.push(["draw", ...args]),
@@ -37,7 +49,7 @@ const source = fs.readFileSync(new URL("../web/vnccs_unicanvas_pose.mjs", import
 const ucSource = fs.readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 function harness(studioClass = class {}) {
     const document = Object.assign(new Element("document"), { createElement: tag => new Element(tag), head: new Element(), getElementById: () => true });
-    const context = { ...state, ...control, ...toggles, document, AbortController, console, JSON, setTimeout, clearTimeout,
+    const context = { ...state, ...control, ...toggles, ...transform, ...timelineCore, document, AbortController, console, JSON, setTimeout, clearTimeout,
         requestAnimationFrame: () => 0, cancelAnimationFrame: noop,
         window: { devicePixelRatio: 1 },
         // refreshCharacterMenu probes /vnccs/context_lists; tests stub the list directly.
@@ -89,6 +101,9 @@ function selectionHarness() {
     for (const name of ["syncCursorStyle", "renderToolSettings", "renderSamPanel", "updateSamControls", "updateHud", "updateContextCursor",
         "updateToolPreviewOverlay", "updateLayerListActiveState", "syncActiveLayerControls", "renderLayerList"]) host[name] = noop;
     host.toolNeedsCanvasRender = () => false;
+    // Session and transform entry points read the render placement; identity unless a test says otherwise.
+    host.getLayerRenderTransform = () => [1, 0, 0, 1, 0, 0];
+    host.getLayerStateOffset = () => ({ x: 0, y: 0 });
     host.getModelBase = () => "qwen_image_edit"; host.getInferenceSize = () => ({ width:512, height:512 });
     host.drawBtn = { disabled:false };
     host.createLayerPixelSnapshot = item => ({ id: item.id, pose: JSON.parse(JSON.stringify(item.pose || null)) });
@@ -103,6 +118,7 @@ function selectionHarness() {
         setVisible: show => calls.push(["visible", show]), layout: noop,
         activate: async (selected, options) => calls.push(["activate", selected.id, options.show]),
         setCharacterOpen: open => calls.push(["character", open]),
+        resetInspectionView: () => calls.push(["resetView"]),
         generation: async selected => { calls.push(["generation", selected.id]); throw new Error("Capture stopped by test"); },
     };
     return { host, layer, raster, calls };
@@ -224,37 +240,73 @@ test("tool visibility, tab changes and keyboard navigation retain settings and b
     assert.equal(pages[1].hidden, false); assert.equal(tabs.children[1].focused, true);
 });
 
-test("bbox editor geometry follows pan and zoom and clips outside the canvas", () => {
+test("the session viewport covers the whole stage and never clips to the layer rect", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     for (const scale of [.25, .7, 1, 2.5]) {
         host.view = { x: -120, y: 50, scale };
         editor.layout();
         const style = editor.studio.canvasContainer.style;
-        assert.equal(parseFloat(style.left), 320-120+10*scale);
-        assert.equal(parseFloat(style.top), 40+50+20*scale);
-        assert.equal(parseFloat(style.width), 400*scale);
-        assert.equal(parseFloat(style.height), 600*scale);
-        assert.match(style.clipPath, /^inset\(/);
+        assert.equal(parseFloat(style.left), 320, "the viewport fills the stage");
+        assert.equal(parseFloat(style.top), 40);
+        assert.equal(parseFloat(style.width), 1000);
+        assert.equal(parseFloat(style.height), 800);
+        assert.equal(style.clipPath, undefined, "no clip to the layer rect: edge gizmos keep room");
     }
     layer.locked = true; editor.layout(); assert.equal(editor.sidePanel.inert, true);
 });
 
-test("the pose editor surface follows the layer's scene-state offset (#7)", () => {
+test("the session camera maps the capture framing onto the rect one to one (view offset)", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
+    editor.initialized = true; editor.visible = true;
+    const offsets = [];
+    editor.studio.viewer = { camera: { fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop,
+        setViewOffset: (...args) => offsets.push(args) } };
+    editor.studio.canvasContainer.clientWidth = 1000; editor.studio.canvasContainer.clientHeight = 800;
+    // rect (10, 20, 400, 600) at view scale 1, origin at view 0: rect on canvas = (10, 20, 400, 600).
+    host.view = { x: 0, y: 0, scale: 1 };
+    editor.layout();
+    const [cw, ch, ox, oy, w, h] = offsets.at(-1);
+    const close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-6, `${value} ~ ${expected}`);
+    // s = ch/rh = 800/600; ox = cw/2 - s*(rx + rw/2); oy = -s*ry; the window is cw*s x ch*s.
+    close(cw, 1000); close(ch, 800);
+    close(ox, 500 - (800 / 600) * (10 + 200));
+    close(oy, -(800 / 600) * 20);
+    close(w, 1000 * 800 / 600); close(h, 800 * 800 / 600);
+    // Panning and zooming the UniCanvas view re-anchors the offset onto the moved rect.
+    host.view = { x: -120, y: 50, scale: 0.5 };
+    editor.layout();
+    const [rx, ry, rw, rh] = [-120 + 10 * .5, 50 + 20 * .5, 400 * .5, 600 * .5];
+    close(offsets.at(-1)[2], 500 - (800 / rh) * (rx + rw / 2));
+    close(offsets.at(-1)[3], -(800 / rh) * ry);
+    // An unchanged layout does not rewrite the projection.
+    const count = offsets.length; editor.layout(); assert.equal(offsets.length, count);
+});
+
+test("the pose editor session view follows the layer's scene-state offset (#7)", () => {
+    const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
+    editor.initialized = true; editor.visible = true;
+    const offsets = [];
+    editor.studio.viewer = { camera: { fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop,
+        setViewOffset: (...args) => offsets.push(args) } };
     host.view = { x: 0, y: 0, scale: 2 };
+    const close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-6, `${value} ~ ${expected}`);
     let matrix = [1, 0, 0, 1, 30, -12];
     host.getLayerStateOffset = () => ({ x: 30, y: -12 });
     host.getLayerRenderTransform = () => matrix;
     editor.layout();
-    const style = editor.studio.canvasContainer.style;
-    assert.equal(parseFloat(style.left), 320 + (10 + 30) * 2);
-    assert.equal(parseFloat(style.top), 40 + (20 - 12) * 2);
-    assert.equal(parseFloat(style.width), 800, "the offset never resizes the surface");
-    // A scaled timeline frame cannot be matched by the 3D surface: the state offset still applies.
+    // The state offset moves the capture-frame region on the canvas: rect (10,-12) + offset 30/-12
+    // at scale 2 = (80, -16, 800, 1200) on the canvas.
+    const [rx, ry, rw, rh] = [(10 + 30) * 2, (20 - 12) * 2, 400 * 2, 600 * 2];
+    close(offsets.at(-1)[2], 500 - (800 / rh) * (rx + rw / 2));
+    close(offsets.at(-1)[3], -(800 / rh) * ry);
+    close(offsets.at(-1)[4], 1000 * 800 / rh);
+    // Full parity (6e): a scaled timeline frame moves AND sizes the capture-frame region exactly
+    // like the layer pixels render.
     matrix = [1.5, 0, 0, 1.5, 400, 400];
     editor.layout();
-    assert.equal(parseFloat(style.left), 320 + (10 + 30) * 2);
-    assert.deepEqual(state.posePlacedRect({ x: 1, y: 2, width: 3, height: 4 }), { x: 1, y: 2, width: 3, height: 4 });
+    const [sx, sy, sw, sh] = [1.5 * 10 + 400, 1.5 * 20 + 400, 400 * 1.5, 600 * 1.5].map(value => value * 2);
+    close(offsets.at(-1)[2], 500 - (800 / sh) * (sx + sw / 2));
+    close(offsets.at(-1)[3], -(800 / sh) * sy);
 });
 
 test("pose controls stay inside the resized stage and never replace the generation panel", () => {
@@ -476,6 +528,165 @@ test("serialized pose, move history, node output and PSD use the same dedicated 
     assert.match(ucSource, /positive: poseRequest\.positive, denoise: 1/);
 });
 
+test("a moved view shows the capture frame and dims the stack until Reset view or Home", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    const studio = controlled.instances[0];
+    const framing = JSON.parse(JSON.stringify(layer.pose.viewport));
+    assert.equal(editor.resetBtn.disabled, true, "aligned at session start: nothing to reset");
+    assert.equal(editor.frameEl.classList.contains("on"), false);
+    assert.equal(editor.shade.classList.contains("on"), false);
+
+    // Orbit away: the view stays where the user left it, the frame shows what will be captured
+    // and the 2D stack dims (it is no longer aligned with the rect). No snap on release.
+    studio.viewer.orbit.fire("start");
+    studio.viewer.camera.position.fromArray([90, 80, 70]);
+    studio.viewer.orbit.fire("end");
+    assert.equal(editor.frameEl.classList.contains("on"), true, "the capture frame shows while misaligned");
+    assert.equal(editor.shade.classList.contains("on"), true, "the 2D stack dims while misaligned");
+    assert.equal(editor.resetBtn.disabled, false);
+    assert.equal(JSON.stringify(layer.pose.viewport), JSON.stringify(framing), "navigation never rewrites the framing");
+
+    editor.resetBtn.fire("click");
+    assert.equal(JSON.stringify(studio.viewer.camera.position.toArray()), JSON.stringify(framing.position),
+        "Reset view returns the camera to the framing");
+    assert.equal(editor.frameEl.classList.contains("on"), false);
+    assert.equal(editor.resetBtn.disabled, true);
+
+    // Home does the same from the keyboard; the wheel toggles the frame too.
+    studio.viewer.camera.position.fromArray([5, 6, 7]);
+    studio.canvas.fire("wheel", { deltaY: -100 });
+    assert.equal(editor.frameEl.classList.contains("on"), true);
+    studio.canvasContainer.fire("keydown", { key: "Home", target: new Element() });
+    assert.equal(JSON.stringify(studio.viewer.camera.position.toArray()), JSON.stringify(framing.position));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(editor.inspecting, false);
+    editor.release();
+});
+
+test("Save pose and Cancel put the preview camera back on the capture framing", () => {
+    const { host, layer, calls } = selectionHarness();
+    host.editPoseLayer(layer);
+    host.finishPoseEdit(true);
+    assert.ok(calls.some(call => call[0] === "resetView"), "session end resets the preview camera");
+    host.editPoseLayer(layer);
+    host.finishPoseEdit(false);
+    assert.equal(calls.filter(call => call[0] === "resetView").length, 2, "Cancel resets it too");
+});
+
+function transformHarness() {
+    const { host, layer, calls, context } = selectionHarness();
+    host.tool = "resize";
+    host.activeLayerId = layer.id;
+    layer.pose.rect = { x: 0, y: 0, width: 200, height: 100 };
+    layer.pose.viewport = { position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 };
+    layer.canvas = Object.assign(new Element("canvas"), { width: 200, height: 100 });
+    layer.hiresCanvas = new Element("canvas");
+    layer.hiresRect = { ...layer.pose.rect };
+    host.getLayerRenderTransform = () => [1, 0, 0, 1, 0, 0];
+    host.getLayerStateOffset = () => ({ x: 0, y: 0 });
+    host.cloneCanvas = canvas => canvas;
+    host.invalidateLayerRenderCaches = noop;
+    host.clampCanvasBounds = bounds => bounds;
+    host.dragStart = {};
+    host.origin = { x: -500, y: -500 };
+    host.size = { width: 4000, height: 4000 };
+    host.projectPoseLayer = async selected => {
+        if (selected !== layer) throw new Error("wrong layer");
+        calls.push(["recapture", layer.pose.rect.width, layer.pose.rect.height]);
+    };
+    return { host, layer, calls, context };
+}
+
+test("the Resize tool scales a live pose layer's rect non-destructively from its corners", () => {
+    const { host, layer, calls } = transformHarness();
+    // Corner drag on the placed rect: the draft previews the scaled bitmap, Apply resizes the
+    // rect, keeps the framing and re-captures crisply at the new size.
+    assert.equal(host.startTransformGesture({ x: 200, y: 100 }, { shiftKey: false, altKey: false, ctrlKey: false }), true);
+    assert.equal(host.pointerMode, "layer-transform");
+    assert.equal(host.transformDraft.poseScale, true);
+    host.updateTransformDraft({ x: 300, y: 150 }, { shiftKey: false, altKey: false, ctrlKey: false });
+    host.applyTransformDraft();
+    assert.equal(JSON.stringify(layer.pose.rect), JSON.stringify({ x: 0, y: 0, width: 300, height: 150 }),
+        "proportional corner scale (aspect kept)");
+    assert.equal(JSON.stringify(layer.pose.viewport), JSON.stringify({ position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 }),
+        "the capture framing never changes with the rect");
+    assert.equal(host.transformDraft, null);
+    assert.equal(host.undoStack.length, 1, "one history entry per gesture");
+    assert.equal(host.undoStack[0].kind, "layerPixels");
+    assert.deepEqual(calls.filter(call => call[0] === "recapture"), [[ "recapture", 300, 150 ]],
+        "Apply re-renders the mannequin at the new rect size");
+    assert.match(ucSource, /"pose", "bbox", "pan", "move", "resize"\]/, "the Resize tool reaches pose layers");
+});
+
+test("pose layers refuse rotate, skew, distort and edge (aspect) drags of the transform tool", () => {
+    const { host, layer, calls } = transformHarness();
+    // Edge handle: an aspect change cannot keep the camera framing honest.
+    assert.equal(host.startTransformGesture({ x: 100, y: 0 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
+    assert.match(String(calls.find(call => call[0] === "status")?.[1] || ""), /Corner handles scale a live pose layer/);
+    // Rotate knob above the top edge.
+    assert.equal(host.startTransformGesture({ x: 100, y: -40 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
+    assert.ok(!host.transformDraft);
+    // Inside the frame is the raster move gesture, not a pose gesture.
+    assert.equal(host.startTransformGesture({ x: 100, y: 50 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
+    // A rotated timeline frame refuses entirely: go back to the rest frame.
+    host.getLayerRenderTransform = () => [0.7, 0.7, -0.7, 0.7, 10, 10];
+    // The ne corner of the rotated frame sits at (150, 150).
+    assert.equal(host.startTransformGesture({ x: 150, y: 150 }, { shiftKey: false, altKey: false, ctrlKey: false }), false);
+    assert.match(String(calls.find(call => call[0] === "status" && /rest frame/.test(call[1]))?.[1] || ""), /rest frame/);
+    assert.equal(layer.pose.rect.width, 200, "nothing moved");
+});
+
+test("posePlacedRect maps the rect through the full render transform, like the pixels (6e)", () => {
+    const rect = { x: 10, y: 20, width: 400, height: 600 };
+    // No matrix, no offset: the rest rect itself.
+    assert.equal(JSON.stringify(state.posePlacedRect(rect)), JSON.stringify(rect));
+    // Translation-only matrix: a plain move (the pre-6e behavior).
+    assert.equal(JSON.stringify(state.posePlacedRect(rect, [1, 0, 0, 1, 30, -12])),
+        JSON.stringify({ x: 40, y: 8, width: 400, height: 600 }));
+    // A timeline scale frame translates AND sizes the placement.
+    assert.equal(JSON.stringify(state.posePlacedRect(rect, [2, 0, 0, 2, 100, 50])),
+        JSON.stringify({ x: 120, y: 90, width: 800, height: 1200 }));
+    // A scene-state depth scale passed as an offset only (anchored on the feet).
+    const placed = state.posePlacedRect(rect, null, { x: 10, y: 5, scale: 2, ax: 10, ay: 620 });
+    // m = [2,0,0,2, 10 - ax, 5 - ay]; the feet anchor moves by (10, 5) and the rect scales 2x.
+    assert.equal(JSON.stringify(placed), JSON.stringify({ x: 20, y: 2 * 20 + 5 - 620, width: 800, height: 1200 }));
+    // A rotated frame collapses to its axis-aligned bounds; editing refuses it.
+    const rotated = state.posePlacedRect({ x: 0, y: 0, width: 100, height: 10 }, [0, 1, -1, 0, 100, 0]);
+    assert.equal(JSON.stringify(rotated), JSON.stringify({ x: 90, y: 0, width: 10, height: 100 }));
+});
+
+test("a rotated timeline frame refuses the pose session until the rest frame", () => {
+    const { host, layer, calls } = selectionHarness();
+    host.getLayerRenderTransform = () => [0.7, 0.7, -0.7, 0.7, 10, 10];
+    host.editPoseLayer(layer);
+    assert.equal(host.tool, "move", "the Pose tool falls back instead of opening a lying session");
+    assert.ok(!host.poseEditSession);
+    assert.match(String(calls.find(call => call[0] === "status")?.[1] || ""), /rest frame/);
+});
+
+test("joint and anchor projections run on the capture framing, not the inspection view (6g)", () => {
+    const { editor, layer } = harness();
+    layer.pose.viewport = { position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 };
+    editor.layer = layer; editor.initialized = true;
+    // The inspection view was left somewhere else by the free navigation.
+    const vector = values => ({ toArray: () => values.slice(), fromArray: v => { values = v.slice(); } });
+    const camera = { position: vector([90, 80, 70]), fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop, updateMatrixWorld: noop };
+    editor.studio = { viewer: { camera, orbit: { target: vector([0, 0, 0]), update: noop }, skinnedMesh: null, passiveCharacters: new Map() } };
+    const seen = [];
+    editor.withFramingCamera(cam => seen.push([cam.position.toArray(), camera.view]));
+    assert.equal(JSON.stringify(seen[0][0]), JSON.stringify([0, 10, 45]), "the callback sees the framing camera");
+    assert.equal(seen[0][1], null, "the session view offset is lifted for projections");
+    assert.equal(JSON.stringify(camera.position.toArray()), JSON.stringify([90, 80, 70]),
+        "the inspection view is put back afterwards");
+    // The projection helpers route through it (characterAnchors has no mesh here; it must not throw).
+    editor.updateOpenPose();
+    assert.equal(layer.pose.openpose, undefined, "no meshes, no joints - but no projection off the framing either");
+    assert.equal(editor.characterAnchors("character-1"), null);
+    assert.equal(source.match(/withFramingCamera\(camera =>/g).length, 2, "joints and anchors both project on the framing");
+});
+
 test("captures run on the persisted framing; existing layers keep their saved framing", async () => {
     const controlled = controlledStudio();
     const { editor, layer } = harness(controlled.Studio);
@@ -515,7 +726,11 @@ function controlledStudio(load = async () => true) {
             this._viewerInitPromise = Promise.resolve();
             const vector = values => ({ toArray: () => values.slice(), fromArray: v => { values = v.slice(); } });
             const orbitEvents = {};
-            this.viewer = { scene: { background: null }, camera: { position: vector([1,2,3]), fov: 40, zoom: 1, updateProjectionMatrix: noop },
+            const camera = { position: vector([1,2,3]), fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop, updateMatrixWorld: noop,
+                setViewOffset: (fullWidth, fullHeight, offsetX, offsetY, width, height) => {
+                    camera.view = { enabled: true, fullWidth, fullHeight, offsetX, offsetY, width, height };
+                } };
+            this.viewer = { scene: { background: null }, camera,
                 orbit: {
                     target: vector([0,0,0]), update: noop,
                     addEventListener: (name, callback) => (orbitEvents[name] ||= []).push(callback),
@@ -584,7 +799,7 @@ test("panorama cache hydration restores only the matching uploaded character pix
     assert.equal(cached.character.dataURL, "pixels");
 });
 
-test("Pose Studio dimension inputs immediately resize the live bbox surface", () => {
+test("Pose Studio dimension inputs resize the rect around its center (6f)", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     layer.pose.studio.export = { view_width: 400, view_height: 600 };
     let seen;
@@ -592,7 +807,32 @@ test("Pose Studio dimension inputs immediately resize the live bbox surface", ()
     editor.applyDimensions({ view_width: 640, view_height: 480 });
     assert.equal(layer.pose.rect.width, 640); assert.equal(host.bbox.height, 480);
     assert.deepEqual(seen, [640, 480]);
-    assert.equal(editor.studio.canvasContainer.style.width, "640px");
+    assert.equal(layer.pose.rect.height, 480);
+    // The center stays: the figure keeps its world-px scale instead of jumping with the corner.
+    assert.equal(JSON.stringify([layer.pose.rect.x, layer.pose.rect.y]), JSON.stringify([10 - 120, 20 + 60]),
+        "anchored at the rect center (center (210, 320) is kept)");
+    // A rect that no longer matches the bbox leaves the bbox alone.
+    host.bbox = { x: 0, y: 0, width: 64, height: 64 };
+    editor.applyDimensions({ view_width: 320, view_height: 240 });
+    assert.equal(host.bbox.width, 64);
+});
+
+test("captures lift the session view offset for the render and put it back", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    const camera = controlled.instances[0].viewer.camera;
+    assert.ok(camera.view, "a live session anchors the camera on the layer rect");
+    const during = [];
+    const capture = camera.view;
+    camera.setViewOffset = (...args) => { camera.view = { enabled: true, args }; };
+    controlled.instances[0].viewer.capture = (...args) => { during.push(camera.view); return args[8].targetCanvas; };
+    layer.pose.viewport = { position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 };
+    const target = new Element("canvas");
+    editor.captureSurface({ width: 40, height: 60 }, true, target);
+    assert.equal(during[0], null, "the render sees no session view offset");
+    assert.equal(camera.view, capture, "the session view offset is restored afterwards");
+    editor.release();
 });
 
 test("generation reuses the Pose Studio prompt and leaves a rotated panorama camera untouched", async () => {
@@ -665,8 +905,11 @@ test("the ID pass renders each mannequin in its own flat color and restores the 
     const seen = [];
     class MeshBasicMaterial { constructor(options) { Object.assign(this, options); } dispose() { this.disposed = true; } }
     class Color { constructor(r, g, b) { this.rgb = [r, g, b]; } }
+    const vector = values => ({ toArray: () => values.slice(), fromArray: v => { values = v.slice(); } });
     const viewer = { THREE: { MeshBasicMaterial, Color }, skinnedMesh: active, passiveCharacters: new Map([["c2", { mesh: passive }]]),
         scene: { traverse: callback => [active, passive, grid, frame].forEach(callback) }, renderInteractionOverlay: noop,
+        camera: { position: vector([0, 10, 45]), fov: 40, zoom: 1, view: null, updateProjectionMatrix: noop, updateMatrixWorld: noop },
+        orbit: { target: vector([0, 0, 0]), update: noop },
         capture: (width, height, _zoom, _bg, _x, _y, _yaw, _pitch, options) => {
             seen.push({ active: active.material.color.rgb, passive: passive.material.color.rgb, grid: grid.visible, frame: frame.visible,
                 unlit: active.material.toneMapped === false, options });

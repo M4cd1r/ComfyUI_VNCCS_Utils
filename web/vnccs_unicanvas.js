@@ -3,7 +3,7 @@
  */
 
 import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
-import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal } from "./vnccs_unicanvas_pose_state.mjs";
+import { POSE_ICON, isImageLayer, serializePose, mergePoseCache, serializePoseId, restorePoseId, serializePoseNormal, restorePoseNormal, poseFrameRotated } from "./vnccs_unicanvas_pose_state.mjs";
 import { installUniCanvasCharacterBake } from "./vnccs_unicanvas_bake.mjs";
 import { installUniCanvasSprites } from "./vnccs_unicanvas_sprites.mjs";
 import { app } from "../../scripts/app.js";
@@ -1997,7 +1997,9 @@ class UniCanvasWidget {
       if (this.tool === "pose") this.setTool("move");
       return;
     }
-    if (this.tool === "pose" && this.poseEditSession?.layerId !== layer.id) this.beginPoseEditSession(layer);
+    if (this.tool === "pose" && this.poseEditSession?.layerId !== layer.id) {
+      if (!this.beginPoseEditSession(layer)) { this.setTool("move"); return; }
+    }
     this.poseEditor ||= new UniCanvasPoseEditor(this);
     try {
       if (this.panorama && layer.pose.panoramaCamera) {
@@ -2059,6 +2061,12 @@ class UniCanvasWidget {
   }
 
   beginPoseEditSession(layer) {
+    // A rotated timeline frame cannot be matched by the pose editor's axis-aligned rect (6e):
+    // the 3D session and the pixels would project differently. Edit on the rest frame.
+    if (poseFrameRotated(this.getLayerRenderTransform(layer))) {
+      this.setStatus("Go to the rest frame to edit the pose", true);
+      return false;
+    }
     this.poseEditSession = {
       layerId: layer.id,
       before: this.createLayerPixelSnapshot(layer),
@@ -2070,6 +2078,7 @@ class UniCanvasWidget {
     this.requestRender();
     this.updateHistoryButtons();
     this.setStatus("Editing pose - Save pose (Enter) or Cancel when done. Ctrl+Z / Ctrl+Y undo and redo pose changes.");
+    return true;
   }
 
   // Leaving the Pose tool keeps the edit: one undo step for the whole session.
@@ -2092,6 +2101,9 @@ class UniCanvasWidget {
     if (!session?.view) return;
     this.view = { ...session.view };
     this.intendedScale = session.intendedScale ?? this.view.scale;
+    // Session view model: leaving the edit also puts the preview camera back on the capture
+    // framing, so re-entering the session starts exactly on the layer's pixels again.
+    this.poseEditor?.resetInspectionView?.();
     this.poseEditor?.layout();
     this.requestRender();
   }
@@ -3681,7 +3693,9 @@ class UniCanvasWidget {
       }
       if (this.tool === "bbox") return;
     }
-    if (this.activeLayer?.type === "pose" && e.button === 0 && !["pose", "bbox", "pan", "move"].includes(this.tool)) {
+    // Pose layers accept the Resize tool for non-destructive corner scaling (the rect grows,
+    // the camera framing stays); every other pixel tool needs a raster layer.
+    if (this.activeLayer?.type === "pose" && e.button === 0 && !["pose", "bbox", "pan", "move", "resize"].includes(this.tool)) {
       this.setStatus("Use Pose Studio to edit this live layer, or select a raster layer for pixel tools.", true);
       return;
     }
@@ -4743,8 +4757,10 @@ class UniCanvasWidget {
   getTransformFrame(layer = this.activeLayer) {
     const draft = this.getLayerTransformDraft(layer);
     if (draft) return draft;
-    // The frame the layer shows at: its stored pixels through the render placement (rotated too).
-    const rest = layer && !layer.locked ? this.getLayerRestBounds(layer) : null;
+    // A pose layer's frame is its world rect (the mannequin rarely fills its pixels).
+    const rest = layer && !layer.locked
+      ? (layer.type === "pose" ? layer.pose?.rect || null : this.getLayerRestBounds(layer))
+      : null;
     return rest ? { quad: placedQuad(rest, this.getLayerRenderTransform(layer)), mesh: null } : null;
   }
 
@@ -4763,6 +4779,9 @@ class UniCanvasWidget {
     this.transformDraft = {
       placement,
       keyFrame: this.timelinePanel?.transformKeyFrame(layer) || null,
+      // Pose layers scale non-destructively: Apply resizes pose.rect and re-captures instead
+      // of resampling the stored pixels (6d). Every gesture on them is corner-scale only.
+      poseScale: layer.type === "pose",
       layerId: layer.id,
       before: source.before,
       sourceCanvas: source.canvas,
@@ -4800,9 +4819,22 @@ class UniCanvasWidget {
     const frame = this.getTransformFrame(layer);
     const hit = frame ? hitTransform(frame, point, this.transformHitOptions()) : null;
     if (!layer || layer.locked || !hit) return false;
+    // A live pose layer scales from its corner handles only: rotation, skew, distort, warp and
+    // edge (aspect-changing) drags would lie about the 3D pixels. A rotated timeline frame
+    // refuses entirely: go back to the rest frame instead of posing on a rotated one.
+    if (layer.type === "pose") {
+      if (poseFrameRotated(this.getLayerRenderTransform(layer))) {
+        this.setStatus("Go to the rest frame to edit the pose", true);
+        return false;
+      }
+      if (!(hit.kind === "handle" && isCornerHandle(hit.handle))) {
+        this.setStatus("Corner handles scale a live pose layer; rasterize it to rotate, skew or distort.", true);
+        return false;
+      }
+    }
     const draft = this.beginTransformDraft(layer);
     if (!draft) return false;
-    if (this.resizeTransformMode === "warp" && !draft.mesh) draft.mesh = meshFromQuad(draft.quad);
+    if (this.resizeTransformMode === "warp" && !draft.poseScale && !draft.mesh) draft.mesh = meshFromQuad(draft.quad);
     const center = quadCenter(draft.quad);
     this.dragStart.layerId = layer.id;
     this.dragStart.layerBefore = draft.before;
@@ -4855,7 +4887,16 @@ class UniCanvasWidget {
     const handle = hit.handle;
     const corner = isCornerHandle(handle);
     let quad;
-    if (corner && (mode === "distort" || (mode === "free" && modifier && !(alt && shift)))) {
+    if (draft.poseScale) {
+      // Pose scale is always proportional (the capture camera aspect must survive the rect
+      // resize); Alt still scales from the center. Gesture previews scale the bitmap live.
+      quad = scaleQuadFromHandle(start.quad, handle, point, {
+        width: draft.sourceBounds.width,
+        height: draft.sourceBounds.height,
+        keepRatio: true,
+        fromCenter: alt,
+      });
+    } else if (corner && (mode === "distort" || (mode === "free" && modifier && !(alt && shift)))) {
       quad = distortQuadCorner(start.quad, handle, { x: start.quad[handle].x + delta.x, y: start.quad[handle].y + delta.y });
     } else if (corner && (mode === "perspective" || (mode === "free" && modifier && alt && shift))) {
       quad = perspectiveQuadCorner(start.quad, handle, delta);
@@ -4964,6 +5005,16 @@ class UniCanvasWidget {
       return;
     }
     if (draft.keyFrame) {
+      if (draft.poseScale) {
+        // Transform keys scale a layer's RENDER; a live pose layer is scaled in world pixels
+        // through its rect, so a keyed frame refuses instead of silently writing keys.
+        this.transformDraft = null;
+        this.setStatus("Go to the rest frame to scale a live pose layer", true);
+        this.renderToolSettings();
+        this.updateTransformControls();
+        this.requestRender();
+        return;
+      }
       // A keyed timeline frame: the frame becomes position / scale / rotation keys, pixels stay.
       this.transformDraft = null;
       this.timelinePanel?.commitTransformKeys(layer, draft);
@@ -4999,6 +5050,20 @@ class UniCanvasWidget {
     }, layer.canvas);
     this.transformDraft = null;
     this.activeLayerId = layer.id;
+    if (draft.poseScale) {
+      // Non-destructive pose scale (6d): the rect takes the dragged frame, the capture framing
+      // stays (same camera, same aspect) and the mannequin re-renders crisply at the new size.
+      // The resampled bitmap above is the interim view until that capture lands; baked
+      // characters follow the rect like the mannequin.
+      layer.pose.rect = {
+        x: Math.round(bounds.x),
+        y: Math.round(bounds.y),
+        width: Math.max(1, Math.round(bounds.width)),
+        height: Math.max(1, Math.round(bounds.height)),
+      };
+      layer.poseIdCanvas = null; layer.poseIdMeta = null;
+      layer.poseNormalCanvas = null; layer.poseNormalMeta = null;
+    }
     this.pushHistoryEntry({
       kind: "layerPixels",
       layerId: layer.id,
@@ -5011,6 +5076,7 @@ class UniCanvasWidget {
     this.syncLightStateToWidget();
     this.scheduleFullSync();
     this.requestRender();
+    if (draft.poseScale) void this.projectPoseLayer(layer).catch(() => {});
   }
 
   drawWarpedTriangle(ctx, sourceCanvas, s0, s1, s2, d0, d1, d2) {
