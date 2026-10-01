@@ -23,14 +23,14 @@ def test_module_registered_with_aliases():
 def test_defaults_follow_qi21_recipe():
     module = _get_unicanvas_model_module("qwen_image21")
     defaults = module.defaults
-    # Flow matching sampling: euler/simple; the Viggle v0.2.1 turbo LoRA is on by default,
+    # Flow matching sampling: euler/simple; the Viggle v0.3 turbo LoRA is on by default,
     # so 6 steps at CFG 1 (verified subject extraction in ~9 s on a 4090).
     from nodes.unicanvas.models.qwen_image21 import QWEN21_TURBO_LORA_NAME, QWEN21_TURBO_STEPS
 
     assert defaults["steps"] == QWEN21_TURBO_STEPS == 6
     assert defaults["qwen21_turbo_enabled"] is True
     assert defaults["qwen_lora_name"] == QWEN21_TURBO_LORA_NAME
-    assert "v0.2.1-6step" in QWEN21_TURBO_LORA_NAME
+    assert "v0.3-6step" in QWEN21_TURBO_LORA_NAME
     assert defaults["sampler"] == "euler"
     assert defaults["sampler_name"] == "euler"
     assert defaults["scheduler"] == "simple"

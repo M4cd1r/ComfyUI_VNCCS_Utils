@@ -7,6 +7,7 @@
 * **Security gate**: The security scan now rejects `XMLHttpRequest` in shipped JavaScript, including vendored code.
 * **Pose library sync**: Syncing a pose repository no longer re-downloads and deletes the same asset on every run on Windows, where the manifest category casing differs from the existing folder. A failed preview download also no longer deletes files that are already present locally.
 * **Pose Studio image import**: Importing a pose from an image now refreshes the pose capture, so the node outputs the imported pose instead of the previous one.
+* **QI2.1 Viggle Turbo v0.3**: The Qwen Image 2.1 turbo LoRA preset, the UniCanvas defaults and Remove bg now use Viggle Turbo v0.3 (6 steps, CFG 1). The file downloads on first use. Saved canvases that still name the v0.2.1 file treat it as an ordinary LoRA, so re-select the turbo LoRA there.
 
 # Version 0.6.8
 ## UniCanvas Overhaul: Faster Editing, Pose Layers, and More Models

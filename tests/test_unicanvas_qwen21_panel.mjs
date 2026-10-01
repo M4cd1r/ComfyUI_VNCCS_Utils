@@ -61,7 +61,7 @@ test("QI2.1 Turbo LoRA uses the shared preset turbo card, not a bespoke switch",
   assert.equal(qi.turbo.strength_setting, "qwen_lora_strength");
   assert.equal(qi.turbo.enable_setting, "qwen21_turbo_enabled");
   assert.deepEqual(qi.turbo.turbo_settings, { steps: 6, cfg: 1 });
-  assert.equal(qi.turbo.asset.local_path, "models/loras/viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors");
+  assert.equal(qi.turbo.asset.local_path, "models/loras/viggle/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors");
   assert.match(qi.turbo.asset.hf_revision, /^[0-9a-f]{40}$/);
 });
 

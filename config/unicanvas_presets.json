@@ -319,10 +319,10 @@
         "asset": {
           "name": "Qwen Image 2.1 Viggle Turbo",
           "hf_repo": "Viggle/Qwen-Image-2.1-viggle-turbo",
-          "hf_path": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
-          "local_path": "models/loras/viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+          "hf_path": "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
+          "local_path": "models/loras/viggle/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
           "description": "Six-step Viggle Turbo LoRA for Qwen Image 2.1.",
-          "hf_revision": "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
+          "hf_revision": "56d76f7baa6519ccf9c2942039b5c03dfbbcac1b"
         }
       }
     },

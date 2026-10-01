@@ -28,12 +28,12 @@ export const UNICANVAS_QWEN21_MODULE = {
       clip_type: "qwen_image",
       sampler_name: "euler",
       scheduler: "simple",
-      // Viggle v0.2.1 turbo on by default: 6 steps at CFG 1.
+      // Viggle v0.3 turbo on by default: 6 steps at CFG 1.
       steps: 6,
       cfg: 1,
       denoise: 1,
       qwen21_turbo_enabled: true,
-      qwen_lora_name: "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+      qwen_lora_name: "viggle/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
       qwen_lora_strength: 1,
       qwen21_opaque_output: false,
       // AusBoss outpaint LoRA v2: applied in outpaint mode only (gray-padded canvas + fixed instruction).
