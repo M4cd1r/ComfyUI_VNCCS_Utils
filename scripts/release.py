@@ -58,6 +58,28 @@ def split_changelog(text: str) -> tuple[str, str]:
     return body, rest
 
 
+def split_notes(text: str, limit: int = 3800) -> list[str]:
+    """Split release notes into chunks of at most `limit` characters, preferring line breaks."""
+    chunks: list[str] = []
+    current = ""
+    for line in text.strip().splitlines():
+        while len(line) > limit:
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+            cut = line.rfind(" ", 0, limit)
+            cut = cut if cut > 0 else limit
+            chunks.append(line[:cut].rstrip())
+            line = line[cut:].lstrip()
+        if current and len(current) + len(line) + 1 > limit:
+            chunks.append(current.rstrip())
+            current = ""
+        current += line + "\n"
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks
+
+
 def prepare_release(
     root: Path, bump: str | None = None, version: str | None = None, notes_path: Path | None = None
 ) -> str:
@@ -94,6 +116,8 @@ def prepare_release(
     readme_path.write_text(_README_RE.sub(rf"\g<1>{new_version}\g<3>", readme, count=1), encoding="utf-8")
     if notes_path:
         notes_path.write_text(body.strip() + "\n", encoding="utf-8")
+        for index, chunk in enumerate(split_notes(body), start=1):
+            notes_path.with_name(f"{notes_path.stem}_{index:02d}.md").write_text(chunk + "\n", encoding="utf-8")
     return new_version
 
 

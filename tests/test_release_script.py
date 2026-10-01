@@ -23,6 +23,7 @@ def test_release_promotes_next_and_restores_stub(tmp_path):
     notes = tmp_path / "notes.md"
     assert release.prepare_release(root, bump="patch", notes_path=notes) == "1.2.4"
     assert notes.read_text(encoding="utf-8") == "* **Fix**: a.\n"
+    assert (tmp_path / "notes_01.md").read_text(encoding="utf-8") == "* **Fix**: a.\n"
     assert (root / "CHANGELOG.md").read_text(encoding="utf-8") == (
         "# Version [[NEXT]]\n\n# Version 1.2.4\n\n* **Fix**: a.\n\n# Version 1.2.3\n\n* old\n"
     )
@@ -58,3 +59,18 @@ def test_invalid_release_changes_nothing(tmp_path, changelog, kwargs):
 def test_repo_changelog_starts_with_next_section():
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     release.split_changelog(text)
+
+
+def test_split_notes_keeps_everything_within_limit():
+    text = "\n".join(f"* item {i} " + "x" * 40 for i in range(200))
+    chunks = release.split_notes(text, limit=500)
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 500 for chunk in chunks)
+    assert "\n".join(chunks) == text
+    assert release.split_notes("short", limit=500) == ["short"]
+
+
+def test_split_notes_breaks_overlong_lines():
+    chunks = release.split_notes("word " * 300, limit=100)
+    assert all(len(chunk) <= 100 for chunk in chunks)
+    assert " ".join(chunks).split() == ["word"] * 300

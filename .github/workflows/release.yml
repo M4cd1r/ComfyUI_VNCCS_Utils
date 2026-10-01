@@ -69,11 +69,19 @@ jobs:
             echo "DISCORD_WEBHOOK_URL is not set; skipping Discord announcement."
             exit 0
           fi
-          NOTES=$(head -c 3800 "$RUNNER_TEMP/release_notes.md")
-          jq -n --arg title "VNCCS Utils $VERSION is out" \
-                --arg url "https://registry.comfy.org/nodes/vnccs-utils" \
-                --arg desc "$NOTES" \
-                '{embeds: [{title: $title, url: $url, description: $desc, color: 16748451}]}' > "$RUNNER_TEMP/discord.json"
-          curl -sS --fail-with-body -X POST -H "Content-Type: application/json" \
-            --data @"$RUNNER_TEMP/discord.json" "$DISCORD_WEBHOOK_URL" \
-            || echo "::warning::Discord announcement failed; the release itself succeeded."
+          # release.py splits the notes into Discord-sized files: release_notes_01.md, _02.md, ...
+          post() {
+            curl -sS --fail-with-body -X POST -H "Content-Type: application/json" \
+              --data @"$RUNNER_TEMP/discord.json" "$DISCORD_WEBHOOK_URL"
+          }
+          INDEX=0
+          for FILE in "$RUNNER_TEMP"/release_notes_*.md; do
+            INDEX=$((INDEX + 1))
+            if [ "$INDEX" -eq 1 ]; then TITLE="VNCCS Utils $VERSION is out"; else TITLE="VNCCS Utils $VERSION (continued)"; fi
+            jq -n --arg title "$TITLE" \
+                  --arg url "https://registry.comfy.org/nodes/vnccs-utils" \
+                  --rawfile desc "$FILE" \
+                  '{embeds: [{title: $title, url: $url, description: $desc, color: 16748451}]}' > "$RUNNER_TEMP/discord.json"
+            post || { echo "::warning::Discord announcement failed; the release itself succeeded."; exit 0; }
+            sleep 1
+          done
