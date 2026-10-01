@@ -44,9 +44,9 @@ jobs:
           EXPLICIT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "$EXPLICIT_VERSION" ]; then
-            VERSION=$(python scripts/release.py --version "$EXPLICIT_VERSION")
+            VERSION=$(python scripts/release.py --notes-file "$RUNNER_TEMP/release_notes.md" --version "$EXPLICIT_VERSION")
           else
-            VERSION=$(python scripts/release.py --bump "$BUMP")
+            VERSION=$(python scripts/release.py --notes-file "$RUNNER_TEMP/release_notes.md" --bump "$BUMP")
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Commit release
@@ -60,3 +60,20 @@ jobs:
         uses: Comfy-Org/publish-node-action@main
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+      - name: Announce on Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL is not set; skipping Discord announcement."
+            exit 0
+          fi
+          NOTES=$(head -c 3800 "$RUNNER_TEMP/release_notes.md")
+          jq -n --arg title "VNCCS Utils $VERSION is out" \
+                --arg url "https://registry.comfy.org/nodes/vnccs-utils" \
+                --arg desc "$NOTES" \
+                '{embeds: [{title: $title, url: $url, description: $desc, color: 16748451}]}' > "$RUNNER_TEMP/discord.json"
+          curl -sS --fail-with-body -X POST -H "Content-Type: application/json" \
+            --data @"$RUNNER_TEMP/discord.json" "$DISCORD_WEBHOOK_URL" \
+            || echo "::warning::Discord announcement failed; the release itself succeeded."

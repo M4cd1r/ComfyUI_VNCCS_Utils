@@ -116,7 +116,8 @@ Conventions:
   (keep the section; a PR that needs a title adds none, the release gets its number only).
   The manual **Release** workflow (`.github/workflows/release.yml`, runs
   `scripts/release.py`) renames `[[NEXT]]` to the new version, bumps `pyproject.toml` and
-  README, restores an empty `[[NEXT]]` stub, commits to `main` and publishes to the registry.
+  README, restores an empty `[[NEXT]]` stub, commits to `main`, publishes to the registry and posts the
+  released notes to Discord (repo secret `DISCORD_WEBHOOK_URL`; skipped when unset).
   A direct `pyproject.toml` change on `main` still triggers `publish_action.yml`.
 - UI changes need an After capture only (`node evidence.mjs --topic <topic> --phase after`, see
   `AGENTS.md`); no Before captures or pairs.

@@ -20,7 +20,9 @@ def _make_repo(tmp_path, changelog):
 
 def test_release_promotes_next_and_restores_stub(tmp_path):
     root = _make_repo(tmp_path, "# Version [[NEXT]]\n\n* **Fix**: a.\n\n# Version 1.2.3\n\n* old\n")
-    assert release.prepare_release(root, bump="patch") == "1.2.4"
+    notes = tmp_path / "notes.md"
+    assert release.prepare_release(root, bump="patch", notes_path=notes) == "1.2.4"
+    assert notes.read_text(encoding="utf-8") == "* **Fix**: a.\n"
     assert (root / "CHANGELOG.md").read_text(encoding="utf-8") == (
         "# Version [[NEXT]]\n\n# Version 1.2.4\n\n* **Fix**: a.\n\n# Version 1.2.3\n\n* old\n"
     )

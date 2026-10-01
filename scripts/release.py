@@ -5,6 +5,7 @@ never touch version numbers. The Release workflow runs this script, which then:
 
 * renames the `[[NEXT]]` heading to the new version,
 * puts a fresh empty `# Version [[NEXT]]` section on top for the next PRs,
+* optionally saves the released notes to a file (for announcements),
 * updates `version` in pyproject.toml and "Current release" in README.md.
 
 Usage: python scripts/release.py (--bump patch|minor|major | --version X.Y.Z)
@@ -57,7 +58,9 @@ def split_changelog(text: str) -> tuple[str, str]:
     return body, rest
 
 
-def prepare_release(root: Path, bump: str | None = None, version: str | None = None) -> str:
+def prepare_release(
+    root: Path, bump: str | None = None, version: str | None = None, notes_path: Path | None = None
+) -> str:
     pyproject_path = root / "pyproject.toml"
     changelog_path = root / "CHANGELOG.md"
     readme_path = root / "README.md"
@@ -89,6 +92,8 @@ def prepare_release(root: Path, bump: str | None = None, version: str | None = N
     changelog_path.write_text(changelog, encoding="utf-8")
     pyproject_path.write_text(_PYPROJECT_RE.sub(rf"\g<1>{new_version}\g<3>", pyproject, count=1), encoding="utf-8")
     readme_path.write_text(_README_RE.sub(rf"\g<1>{new_version}\g<3>", readme, count=1), encoding="utf-8")
+    if notes_path:
+        notes_path.write_text(body.strip() + "\n", encoding="utf-8")
     return new_version
 
 
@@ -97,10 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--bump", choices=["patch", "minor", "major"])
     group.add_argument("--version")
+    parser.add_argument("--notes-file", type=Path, help="Write the released changelog section here")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     args = parser.parse_args(argv)
     try:
-        print(prepare_release(args.root, bump=args.bump, version=args.version))
+        print(prepare_release(args.root, bump=args.bump, version=args.version, notes_path=args.notes_file))
     except ReleaseError as exc:
         print(f"release: {exc}", file=sys.stderr)
         return 1
