@@ -1,3 +1,5 @@
+# Version [[NEXT]]
+
 # Version 0.6.9
 ## Registry Compliance Fix
 
