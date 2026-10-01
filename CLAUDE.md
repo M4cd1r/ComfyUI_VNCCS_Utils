@@ -111,7 +111,14 @@ Conventions:
 
 ## Workflow notes
 
-- Bump nothing in `pyproject.toml` unless releasing (the publish workflow triggers on it).
+- Releases: never bump `pyproject.toml` or the README "Current release" in a feature PR. Add
+  user-facing notes as bullets under the top `# Version [[NEXT]]` section of `CHANGELOG.md`
+  (keep the section; a PR that needs a title adds none, the release gets its number only).
+  The manual **Release** workflow (`.github/workflows/release.yml`, runs
+  `scripts/release.py`) renames `[[NEXT]]` to the new version, bumps `pyproject.toml` and
+  README, restores an empty `[[NEXT]]` stub, commits to `main`, publishes to the registry and posts the
+  released notes to Discord (repo secret `DISCORD_WEBHOOK_URL`; skipped when unset).
+  A direct `pyproject.toml` change on `main` still triggers `publish_action.yml`.
 - UI changes need an After capture only (`node evidence.mjs --topic <topic> --phase after`, see
   `AGENTS.md`); no Before captures or pairs.
 - After frontend changes on a live instance, hard-reload (Ctrl+Shift+R).
